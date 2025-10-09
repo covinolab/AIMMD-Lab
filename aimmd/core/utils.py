@@ -268,6 +268,7 @@ def fit(network, pathensemble,
         process_descriptors=lambda x: x,
         save_memory=False,
         nbins=0,
+        state_bins='',
         augment=False,
         thA=0.1,
         thB=0.1,
@@ -325,12 +326,18 @@ def fit(network, pathensemble,
         reduce memory use. Useful when the training set doesn't fit in RAM.
     
     nbins : int, default=0
-        If `nbins > 0`, divide the reactive space in nbins + 2 bins based on
-        the input neural network model, add two additional bins for the state
-        A and state B's inside, and assign selection probabilities to the
+        Divide the reactive space in `nbins + 2` bins based on the input
+        neural network model, and assign selection probabilities to the
         training set points such that each batch has a uniform population
         across the bins. Plus, regularize the shooting results in the bins.
         `nbins = 9` is usually a good value.
+    
+    state_bins : str, default=''
+        Add two additional bins for the states defined in `state_bins`.
+        For example, `state_bins = 'AB'` includes both in A and in B data
+        in the training set. Assign selection probabilities to the training
+        set points such that each batch has a uniform population across all
+        the bins.
     
     augment : bool, default=False
         If `True`, include all available data in the training set: shooting
@@ -866,9 +873,12 @@ def fit(network, pathensemble,
         free_BtoA_frames_begin = free_AtoB_frames_begin + len(
             free_AtoB_values)
         
-        # uniformize selection probabilities in bins
-        bins = get_bins(pathensemble, nbins,
-            cutoff_max=20.0, initial_path=initial_path, states=True)
+        # uniformize selection probabilities in bins (if nbins > 0)
+        if nbins:
+            bins = get_bins(pathensemble, nbins,
+                cutoff_max=20.0, initial_path=initial_path, states=True)
+        else:
+            bins = np.array([-np.inf, +np.inf])
         
         write(f'\nUniformizing selection probabilities\n'
               f'in bins: {array2string(bins, 20)}',
@@ -877,11 +887,13 @@ def fit(network, pathensemble,
         # internal A and internal B
         mask = range(0, len(inA_values))
         norm = np.sum(selection_probabilities[mask])
-        if norm:
+        if 'A' in state_bins and norm:
             selection_probabilities[mask] /= norm
+        else:
+            selection_probabilities[mask] = 0.
         mask = range(len(inA_values), n_internal_frames)
         norm = np.sum(selection_probabilities[mask])
-        if norm:
+        if 'B' in state_bins and norm:
             selection_probabilities[mask] /= norm
         
         # all the rest
