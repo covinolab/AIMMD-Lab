@@ -893,13 +893,13 @@ def fit(network, pathensemble,
                     results[maskA, 0],
                     weights=selection_probabilities[maskA])
             else:
-                a2 = 0.
+                a2 = 1.
             if np.sum(selection_probabilities[maskB]):
                 b2 = np.average(
                     results[maskB, 1],
                     weights=selection_probabilities[maskB])
             else:
-                b2 = 0.
+                b2 = 1.
             selection_probabilities[maskA] *= results[maskA, 0] / a2
             selection_probabilities[maskB] *= results[maskB, 1] / b2
             results[maskA, 0] = a2
