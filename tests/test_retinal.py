@@ -78,7 +78,6 @@ print('Obtained', equilibrium)
 
 print('\nSplitting path ensemble')
 equilibrium.split()
-npaths = len(equilibrium)
 print('Obtained', equilibrium)
 
 print('\nSaving path ensemble')
