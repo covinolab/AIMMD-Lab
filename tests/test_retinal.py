@@ -129,7 +129,7 @@ else:
     i = max(1, len(equilibrium) - npaths)
 
 old_label = ''
-for i in range(i, min(len(equilibrium), i + npaths)):
+for i in range(i, min(len(equilibrium) - 1, i + npaths)):
     descriptors = cv(equilibrium.path(i))
     times = equilibrium.times(i)[0]
     if i in ARA_indices:
