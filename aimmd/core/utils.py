@@ -380,7 +380,9 @@ def fit(network, pathensemble,
         
     epochs : int, default=500
         Number of training epochs, each of which draws a new batch of
-        training set data and minimizes the loss for one step.
+        training set data and minimizes the loss for one step. The fit will
+        run up until 50% epochs more until the batch loss (removed the
+        smoothening and regularization weights) is the lowest ever recorded.
     
     batch_size : int, default=4096
         Size of each training batch. Since the batch is drawn with selection
@@ -413,6 +415,10 @@ def fit(network, pathensemble,
     
     TODO: include free/shot A-R and B-R paths.
     """
+    
+    if not augment:
+        thA = None
+        thB = None
     
     # utils' function
     def _concatenate(l, **kwargs):
@@ -582,21 +588,18 @@ def fit(network, pathensemble,
             pathensemble.values(keys[free_B], internal=True), axis=0)
         total = np.sum(wTPs)
         if total and thA is not None:
-            factor_fromA_toB = np.clip(
-                np.sum(expit(free_A_values)) / total, 1e-9, 1)
+            factor_fromA_toB = min(np.sum(expit(+free_A_values)) / total, 1)
+            if verbose:
+                write(f'Conversion factor from A to B: {factor_fromA_toB:.5e}')
         else:
             factor_fromA_toB = 0.
         
         if total and thB is not None:
-            factor_fromB_toA = np.clip(
-                np.sum(1 - expit(free_B_values)) / total, 1e-9, 1)
+            factor_fromB_toA = min(np.sum(expit(-free_B_values)) / total, 1)
+            if verbose:
+                write(f'Conversion factor from B to A: {factor_fromB_toA:.5e}')
         else:
             factor_fromB_toA = 0.
-
-        if thA is not None or thB is not None:
-            write(f'Transition paths\' conversion results: '
-                  f'({factor_fromB_toA:.5e}, '
-                   f'{factor_fromA_toB:.5e})')
         
         # collect values, descriptors, and results
         
@@ -879,6 +882,24 @@ def fit(network, pathensemble,
                 cutoff_max=20.0, initial_path=initial_path, states=True)
         else:
             bins = np.array([-np.inf, +np.inf])
+
+        # avoid frustration due to not both A, B being present in internal bins
+        # swipe forward and look for results to B
+        i = 3
+        v = values[results[:, 1] > 0]
+        while i < len(bins) - 1:
+            if np.sum((bins[i - 1] <= v) * (v < bins[i])) < 3:
+                bins = np.delete(bins, i - 1)
+            else:
+                i += 1
+
+        # swipe backward and look for results to A
+        i = len(bins) - 3
+        v = values[results[:, 0] > 0]
+        while i > 1:
+            if np.sum((bins[i] <= v) * (v < bins[i + 1])) < 3:
+                bins = np.delete(bins, i)
+            i -= 1
         
         write(f'\nUniformizing selection probabilities\n'
               f'in bins: {array2string(bins, 20)}',
@@ -903,6 +924,13 @@ def fit(network, pathensemble,
                 write(f'    bin {i}: '
                       f'({expit(bins[i]):.3e}, {expit(bins[i+1]):.3e})')
             
+            # bin "center"
+            q = (bins[i] + bins[i + 1]) / 2
+            if i == 0:
+                q = bins[+1]
+            elif i == len(bins) - 2:
+                q = bins[-2]
+                        
             # get mask
             mask = n_internal_frames + np.where(indices == i)[0]
             
@@ -916,24 +944,40 @@ def fit(network, pathensemble,
             # are additional results from A possible?
             if factor_fromA_toB and len(mask_free_AtoA) and \
                0 < len(mask_TPs) / len(mask_free_AtoA) < 100:
-                w = np.minimum(1e9, 1 / expit(+values[mask_free_AtoA]))
-                results[mask_free_AtoA, 0] += w
-                w = np.minimum(1e9, 1 / expit(+values[mask_TPs]))
+                # ratio = (np.sum(results[mask_free_AtoA]) /
+                #          np.sum(results[mask])) / factor_fromA_toB
+                ratio = 1 / max(factor_fromA_toB, expit(+q))
+                results[mask_free_AtoA, 0] += ratio
                 results[mask_TPs, 1] += (
                     wTPs[mask_TPs - shot_AtoB_frames_begin] *
-                    factor_fromA_toB * w)
+                    ratio * factor_fromA_toB)
+                if verbose:
+                    write(f'    ... {len(mask_free_AtoA):<9} '
+                          f'free A to A frames get additional '
+                          f'{ratio:.3e} result to A')
+                    write(f'    ... {len(mask_TPs):<9} '
+                          f'transition frames get additional '
+                          f'f{ratio * factor_fromA_toB:.3e} result to B')
             
             # are additional results from B possible?
             if factor_fromB_toA and len(mask_free_BtoB) and \
                0 < len(mask_TPs) / len(mask_free_BtoB) < 100:
-                w = np.minimum(1e9, 1 / expit(-values[mask_free_BtoB]))
-                results[mask_free_BtoB, 1] += w
-                w = np.minimum(1e9, 1 / expit(-values[mask_TPs]))
+                # ratio = (np.sum(results[mask_free_BtoB]) /
+                #          np.sum(results[mask])) / factor_fromB_toA
+                ratio = 1 / max(factor_fromA_toB, expit(-q))
+                results[mask_free_BtoB, 1] += ratio
                 results[mask_TPs, 0] += (
-                    wTPs[mask_TPs - shot_AtoB_frames_begin] *
-                    factor_fromB_toA * w)
+                wTPs[mask_TPs - shot_AtoB_frames_begin] *
+                ratio * factor_fromB_toA)
+                if verbose:
+                    write(f'    ... {len(mask_free_BtoB):<9} '
+                          f'free B to B frames get additional '
+                          f'{ratio:.3e} result to B')
+                    write(f'    ... {len(mask_TPs):<9} '
+                          f'transition frames get additional '
+                          f'f{ratio * factor_fromB_toA:.3e} result to A')
             
-            # remove empty
+            # remove empty points
             selection_probabilities[mask[
                 np.sum(results[mask], axis=1) == 0]] = 0.
             mask = mask[selection_probabilities[mask] > 0]
@@ -979,7 +1023,7 @@ def fit(network, pathensemble,
             if not verbose:
                 continue
             
-            write(f'    ... {len(mask)} frames')
+            write(f'    ... {len(mask):<9} frames')
             write(f'    ... {a:.3e} average result to A')
             write(f'    ... {b:.3e} average result to B')
         
@@ -1002,8 +1046,11 @@ def fit(network, pathensemble,
         
         # in case of problems, restore this
         min_loss = np.inf
+        min_loss_step = 0
         state_dict = copy.deepcopy(network.state_dict())
-        
+        min_loss2 = np.inf
+        min_loss_step2 = 0
+        state_dict2 = copy.deepcopy(network.state_dict())
         while True:
             
             for param_group in optimizer.param_groups:
@@ -1079,8 +1126,14 @@ def fit(network, pathensemble,
             if scales[-1] >= stop or np.isnan(scales[-1]):
                 write(f'!!! stopping early since scale '
                       f'{scales[-1]:.3f} > {stop:.3f}')
-                write(f'    restoring lowest loss\' ({min_loss:.3f}) weights')
-                network.load_state_dict(state_dict)
+                if (i + 1) < 1.25 * epochs:
+                    write(f'    restoring lowest loss\' ({min_loss:.3e}) '
+                          f'weights, step {min_loss_step + 1}')
+                    network.load_state_dict(state_dict)
+                else:
+                    write(f'    restoring lowest loss\' ({min_loss2:.3e}) '
+                          f'weights, step {min_loss_step2 + 1}')
+                    network.load_state_dict(state_dict2)
                 
                 # recompute scales and range
                 q = network(d)
@@ -1091,26 +1144,28 @@ def fit(network, pathensemble,
             # save model if goood
             if losses[-1] <= min_loss:
                 min_loss = losses[-1]
+                min_loss_step = i
                 state_dict = copy.deepcopy(network.state_dict())
+
+            # new min loss
+            if (i + 1) >= epochs and losses[-1] <= min_loss2:
+                min_loss2 = losses[-1]
+                min_loss_step2 = i
+                state_dict2 = copy.deepcopy(network.state_dict())
             
-            # handle termination: ok scales
-            if scales[-1] >= 1:
-                
-                # just lowest
-                if (i + 1) >= epochs and losses[-1] <= np.min(losses):
-                    break
-                
-                # lowest before
-                if (i + 1) >= 1.5 * epochs:
-                    #write(f'!!! restoring lowest loss\' '
-                    #      f'({min_loss:.3e}) weights')
-                    #network.load_state_dict(state_dict)
-                    break
+            # handle termination: lowest loss
+            if (i + 1) >= epochs and losses[-1] <= min_loss:
+                break
+
+            # new target after 1.25 * epochs
+            if (i + 1) >= 1.25 * epochs and losses[-1] <= min_loss2:
+                break
             
-            # too long
-            elif (i + 1) >= 1.5 * epochs:
-                write(f'!!! restoring lowest loss\' ({min_loss:.3e}) weights')
-                network.load_state_dict(state_dict)
+            # at most 1.5 * epochs
+            if (i + 1) >= 1.5 * epochs:
+                write(f'    restoring lowest loss\' ({min_loss2:.3e}) '
+                      f'weights, step {min_loss_step2 + 1}')
+                network.load_state_dict(state_dict2)
                 break
             
             i += 1
