@@ -64,13 +64,16 @@ def values_function(descriptors):
     return np.concatenate(results)
 
 def fit(network, pathensemble, initial_path=None, verbose=False,
-        keys=None, save_memory=False, convert=False):
+        keys=None, save_memory=False):
     return _fit(network, pathensemble,
-        lr=1e-2, epochs=100,
-        initial_path=initial_path, verbose=verbose,
-        keys=keys, save_memory=False,
+        lr=1e-2,
+        epochs=100,
+        initial_path=initial_path,
+        verbose=verbose,
+        keys=keys,
+        save_memory=False,
         process_descriptors=process_descriptors,
-        convert=convert, thA=0.1, thB=0.1,
+        augment=True,
         loss_bayesian_factor=100)
 
 """
