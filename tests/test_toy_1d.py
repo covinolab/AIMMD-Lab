@@ -114,7 +114,6 @@ print('In B segments    ', inB_indices)
 print('Transitions      ', TPs_indices)
 
 print('\nPlotting time series of selected paths (descriptors/values space)')
-plt.figure(1)
 npaths = 5
 
 if len(TPs_indices) and len(equilibrium) > TPs_indices[0] + 2:
@@ -302,15 +301,14 @@ print('\nPlotting time series of selected paths (descriptors/values space)')
 if len(TPs_indices) and len(pathensemble) > TPs_indices[0] + 2:
     i = TPs_indices[-1] - 2
 else:
-    i = max(0, len(equilibrium) - 3)
+    i = max(0, len(pathensemble) - 3)
 
 old_label = ''
-for i in range(i, i + npaths):
-    if i >= len(equilibrium) - 1:
-        break
+for i in range(i, min(i + npaths, len(pathensemble))):
     descriptors = pathensemble.descriptors(i)[0][:, 0]
     values = expit(pathensemble.values(i)[0])  # committor
-    times = pathensemble.times(i)[0]
+    times = np.arange(len(values))
+    shooting_index = pathensemble.shooting_indices[i]
     if i in ARA_indices:
         color = 'tomato'
         label = f'ARA'
@@ -331,11 +329,13 @@ for i in range(i, i + npaths):
                            f'should be of different kind.')
     old_label = label
     plt.figure(2)
-    plt.plot(times[0], descriptors[0], 'o', color='black', zorder=100)
+    plt.plot(times[0],
+             descriptors[shooting_index], 'o', color='black', zorder=100)
     plt.plot(times, descriptors, color=color, label=label)
     
     plt.figure(3)
-    plt.plot(times[0], values[0], 'o', color='black', zorder=100)
+    plt.plot(times[0],
+             values[shooting_index], 'o', color='black', zorder=100)
     plt.plot(times, values, color=color, label=label)
 
 plt.figure(2)
