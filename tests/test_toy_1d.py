@@ -13,6 +13,7 @@ from time import time as current_time
 FOLDER = 'toy_1d'
 PYTHON = 'python3'  # will call generate.py
 
+print(f'Changing working directory to {FOLDER}')
 os.chdir(FOLDER)
 
 print('Copying scripts from "src" folder (workaround)')
@@ -201,7 +202,7 @@ pids = [int(pid) for pid in
         stdout.split('PIDS')[1].split('\n')[0].split()]
 print(f'\nAIMMD process PIDs: {pids}')
 print(f'Running for at most one minute...')
-print(f'(You can inspect run1\'s log files for details.)')
+print(f'(You can inspect {FOLDER}/run1\'s log files for details.)')
 t0 = current_time()
 while current_time() - t0 < 60:
     # Check if process is still running and if simulation output exists
