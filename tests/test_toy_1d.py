@@ -73,7 +73,6 @@ print('Obtained', equilibrium)
 
 print('\nSplitting path ensemble')
 equilibrium.split()
-npaths = len(equilibrium)
 print('Obtained', equilibrium)
 
 print('\nSaving path ensemble')
@@ -119,8 +118,8 @@ print('Transitions      ', TPs_indices)
 print('\nPlotting time series of selected paths (descriptors/values space)')
 npaths = 5
 
-if len(TPs_indices) and len(equilibrium) > TPs_indices[0] + 2:
-    i = TPs_indices[-1] - 2
+if len(TPs_indices) and len(equilibrium) > TPs_indices[0] + npaths // 2:
+    i = TPs_indices[-1] - npaths // 2
 else:
     i = max(1, len(equilibrium) - npaths)
 
@@ -299,8 +298,8 @@ print('In B segments    ', inB_indices)
 print('Transitions      ', TPs_indices)
 
 print('\nPlotting time series of selected paths (descriptors/values space)')
-if len(TPs_indices) and len(pathensemble) > TPs_indices[0] + 2:
-    i = TPs_indices[-1] - 2
+if len(TPs_indices) and len(pathensemble) > TPs_indices[0] + npaths // 2:
+    i = TPs_indices[-1] - npaths // 2
 else:
     i = max(0, len(pathensemble) - npaths)
 
