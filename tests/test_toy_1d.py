@@ -15,6 +15,7 @@ PYTHON = 'python3'  # will call generate.py
 
 print(f'Changing working directory to {FOLDER}')
 os.chdir(FOLDER)
+sys.path.append('.')
 
 print('Copying scripts from "src" folder (workaround)')
 os.system(f'cp ../../aimmd/core/generate.py .')
