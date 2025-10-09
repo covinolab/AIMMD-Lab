@@ -121,7 +121,6 @@ print('In B segments    ', inB_indices)
 print('Transitions      ', TPs_indices)
 
 print('\nPlotting time series of selected paths (descriptors/values space)')
-plt.figure(1)
 npaths = 5
 
 if len(TPs_indices) and len(equilibrium) > TPs_indices[0] + 2:
