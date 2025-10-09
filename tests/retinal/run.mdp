@@ -1,0 +1,32 @@
+; Run parameters
+integrator  		= sd
+dt          		= 0.002     ; 2fs
+tinit       		= 0
+nsteps      		= -1   ;
+nstcomm     		= 100
+; Output parameters
+nstxout  	            = 1
+nstvout                 = 1
+nstxout-compressed  	= 0
+nstenergy           	= 1
+; Bond parameters
+constraint_algorithm    = lincs
+constraints             = h-bonds
+; Single-range cutoff scheme  # MAKE IT BIG
+cutoff-scheme   	= Verlet
+pbc                 = xyz
+rvdw                = 5.0
+coulombtype         = PME
+rcoulomb            = 5.0
+; Temperature coupling
+tcoupl              = v-rescale
+tc_grps     		= System
+tau_t       		= 2.0
+ref_t       		= 300
+; Pressure coupling is off
+Pcoupl          	= no
+refcoord_scaling 	= com
+gen_vel     		= no
+continuation        = yes
+gen_temp 		= 300
+comm_mode 		= ANGULAR
