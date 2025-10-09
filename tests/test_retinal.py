@@ -17,6 +17,7 @@ PYTHON = 'python3'  # will call generate.py
 
 print(f'Changing working directory to {FOLDER}')
 os.chdir(FOLDER)
+sys.path.append('.')
 
 seconds = 12  # of equilibration
 
