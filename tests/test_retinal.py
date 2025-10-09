@@ -124,8 +124,8 @@ print('Transitions      ', TPs_indices)
 print('\nPlotting time series of selected paths (descriptors/values space)')
 npaths = 5
 
-if len(TPs_indices) and len(equilibrium) > TPs_indices[0] + 2:
-    i = TPs_indices[-1] - 2
+if len(TPs_indices) and len(equilibrium) > TPs_indices[0] + npaths // 2:
+    i = TPs_indices[-1] - npaths // 2
 else:
     i = max(1, len(equilibrium) - npaths)
 
@@ -300,10 +300,10 @@ print('Transitions      ', TPs_indices)
 
 print('\nPlotting time series of selected paths (descriptors/values space)')
 
-if len(TPs_indices) and len(pathensemble) > TPs_indices[0] + 2:
-    i = TPs_indices[-1] - 2
+if len(TPs_indices) and len(pathensemble) > TPs_indices[0] + npaths // 2:
+    i = TPs_indices[-1] - npaths // 2
 else:
-    i = max(1, len(pathensemble) - npaths)
+    i = max(0, len(pathensemble) - npaths)
 
 for i in range(i, min(len(pathensemble), i + npaths)):
     descriptors = cv(pathensemble.path(i))
