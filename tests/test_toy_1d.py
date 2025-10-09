@@ -13,7 +13,7 @@ from time import time as current_time
 FOLDER = 'toy_1d'
 PYTHON = 'python3'  # will call generate.py
 
-nframes = 50000  # will run the exploratory equilibrium simulation for that long
+nframes = 50000  # will run the exploratory eq simulation for that long
 
 print(f'Changing working directory to {FOLDER}')
 os.chdir(FOLDER)
