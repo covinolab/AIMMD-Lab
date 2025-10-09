@@ -330,12 +330,12 @@ for i in range(i, min(i + npaths, len(pathensemble))):
                            f'should be of different kind.')
     old_label = label
     plt.figure(2)
-    plt.plot(times[0],
+    plt.plot(times[shooting_index],
              descriptors[shooting_index], 'o', color='black', zorder=100)
     plt.plot(times, descriptors, color=color, label=label)
     
     plt.figure(3)
-    plt.plot(times[0],
+    plt.plot(times[shooting_index],
              values[shooting_index], 'o', color='black', zorder=100)
     plt.plot(times, values, color=color, label=label)
 
