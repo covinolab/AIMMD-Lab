@@ -127,7 +127,7 @@ npaths = 5
 if len(TPs_indices) and len(equilibrium) > TPs_indices[0] + 2:
     i = TPs_indices[-1] - 2
 else:
-    i = max(0, len(equilibrium) - 3)
+    i = max(1, len(equilibrium) - npaths)
 
 old_label = ''
 for i in range(i, min(len(equilibrium), i + npaths)):
@@ -149,7 +149,7 @@ for i in range(i, min(len(equilibrium), i + npaths)):
         color = 'blue'
         label = f'inB'
     if old_label == label:
-        raise RuntimeError(f'Paths {old_label} ({i}) and {label} ({i}) '
+        raise RuntimeError(f'Paths {old_label} ({i - 1}) and {label} ({i}) '
                            f'should be of different kind.')
     old_label = label
     plt.figure(1)
@@ -303,7 +303,7 @@ print('\nPlotting time series of selected paths (descriptors/values space)')
 if len(TPs_indices) and len(pathensemble) > TPs_indices[0] + 2:
     i = TPs_indices[-1] - 2
 else:
-    i = max(0, len(pathensemble) - 3)
+    i = max(1, len(pathensemble) - npaths)
 
 for i in range(i, min(len(pathensemble), i + npaths)):
     descriptors = cv(pathensemble.path(i))
