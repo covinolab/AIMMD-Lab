@@ -305,8 +305,6 @@ else:
     i = max(0, len(pathensemble) - 3)
 
 for i in range(i, min(len(pathensemble), i + npaths)):
-    if i >= len(pathensemble) - 1:
-        break
     descriptors = cv(pathensemble.path(i))
     values = expit(pathensemble.values(i)[0])  # committor
     times = np.arange(len(values))
