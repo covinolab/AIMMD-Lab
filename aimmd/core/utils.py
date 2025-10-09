@@ -263,117 +263,148 @@ def stop_simulation(worker_id, fname=None):
 ###############################################################################
 
 def fit(network, pathensemble,
-        lr=1e-3, epochs=500,
-        initial_path=None, verbose=False,
         keys=None,
-        save_memory=False,
+        initial_path=None,
         process_descriptors=lambda x: x,
-        convert=True, thA=0.1, thB=0.1,
-        loss_bayesian_factor=100):
+        save_memory=False,
+        nbins=0,
+        augment=False,
+        thA=0.1,
+        thB=0.1,
+        lr=1e-3,
+        loss_bayesian_factor=100,
+        loss_smoothening_weight=0,
+        loss_regularization_weight=0,
+        epochs=500,
+        batch_size=4096,
+        stop=50.,
+        verbose=False):
     
     """
     Train a neural network to predict the logit committor from AIMMD
     simulation data.
-
+    
     This function fits the given `network` using path sampling results
     stored in `pathensemble`. It uses a log-binomial loss and replaces
     the network's weights with the fitted ones.
-
-    If the input network is already partially trained, the function uses
-    it to regularize the training process. Calling this function multiple
-    times during an AIMMD simulation campaign can help improve convergence.
-
-    The training set includes all available data: shooting points, two-way
-    shooting results, and free trajectories. This broadens coverage and
-    improves learning.
-
-    Important:
-        - The network is modified in-place.
-        - Training parameters (learning rate, batch size, epochs, etc.)
-          are defined inside the function. To change them, edit the code
-          directly.
-
+    
+    If the input network is already partially trained and `nbins > 0`,
+    the function uses it to regularize the training process. Then, calling
+    this function multiple times during an AIMMD simulation campaign can
+    help improve convergence.
+    
+    If `agument` is `True`, the training set includes all available data:
+    shooting points, two-way shooting simulations, and free trajectories.
+    This broadens coverage and improves learning. Otherwise, it just trains
+    on the shooting points and their associated results.
+    
+    Attention! The network is modified in-place.
+    
     Parameters
     ----------
     network : Network
         Neural network model to train.
-
+    
     pathensemble : PathEnsemble or PathEnsemblesCollection
         Collection of sampled paths, including shooting and free simulations.
         Used to build the training set.
-
-    lr
-
-    epochs
-
-    initial_path : PathEnsemble or PathEnsemblesCollection, optional
-        Initial paths used to start the simulation. Used to add extra data if
-        `pathensemble` has too little.
-
-    verbose : bool, default=False
-        If True, show a progress bar during training.
-
+    
     keys : array-like of int, range, or slice, optional
         Use only the paths at these indices for training. Useful for
         bootstrapping or block averaging.
-
+    
+    initial_path : PathEnsemble or PathEnsemblesCollection, optional
+        Initial paths used to start the simulation. Used to add extra data if
+        `pathensemble` has too little.
+    
+    process_descriptors : function, default is identity
+        Transform pathensemble's descriptors into the neural network's input.
+    
     save_memory : bool, default=False
-        If True, compute descriptors on the fly for each training batch to
+        If `True`, compute descriptors on the fly for each training batch to
         reduce memory use. Useful when the training set doesn't fit in RAM.
-
-    process_descriptors : from "params.py"
-
-    convert : bool, default=True
-        It True, use equilibrium data for an interpolated kind of results
-        based on `factor_fromA_toB` and `factor_fromB_toA` computed by this
-        function.
-
-    thA : float, default=0.1
-        Threshold for defining the boundary of state A. The function looks at
+    
+    nbins : int, default=0
+        If `nbins > 0`, divide the reactive space in nbins + 2 bins based on
+        the input neural network model, add two additional bins for the state
+        A and state B's inside, and assign selection probabilities to the
+        training set points such that each batch has a uniform population
+        across the bins. Plus, regularize the shooting results in the bins.
+        `nbins = 9` is usually a good value.
+    
+    augment : bool, default=False
+        If `True`, include all available data in the training set: shooting
+        points, two-way shooting simulations, and free trajectories. This
+        broadens coverage and improves learning. Otherwise, it just trains
+        on the shooting points and their associated results.
+    
+    thA : float, optional
+        If `augment == True` and `thA > 0`, modify the training set to
+        improve the learning accuracy when approaching the boundary of state
+        A, by including fractional shooting results. Specifically, `thA` is the
+        threshold for defining the boundary of state A. The function looks at
         all shooting values from paths reaching A (including free ones),
         sorts them, and uses the `thA` percentile as a cutoff. Paths with
-        lower values are considered as if coming from state A.
+        lower values are considered as if coming from state A for the
+        additional shooting results. If there are enough free simulations,
+        the actual boundary of state A will be considered. `thA = 0.1` is
+        usually a good value.
+    
+    thB : float, optional
+        Same idea as `thA`, but for state B. If `augment == True` and
+        `thB > 0`, the function uses the `(1 - thB)` percentile as the cutoff.
+        Paths with higher shooting values are considered as if coming from
+        state B for the additional shooting results.
 
-    thB : float, default=0.1
-        Same idea as `thA`, but for state B. The function uses the (1 - thB)
-        percentile as the cutoff. Paths with higher shooting values are
-        considered as if coming from state B.
+    lr : float, default=1e-3
+        Learning rate. Will use an ADAM optimizer.
+    
+    loss_bayesian_factor : float, default=100.0
+        In defining the logit committor square deviation training loss,
+        necessary with discrete data.
+    
+    loss_smoothening_weight : float, default=0.0
+        Weight of an additional term to the loss, corresponding to the
+        network's gradient with respect to the input regularization factor.
 
-    loss_bayesian_factor : float, default=0.01
-        Implement Bayesian update of the loss necessary for convergence when
-        shooting results are discrete. Feel free to experiment (small) values.
-
+    loss_regularization_weight : float, default=0.0
+        Weight of an additional term to the loss, corresponding to the L1
+        regularization factor.
+        
+    epochs : int, default=500
+        Number of training epochs, each of which draws a new batch of
+        training set data and minimizes the loss for one step.
+    
+    batch_size : int, default=4096
+        Size of each training batch. Since the batch is drawn with selection
+        selection probabilities, its size will always be `batch_size`, even
+        with very small training sets.
+    
+    verbose : bool, default=False
+        If True, be loud and noise. Among other things, show a progress bar
+        during training.
+    
     Returns
     -------
     losses : list of float
         Loss values from each training epoch.
-
+    
     scales : list of float
         Maximum absolute network output (logit committor) at each epoch.
-
+    
     values : ndarray of float
         Logit committor values for all training points.
-
+    
     selection_probabilities : ndarray of float
         Probability of selecting each training point in a batch. If the
         network was already trained, these probabilities are adjusted to
         improve sampling across committor values.
-
+    
     results : ndarray of shape (N, 2)
         Shooting results linked to each training point. Real numbers (not
         just 0 or 1) since the function includes and regularizes all data.
-    """
     
-    smoothening_weight = 0
-    # network's gradient wrt input regularization factor
-    regularization_weight = 0  # L1 regularization factor
-    batch_size = 4096  # each batch will feature training set elements
-    # homogenized in bins
-    stop = 50.  # do not train further
-    nbins = 9  # regularize in `nbins` bins
-
-    """
-    TODO: Include free/shot A-R and B-R paths.
+    TODO: include free/shot A-R and B-R paths.
     """
     
     # utils' function
@@ -387,7 +418,7 @@ def fit(network, pathensemble,
     
     write(f'Reseting the network parameters ({now()})')
     network.reset_parameters()
-
+    
     # getting descriptors size
     if initial_path is not None:
         descriptors_size = len(initial_path.frame_descriptors[0])
@@ -412,7 +443,7 @@ def fit(network, pathensemble,
         initial_states = pathensemble.initial_states[keys]
         internal_states = pathensemble.internal_states[keys]
         final_states = pathensemble.final_states[keys]
-
+        
         # remove "hopeless" paths
         keys = keys[internal_states != initial_states]
         initial_states = pathensemble.initial_states[keys]
@@ -462,42 +493,44 @@ def fit(network, pathensemble,
                         (final_states == 'B'))[0]
         
         # determine effective state A boundary
-        if len(AtoA):
-            thA = +np.quantile(+shooting_values[AtoA], thA)
-            if np.isnan(thA):
-                thA = -np.inf
+        thA2 = -np.inf
+        if thA is not None and len(AtoA):
+            thA2 = +np.quantile(+shooting_values[AtoA], thA)
+            if np.isnan(thA2):
+                thA2 = -np.inf
             # report
-            write(f'\n    thA associated value: {thA:.3f}')
+            write(f'\n    thA {thA} associated value: {thA2:.3f}')
         
         # determine effective state B boundary
-        if len(BtoB):
-            thB = -np.quantile(-shooting_values[BtoB], thB)
-            if np.isnan(thB):
-                thB = +np.inf
+        thB2 = +np.inf
+        if thB is not None and len(BtoB):
+            thB2 = -np.quantile(-shooting_values[BtoB], thB)
+            if np.isnan(thB2):
+                thB2 = +np.inf
             # report
-            write(f'    thB associated value: {thB:.3f}\n')
+            write(f'    thB {thB} associated value: {thB2:.3f}\n')            
         
         # get indices of equilibrium fromA paths
         # (starting at the effective boundary of state A)
         free_A = np.where((initial_states == 'A') *
                           (internal_states == 'R') * 
-                          (shooting_values <= thA))[0]
+                          (shooting_values <= thA2))[0]
         
         # get indices of equilibrium fromB paths
         # (starting or ending at the effective boundary of state B)
         free_B = np.where((initial_states == 'B') *
                           (internal_states == 'R') * 
-                          (shooting_values >= thB))[0]
+                          (shooting_values >= thB2))[0]
         
         # which AtoA paths are free? (within keys representation)
         # which BtoB paths are free? (within keys representation)
-        free_AtoA = AtoA[shooting_values[AtoA] <= thA]
-        free_BtoB = BtoB[shooting_values[BtoB] >= thB]
-
+        free_AtoA = AtoA[shooting_values[AtoA] <= thA2]
+        free_BtoB = BtoB[shooting_values[BtoB] >= thB2]
+        
         # which AtoA paths are shot? (within keys representation)
         # which BtoB paths are shot? (within keys representation)
-        shot_AtoA = AtoA[shooting_values[AtoA] > thA]
-        shot_BtoB = BtoB[shooting_values[BtoB] < thB]
+        shot_AtoA = AtoA[shooting_values[AtoA] > thA2]
+        shot_BtoB = BtoB[shooting_values[BtoB] < thB2]
         
         # shot AtoB and BtoA paths (now within shot paths representation)
         shot_AtoB = ((initial_states[shot_paths] == 'A') *
@@ -535,28 +568,31 @@ def fit(network, pathensemble,
         else:
             wTPs = np.zeros(0)
         
-        
         # determine transition paths' supplemental results
         free_A_values = _concatenate(
             pathensemble.values(keys[free_A], internal=True), axis=0)
         free_B_values = _concatenate(
             pathensemble.values(keys[free_B], internal=True), axis=0)
         total = np.sum(wTPs)
-        if total and convert:
+        if total and thA is not None:
             factor_fromA_toB = np.clip(
                 np.sum(expit(free_A_values)) / total, 1e-9, 1)
+        else:
+            factor_fromA_toB = 0.
+        
+        if total and thB is not None:
             factor_fromB_toA = np.clip(
                 np.sum(1 - expit(free_B_values)) / total, 1e-9, 1)
+        else:
+            factor_fromB_toA = 0.
+
+        if thA is not None or thB is not None:
             write(f'Transition paths\' conversion results: '
                   f'({factor_fromB_toA:.5e}, '
                    f'{factor_fromA_toB:.5e})')
-            
-        else:
-            factor_fromA_toB = 0.0
-            factor_fromB_toA = 0.0
         
         # collect values, descriptors, and results
-
+        
         ########
         # in A #
         ########
@@ -565,7 +601,7 @@ def fit(network, pathensemble,
             pathensemble.descriptors(keys[inA], internal=True), axis=0)
         inA_values = np.repeat(-stop, len(inA_descriptors))
         inA_results = np.zeros((len(inA_values), 2))
-        inA_results[:, 0] = 1.0
+        inA_results[:, 0] = 1. * augment
         
         ########
         # in B #
@@ -575,7 +611,7 @@ def fit(network, pathensemble,
             pathensemble.descriptors(keys[inB], internal=True), axis=0)
         inB_values = np.repeat(-stop, len(inB_descriptors))
         inB_results = np.zeros((len(inB_values), 2))
-        inB_results[:, 1] = 1.0
+        inB_results[:, 1] = 1. * augment
         
         ###############
         # shot A to A #
@@ -596,26 +632,30 @@ def fit(network, pathensemble,
             shooting_indices[shot_AtoA], boundaries, boundaries[1:]):
             
             # backward
-            segment = range(begin, begin + si + 1)
+            if augment:
+                segment = range(begin, begin + si + 1)
+            else:  # only the shooting point
+                segment = [begin + si]
             shot_AtoA_results[segment, 0] += 1.
             
             # forward
-            segment = range(begin + si, end)
+            if augment:
+                segment = range(begin + si, end)
             shot_AtoA_results[segment, 0] += 1.
-
+        
         # selection probabilities
         shot_AtoA_selection_probabilities = np.ones(len(shot_AtoA_values))
-
+        
         ###############
         # shot B to B #
         ###############
-
+        
         shot_BtoB_values = _concatenate(
             pathensemble.values(keys[shot_BtoB], internal=True), axis=0)
         shot_BtoB_descriptors = _concatenate(
             pathensemble.descriptors(keys[shot_BtoB], internal=True), axis=0
         ).reshape(-1, descriptors_size)
-
+        
         # initialize results
         shot_BtoB_results = np.zeros((len(shot_BtoB_values), 2))
         
@@ -625,13 +665,17 @@ def fit(network, pathensemble,
             shooting_indices[shot_BtoB], boundaries, boundaries[1:]):
             
             # backward
-            segment = range(begin, begin + si + 1)
+            if augment:
+                segment = range(begin, begin + si + 1)
+            else:  # only the shooting point
+                segment = [begin + si]
             shot_BtoB_results[segment, 1] += 1.
             
             # forward
-            segment = range(begin + si, end)
+            if augment:
+                segment = range(begin + si, end)
             shot_BtoB_results[segment, 1] += 1.
-
+        
         ###############
         # free A to A #
         ###############
@@ -641,12 +685,12 @@ def fit(network, pathensemble,
         free_AtoA_descriptors = _concatenate(
             pathensemble.descriptors(keys[free_AtoA], internal=True), axis=0
         ).reshape(-1, descriptors_size)
-
+        
         # initialize results
         free_AtoA_results = np.zeros((len(free_AtoA_values), 2))
         
         # results
-        free_AtoA_results[:, 0] += 1.0
+        free_AtoA_results[:, 0] += 1. * augment
         
         ###############
         # free B to B #
@@ -657,23 +701,23 @@ def fit(network, pathensemble,
         free_BtoB_descriptors = _concatenate(
             pathensemble.descriptors(keys[free_BtoB], internal=True), axis=0
         ).reshape(-1, descriptors_size)
-
+        
         # initialize results
         free_BtoB_results = np.zeros((len(free_BtoB_values), 2))
         
         # results
-        free_BtoB_results[:, 1] += 1.0
+        free_BtoB_results[:, 1] += 1. * augment
         
         ###############
         # shot A to B #
         ###############
-
+        
         shot_AtoB_values = _concatenate(
             pathensemble.values(keys[shot_AtoB], internal=True), axis=0)
         shot_AtoB_descriptors = _concatenate(
             pathensemble.descriptors(keys[shot_AtoB], internal=True), axis=0
         ).reshape(-1, descriptors_size)
-
+        
         # initialize results
         shot_AtoB_results = np.zeros((len(shot_AtoB_values), 2))
         
@@ -683,23 +727,27 @@ def fit(network, pathensemble,
             shooting_indices[shot_AtoB], boundaries, boundaries[1:]):
             
             # backward
-            segment = range(begin, begin + si + 1)
+            if augment:
+                segment = range(begin, begin + si + 1)
+            else:  # only the shooting point
+                segment = [begin + si]
             shot_AtoB_results[segment, 0] += 1.
             
             # forward
-            segment = range(begin + si, end)
+            if augment:
+                segment = range(begin + si, end)
             shot_AtoB_results[segment, 1] += 1.
         
         ###############
         # shot B to A #
         ###############
-
+        
         shot_BtoA_values = _concatenate(
             pathensemble.values(keys[shot_BtoA], internal=True), axis=0)
         shot_BtoA_descriptors = _concatenate(
             pathensemble.descriptors(keys[shot_BtoA], internal=True), axis=0
         ).reshape(-1, descriptors_size)
-
+        
         # initialize results
         shot_BtoA_results = np.zeros((len(shot_BtoA_values), 2))
         
@@ -709,11 +757,15 @@ def fit(network, pathensemble,
             shooting_indices[shot_BtoA], boundaries, boundaries[1:]):
             
             # backward
-            segment = range(begin, begin + si + 1)
+            if augment:
+                segment = range(begin, begin + si + 1)
+            else:  # only the shooting point
+                segment = [begin + si]
             shot_BtoA_results[segment, 1] += 1.
             
             # forward
-            segment = range(begin + si, end)
+            if augment:
+                segment = range(begin + si, end)
             shot_BtoA_results[segment, 0] += 1.
         
         ###############
@@ -725,12 +777,12 @@ def fit(network, pathensemble,
         free_AtoB_descriptors = _concatenate(
             pathensemble.descriptors(keys[free_AtoB], internal=True), axis=0
         ).reshape(-1, descriptors_size)
-
+        
         # initialize results
         free_AtoB_results = np.zeros((len(free_AtoB_values), 2))
         
         # results
-        free_AtoB_results[:, 1] += 1.
+        free_AtoB_results[:, 1] += 1. * augment
         
         ###############
         # free B to A #
@@ -741,17 +793,17 @@ def fit(network, pathensemble,
         free_BtoA_descriptors = _concatenate(
             pathensemble.descriptors(keys[free_BtoA], internal=True), axis=0
         ).reshape(-1, descriptors_size)
-
+        
         # initialize results
         free_BtoA_results = np.zeros((len(free_BtoA_values), 2))
         
         # results
-        free_BtoA_results[:, 0] += 1.
+        free_BtoA_results[:, 0] += 1. * augment
         
         ##########
         # Merge! #
         ##########
-
+        
         values = np.concatenate([
             inA_values,
             inB_values,
@@ -798,7 +850,7 @@ def fit(network, pathensemble,
               f'          {len(free_AtoB_values):9} free A to B frames, and\n'
               f'          {len(free_BtoA_values):9} free B to A frames,\n'
               f'   TOTAL: {len(values):9} frames')
-
+        
         # useful
         n_internal_frames = len(inA_values) + len(inB_values)
         free_AtoA_frames_begin = n_internal_frames + len(
@@ -838,7 +890,7 @@ def fit(network, pathensemble,
             if verbose:
                 write(f'    bin {i}: '
                       f'({expit(bins[i]):.3e}, {expit(bins[i+1]):.3e})')
-
+            
             # get mask
             mask = n_internal_frames + np.where(indices == i)[0]
             
@@ -848,9 +900,9 @@ def fit(network, pathensemble,
                                   (mask  < free_BtoB_frames_begin)]
             mask_free_BtoB = mask[(mask >= free_BtoB_frames_begin) *
                                   (mask  < shot_AtoB_frames_begin)]
-
+            
             # are additional results from A possible?
-            if convert and len(mask_free_AtoA) and \
+            if factor_fromA_toB and len(mask_free_AtoA) and \
                0 < len(mask_TPs) / len(mask_free_AtoA) < 100:
                 w = np.minimum(1e9, 1 / expit(+values[mask_free_AtoA]))
                 results[mask_free_AtoA, 0] += w
@@ -858,9 +910,9 @@ def fit(network, pathensemble,
                 results[mask_TPs, 1] += (
                     wTPs[mask_TPs - shot_AtoB_frames_begin] *
                     factor_fromA_toB * w)
-
+            
             # are additional results from B possible?
-            if convert and len(mask_free_BtoB) and \
+            if factor_fromB_toA and len(mask_free_BtoB) and \
                0 < len(mask_TPs) / len(mask_free_BtoB) < 100:
                 w = np.minimum(1e9, 1 / expit(-values[mask_free_BtoB]))
                 results[mask_free_BtoB, 1] += w
@@ -873,11 +925,11 @@ def fit(network, pathensemble,
             selection_probabilities[mask[
                 np.sum(results[mask], axis=1) == 0]] = 0.
             mask = mask[selection_probabilities[mask] > 0]
-
+            
             # does it make sense to proceed?
             if not np.sum(selection_probabilities[mask]):
                 continue
-
+            
             # correct for imbalance
             results[mask] /= np.mean(np.sum(results[mask], axis=1))
             a = np.average(results[mask, 0],
@@ -914,7 +966,7 @@ def fit(network, pathensemble,
             
             if not verbose:
                 continue
-
+            
             write(f'    ... {len(mask)} frames')
             write(f'    ... {a:.3e} average result to A')
             write(f'    ... {b:.3e} average result to B')
@@ -935,7 +987,7 @@ def fit(network, pathensemble,
         i = 0
         if verbose:
             counter = tqdm(range(epochs), position=0)
-
+        
         # in case of problems, restore this
         min_loss = np.inf
         state_dict = copy.deepcopy(network.state_dict())
@@ -970,7 +1022,7 @@ def fit(network, pathensemble,
                 
                 toA_contribution = (q[:, 0] - qA) ** 2
                 toB_contribution = (q[:, 0] - qB) ** 2
-
+                
                 q = q[:, 0].detach()
                 
                 loss = torch.sum(q ** 2 *
@@ -983,18 +1035,18 @@ def fit(network, pathensemble,
                 loss -= 1.0
                 
                 # Compute the smoothness penalty
-                if smoothening_weight:
+                if loss_smoothening_weight:
                     q_grad = torch.autograd.grad(
                         outputs=q.sum(), inputs=d, create_graph=True)[0]
                     smoothness_loss = (torch.abs(q_grad) ** 2).mean()
-                    loss += smoothening_weight * smoothness_loss
+                    loss += loss_smoothening_weight * smoothness_loss
                 
                 # Calculate L1 regularization
-                if regularization_weight:
+                if loss_regularization_weight:
                     l1_norm = sum(p.abs().sum() for p in network.parameters())
                     
                     # Combine original loss with L1 regularization term
-                    loss += regularization_weight * l1_norm
+                    loss += loss_regularization_weight * l1_norm
                 loss.backward()
                 return loss
             
@@ -1007,7 +1059,7 @@ def fit(network, pathensemble,
             q = network(d)
             scales.append(max(float(torch.max(q)), -float(torch.min(q))))
             Range = float(torch.min(q)), float(torch.max(q))
-
+            
             if verbose:
                 counter.update(1)
             
@@ -1017,7 +1069,7 @@ def fit(network, pathensemble,
                       f'{scales[-1]:.3f} > {stop:.3f}')
                 write(f'    restoring lowest loss\' ({min_loss:.3f}) weights')
                 network.load_state_dict(state_dict)
-
+                
                 # recompute scales and range
                 q = network(d)
                 scales[-1] = max(float(torch.max(q)), -float(torch.min(q)))
@@ -1028,21 +1080,21 @@ def fit(network, pathensemble,
             if losses[-1] <= min_loss:
                 min_loss = losses[-1]
                 state_dict = copy.deepcopy(network.state_dict())
-
+            
             # handle termination: ok scales
             if scales[-1] >= 1:
-
+                
                 # just lowest
                 if (i + 1) >= epochs and losses[-1] <= np.min(losses):
                     break
-
+                
                 # lowest before
                 if (i + 1) >= 1.5 * epochs:
                     #write(f'!!! restoring lowest loss\' '
                     #      f'({min_loss:.3e}) weights')
                     #network.load_state_dict(state_dict)
                     break
-
+            
             # too long
             elif (i + 1) >= 1.5 * epochs:
                 write(f'!!! restoring lowest loss\' ({min_loss:.3e}) weights')
@@ -1050,10 +1102,10 @@ def fit(network, pathensemble,
                 break
             
             i += 1
-
+            
             # D.append(d)
             # R.append(r)
-
+            
             # report
             if verbose and i % (epochs // 20) == 0:
                 write(f'    loss {losses[-1]:.3e}, '
