@@ -1,4 +1,4 @@
-from utils import *
+from aimmd.core.utils import *
 
 # parse input
 directory = sys.argv[1]
