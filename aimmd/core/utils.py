@@ -1132,7 +1132,7 @@ def fit(network, pathensemble,
             write(f'!!! stopping early since scale '
                   f'{scales[-1]:.3f} > {stop:.3f}')
             if (i + 1) < 1.25 * epochs:
-                write(f'    restoring lowest loss\' ({min_loss:.3e}) '
+                write(f'    restoring lowest loss\' ({min_loss1:.3e}) '
                       f'weights, step {min_loss_step1 + 1}')
                 network.load_state_dict(state_dict1)
             else:
