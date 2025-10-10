@@ -1032,7 +1032,7 @@ def fit(network, pathensemble,
     values = values[keepers]
     descriptors = descriptors[keepers]
     results = results[keepers]
-    write(f'\nTraining set size {len(selection_probabilities)}\n')
+    write(f'\nTraining set size {len(selection_probabilities)}')
     
     selection_probabilities /= np.sum(selection_probabilities)
     
@@ -1044,15 +1044,6 @@ def fit(network, pathensemble,
     """
     
     # initialization
-    
-    losses = []
-    scales = []
-    # D = []
-    # R = []
-    i = 0
-    if verbose:
-        counter = tqdm(range(epochs), position=0)
-    
     # backups for restoration
     state_dict0 = copy.deepcopy(network.state_dict())  # fixed
     state_dict1 = copy.deepcopy(network.state_dict())  # linked to min_loss1
@@ -1062,9 +1053,17 @@ def fit(network, pathensemble,
     min_loss_step1 = 0
     min_loss_step2 = 0
     
-    write(f'Reseting the network parameters ({now()})')
+    write(f'Reseting the network parameters ({now()})\n')
     network.reset_parameters()
-
+    
+    losses = []
+    scales = []
+    # D = []
+    # R = []
+    i = 0
+    if verbose:
+        counter = tqdm(range(epochs), position=0)
+    
     # actual loop
     while True:
         
