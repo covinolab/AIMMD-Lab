@@ -1,7 +1,13 @@
-from utils import *
-from utils import fit as _fit
+from aimmd.core.utils import *
+from aimmd.core.utils import fit as _fit
 
-GMX = 'gmx'  # gromacs executable
+GMX = shutil.which('gmx') or shutil.which('gmx_mpi')
+
+if GMX is None:
+    raise EnvironmentError(
+        'GROMACS executable not found in PATH. Please install '
+        'GROMACS and ensure \'gmx\' or \'gmx_mpi\' is in your PATH.'
+    )
 
 mdtraj_frame = md.load('run.gro')
 couples = [(i,j) for i in range(mdtraj_frame.n_atoms)
