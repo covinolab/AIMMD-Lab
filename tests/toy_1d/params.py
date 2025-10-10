@@ -1,7 +1,7 @@
-from utils import *
-from utils import fit as _fit
+from aimmd.core.utils import *
+from aimmd.core.utils import fit as _fit
 
-PYTHON = 'python3'
+PYTHON = sys.executable
 
 def descriptors_function(traj, verbose=False):
     return np.array([
