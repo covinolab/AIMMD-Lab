@@ -913,6 +913,8 @@ def fit(network, pathensemble,
     norm = np.sum(selection_probabilities[mask])
     if 'B' in state_bins and norm:
         selection_probabilities[mask] /= norm
+    else:
+        selection_probabilities[mask] = 0.
     
     # all the rest
     indices = np.digitize(values[n_internal_frames:], bins) - 1
@@ -1030,6 +1032,7 @@ def fit(network, pathensemble,
     values = values[keepers]
     descriptors = descriptors[keepers]
     results = results[keepers]
+    write(f'\nTraining set size {len(selection_probabilities)}\n')
     
     selection_probabilities /= np.sum(selection_probabilities)
     
