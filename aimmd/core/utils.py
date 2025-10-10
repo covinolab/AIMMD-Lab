@@ -28,7 +28,7 @@ from datetime import datetime
 from textwrap import wrap
 from scipy.special import logit, expit
 from mdtraj.formats import TRRTrajectoryFile
-from pathensemble import *
+from .pathensemble import *
 
 ###############################################################################
 # Base utils ##################################################################
