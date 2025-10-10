@@ -1185,7 +1185,7 @@ def fit(network, pathensemble,
     # error handling: result not as expected
     if Range[0] > 0 or Range[1] < 0 or scales[-1] < 1:
         write(f'!!! bad range ({Range[0]:.3f}, {Range[1]:.3f}), '
-              f'reloading old parameters')
+              f'restoring original parameters')
         network.load_state_dict(state_dict0)
     
     # recompute scales and range in case they changed
