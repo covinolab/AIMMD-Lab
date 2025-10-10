@@ -1,4 +1,4 @@
-from utils import *
+from aimmd.core.utils import *
 
 directory = sys.argv[1]
 params = sys.argv[2]
