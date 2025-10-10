@@ -5,6 +5,8 @@ This module provides default configuration values for both AIMMD sampling
 and path sampling analysis. It defines simulation, reweighting, and engine
 parameters, as well as placeholder (user-overridable) functions for
 state identification, descriptor generation, and network output evaluation.
+
+TODO homogenize syntax
 """
 
 import shutil
