@@ -438,760 +438,755 @@ def fit(network, pathensemble,
     else:
         descriptors_size = len(pathensemble.frame_descriptors[0])
     
-    try:
-        t0 = time.time()
-        losses, scales, selection_probabilities, results = [], [], [], []
-        
-        device = next(network.parameters()).device
-        dtype = next(network.parameters()).dtype
-        optimizer = torch.optim.Adam(network.parameters(), lr=lr)
-        
-        if len(pathensemble):
-            keys = np.arange(len(pathensemble))[keys].ravel()
-            keys = keys[pathensemble[keys].are_accepted]
-        else:
-            keys = np.zeros(0, dtype=int)
-        
-        # extract info (within keys representation)
-        initial_states = pathensemble.initial_states[keys]
-        internal_states = pathensemble.internal_states[keys]
-        final_states = pathensemble.final_states[keys]
-        
-        # remove "hopeless" paths
-        keys = keys[internal_states != initial_states]
-        initial_states = pathensemble.initial_states[keys]
-        internal_states = pathensemble.internal_states[keys]
-        final_states = pathensemble.final_states[keys]
-        
-        # keep extracting information
-        internal_lengths = pathensemble.internal_lengths[keys]
-        shooting_indices = pathensemble.shooting_indices[keys]
-        shooting_states = pathensemble.shooting_states[keys]
-        shooting_values = pathensemble.shooting_values[keys]
-        shooting_values[shooting_states == 'A'] = -np.inf
-        shooting_values[shooting_states == 'B'] = +np.inf
-        
-        # get indices of A paths (use initial_path if not present)
-        inA = keys[np.where(internal_states == 'A')[0]]
-        if not len(inA):
-            temp = initial_path[:].unsplit()
-            temp = temp.crop(frame_indices=temp.frame_states == 'A')
-            temp.are_accepted[:] = True
-            pathensemble += temp
-            keys = np.append(keys, len(pathensemble) - 1)
-            inA = np.array([len(keys) - 1])
-        
-        # get indices of in B paths (use initial_path if not present)
-        inB = keys[np.where(internal_states == 'B')[0]]
-        if not len(inB):
-            temp = initial_path[:].unsplit()
-            temp = temp.crop(frame_indices=temp.frame_states == 'B')
-            temp.are_accepted[:] = True
-            pathensemble += temp
-            keys = np.append(keys, len(pathensemble) - 1)
-            inB = np.array([len(keys) - 1])
-        
-        # get indices of shot paths
-        shot_paths = np.where((internal_states == 'R') *
-                              (shooting_indices > 0))[0]
-        
-        # get indices of ARA paths (within keys representation)
-        AtoA = np.where((initial_states == 'A') *
-                        (internal_states == 'R') * 
-                        (final_states == 'A'))[0]
-        
-        # get indices of BRB paths (within keys representation)
-        BtoB = np.where((initial_states == 'B') *
-                        (internal_states == 'R') * 
-                        (final_states == 'B'))[0]
-        
-        # determine effective state A boundary
-        thA2 = -np.inf
-        if thA is not None and len(AtoA):
-            thA2 = +np.quantile(+shooting_values[AtoA], thA)
-            if np.isnan(thA2):
-                thA2 = -np.inf
-            # report
-            write(f'\n    thA {thA} associated value: {thA2:.3f}')
-        
-        # determine effective state B boundary
-        thB2 = +np.inf
-        if thB is not None and len(BtoB):
-            thB2 = -np.quantile(-shooting_values[BtoB], thB)
-            if np.isnan(thB2):
-                thB2 = +np.inf
-            # report
-            write(f'    thB {thB} associated value: {thB2:.3f}\n')            
-        
-        # get indices of equilibrium fromA paths
-        # (starting at the effective boundary of state A)
-        free_A = np.where((initial_states == 'A') *
-                          (internal_states == 'R') * 
-                          (shooting_values <= thA2))[0]
-        
-        # get indices of equilibrium fromB paths
-        # (starting or ending at the effective boundary of state B)
-        free_B = np.where((initial_states == 'B') *
-                          (internal_states == 'R') * 
-                          (shooting_values >= thB2))[0]
-        
-        # which AtoA paths are free? (within keys representation)
-        # which BtoB paths are free? (within keys representation)
-        free_AtoA = AtoA[shooting_values[AtoA] <= thA2]
-        free_BtoB = BtoB[shooting_values[BtoB] >= thB2]
-        
-        # which AtoA paths are shot? (within keys representation)
-        # which BtoB paths are shot? (within keys representation)
-        shot_AtoA = AtoA[shooting_values[AtoA] > thA2]
-        shot_BtoB = BtoB[shooting_values[BtoB] < thB2]
-        
-        # shot AtoB and BtoA paths (now within shot paths representation)
-        shot_AtoB = ((initial_states[shot_paths] == 'A') *
-                     (final_states[shot_paths] == 'B'))
-        shot_BtoA = ((initial_states[shot_paths] == 'B') *
-                     (final_states[shot_paths] == 'A'))
-        
-        # assign weights to shot TPs: 1 / density at shooting interface
-        shot_paths_densities = pathensemble.densities(keys[shot_paths])
-        shot_AtoB_densities = shot_paths_densities[shot_AtoB]
-        shot_BtoA_densities = shot_paths_densities[shot_BtoA]
-        shot_AtoB_densities[shot_AtoB_densities == 0.] = np.inf  # stay safe
-        shot_BtoA_densities[shot_BtoA_densities == 0.] = np.inf  # stay safe
-        shot_AtoB_weights = 1 / shot_AtoB_densities
-        shot_BtoA_weights = 1 / shot_BtoA_densities
-        
-        # convert to within keys representation
-        shot_AtoB = shot_paths[shot_AtoB]
-        shot_BtoA = shot_paths[shot_BtoA]
-        shot_TPs = np.append(shot_AtoB, shot_BtoA).astype(int)
-        shot_TPs_weights = np.append(shot_AtoB_weights, shot_BtoA_weights)
-        
-        # equilibrium TPs (within keys representation)
-        free_AtoB = free_A[final_states[free_A] == 'B']
-        free_BtoA = free_B[final_states[free_B] == 'A']
-        free_TPs = np.append(free_AtoB, free_BtoA).astype(int)
-        
-        # TPs weights (default for equilibrium: 1)
-        TPs = np.append(shot_TPs, free_TPs).astype(int)
-        if len(TPs):
-            WTPs = np.ones(len(TPs))  # path-wise
-            WTPs[:len(shot_TPs)] = shot_TPs_weights
-            wTPs = np.repeat(WTPs, internal_lengths[TPs])
-            # frame-wise
-        else:
-            wTPs = np.zeros(0)
-        
-        # determine transition paths' supplemental results
-        free_A_values = _concatenate(
-            pathensemble.values(keys[free_A], internal=True), axis=0)
-        free_B_values = _concatenate(
-            pathensemble.values(keys[free_B], internal=True), axis=0)
-        total = np.sum(wTPs)
-        if total and thA is not None:
-            factor_fromA_toB = min(np.sum(expit(+free_A_values)) / total, 1)
-            if verbose:
-                write(f'Conversion factor from A to B: {factor_fromA_toB:.5e}')
-        else:
-            factor_fromA_toB = 0.
-        
-        if total and thB is not None:
-            factor_fromB_toA = min(np.sum(expit(-free_B_values)) / total, 1)
-            if verbose:
-                write(f'Conversion factor from B to A: {factor_fromB_toA:.5e}')
-        else:
-            factor_fromB_toA = 0.
-        
-        # collect values, descriptors, and results
-        
-        ########
-        # in A #
-        ########
-        
-        inA_descriptors = _concatenate(
-            pathensemble.descriptors(keys[inA], internal=True), axis=0)
-        inA_values = np.repeat(-stop, len(inA_descriptors))
-        inA_results = np.zeros((len(inA_values), 2))
-        inA_results[:, 0] = 1. * augment
-        
-        ########
-        # in B #
-        ########
-        
-        inB_descriptors = _concatenate(
-            pathensemble.descriptors(keys[inB], internal=True), axis=0)
-        inB_values = np.repeat(-stop, len(inB_descriptors))
-        inB_results = np.zeros((len(inB_values), 2))
-        inB_results[:, 1] = 1. * augment
-        
-        ###############
-        # shot A to A #
-        ###############
-        
-        shot_AtoA_values = _concatenate(
-            pathensemble.values(keys[shot_AtoA], internal=True), axis=0)
-        shot_AtoA_descriptors = _concatenate(
-            pathensemble.descriptors(keys[shot_AtoA], internal=True), axis=0
-        ).reshape(-1, descriptors_size)
-        
-        # initialize results
-        shot_AtoA_results = np.zeros((len(shot_AtoA_values), 2))
-        
-        # base results
-        boundaries = np.cumsum(np.append([0], internal_lengths[shot_AtoA]))
-        for si, begin, end in zip(
-            shooting_indices[shot_AtoA], boundaries, boundaries[1:]):
-            
-            # backward
-            if augment:
-                segment = range(begin, begin + si + 1)
-            else:  # only the shooting point
-                segment = [begin + si]
-            shot_AtoA_results[segment, 0] += 1.
-            
-            # forward
-            if augment:
-                segment = range(begin + si, end)
-            shot_AtoA_results[segment, 0] += 1.
-        
-        # selection probabilities
-        shot_AtoA_selection_probabilities = np.ones(len(shot_AtoA_values))
-        
-        ###############
-        # shot B to B #
-        ###############
-        
-        shot_BtoB_values = _concatenate(
-            pathensemble.values(keys[shot_BtoB], internal=True), axis=0)
-        shot_BtoB_descriptors = _concatenate(
-            pathensemble.descriptors(keys[shot_BtoB], internal=True), axis=0
-        ).reshape(-1, descriptors_size)
-        
-        # initialize results
-        shot_BtoB_results = np.zeros((len(shot_BtoB_values), 2))
-        
-        # base results
-        boundaries = np.cumsum(np.append([0], internal_lengths[shot_BtoB]))
-        for si, begin, end in zip(
-            shooting_indices[shot_BtoB], boundaries, boundaries[1:]):
-            
-            # backward
-            if augment:
-                segment = range(begin, begin + si + 1)
-            else:  # only the shooting point
-                segment = [begin + si]
-            shot_BtoB_results[segment, 1] += 1.
-            
-            # forward
-            if augment:
-                segment = range(begin + si, end)
-            shot_BtoB_results[segment, 1] += 1.
-        
-        ###############
-        # free A to A #
-        ###############
-        
-        free_AtoA_values = _concatenate(
-            pathensemble.values(keys[free_AtoA], internal=True), axis=0)
-        free_AtoA_descriptors = _concatenate(
-            pathensemble.descriptors(keys[free_AtoA], internal=True), axis=0
-        ).reshape(-1, descriptors_size)
-        
-        # initialize results
-        free_AtoA_results = np.zeros((len(free_AtoA_values), 2))
-        
-        # results
-        free_AtoA_results[:, 0] += 1. * augment
-        
-        ###############
-        # free B to B #
-        ###############
-        
-        free_BtoB_values = _concatenate(
-            pathensemble.values(keys[free_BtoB], internal=True), axis=0)
-        free_BtoB_descriptors = _concatenate(
-            pathensemble.descriptors(keys[free_BtoB], internal=True), axis=0
-        ).reshape(-1, descriptors_size)
-        
-        # initialize results
-        free_BtoB_results = np.zeros((len(free_BtoB_values), 2))
-        
-        # results
-        free_BtoB_results[:, 1] += 1. * augment
-        
-        ###############
-        # shot A to B #
-        ###############
-        
-        shot_AtoB_values = _concatenate(
-            pathensemble.values(keys[shot_AtoB], internal=True), axis=0)
-        shot_AtoB_descriptors = _concatenate(
-            pathensemble.descriptors(keys[shot_AtoB], internal=True), axis=0
-        ).reshape(-1, descriptors_size)
-        
-        # initialize results
-        shot_AtoB_results = np.zeros((len(shot_AtoB_values), 2))
-        
-        # base results
-        boundaries = np.cumsum(np.append([0], internal_lengths[shot_AtoB]))
-        for si, begin, end in zip(
-            shooting_indices[shot_AtoB], boundaries, boundaries[1:]):
-            
-            # backward
-            if augment:
-                segment = range(begin, begin + si + 1)
-            else:  # only the shooting point
-                segment = [begin + si]
-            shot_AtoB_results[segment, 0] += 1.
-            
-            # forward
-            if augment:
-                segment = range(begin + si, end)
-            shot_AtoB_results[segment, 1] += 1.
-        
-        ###############
-        # shot B to A #
-        ###############
-        
-        shot_BtoA_values = _concatenate(
-            pathensemble.values(keys[shot_BtoA], internal=True), axis=0)
-        shot_BtoA_descriptors = _concatenate(
-            pathensemble.descriptors(keys[shot_BtoA], internal=True), axis=0
-        ).reshape(-1, descriptors_size)
-        
-        # initialize results
-        shot_BtoA_results = np.zeros((len(shot_BtoA_values), 2))
-        
-        # base results
-        boundaries = np.cumsum(np.append([0], internal_lengths[shot_BtoA]))
-        for si, begin, end in zip(
-            shooting_indices[shot_BtoA], boundaries, boundaries[1:]):
-            
-            # backward
-            if augment:
-                segment = range(begin, begin + si + 1)
-            else:  # only the shooting point
-                segment = [begin + si]
-            shot_BtoA_results[segment, 1] += 1.
-            
-            # forward
-            if augment:
-                segment = range(begin + si, end)
-            shot_BtoA_results[segment, 0] += 1.
-        
-        ###############
-        # free A to B #
-        ###############
-        
-        free_AtoB_values = _concatenate(
-            pathensemble.values(keys[free_AtoB], internal=True), axis=0)
-        free_AtoB_descriptors = _concatenate(
-            pathensemble.descriptors(keys[free_AtoB], internal=True), axis=0
-        ).reshape(-1, descriptors_size)
-        
-        # initialize results
-        free_AtoB_results = np.zeros((len(free_AtoB_values), 2))
-        
-        # results
-        free_AtoB_results[:, 1] += 1. * augment
-        
-        ###############
-        # free B to A #
-        ###############
-        
-        free_BtoA_values = _concatenate(
-            pathensemble.values(keys[free_BtoA], internal=True), axis=0)
-        free_BtoA_descriptors = _concatenate(
-            pathensemble.descriptors(keys[free_BtoA], internal=True), axis=0
-        ).reshape(-1, descriptors_size)
-        
-        # initialize results
-        free_BtoA_results = np.zeros((len(free_BtoA_values), 2))
-        
-        # results
-        free_BtoA_results[:, 0] += 1. * augment
-        
-        ##########
-        # Merge! #
-        ##########
-        
-        values = np.concatenate([
-            inA_values,
-            inB_values,
-            shot_AtoA_values,
-            shot_BtoB_values,
-            free_AtoA_values,
-            free_BtoB_values,
-            shot_AtoB_values,
-            shot_BtoA_values,
-            free_AtoB_values,
-            free_BtoA_values], axis=0)
-        descriptors = np.concatenate([
-            inA_descriptors,
-            inB_descriptors,
-            shot_AtoA_descriptors,
-            shot_BtoB_descriptors,
-            free_AtoA_descriptors,
-            free_BtoB_descriptors,
-            shot_AtoB_descriptors,
-            shot_BtoA_descriptors,
-            free_AtoB_descriptors,
-            free_BtoA_descriptors], axis=0)
-        results = np.concatenate([
-            inA_results,
-            inB_results,
-            shot_AtoA_results,
-            shot_BtoB_results,
-            free_AtoA_results,
-            free_BtoB_results,
-            shot_AtoB_results,
-            shot_BtoA_results,
-            free_AtoB_results,
-            free_BtoA_results], axis=0)
-        selection_probabilities = np.ones(len(values))
-        
-        write(f'\nCollected {len(inA_values):9} in A frames,\n'
-              f'          {len(inB_values):9} in B frames,\n'
-              f'          {len(shot_AtoA_values):9} shot A to A frames,\n'
-              f'          {len(shot_BtoB_values):9} shot B to B frames,\n'
-              f'          {len(free_AtoA_values):9} free A to A frames,\n'
-              f'          {len(free_BtoB_values):9} free B to B frames,\n'
-              f'          {len(shot_AtoB_values):9} shot A to B frames,\n'
-              f'          {len(shot_BtoA_values):9} shot B to A frames,\n'
-              f'          {len(free_AtoB_values):9} free A to B frames, and\n'
-              f'          {len(free_BtoA_values):9} free B to A frames,\n'
-              f'   TOTAL: {len(values):9} frames')
-        
-        # useful
-        n_internal_frames = len(inA_values) + len(inB_values)
-        free_AtoA_frames_begin = n_internal_frames + len(
-            shot_AtoA_values) + len(shot_BtoB_values)
-        free_BtoB_frames_begin = free_AtoA_frames_begin + len(
-            free_AtoA_values)
-        shot_AtoB_frames_begin = free_BtoB_frames_begin + len(
-            free_BtoB_values)
-        shot_BtoA_frames_begin = shot_AtoB_frames_begin + len(
-            shot_AtoB_values)
-        free_AtoB_frames_begin = shot_BtoA_frames_begin + len(
-            shot_BtoA_values)
-        free_BtoA_frames_begin = free_AtoB_frames_begin + len(
-            free_AtoB_values)
-        
-        # uniformize selection probabilities in bins (if nbins > 0)
-        if nbins:
-            bins = get_bins(pathensemble, nbins,
-                cutoff_max=20.0, initial_path=initial_path, states=True)
-        else:
-            bins = np.array([-np.inf, +np.inf])
-
-        # avoid frustration due to not both A, B being present in internal bins
-        # swipe forward and look for results to B
-        i = 3
-        v = values[results[:, 1] > 0]
-        while i < len(bins) - 1:
-            if np.sum((bins[i - 1] <= v) * (v < bins[i])) < 3:
-                bins = np.delete(bins, i - 1)
-            else:
-                i += 1
-
-        # swipe backward and look for results to A
-        i = len(bins) - 3
-        v = values[results[:, 0] > 0]
-        while i > 1:
-            if np.sum((bins[i] <= v) * (v < bins[i + 1])) < 3:
-                bins = np.delete(bins, i)
-            i -= 1
-        
-        write(f'\nUniformizing selection probabilities\n'
-              f'in bins: {array2string(bins, 20)}',
-              wrap_text=True)
-        
-        # internal A and internal B
-        mask = range(0, len(inA_values))
-        norm = np.sum(selection_probabilities[mask])
-        if 'A' in state_bins and norm:
-            selection_probabilities[mask] /= norm
-        else:
-            selection_probabilities[mask] = 0.
-        mask = range(len(inA_values), n_internal_frames)
-        norm = np.sum(selection_probabilities[mask])
-        if 'B' in state_bins and norm:
-            selection_probabilities[mask] /= norm
-        
-        # all the rest
-        indices = np.digitize(values[n_internal_frames:], bins) - 1
-        for i in range(len(bins) - 1):
-            if verbose:
-                write(f'    bin {i}: '
-                      f'({expit(bins[i]):.3e}, {expit(bins[i+1]):.3e})')
-            
-            # bin "center"
-            q = (bins[i] + bins[i + 1]) / 2
-            if i == 0:
-                q = bins[+1]
-            elif i == len(bins) - 2:
-                q = bins[-2]
-                        
-            # get mask
-            mask = n_internal_frames + np.where(indices == i)[0]
-            
-            # get info
-            mask_TPs = mask[mask >= shot_AtoB_frames_begin]
-            mask_free_AtoA = mask[(mask >= free_AtoA_frames_begin) *
-                                  (mask  < free_BtoB_frames_begin)]
-            mask_free_BtoB = mask[(mask >= free_BtoB_frames_begin) *
-                                  (mask  < shot_AtoB_frames_begin)]
-            
-            # are additional results from A possible?
-            if factor_fromA_toB and len(mask_free_AtoA) and \
-               0 < len(mask_TPs) / len(mask_free_AtoA) < 100:
-                # ratio = (np.sum(results[mask_free_AtoA]) /
-                #          np.sum(results[mask])) / factor_fromA_toB
-                ratio = 1 / max(factor_fromA_toB, expit(+q))
-                results[mask_free_AtoA, 0] += ratio
-                results[mask_TPs, 1] += (
-                    wTPs[mask_TPs - shot_AtoB_frames_begin] *
-                    ratio * factor_fromA_toB)
-                if verbose:
-                    write(f'    ... {len(mask_free_AtoA):<9} '
-                          f'free A to A frames get additional '
-                          f'{ratio:.3e} result to A')
-                    write(f'    ... {len(mask_TPs):<9} '
-                          f'transition frames get additional '
-                          f'f{ratio * factor_fromA_toB:.3e} result to B')
-            
-            # are additional results from B possible?
-            if factor_fromB_toA and len(mask_free_BtoB) and \
-               0 < len(mask_TPs) / len(mask_free_BtoB) < 100:
-                # ratio = (np.sum(results[mask_free_BtoB]) /
-                #          np.sum(results[mask])) / factor_fromB_toA
-                ratio = 1 / max(factor_fromA_toB, expit(-q))
-                results[mask_free_BtoB, 1] += ratio
-                results[mask_TPs, 0] += (
-                wTPs[mask_TPs - shot_AtoB_frames_begin] *
-                ratio * factor_fromB_toA)
-                if verbose:
-                    write(f'    ... {len(mask_free_BtoB):<9} '
-                          f'free B to B frames get additional '
-                          f'{ratio:.3e} result to B')
-                    write(f'    ... {len(mask_TPs):<9} '
-                          f'transition frames get additional '
-                          f'f{ratio * factor_fromB_toA:.3e} result to A')
-            
-            # remove empty points
-            selection_probabilities[mask[
-                np.sum(results[mask], axis=1) == 0]] = 0.
-            mask = mask[selection_probabilities[mask] > 0]
-            
-            # does it make sense to proceed?
-            if not np.sum(selection_probabilities[mask]):
-                continue
-            
-            # correct for imbalance
-            results[mask] /= np.mean(np.sum(results[mask], axis=1))
-            a = np.average(results[mask, 0],
-                           weights=selection_probabilities[mask])
-            b = np.average(results[mask, 1],
-                           weights=selection_probabilities[mask])
-            
-            # let selection probability absorb imbalance from A and B
-            maskA = mask[results[mask, 1] == 0]  # only A
-            maskB = mask[results[mask, 0] == 0]  # only B
-            if np.sum(selection_probabilities[maskA]):
-                a2 = np.average(
-                    results[maskA, 0],
-                    weights=selection_probabilities[maskA])
-            else:
-                a2 = 1.
-            if np.sum(selection_probabilities[maskB]):
-                b2 = np.average(
-                    results[maskB, 1],
-                    weights=selection_probabilities[maskB])
-            else:
-                b2 = 1.
-            selection_probabilities[maskA] *= results[maskA, 0] / a2
-            selection_probabilities[maskB] *= results[maskB, 1] / b2
-            results[maskA, 0] = a2
-            results[maskB, 1] = b2
-            
-            # since results with both rA > 0, rB > 0 are rare and
-            # mostly uniform already, there is no need to rescale them
-            
-            # final normalization
-            selection_probabilities[mask] /= np.sum(
-                selection_probabilities[mask])
-            
-            if not verbose:
-                continue
-            
-            write(f'    ... {len(mask):<9} frames')
-            write(f'    ... {a:.3e} average result to A')
-            write(f'    ... {b:.3e} average result to B')
-        
-        selection_probabilities /= np.sum(selection_probabilities)
-        
-        if not save_memory:  # all together now
-            descriptors = process_descriptors(descriptors)
-        
-        """
-        Training loop.
-        """
-        
-        losses = []
-        scales = []
-        # D = []
-        # R = []
-        i = 0
+    t0 = time.time()
+    losses, scales, selection_probabilities, results = [], [], [], []
+    
+    device = next(network.parameters()).device
+    dtype = next(network.parameters()).dtype
+    optimizer = torch.optim.Adam(network.parameters(), lr=lr)
+    
+    if len(pathensemble):
+        keys = np.arange(len(pathensemble))[keys].ravel()
+        keys = keys[pathensemble[keys].are_accepted]
+    else:
+        keys = np.zeros(0, dtype=int)
+    
+    # extract info (within keys representation)
+    initial_states = pathensemble.initial_states[keys]
+    internal_states = pathensemble.internal_states[keys]
+    final_states = pathensemble.final_states[keys]
+    
+    # remove "hopeless" paths
+    keys = keys[internal_states != initial_states]
+    initial_states = pathensemble.initial_states[keys]
+    internal_states = pathensemble.internal_states[keys]
+    final_states = pathensemble.final_states[keys]
+    
+    # keep extracting information
+    internal_lengths = pathensemble.internal_lengths[keys]
+    shooting_indices = pathensemble.shooting_indices[keys]
+    shooting_states = pathensemble.shooting_states[keys]
+    shooting_values = pathensemble.shooting_values[keys]
+    shooting_values[shooting_states == 'A'] = -np.inf
+    shooting_values[shooting_states == 'B'] = +np.inf
+    
+    # get indices of A paths (use initial_path if not present)
+    inA = keys[np.where(internal_states == 'A')[0]]
+    if not len(inA):
+        temp = initial_path[:].unsplit()
+        temp = temp.crop(frame_indices=temp.frame_states == 'A')
+        temp.are_accepted[:] = True
+        pathensemble += temp
+        keys = np.append(keys, len(pathensemble) - 1)
+        inA = np.array([len(keys) - 1])
+    
+    # get indices of in B paths (use initial_path if not present)
+    inB = keys[np.where(internal_states == 'B')[0]]
+    if not len(inB):
+        temp = initial_path[:].unsplit()
+        temp = temp.crop(frame_indices=temp.frame_states == 'B')
+        temp.are_accepted[:] = True
+        pathensemble += temp
+        keys = np.append(keys, len(pathensemble) - 1)
+        inB = np.array([len(keys) - 1])
+    
+    # get indices of shot paths
+    shot_paths = np.where((internal_states == 'R') *
+                          (shooting_indices > 0))[0]
+    
+    # get indices of ARA paths (within keys representation)
+    AtoA = np.where((initial_states == 'A') *
+                    (internal_states == 'R') * 
+                    (final_states == 'A'))[0]
+    
+    # get indices of BRB paths (within keys representation)
+    BtoB = np.where((initial_states == 'B') *
+                    (internal_states == 'R') * 
+                    (final_states == 'B'))[0]
+    
+    # determine effective state A boundary
+    thA2 = -np.inf
+    if thA is not None and len(AtoA):
+        thA2 = +np.quantile(+shooting_values[AtoA], thA)
+        if np.isnan(thA2):
+            thA2 = -np.inf
+        # report
+        write(f'\n    thA {thA} associated value: {thA2:.3f}')
+    
+    # determine effective state B boundary
+    thB2 = +np.inf
+    if thB is not None and len(BtoB):
+        thB2 = -np.quantile(-shooting_values[BtoB], thB)
+        if np.isnan(thB2):
+            thB2 = +np.inf
+        # report
+        write(f'    thB {thB} associated value: {thB2:.3f}\n')            
+    
+    # get indices of equilibrium fromA paths
+    # (starting at the effective boundary of state A)
+    free_A = np.where((initial_states == 'A') *
+                      (internal_states == 'R') * 
+                      (shooting_values <= thA2))[0]
+    
+    # get indices of equilibrium fromB paths
+    # (starting or ending at the effective boundary of state B)
+    free_B = np.where((initial_states == 'B') *
+                      (internal_states == 'R') * 
+                      (shooting_values >= thB2))[0]
+    
+    # which AtoA paths are free? (within keys representation)
+    # which BtoB paths are free? (within keys representation)
+    free_AtoA = AtoA[shooting_values[AtoA] <= thA2]
+    free_BtoB = BtoB[shooting_values[BtoB] >= thB2]
+    
+    # which AtoA paths are shot? (within keys representation)
+    # which BtoB paths are shot? (within keys representation)
+    shot_AtoA = AtoA[shooting_values[AtoA] > thA2]
+    shot_BtoB = BtoB[shooting_values[BtoB] < thB2]
+    
+    # shot AtoB and BtoA paths (now within shot paths representation)
+    shot_AtoB = ((initial_states[shot_paths] == 'A') *
+                 (final_states[shot_paths] == 'B'))
+    shot_BtoA = ((initial_states[shot_paths] == 'B') *
+                 (final_states[shot_paths] == 'A'))
+    
+    # assign weights to shot TPs: 1 / density at shooting interface
+    shot_paths_densities = pathensemble.densities(keys[shot_paths])
+    shot_AtoB_densities = shot_paths_densities[shot_AtoB]
+    shot_BtoA_densities = shot_paths_densities[shot_BtoA]
+    shot_AtoB_densities[shot_AtoB_densities == 0.] = np.inf  # stay safe
+    shot_BtoA_densities[shot_BtoA_densities == 0.] = np.inf  # stay safe
+    shot_AtoB_weights = 1 / shot_AtoB_densities
+    shot_BtoA_weights = 1 / shot_BtoA_densities
+    
+    # convert to within keys representation
+    shot_AtoB = shot_paths[shot_AtoB]
+    shot_BtoA = shot_paths[shot_BtoA]
+    shot_TPs = np.append(shot_AtoB, shot_BtoA).astype(int)
+    shot_TPs_weights = np.append(shot_AtoB_weights, shot_BtoA_weights)
+    
+    # equilibrium TPs (within keys representation)
+    free_AtoB = free_A[final_states[free_A] == 'B']
+    free_BtoA = free_B[final_states[free_B] == 'A']
+    free_TPs = np.append(free_AtoB, free_BtoA).astype(int)
+    
+    # TPs weights (default for equilibrium: 1)
+    TPs = np.append(shot_TPs, free_TPs).astype(int)
+    if len(TPs):
+        WTPs = np.ones(len(TPs))  # path-wise
+        WTPs[:len(shot_TPs)] = shot_TPs_weights
+        wTPs = np.repeat(WTPs, internal_lengths[TPs])
+        # frame-wise
+    else:
+        wTPs = np.zeros(0)
+    
+    # determine transition paths' supplemental results
+    free_A_values = _concatenate(
+        pathensemble.values(keys[free_A], internal=True), axis=0)
+    free_B_values = _concatenate(
+        pathensemble.values(keys[free_B], internal=True), axis=0)
+    total = np.sum(wTPs)
+    if total and thA is not None:
+        factor_fromA_toB = min(np.sum(expit(+free_A_values)) / total, 1)
         if verbose:
-            counter = tqdm(range(epochs), position=0)
+            write(f'Conversion factor from A to B: {factor_fromA_toB:.5e}')
+    else:
+        factor_fromA_toB = 0.
+    
+    if total and thB is not None:
+        factor_fromB_toA = min(np.sum(expit(-free_B_values)) / total, 1)
+        if verbose:
+            write(f'Conversion factor from B to A: {factor_fromB_toA:.5e}')
+    else:
+        factor_fromB_toA = 0.
+    
+    # collect values, descriptors, and results
+    
+    ########
+    # in A #
+    ########
+    
+    inA_descriptors = _concatenate(
+        pathensemble.descriptors(keys[inA], internal=True), axis=0)
+    inA_values = np.repeat(-stop, len(inA_descriptors))
+    inA_results = np.zeros((len(inA_values), 2))
+    inA_results[:, 0] = 1. * augment
+    
+    ########
+    # in B #
+    ########
+    
+    inB_descriptors = _concatenate(
+        pathensemble.descriptors(keys[inB], internal=True), axis=0)
+    inB_values = np.repeat(-stop, len(inB_descriptors))
+    inB_results = np.zeros((len(inB_values), 2))
+    inB_results[:, 1] = 1. * augment
+    
+    ###############
+    # shot A to A #
+    ###############
+    
+    shot_AtoA_values = _concatenate(
+        pathensemble.values(keys[shot_AtoA], internal=True), axis=0)
+    shot_AtoA_descriptors = _concatenate(
+        pathensemble.descriptors(keys[shot_AtoA], internal=True), axis=0
+    ).reshape(-1, descriptors_size)
+    
+    # initialize results
+    shot_AtoA_results = np.zeros((len(shot_AtoA_values), 2))
+    
+    # base results
+    boundaries = np.cumsum(np.append([0], internal_lengths[shot_AtoA]))
+    for si, begin, end in zip(
+        shooting_indices[shot_AtoA], boundaries, boundaries[1:]):
         
-        # in case of problems, restore this
-        min_loss = np.inf
-        min_loss_step = 0
-        state_dict = copy.deepcopy(network.state_dict())
-        min_loss2 = np.inf
-        min_loss_step2 = 0
-        state_dict2 = copy.deepcopy(network.state_dict())
-        while True:
-            
-            for param_group in optimizer.param_groups:
-                # slowly increase lr
-                param_group['lr'] = lr * min(1, (i + 1) / (epochs / 20))
-            
-            # sample batch
-            indices = np.random.choice(len(selection_probabilities),
-                                       batch_size, p=selection_probabilities)
-            if save_memory:  # separately to save memory
-                d = process_descriptors(descriptors[indices])
-            else:
-                d = descriptors[indices]
-            d = torch.tensor(d, dtype=dtype, device=device)
-            d.requires_grad = True
-            r = torch.tensor(results[indices], dtype=dtype, device=device)
-            
-            # define loss function
-            def closure():
-                
-                optimizer.zero_grad()
-                q = network(d)
-                
-                qA = - (torch.log(1 + torch.exp(-q[:, 0])) +
-                        loss_bayesian_factor)
-                qB = + (torch.log(1 + torch.exp(+q[:, 0])) +
-                        loss_bayesian_factor)
-                
-                toA_contribution = (q[:, 0] - qA) ** 2
-                toB_contribution = (q[:, 0] - qB) ** 2
-                
-                q = q[:, 0].detach()
-                
-                loss = torch.sum(q ** 2 *
-                    (r[:, 0] * toA_contribution +
-                     r[:, 1] * toB_contribution))
-                
-                # normalize
-                loss /= torch.sum(q ** 2 * (r[:, 0] + r[:, 1]) *
-                                  loss_bayesian_factor ** 2)
-                loss -= 1.0
-                
-                # Compute the smoothness penalty
-                if loss_smoothening_weight:
-                    q_grad = torch.autograd.grad(
-                        outputs=q.sum(), inputs=d, create_graph=True)[0]
-                    smoothness_loss = (torch.abs(q_grad) ** 2).mean()
-                    loss += loss_smoothening_weight * smoothness_loss
-                
-                # Calculate L1 regularization
-                if loss_regularization_weight:
-                    l1_norm = sum(p.abs().sum() for p in network.parameters())
+        # backward
+        if augment:
+            segment = range(begin, begin + si + 1)
+        else:  # only the shooting point
+            segment = [begin + si]
+        shot_AtoA_results[segment, 0] += 1.
+        
+        # forward
+        if augment:
+            segment = range(begin + si, end)
+        shot_AtoA_results[segment, 0] += 1.
+    
+    # selection probabilities
+    shot_AtoA_selection_probabilities = np.ones(len(shot_AtoA_values))
+    
+    ###############
+    # shot B to B #
+    ###############
+    
+    shot_BtoB_values = _concatenate(
+        pathensemble.values(keys[shot_BtoB], internal=True), axis=0)
+    shot_BtoB_descriptors = _concatenate(
+        pathensemble.descriptors(keys[shot_BtoB], internal=True), axis=0
+    ).reshape(-1, descriptors_size)
+    
+    # initialize results
+    shot_BtoB_results = np.zeros((len(shot_BtoB_values), 2))
+    
+    # base results
+    boundaries = np.cumsum(np.append([0], internal_lengths[shot_BtoB]))
+    for si, begin, end in zip(
+        shooting_indices[shot_BtoB], boundaries, boundaries[1:]):
+        
+        # backward
+        if augment:
+            segment = range(begin, begin + si + 1)
+        else:  # only the shooting point
+            segment = [begin + si]
+        shot_BtoB_results[segment, 1] += 1.
+        
+        # forward
+        if augment:
+            segment = range(begin + si, end)
+        shot_BtoB_results[segment, 1] += 1.
+    
+    ###############
+    # free A to A #
+    ###############
+    
+    free_AtoA_values = _concatenate(
+        pathensemble.values(keys[free_AtoA], internal=True), axis=0)
+    free_AtoA_descriptors = _concatenate(
+        pathensemble.descriptors(keys[free_AtoA], internal=True), axis=0
+    ).reshape(-1, descriptors_size)
+    
+    # initialize results
+    free_AtoA_results = np.zeros((len(free_AtoA_values), 2))
+    
+    # results
+    free_AtoA_results[:, 0] += 1. * augment
+    
+    ###############
+    # free B to B #
+    ###############
+    
+    free_BtoB_values = _concatenate(
+        pathensemble.values(keys[free_BtoB], internal=True), axis=0)
+    free_BtoB_descriptors = _concatenate(
+        pathensemble.descriptors(keys[free_BtoB], internal=True), axis=0
+    ).reshape(-1, descriptors_size)
+    
+    # initialize results
+    free_BtoB_results = np.zeros((len(free_BtoB_values), 2))
+    
+    # results
+    free_BtoB_results[:, 1] += 1. * augment
+    
+    ###############
+    # shot A to B #
+    ###############
+    
+    shot_AtoB_values = _concatenate(
+        pathensemble.values(keys[shot_AtoB], internal=True), axis=0)
+    shot_AtoB_descriptors = _concatenate(
+        pathensemble.descriptors(keys[shot_AtoB], internal=True), axis=0
+    ).reshape(-1, descriptors_size)
+    
+    # initialize results
+    shot_AtoB_results = np.zeros((len(shot_AtoB_values), 2))
+    
+    # base results
+    boundaries = np.cumsum(np.append([0], internal_lengths[shot_AtoB]))
+    for si, begin, end in zip(
+        shooting_indices[shot_AtoB], boundaries, boundaries[1:]):
+        
+        # backward
+        if augment:
+            segment = range(begin, begin + si + 1)
+        else:  # only the shooting point
+            segment = [begin + si]
+        shot_AtoB_results[segment, 0] += 1.
+        
+        # forward
+        if augment:
+            segment = range(begin + si, end)
+        shot_AtoB_results[segment, 1] += 1.
+    
+    ###############
+    # shot B to A #
+    ###############
+    
+    shot_BtoA_values = _concatenate(
+        pathensemble.values(keys[shot_BtoA], internal=True), axis=0)
+    shot_BtoA_descriptors = _concatenate(
+        pathensemble.descriptors(keys[shot_BtoA], internal=True), axis=0
+    ).reshape(-1, descriptors_size)
+    
+    # initialize results
+    shot_BtoA_results = np.zeros((len(shot_BtoA_values), 2))
+    
+    # base results
+    boundaries = np.cumsum(np.append([0], internal_lengths[shot_BtoA]))
+    for si, begin, end in zip(
+        shooting_indices[shot_BtoA], boundaries, boundaries[1:]):
+        
+        # backward
+        if augment:
+            segment = range(begin, begin + si + 1)
+        else:  # only the shooting point
+            segment = [begin + si]
+        shot_BtoA_results[segment, 1] += 1.
+        
+        # forward
+        if augment:
+            segment = range(begin + si, end)
+        shot_BtoA_results[segment, 0] += 1.
+    
+    ###############
+    # free A to B #
+    ###############
+    
+    free_AtoB_values = _concatenate(
+        pathensemble.values(keys[free_AtoB], internal=True), axis=0)
+    free_AtoB_descriptors = _concatenate(
+        pathensemble.descriptors(keys[free_AtoB], internal=True), axis=0
+    ).reshape(-1, descriptors_size)
+    
+    # initialize results
+    free_AtoB_results = np.zeros((len(free_AtoB_values), 2))
+    
+    # results
+    free_AtoB_results[:, 1] += 1. * augment
+    
+    ###############
+    # free B to A #
+    ###############
+    
+    free_BtoA_values = _concatenate(
+        pathensemble.values(keys[free_BtoA], internal=True), axis=0)
+    free_BtoA_descriptors = _concatenate(
+        pathensemble.descriptors(keys[free_BtoA], internal=True), axis=0
+    ).reshape(-1, descriptors_size)
+    
+    # initialize results
+    free_BtoA_results = np.zeros((len(free_BtoA_values), 2))
+    
+    # results
+    free_BtoA_results[:, 0] += 1. * augment
+    
+    ##########
+    # Merge! #
+    ##########
+    
+    values = np.concatenate([
+        inA_values,
+        inB_values,
+        shot_AtoA_values,
+        shot_BtoB_values,
+        free_AtoA_values,
+        free_BtoB_values,
+        shot_AtoB_values,
+        shot_BtoA_values,
+        free_AtoB_values,
+        free_BtoA_values], axis=0)
+    descriptors = np.concatenate([
+        inA_descriptors,
+        inB_descriptors,
+        shot_AtoA_descriptors,
+        shot_BtoB_descriptors,
+        free_AtoA_descriptors,
+        free_BtoB_descriptors,
+        shot_AtoB_descriptors,
+        shot_BtoA_descriptors,
+        free_AtoB_descriptors,
+        free_BtoA_descriptors], axis=0)
+    results = np.concatenate([
+        inA_results,
+        inB_results,
+        shot_AtoA_results,
+        shot_BtoB_results,
+        free_AtoA_results,
+        free_BtoB_results,
+        shot_AtoB_results,
+        shot_BtoA_results,
+        free_AtoB_results,
+        free_BtoA_results], axis=0)
+    selection_probabilities = np.ones(len(values))
+    
+    write(f'\nCollected {len(inA_values):9} in A frames,\n'
+          f'          {len(inB_values):9} in B frames,\n'
+          f'          {len(shot_AtoA_values):9} shot A to A frames,\n'
+          f'          {len(shot_BtoB_values):9} shot B to B frames,\n'
+          f'          {len(free_AtoA_values):9} free A to A frames,\n'
+          f'          {len(free_BtoB_values):9} free B to B frames,\n'
+          f'          {len(shot_AtoB_values):9} shot A to B frames,\n'
+          f'          {len(shot_BtoA_values):9} shot B to A frames,\n'
+          f'          {len(free_AtoB_values):9} free A to B frames, and\n'
+          f'          {len(free_BtoA_values):9} free B to A frames,\n'
+          f'   TOTAL: {len(values):9} frames')
+    
+    # useful
+    n_internal_frames = len(inA_values) + len(inB_values)
+    free_AtoA_frames_begin = n_internal_frames + len(
+        shot_AtoA_values) + len(shot_BtoB_values)
+    free_BtoB_frames_begin = free_AtoA_frames_begin + len(
+        free_AtoA_values)
+    shot_AtoB_frames_begin = free_BtoB_frames_begin + len(
+        free_BtoB_values)
+    shot_BtoA_frames_begin = shot_AtoB_frames_begin + len(
+        shot_AtoB_values)
+    free_AtoB_frames_begin = shot_BtoA_frames_begin + len(
+        shot_BtoA_values)
+    free_BtoA_frames_begin = free_AtoB_frames_begin + len(
+        free_AtoB_values)
+    
+    # uniformize selection probabilities in bins (if nbins > 0)
+    if nbins:
+        bins = get_bins(pathensemble, nbins,
+            cutoff_max=20.0, initial_path=initial_path, states=True)
+    else:
+        bins = np.array([-np.inf, +np.inf])
+
+    # avoid frustration due to not both A, B being present in internal bins
+    # swipe forward and look for results to B
+    i = 3
+    v = values[results[:, 1] > 0]
+    while i < len(bins) - 1:
+        if np.sum((bins[i - 1] <= v) * (v < bins[i])) < 3:
+            bins = np.delete(bins, i - 1)
+        else:
+            i += 1
+
+    # swipe backward and look for results to A
+    i = len(bins) - 3
+    v = values[results[:, 0] > 0]
+    while i > 1:
+        if np.sum((bins[i] <= v) * (v < bins[i + 1])) < 3:
+            bins = np.delete(bins, i)
+        i -= 1
+    
+    write(f'\nUniformizing selection probabilities\n'
+          f'in bins: {array2string(bins, 20)}',
+          wrap_text=True)
+    
+    # internal A and internal B
+    mask = range(0, len(inA_values))
+    norm = np.sum(selection_probabilities[mask])
+    if 'A' in state_bins and norm:
+        selection_probabilities[mask] /= norm
+    else:
+        selection_probabilities[mask] = 0.
+    mask = range(len(inA_values), n_internal_frames)
+    norm = np.sum(selection_probabilities[mask])
+    if 'B' in state_bins and norm:
+        selection_probabilities[mask] /= norm
+    
+    # all the rest
+    indices = np.digitize(values[n_internal_frames:], bins) - 1
+    for i in range(len(bins) - 1):
+        if verbose:
+            write(f'    bin {i}: '
+                  f'({expit(bins[i]):.3e}, {expit(bins[i+1]):.3e})')
+        
+        # bin "center"
+        q = (bins[i] + bins[i + 1]) / 2
+        if i == 0:
+            q = bins[+1]
+        elif i == len(bins) - 2:
+            q = bins[-2]
                     
-                    # Combine original loss with L1 regularization term
-                    loss += loss_regularization_weight * l1_norm
-                loss.backward()
-                return loss
-            
-            # update network
-            network.train()
-            loss = optimizer.step(closure)
-            losses.append(float(loss))
-            
-            # report scales
-            q = network(d)
-            scales.append(max(float(torch.max(q)), -float(torch.min(q))))
-            Range = float(torch.min(q)), float(torch.max(q))
-            
+        # get mask
+        mask = n_internal_frames + np.where(indices == i)[0]
+        
+        # get info
+        mask_TPs = mask[mask >= shot_AtoB_frames_begin]
+        mask_free_AtoA = mask[(mask >= free_AtoA_frames_begin) *
+                              (mask  < free_BtoB_frames_begin)]
+        mask_free_BtoB = mask[(mask >= free_BtoB_frames_begin) *
+                              (mask  < shot_AtoB_frames_begin)]
+        
+        # are additional results from A possible?
+        if factor_fromA_toB and len(mask_free_AtoA) and \
+           0 < len(mask_TPs) / len(mask_free_AtoA) < 100:
+            # ratio = (np.sum(results[mask_free_AtoA]) /
+            #          np.sum(results[mask])) / factor_fromA_toB
+            ratio = 1 / max(factor_fromA_toB, expit(+q))
+            results[mask_free_AtoA, 0] += ratio
+            results[mask_TPs, 1] += (
+                wTPs[mask_TPs - shot_AtoB_frames_begin] *
+                ratio * factor_fromA_toB)
             if verbose:
-                counter.update(1)
+                write(f'    ... {len(mask_free_AtoA):<9} '
+                      f'free A to A frames get additional '
+                      f'{ratio:.3e} result to A')
+                write(f'    ... {len(mask_TPs):<9} '
+                      f'transition frames get additional '
+                      f'f{ratio * factor_fromA_toB:.3e} result to B')
+        
+        # are additional results from B possible?
+        if factor_fromB_toA and len(mask_free_BtoB) and \
+           0 < len(mask_TPs) / len(mask_free_BtoB) < 100:
+            # ratio = (np.sum(results[mask_free_BtoB]) /
+            #          np.sum(results[mask])) / factor_fromB_toA
+            ratio = 1 / max(factor_fromA_toB, expit(-q))
+            results[mask_free_BtoB, 1] += ratio
+            results[mask_TPs, 0] += (
+            wTPs[mask_TPs - shot_AtoB_frames_begin] *
+            ratio * factor_fromB_toA)
+            if verbose:
+                write(f'    ... {len(mask_free_BtoB):<9} '
+                      f'free B to B frames get additional '
+                      f'{ratio:.3e} result to B')
+                write(f'    ... {len(mask_TPs):<9} '
+                      f'transition frames get additional '
+                      f'f{ratio * factor_fromB_toA:.3e} result to A')
+        
+        # remove empty points
+        selection_probabilities[mask[
+            np.sum(results[mask], axis=1) == 0]] = 0.
+        mask = mask[selection_probabilities[mask] > 0]
+        
+        # does it make sense to proceed?
+        if not np.sum(selection_probabilities[mask]):
+            continue
+        
+        # correct for imbalance
+        results[mask] /= np.mean(np.sum(results[mask], axis=1))
+        a = np.average(results[mask, 0],
+                       weights=selection_probabilities[mask])
+        b = np.average(results[mask, 1],
+                       weights=selection_probabilities[mask])
+        
+        # let selection probability absorb imbalance from A and B
+        maskA = mask[results[mask, 1] == 0]  # only A
+        maskB = mask[results[mask, 0] == 0]  # only B
+        if np.sum(selection_probabilities[maskA]):
+            a2 = np.average(
+                results[maskA, 0],
+                weights=selection_probabilities[maskA])
+        else:
+            a2 = 1.
+        if np.sum(selection_probabilities[maskB]):
+            b2 = np.average(
+                results[maskB, 1],
+                weights=selection_probabilities[maskB])
+        else:
+            b2 = 1.
+        selection_probabilities[maskA] *= results[maskA, 0] / a2
+        selection_probabilities[maskB] *= results[maskB, 1] / b2
+        results[maskA, 0] = a2
+        results[maskB, 1] = b2
+        
+        # since results with both rA > 0, rB > 0 are rare and
+        # mostly uniform already, there is no need to rescale them
+        
+        # final normalization
+        selection_probabilities[mask] /= np.sum(
+            selection_probabilities[mask])
+        
+        if not verbose:
+            continue
+        
+        write(f'    ... {len(mask):<9} frames')
+        write(f'    ... {a:.3e} average result to A')
+        write(f'    ... {b:.3e} average result to B')
+    
+    selection_probabilities /= np.sum(selection_probabilities)
+    
+    if not save_memory:  # all together now
+        descriptors = process_descriptors(descriptors)
+    
+    """
+    Training loop.
+    """
+    
+    losses = []
+    scales = []
+    # D = []
+    # R = []
+    i = 0
+    if verbose:
+        counter = tqdm(range(epochs), position=0)
+    
+    # in case of problems, restore this
+    min_loss = np.inf
+    min_loss_step = 0
+    state_dict = copy.deepcopy(network.state_dict())
+    min_loss2 = np.inf
+    min_loss_step2 = 0
+    state_dict2 = copy.deepcopy(network.state_dict())
+    while True:
+        
+        for param_group in optimizer.param_groups:
+            # slowly increase lr
+            param_group['lr'] = lr * min(1, (i + 1) / (epochs / 20))
+        
+        # sample batch
+        indices = np.random.choice(len(selection_probabilities),
+                                   batch_size, p=selection_probabilities)
+        if save_memory:  # separately to save memory
+            d = process_descriptors(descriptors[indices])
+        else:
+            d = descriptors[indices]
+        d = torch.tensor(d, dtype=dtype, device=device)
+        d.requires_grad = True
+        r = torch.tensor(results[indices], dtype=dtype, device=device)
+        
+        # define loss function
+        def closure():
             
-            # handle termination: too high scales
-            if scales[-1] >= stop or np.isnan(scales[-1]):
-                write(f'!!! stopping early since scale '
-                      f'{scales[-1]:.3f} > {stop:.3f}')
-                if (i + 1) < 1.25 * epochs:
-                    write(f'    restoring lowest loss\' ({min_loss:.3e}) '
-                          f'weights, step {min_loss_step + 1}')
-                    network.load_state_dict(state_dict)
-                else:
-                    write(f'    restoring lowest loss\' ({min_loss2:.3e}) '
-                          f'weights, step {min_loss_step2 + 1}')
-                    network.load_state_dict(state_dict2)
+            optimizer.zero_grad()
+            q = network(d)
+            
+            qA = - (torch.log(1 + torch.exp(-q[:, 0])) +
+                    loss_bayesian_factor)
+            qB = + (torch.log(1 + torch.exp(+q[:, 0])) +
+                    loss_bayesian_factor)
+            
+            toA_contribution = (q[:, 0] - qA) ** 2
+            toB_contribution = (q[:, 0] - qB) ** 2
+            
+            q = q[:, 0].detach()
+            
+            loss = torch.sum(q ** 2 *
+                (r[:, 0] * toA_contribution +
+                 r[:, 1] * toB_contribution))
+            
+            # normalize
+            loss /= torch.sum(q ** 2 * (r[:, 0] + r[:, 1]) *
+                              loss_bayesian_factor ** 2)
+            loss -= 1.0
+            
+            # Compute the smoothness penalty
+            if loss_smoothening_weight:
+                q_grad = torch.autograd.grad(
+                    outputs=q.sum(), inputs=d, create_graph=True)[0]
+                smoothness_loss = (torch.abs(q_grad) ** 2).mean()
+                loss += loss_smoothening_weight * smoothness_loss
+            
+            # Calculate L1 regularization
+            if loss_regularization_weight:
+                l1_norm = sum(p.abs().sum() for p in network.parameters())
                 
-                # recompute scales and range
-                q = network(d)
-                scales[-1] = max(float(torch.max(q)), -float(torch.min(q)))
-                Range = float(torch.min(q)), float(torch.max(q))
-                break
-            
-            # save model if goood
-            if losses[-1] <= min_loss:
-                min_loss = losses[-1]
-                min_loss_step = i
-                state_dict = copy.deepcopy(network.state_dict())
-
-            # new min loss
-            if (i + 1) >= epochs and losses[-1] <= min_loss2:
-                min_loss2 = losses[-1]
-                min_loss_step2 = i
-                state_dict2 = copy.deepcopy(network.state_dict())
-            
-            # handle termination: lowest loss
-            if (i + 1) >= epochs and losses[-1] <= min_loss:
-                break
-
-            # new target after 1.25 * epochs
-            if (i + 1) >= 1.25 * epochs and losses[-1] <= min_loss2:
-                break
-            
-            # at most 1.5 * epochs
-            if (i + 1) >= 1.5 * epochs:
+                # Combine original loss with L1 regularization term
+                loss += loss_regularization_weight * l1_norm
+            loss.backward()
+            return loss
+        
+        # update network
+        network.train()
+        loss = optimizer.step(closure)
+        losses.append(float(loss))
+        
+        # report scales
+        q = network(d)
+        scales.append(max(float(torch.max(q)), -float(torch.min(q))))
+        Range = float(torch.min(q)), float(torch.max(q))
+        
+        if verbose:
+            counter.update(1)
+        
+        # handle termination: too high scales
+        if scales[-1] >= stop or np.isnan(scales[-1]):
+            write(f'!!! stopping early since scale '
+                  f'{scales[-1]:.3f} > {stop:.3f}')
+            if (i + 1) < 1.25 * epochs:
+                write(f'    restoring lowest loss\' ({min_loss:.3e}) '
+                      f'weights, step {min_loss_step + 1}')
+                network.load_state_dict(state_dict)
+            else:
                 write(f'    restoring lowest loss\' ({min_loss2:.3e}) '
                       f'weights, step {min_loss_step2 + 1}')
                 network.load_state_dict(state_dict2)
-                break
             
-            i += 1
-            
-            # D.append(d)
-            # R.append(r)
-            
-            # report
-            if verbose and i % (epochs // 20) == 0:
-                write(f'    loss {losses[-1]:.3e}, '
-                      f'scale {scales[-1]:.3f}, '
-                      f'range ({Range[0]:.3f}, {Range[1]:.3f})')
+            # recompute scales and range
+            q = network(d)
+            scales[-1] = max(float(torch.max(q)), -float(torch.min(q)))
+            Range = float(torch.min(q)), float(torch.max(q))
+            break
         
-        if verbose:
-            counter.close()
+        # save model if goood
+        if losses[-1] <= min_loss:
+            min_loss = losses[-1]
+            min_loss_step = i
+            state_dict = copy.deepcopy(network.state_dict())
+
+        # new min loss
+        if (i + 1) >= epochs and losses[-1] <= min_loss2:
+            min_loss2 = losses[-1]
+            min_loss_step2 = i
+            state_dict2 = copy.deepcopy(network.state_dict())
         
-        write(f'Training took {time.time()-t0:.1f}s')
-        write(f'    {i + 1} epochs')
-        write(f'    last loss {losses[-1]:.3e}')
-        write(f'    last scale {scales[-1]:.3f}')
-        write(f'    last range ({Range[0]:.3f}, {Range[1]:.3f})')
-        return losses, scales, values, selection_probabilities, results#, D, R
-    except Exception as exception:
-        write(f'!!! {exception}')
-        network.reset_parameters()
-        return [], [], [], [], []
+        # handle termination: lowest loss
+        if (i + 1) >= epochs and losses[-1] <= min_loss:
+            break
+
+        # new target after 1.25 * epochs
+        if (i + 1) >= 1.25 * epochs and losses[-1] <= min_loss2:
+            break
+        
+        # at most 1.5 * epochs
+        if (i + 1) >= 1.5 * epochs:
+            write(f'    restoring lowest loss\' ({min_loss2:.3e}) '
+                  f'weights, step {min_loss_step2 + 1}')
+            network.load_state_dict(state_dict2)
+            break
+        
+        i += 1
+        
+        # D.append(d)
+        # R.append(r)
+        
+        # report
+        if verbose and i % (epochs // 20) == 0:
+            write(f'    loss {losses[-1]:.3e}, '
+                  f'scale {scales[-1]:.3f}, '
+                  f'range ({Range[0]:.3f}, {Range[1]:.3f})')
+    
+    if verbose:
+        counter.close()
+    
+    write(f'Training took {time.time()-t0:.1f}s')
+    write(f'    {i + 1} epochs')
+    write(f'    last loss {losses[-1]:.3e}')
+    write(f'    last scale {scales[-1]:.3f}')
+    write(f'    last range ({Range[0]:.3f}, {Range[1]:.3f})')
+    return losses, scales, values, selection_probabilities, results#, D, R
 
 
 ###############################################################################
