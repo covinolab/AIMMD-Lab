@@ -1200,7 +1200,7 @@ def fit(network, pathensemble,
     Range = float(torch.min(q)), float(torch.max(q))
     
     # report and return
-    write(f'Training took {time.time()-t0:.1f}s')
+    write(f'\nTraining took {time.time()-t0:.1f}s')
     write(f'    {i + 1} epochs')
     write(f'    last loss {losses[-1]:.3e}')
     write(f'    last scale {scales[-1]:.3f}')
