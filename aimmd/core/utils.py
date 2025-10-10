@@ -425,9 +425,10 @@ def fit(network, pathensemble,
         if not len(l):
             return np.concatenate([l], **kwargs)
         return np.concatenate(l, **kwargs)
-    
-    write(f'Updating the pathensemble values ({now()})')
-    pathensemble.update_values()  # with previous model
+
+    if nbins:  # needed only in this case
+        write(f'Updating the pathensemble values ({now()})')
+        pathensemble.update_values()  # with previous model
     
     # getting descriptors size
     if initial_path is not None:
