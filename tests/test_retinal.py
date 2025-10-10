@@ -9,6 +9,7 @@ on different machines is not guaranteed.
 import os, sys
 from time import sleep
 from time import time as current_time
+from aimmd.core.utils import *
 
 FOLDER = 'retinal'
 PYTHON = 'python3'  # will call generate.py
@@ -21,14 +22,12 @@ sys.path.append('.')
 
 seconds = 12  # of equilibration
 
-print('Copying scripts from "src" folder (workaround)')
-os.system(f'cp ../../aimmd/core/generate.py .')
-os.system(f'cp ../../aimmd/core/generate_backend.py .')
-os.system(f'cp ../../aimmd/core/utils.py .')
-os.system(f'cp ../../aimmd/core/pathensemble.py .')
-os.system(f'cp ../../aimmd/core/manager.py .')
-os.system(f'cp ../../aimmd/core/trainer.py .')
-os.system(f'cp ../../aimmd/core/worker.sh .')
+print('Copying scripts from "sampling" folder (workaround)')
+os.system(f'cp ../../aimmd/sampling/generate.py .')
+os.system(f'cp ../../aimmd/sampling/generate_backend.py .')
+os.system(f'cp ../../aimmd/sampling/manager.py .')
+os.system(f'cp ../../aimmd/sampling/trainer.py .')
+os.system(f'cp ../../aimmd/sampling/worker.sh .')
 
 print('Cleaning directories')
 os.system('rm -rf equilibrium; mkdir equilibrium')
