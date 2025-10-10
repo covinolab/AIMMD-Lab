@@ -426,7 +426,7 @@ def fit(network, pathensemble,
             return np.concatenate([l], **kwargs)
         return np.concatenate(l, **kwargs)
 
-    if nbins:  # needed only in this case
+    if nbins or thA is not None or thB is not None:  # needed in these cases
         write(f'Updating the pathensemble values ({now()})')
         pathensemble.update_values()  # with previous model
     
@@ -608,7 +608,7 @@ def fit(network, pathensemble,
         pathensemble.descriptors(keys[inA], internal=True), axis=0)
     inA_values = np.repeat(-stop, len(inA_descriptors))
     inA_results = np.zeros((len(inA_values), 2))
-    inA_results[:, 0] = 1. * augment
+    inA_results[:, 0] = 1. * ('A' in state_bins)
     
     ########
     # in B #
@@ -618,7 +618,7 @@ def fit(network, pathensemble,
         pathensemble.descriptors(keys[inB], internal=True), axis=0)
     inB_values = np.repeat(-stop, len(inB_descriptors))
     inB_results = np.zeros((len(inB_values), 2))
-    inB_results[:, 1] = 1. * augment
+    inB_results[:, 1] = 1. * ('B' in state_bins)
     
     ###############
     # shot A to A #
