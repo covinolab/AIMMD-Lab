@@ -429,9 +429,6 @@ def fit(network, pathensemble,
     write(f'Updating the pathensemble values ({now()})')
     pathensemble.update_values()  # with previous model
     
-    write(f'Reseting the network parameters ({now()})')
-    network.reset_parameters()
-    
     # getting descriptors size
     if initial_path is not None:
         descriptors_size = len(initial_path.frame_descriptors[0])
@@ -1035,6 +1032,8 @@ def fit(network, pathensemble,
     Training loop.
     """
     
+    # initialization
+    
     losses = []
     scales = []
     # D = []
@@ -1043,13 +1042,19 @@ def fit(network, pathensemble,
     if verbose:
         counter = tqdm(range(epochs), position=0)
     
-    # in case of problems, restore this
-    min_loss = np.inf
-    min_loss_step = 0
-    state_dict = copy.deepcopy(network.state_dict())
+    # backups for restoration
+    state_dict0 = copy.deepcopy(network.state_dict())  # fixed
+    state_dict1 = copy.deepcopy(network.state_dict())  # linked to min_loss1
+    state_dict2 = copy.deepcopy(network.state_dict())  # linked to min_loss2
+    min_loss1 = np.inf
     min_loss2 = np.inf
+    min_loss_step1 = 0
     min_loss_step2 = 0
-    state_dict2 = copy.deepcopy(network.state_dict())
+    
+    write(f'Reseting the network parameters ({now()})')
+    network.reset_parameters()
+
+    # actual loop
     while True:
         
         for param_group in optimizer.param_groups:
@@ -1127,35 +1132,30 @@ def fit(network, pathensemble,
                   f'{scales[-1]:.3f} > {stop:.3f}')
             if (i + 1) < 1.25 * epochs:
                 write(f'    restoring lowest loss\' ({min_loss:.3e}) '
-                      f'weights, step {min_loss_step + 1}')
-                network.load_state_dict(state_dict)
+                      f'weights, step {min_loss_step1 + 1}')
+                network.load_state_dict(state_dict1)
             else:
                 write(f'    restoring lowest loss\' ({min_loss2:.3e}) '
                       f'weights, step {min_loss_step2 + 1}')
                 network.load_state_dict(state_dict2)
-            
-            # recompute scales and range
-            q = network(d)
-            scales[-1] = max(float(torch.max(q)), -float(torch.min(q)))
-            Range = float(torch.min(q)), float(torch.max(q))
             break
         
         # save model if goood
-        if losses[-1] <= min_loss:
-            min_loss = losses[-1]
-            min_loss_step = i
-            state_dict = copy.deepcopy(network.state_dict())
-
-        # new min loss
+        if losses[-1] <= min_loss1:
+            min_loss1 = losses[-1]
+            min_loss_step1 = i
+            state_dict1 = copy.deepcopy(network.state_dict())
+        
+        # new min loss after reaching target epochs
         if (i + 1) >= epochs and losses[-1] <= min_loss2:
             min_loss2 = losses[-1]
             min_loss_step2 = i
             state_dict2 = copy.deepcopy(network.state_dict())
         
         # handle termination: lowest loss
-        if (i + 1) >= epochs and losses[-1] <= min_loss:
+        if (i + 1) >= epochs and losses[-1] <= min_loss1:
             break
-
+        
         # new target after 1.25 * epochs
         if (i + 1) >= 1.25 * epochs and losses[-1] <= min_loss2:
             break
@@ -1181,6 +1181,17 @@ def fit(network, pathensemble,
     if verbose:
         counter.close()
     
+    # error handling: result not as expected
+    if Range[0] > 0 or Range[1] < 0 or scales[-1] < 1:
+        write(f'!!! bad range ({Range[0]:.3f}, {Range[1]:.3f}), '
+              f'reloading old parameters')
+        network.load_state_dict(state_dict0)
+    
+    # recompute scales and range in case they changed
+    scales[-1] = max(float(torch.max(q)), -float(torch.min(q)))
+    Range = float(torch.min(q)), float(torch.max(q))
+    
+    # report and return
     write(f'Training took {time.time()-t0:.1f}s')
     write(f'    {i + 1} epochs')
     write(f'    last loss {losses[-1]:.3e}')
