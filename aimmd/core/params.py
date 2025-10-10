@@ -44,10 +44,10 @@ Passed to `pathensemble.reweight`.
 # Extra sampling parameters
 # =============================================================================
 extra_equilibriumA = []
-extra_equilibriumA_states_map = [""]
-extra_equilibriumB = ["../run2/equilibriumA"]
-extra_equilibriumB_states_map = ["ZA AR RB BC"]
-extra_extend_frames = 30  # continue simulations beyond final state
+extra_equilibriumA_states_map = [""]  # TODO describe
+extra_equilibriumB = []
+extra_equilibriumB_states_map = [""]
+extra_extend_frames = 0  # continue simulations beyond final state
 
 # =============================================================================
 # Sampling / shooting parameters
@@ -82,15 +82,15 @@ in `random_velocities`. Otherwise, reuse velocities from the parent trajectory
 topology = "run.gro"                 # system topology (all atoms/beads)
 mdrun_parameters = "run.mdp"         # GROMACS MDP file for simulation
 random_velocities = "randomvelocities.mdp"  # MDP for velocity initialization
-grompp = f"{GMX} grompp -maxwarn 5 -n run.ndx"
-mdrun = f"{GMX} mdrun -ntmpi 1 -ntomp 12 -v -maxh 4"
+grompp = f"{GMX} grompp -maxwarn 5"
+mdrun = f"{GMX} mdrun -v -maxh 4"
 eneconv = f'printf "c\\nc\\n" | {GMX} -nobackup eneconv -settime'
 
 trajectory_extension = ".xtc"  # "xtc" or "trr"
 save_interval = 10  # save NN model parameters every N shooting simulations
 
 # =============================================================================
-# 🧠 SLURM configuration (for HPC clusters)
+# SLURM configuration (for HPC clusters)
 # =============================================================================
 slurm_options = """#SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=12
