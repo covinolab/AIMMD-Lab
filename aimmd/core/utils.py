@@ -905,13 +905,13 @@ def fit(network, pathensemble,
     # internal A and internal B
     mask = range(0, len(inA_values))
     norm = np.sum(selection_probabilities[mask])
-    if 'A' in state_bins and norm:
+    if 'A' in state_bins and norm and augment:
         selection_probabilities[mask] /= norm
     else:
         selection_probabilities[mask] = 0.
     mask = range(len(inA_values), n_internal_frames)
     norm = np.sum(selection_probabilities[mask])
-    if 'B' in state_bins and norm:
+    if 'B' in state_bins and norm and augment:
         selection_probabilities[mask] /= norm
     else:
         selection_probabilities[mask] = 0.
