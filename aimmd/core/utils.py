@@ -428,7 +428,7 @@ def fit(network, pathensemble,
 
     if nbins or thA is not None or thB is not None:  # needed in these cases
         write(f'Updating the pathensemble values ({now()})')
-        pathensemble.update_values()  # with previous model
+        pathensemble.update_values(only_reactive=True)  # with previous model
     
     # getting descriptors size
     if initial_path is not None:
