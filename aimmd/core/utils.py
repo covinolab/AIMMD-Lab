@@ -1024,6 +1024,13 @@ def fit(network, pathensemble,
         write(f'    ... {a:.3e} average result to A')
         write(f'    ... {b:.3e} average result to B')
     
+    # keep only the training set frames
+    keepers = selection_probabilities > 0
+    selection_probabilities = selection_probabilities[keepers]
+    values = values[keepers]
+    descriptors = descriptors[keepers]
+    results = results[keepers]
+    
     selection_probabilities /= np.sum(selection_probabilities)
     
     if not save_memory:  # all together now
