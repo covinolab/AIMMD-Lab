@@ -21,8 +21,7 @@ _REQUIRED_DEPS: Dict[str, str] = {
     'mdtraj': 'mdtraj',
     'torch': 'torch',
     'matplotlib': 'matplotlib',
-    'tqdm': 'tqdm',
-    'typeguard': 'typeguard'
+    'tqdm': 'tqdm'
 }
 
 
