@@ -5,10 +5,9 @@ AIMMD default parameter definitions.
 import shutil
 import numpy as np
 from tqdm import tqdm
-from typing import Callable
-from dataclasses import dataclass
-from typeguard import typechecked
 from .utils import fit  # base fit function
+from typing import List, Callable
+from dataclasses import dataclass, field, fields
 
 # find executables
 PYTHON = sys.executable
@@ -21,8 +20,20 @@ if GMX is None:
 
 # all data in a class
 @dataclass
-@typechecked
-class DefaultParams:
+class Params:
+    
+    # user-defined functions for PathEnsemble objects
+    
+    states_function : Callable
+    """From MDanalysis trajectory to array of states."""
+    
+    descriptors_function : Callable
+    """From MDanalysis trajectory to array of descriptors (used by the
+    model)."""
+    
+    values_function : Callable
+    """From array of descriptors to their corresponding (logit committor)
+    values."""
     
     # engine configuration
     
@@ -68,25 +79,12 @@ class DefaultParams:
     
     # other engines will be defined here
     # [...]
-
-    # user-defined functions for PathEnsemble objects
     
-    states_function : Callable
-    """From MDanalysis trajectory to array of states."""
-    
-    descriptors_function : Callable
-    """From MDanalysis trajectory to array of descriptors (used by the
-    model)."""
-    
-    values_function : Callable
-    """From array of descriptors to their corresponding (logit committor)
-    values."""
-
     # shooting point selection options
     
     do_tps : bool = False
     """If True: transition path sampling; if False: rejection-free sampling."""
-
+    
     selection_pool_size : int = 10
     """Number of candidate paths per selection step. When `do_tps = True`,
     `selection_pool_size = 1` is the only option."""
@@ -100,7 +98,7 @@ class DefaultParams:
     """Number of bins partitioning the reactive region according to the
     logit committor."""
     
-    cutoff_max : int = 20.0
+    cutoff_max : float = 20.0
     """Do not exceed `cutoff_max` absolute value with the first and last
     finite bin boundaries. When not runnig free simulations, bins will
     span from `-cutoff_max` to `cutoff_max`."""
@@ -112,7 +110,7 @@ class DefaultParams:
     lorentzian: float = np.inf
     """Width of Lorentzian target distribution in logit committor space.
     If inf: sample shooting points uniformly between first and last bin."""
-
+    
     adjust_selection_in_marginal_bins : bool = True
     """Try to correct over-selection in first and last bin, without breaking
     detailed balance."""
@@ -146,23 +144,25 @@ class DefaultParams:
     """Maximum allowed number of frames per path. In this way, avoid the
     simulations getting stuck in long-lived intermediates."""
     
-    extra_equilibriumA : list = []
+    extra_equilibriumA : List[str] = field(default_factory=lambda: [])
     """Add the free simulations in the folders listed in `extra_equilibriumA`
     to the free simulations produced by this AIMMD run. Useful for recycling
     already produced data."""
     
-    extra_equilibriumA_states_map : list = ['']
+    extra_equilibriumA_states_map : List[str] = field(
+        default_factory=lambda: [''])
     """When adding the free simulations in the folders listed in
     `extra_equilibriumA`, for each of these folders, you may need to redefine
     the states, in case of multi-step transitions. For each string in
     `extra_equilibriumA_states_map` list, you can do this by adapting the following
     example. "AB BC ZA" means that A frames become B frames, B become C, and Z
-    become A."""
+    become A. If the state is not present in the string, it is not converted."""
     
-    extra_equilibriumB : list = []
+    extra_equilibriumB : List[str] = field(default_factory=lambda: [])
     """Same as `extra_equilibriumA` but for this run's state B."""
     
-    extra_equilibriumB_states_map : list = ['']
+    extra_equilibriumB_states_map : List[str] = field(
+        default_factory=lambda: [''])
     """Same as `extra_equilibriumB_states_map` but for this run's state B."""
     
     extra_extend_frames : int = 0
@@ -182,12 +182,11 @@ class DefaultParams:
     
     # paths reweighting options 
     
-    reweight_parameters : dict = {'equilibrium_threshold': 10}
-    '''
-    Dictionary of parameters used for reweighting the paths in a `PathEnsemble`
-    or `PathEnsemblesCollection` object, necessary for free energy and rates
-    estimates. Passed to `pathensemble.reweight`.
-    '''
+    reweight_parameters : dict = field(
+        default_factory=lambda: {'equilibrium_threshold': 10})
+    """Dictionary of parameters used for reweighting the paths in a
+    `PathEnsemble` or `PathEnsemblesCollection` object, necessary for free
+    energy and rates estimates. Passed to `pathensemble.reweight`."""
     
     # save options
     
@@ -203,7 +202,30 @@ class DefaultParams:
     of nodes (will be determined automatically). Each two-way shooting and
     free simulation worker uses one task. Manager and trainer share an extra
     task together."""
-
-
-# initialize
-Params = DefaultParams()
+    
+    # enforce data types when reassigning params
+    def __setattr__(self, name, value):
+        
+        # get type hints dynamically from dataclass field definitions
+        hints = {f.name: f.type for f in fields(self)}
+        
+        # check
+        if name in hints:
+            expected_type = hints[name]
+            if expected_type is Callable:
+                if not callable(value):
+                    raise TypeError(f'{name} must be callable, '
+                                    f'got {type(value).__name__}')
+            elif expected_type is List[str]:
+                if type(value) is not list:
+                    raise TypeError(f'{name} must be list of strings, '
+                                    f'got {type(value).__name__}')
+                elif np.any([type(element) is not str for element in value]):
+                    raise TypeError(f'{name} must be list of strings, '
+                                    f'at least one of its elements is not')
+            elif expected_type != type(value):
+                raise TypeError(f'{name} must be {expected_type}, '
+                                f'got {type(value).__name__}')
+        
+        # assign
+        super().__setattr__(name, value)
