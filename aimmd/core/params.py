@@ -6,6 +6,8 @@ import shutil
 import numpy as np
 from tqdm import tqdm
 from typing import Callable
+from dataclasses import dataclass
+from typeguard import typechecked
 from .utils import fit  # base fit function
 
 # find executables
@@ -18,6 +20,8 @@ if GMX is None:
     )
 
 # all data in a class
+@dataclass
+@typechecked
 class DefaultParams:
     
     # engine configuration
