@@ -32,6 +32,7 @@ setup(
         'torch',
         'matplotlib',
         'tqdm',
+        'typeguard'
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
