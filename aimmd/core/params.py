@@ -18,7 +18,6 @@ if GMX is None:
     )
 
 # all data in a class
-@dataclass
 class DefaultParams:
     
     # engine configuration
