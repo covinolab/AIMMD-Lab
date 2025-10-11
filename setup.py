@@ -31,8 +31,7 @@ setup(
         'mdtraj',
         'torch',
         'matplotlib',
-        'tqdm',
-        'typeguard'
+        'tqdm'
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
