@@ -1,12 +1,14 @@
 '''
-AIMMD default parameter definitions.
+AIMMD parameters management / defaults.
 '''
 
+import dill
 import shutil
 import numpy as np
 from tqdm import tqdm
 from .utils import fit  # base fit function
 from typing import List, Callable
+from dill.source import getsource
 from dataclasses import dataclass, field, fields
 
 # find executables
@@ -24,25 +26,36 @@ class Params:
     
     # user-defined functions for PathEnsemble objects
     
-    states_function : Callable
-    """From MDanalysis trajectory to array of states."""
+    states_function : Callable = field(
+        metadata={'description':
+"""From MDanalysis trajectory to array of states."""
+                 })
     
-    descriptors_function : Callable
-    """From MDanalysis trajectory to array of descriptors (used by the
-    model)."""
+    descriptors_function : Callable = field(
+        metadata={'description':
+"""From MDanalysis trajectory to array of descriptors (used by the model)."""
+                 })
     
-    values_function : Callable
-    """From array of descriptors to their corresponding (logit committor)
-    values."""
+    values_function : Callable = field(
+        metadata={'description':
+"""From array of descriptors to their corresponding (logit committor)
+values."""
+                 })
     
     # engine configuration
     
-    topology : str = 'run.gro'
-    """System's topology (gro file)."""
+    topology : str = field(
+        default='run.gro',
+        metadata={'description':
+"""System's topology (gro file)."""
+                 })
     
     trajectory_extension : str = '.xtc'
     """Use `xtc` for compressed data, `trr` for full-precision data and
     also saving velocities along with the positions."""
+    
+    engine : str = 'gromacs'
+    """Either "gromacs" or "toy" engine. TODO implement others."""
     
     # gromacs engine
     
@@ -227,5 +240,51 @@ class Params:
                 raise TypeError(f'{name} must be {expected_type}, '
                                 f'got {type(value).__name__}')
         
+        # special check: engine
+        if name == 'engine':
+            value = value.lower()
+            if value not in ['gromacs', 'toy']:
+                raise TypeError(f'{name} must be either "gromacs" or "toy", '
+                                f'got {name}')
+        
         # assign
         super().__setattr__(name, value)
+    
+    # save and load params (and functions)
+    def save(self, filename='params.dill'):
+        with open(filename, 'wb') as f:
+            dill.dump(self, f)
+    
+    @classmethod
+    def load(cls, filename='params.dill'):
+        with open(filename, 'rb') as f:
+            return dill.load(f)
+    
+    # human-readable
+    def __str__(self):
+        """Verbose string representation of params with descriptions and
+        function bodies."""
+        
+        lines = []
+        header = f"{self.__class__.__name__} parameters\n" + "-" * 80
+        lines.append(header)
+        
+        for f in fields(self):
+            name = f.name
+            value = getattr(self, name)
+            if not callable(value):
+                lines.append(f'{name} = {repr(value)}')
+                if desc := f.metadata.get("description", ""):
+                    lines.append(f"\"\"\"{desc}\"\"\"")
+            else:
+                # if it's a function, show its content
+                try:
+                    source = getsource(value)
+                    if len(source.splitlines()) > 30:
+                        source = "\n".join(source.splitlines())
+                    lines.append(source)
+                except Exception:
+                    lines.append(f"def {name}\n:\n    # source unavailable\n    pass")
+            lines.append('\n')
+        
+        return "\n".join(lines)
