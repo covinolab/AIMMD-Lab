@@ -25,13 +25,14 @@ setup(
     packages=find_packages(exclude=('tests', 'docs', 'examples')),
     python_requires='>=3.9',
     install_requires=[
+        'dill',
+        'tqdm',
         'numpy',
         'scipy',
-        'MDAnalysis',
-        'mdtraj',
         'torch',
-        'matplotlib',
-        'tqdm'
+        'mdtraj',
+        'MDAnalysis'
+        'matploblib'
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
