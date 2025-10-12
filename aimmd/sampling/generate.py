@@ -1,4 +1,12 @@
 import os, sys, argparse, subprocess, time
+from ..core import Params
+
+class Generate:
+    
+    def __init__(self, params):
+        self.params = Params
+    
+    def generate_slurm(directory, nsteps, n, nA, nB, eA, eB, params)
 
 if __name__ == '__main__':
     
@@ -18,7 +26,7 @@ if __name__ == '__main__':
     parser.add_argument('-eB', '--extend_B', type=int, default=0,
         help='number of tasks dedicated to extending transitin ending in B')
     parser.add_argument('-p', '--params', type=str, default='params.py',
-        help='aimmd run parameters')
+        help='aimmd run parameters (will override defaults)')
     parser.add_argument('-s', '--slurm', action='store_true')
     parser.add_argument('-d', '--dependency', type=str, default='',
         help='wait for job to terminate before starting')
@@ -33,6 +41,8 @@ if __name__ == '__main__':
     params = args.params
     slurm = args.slurm
     dependency = args.dependency
+
+    # TODO put generate backend here as a bonus
     
     PYTHON = sys.executable
     command = (f'{PYTHON} generate_backend.py '
