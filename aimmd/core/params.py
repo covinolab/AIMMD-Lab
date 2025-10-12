@@ -6,7 +6,7 @@ import dill
 import shutil
 import numpy as np
 from tqdm import tqdm
-from ..core.utils import fit  # base fit function
+from .utils import fit  # base fit function
 from typing import List, Callable
 from dill.source import getsource
 from dataclasses import dataclass, field, fields
