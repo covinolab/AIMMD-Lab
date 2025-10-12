@@ -15,13 +15,14 @@ __version__ = '0.1.0'
 
 # required Python dependencies (import name → pip name)
 _REQUIRED_DEPS: Dict[str, str] = {
+    'dill': 'dill',  # save/load (also functions!)
+    'tqdm': 'tqdm',  # show progress bars
     'numpy': 'numpy',
     'scipy': 'scipy',
+    'torch': 'torch',  # machine learning
+    'mdtraj': 'mdtraj',  # md trajectories analysis
     'MDAnalysis': 'MDAnalysis',
-    'mdtraj': 'mdtraj',
-    'torch': 'torch',
-    'matplotlib': 'matplotlib',
-    'tqdm': 'tqdm'
+    'matplotlib': 'matplotlib'  # plots    
 }
 
 
