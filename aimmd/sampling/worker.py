@@ -28,7 +28,7 @@ def limit_resources(localid=0, cpus_per_task=1, gpus_per_task=0):
     gpus = ','.join([f'{gpu_id}' for gpu_id in range(
         localid * gpus_per_task, start + gpus_per_task)])
     gpus = os.getenv("CUDA_VISIBLE_DEVICES", gpus if gpus else None)
-    os.environ["CUDA_VISIBLE_DEVICES"] = gpus_per_task
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpus
     
     print(f'Local id: {localid}')
     print(f'CPU ids : {cpus}')
