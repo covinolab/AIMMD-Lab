@@ -9,14 +9,14 @@ dependencies:
   - python
   - pip
 
- - tqdm
-- numpy
-- scipy
-- torch
-- matplotlib
-- MDAnalysis
-- mdtraj
-- psutil
+  - tqdm
+  - numpy
+  - scipy
+  - torch
+  - matplotlib
+  - MDAnalysis
+  - mdtraj
+  - psutil
 
     # Testing
   - pytest
