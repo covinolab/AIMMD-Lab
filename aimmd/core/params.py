@@ -542,13 +542,16 @@ task together."""
         
         return self_or_cls
     
-    @classmethod
-    def load(cls, filename='params.dill'):
-        """Load from dill file."""
-        with open(filename, 'rb') as f:
-            return dill.load(f)
+    def save(self, filename: str):
+        """Save only dataclass attributes (data + functions) to a dill file."""
+        # Extract dataclass fields only
+        data = {f.name: getattr(self, f.name) for f in fields(self)}
+        with open(filename, "wb") as f:
+            dill.dump(data, f)
     
-    def save(self, filename='params.dill'):
-        """Save to dill file."""
-        with open(filename, 'wb') as f:
-            dill.dump(self, f)
+    @classmethod
+    def load(cls, filename: str) -> "Params":
+        """Load Params from a dill file, restoring only dataclass fields."""
+        with open(filename, "rb") as f:
+            data = dill.load(f)
+        return cls(**data)
