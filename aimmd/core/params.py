@@ -312,7 +312,7 @@ energy and rates estimates. Passed to `pathensemble.reweight`."""
     
     # SLURM configuration (for HPC clusters)
     
-    slurm_options : str = field(
+    slurm_header : str = field(
         default=('#SBATCH --ntasks-per-node=1\n'
                  '#SBATCH --mail-type=FAIL'),
         metadata={'description':
