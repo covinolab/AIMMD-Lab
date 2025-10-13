@@ -388,7 +388,16 @@ task together."""
         # return processed initial paths
         return initial_paths 
     
-    def _check_descriptors_and_values_function(self):
+    def _check_descriptors_function(self):
+        """Run descriptors_function and inspect result."""
+        
+        descriptors = self.descriptors_function(self.initial_paths[0][:1])
+        if type(descriptors) != np.ndarray or len(descriptors) != 1\
+        or len(descriptors.shape) != 2:
+            raise TypeError(f'descriptors_function does not return '
+                            f'an array of size 2 and correct length')
+    
+    def _check_values_function(self):
         """Run descriptors_function, values_function and inspect result."""
         
         # check descriptors_function
@@ -411,7 +420,8 @@ task together."""
         Return processed initial paths."""
         
         self._check_initial_paths_and_states_function()
-        self._check_descriptors_and_values_function()
+        self._check_descriptors_function()
+        self._check_values_function()
     
     def __str__(self):
         """Verbose string representation of params with descriptions and
