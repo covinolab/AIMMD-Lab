@@ -57,6 +57,14 @@ MDAnalysis trajectories.
 """
         })
     
+    # system's name
+    
+    name: str = field(
+        default='AIMMD',
+        metadata={'description':
+"""System's name (will be used for creating slurm's jobs)."""
+        })
+    
     # engine configuration
     
     topology : str = field(
