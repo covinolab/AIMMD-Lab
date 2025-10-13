@@ -51,9 +51,9 @@ values."""
     
     initial_paths: list = field(
         metadata={'description':
-"""List of trajectory filenames or MDAnalysis trajectories. They must be
-transitions (checked automatically). Will replace strings by MDAnalysis
-trajectories.
+"""List of trajectory filenames or MDAnalysis trajectories. They must
+contain transitions (checked automatically). Will replace strings by
+MDAnalysis trajectories.
 """
         })
     
@@ -323,11 +323,10 @@ free simulation worker uses one task. Manager and trainer share an extra
 task together."""
                  })
     
-    def _process_initial_paths(self, initial_paths=[]):
-        """Replace strings with MDAnalysis trajectories. Ensure initial paths
-        are transitions. Incidentally check states_function, too."""
-        
-        print('Processing initial paths...')
+    def _check_initial_paths_and_states_function(self, initial_paths=[]):
+        """Run states_function and inspect result. Replace initial_path
+        strings with MDAnalysis trajectories. Ensure initial paths are
+        transitions. Return processed initial paths."""
         
         # either new paths or already attributed ones
         if not initial_paths:
@@ -349,10 +348,12 @@ task together."""
             
             # compute states and check if the output of states_function
             states = self.states_function(path)
-            if type(states) != np.ndarray or states.dtype != np.dtype('<U1'):
-                raise TypeError(f'When loading "{filename}", '
-                                f'states_function does not return an array '
-                                f'of chars (=states)')
+            if type(states) != np.ndarray or len(states) != len(path)\
+            or len(states.shape) > 1\
+            or states.dtype != np.dtype('<U1'):
+                raise TypeError(f'When loading "{filename}", states_function '
+                                f'does not return an equally long array of '
+                                f'chars (=states)')
             
             # look for a transition
             crossings = np.where(np.diff((states == 'R').astype(int)))[0]
@@ -368,11 +369,32 @@ task together."""
                                 f'does not contain a transition')
         
         # return processed initial paths
-        return initial_paths
+        return initial_paths 
+    
+    def _check_descriptors_and_values_function(self):
+        """Run descriptors_function, values_function and inspect result."""
+        
+        # check descriptors_function
+        descriptors = self.descriptors_function(self.initial_paths[0][:1])
+        if type(descriptors) != np.ndarray or len(descriptors) != 1\
+        or len(descriptors.shape) != 2:
+            raise TypeError(f'descriptors_function does not return '
+                            f'an array of size 2 and correct length')
+        
+        # check values_function
+        values = self.values_function(descriptors)
+        if type(values) != np.ndarray or len(values) != len(descriptors)\
+        or len(values.shape) > 1:
+            raise TypeError(f'values_function does not return '
+                            f'an array of size 1 and correct length')
     
     def __post_init__(self):
-        """Process and check initial paths after initialization."""
-        self._process_initial_paths()
+        """Check provided functions. Replace initial_path strings with
+        MDAnalysis trajectories. Ensure initial paths are transitions.
+        Return processed initial paths."""
+        
+        self._check_initial_paths_and_states_function()
+        self._check_descriptors_and_values_function()
     
     def __str__(self):
         """Verbose string representation of params with descriptions and
@@ -386,14 +408,13 @@ task together."""
             if not callable(value):
                 lines.append(f'{name} = {repr(value)}')
                 if desc := f.metadata.get("description", ""):
-                    lines.append(f"\"\"\"{desc}\"\"\"")
+                    lines.append(f"\"\"\"{desc}\"\"\"\n")
             else:  # if it's a function, show its content
                 try:
                     lines.append(value.__source__)
                 except Exception:
                     lines.append(
-                        f"def {name}\n:\n    # source unavailable\n    pass")
-            lines.append('')
+                        f"def {name}\n:\n    # source unavailable\n    pass\n")
         
         return "\n".join(lines)
     
@@ -438,11 +459,9 @@ task together."""
                 raise TypeError(f'Need at least one initial path, please set '
                                 f'initial_paths with a list of strings or '
                                 f'MDAnalysis trajectories')
-                
-                # you should have topology, so you can process initial_paths
-                value = self._process_initial_paths(value)
+                self._check_initial_paths_and_states_function()
         
-        # special check: engine
+        # special check: engine (before assignment)
         if name == 'engine':
             value = value.lower()
             if value not in ['gromacs', 'toy']:
@@ -451,6 +470,14 @@ task together."""
         
         # assign
         super().__setattr__(name, value)
+        
+        # special check: descriptors_function (after assignment)
+        if name == 'descriptors_function' and hasattr(self, 'initial_paths'):
+            self._check_descriptors_function()
+        
+        # special check: values_function (after assignment)
+        if name == 'values_function' and hasattr(self, 'initial_paths'):
+            self._check_values_function()
     
     @class_or_instancemethod
     def update(self_or_cls, filename='params.py'):
@@ -482,6 +509,7 @@ task together."""
         
         # compile and execute code so that functions get correct co_filename
         code = compile(source, str(path), 'exec')
+        # TODO different folder change relative path
         exec(code, module.__dict__)
         
         # replace old module in sys.modules
@@ -508,7 +536,7 @@ task together."""
                 continue
             setattr(self_or_cls, name, value)
         
-        # initial paths are last
+        # initial paths are last, so that it checks with new states_function
         if 'initial_paths' in kwargs:
             setattr(self_or_cls, 'initial_paths', kwargs['initial_paths'])
         
