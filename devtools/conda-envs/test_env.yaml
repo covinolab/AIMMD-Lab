@@ -12,7 +12,7 @@ dependencies:
   - tqdm
   - numpy
   - scipy
-  - torch
+  - pytorch
   - matplotlib
   - MDAnalysis
   - mdtraj
