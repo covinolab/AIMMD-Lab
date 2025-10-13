@@ -8,6 +8,7 @@ import types
 import shutil
 import linecache
 import numpy as np
+import MDAnalysis as mda
 from tqdm import tqdm
 from .utils import fit  # base fit function
 from typing import List, Callable
@@ -45,6 +46,16 @@ class Params:
 """From array of descriptors to their corresponding (logit committor)
 values."""
                  })
+    
+    # initial paths
+    
+    initial_paths: list = field(
+        metadata={'description':
+"""List of trajectory filenames or MDAnalysis trajectories. They must be
+transitions (checked automatically). Will replace strings by MDAnalysis
+trajectories.
+"""
+        })
     
     # engine configuration
     
@@ -312,6 +323,57 @@ free simulation worker uses one task. Manager and trainer share an extra
 task together."""
                  })
     
+    def _process_initial_paths(self, initial_paths=[]):
+        """Replace strings with MDAnalysis trajectories. Ensure initial paths
+        are transitions. Incidentally check states_function, too."""
+        
+        print('Processing initial paths...')
+        
+        # either new paths or already attributed ones
+        if not initial_paths:
+            initial_paths = self.initial_paths
+        
+        # iterate through initial paths
+        for i, path in enumerate(initial_paths):
+            
+            # replace strings with MDAnalysis trajectories
+            if type(path) is str:
+                filename = path
+                try:
+                    path = mda.Universe(
+                        self.topology, filename, in_memory=True).trajectory
+                except Exception as exception:
+                    raise TypeError(f'The initial path "{path}" resulted '
+                                    f'in the following error:\n{exception}')
+                initial_paths[i] = path
+            
+            # compute states and check if the output of states_function
+            states = self.states_function(path)
+            if type(states) != np.ndarray or states.dtype != np.dtype('<U1'):
+                raise TypeError(f'When loading "{filename}", '
+                                f'states_function does not return an array '
+                                f'of chars (=states)')
+            
+            # look for a transition
+            crossings = np.where(np.diff((states == 'R').astype(int)))[0]
+            transition_found = False
+            for b, e in zip(crossings, crossings[1:]):
+                if states[b] != states[e + 1]:
+                    # transition found
+                    transition_found = True
+            
+            # transition not found
+            if not transition_found:
+                raise TypeError(f'The {i + 1}-th trajectory in initial_paths '
+                                f'does not contain a transition')
+        
+        # return processed initial paths
+        return initial_paths
+    
+    def __post_init__(self):
+        """Process and check initial paths after initialization."""
+        self._process_initial_paths()
+    
     def __str__(self):
         """Verbose string representation of params with descriptions and
         function bodies."""
@@ -342,8 +404,10 @@ task together."""
         hints = {f.name: f.type for f in fields(self)}
         
         # check
-        if name in hints:
+        if name in hints and name not in ['initial_paths', 'engine']:
             expected_type = hints[name]
+            
+            # function
             if expected_type is Callable:
                 if not callable(value):
                     raise TypeError(f'{name} must be callable, '
@@ -353,6 +417,8 @@ task together."""
                 except Exception:
                     value.__source__ = (
                         f"def {name}:\n    # source unavailable\n    pass")
+            
+            # list of strings
             elif expected_type is List[str]:
                 if type(value) is not list:
                     raise TypeError(f'{name} must be list of strings, '
@@ -360,9 +426,21 @@ task together."""
                 elif np.any([type(element) is not str for element in value]):
                     raise TypeError(f'{name} must be list of strings, '
                                     f'at least one of its elements is not')
+            
+            # all the rest
             elif expected_type != type(value):
                 raise TypeError(f'{name} must be {expected_type}, '
                                 f'got {type(value).__name__}')
+        
+        # special check: initial paths
+        if name == 'initial_paths':
+            if not len(value):
+                raise TypeError(f'Need at least one initial path, please set '
+                                f'initial_paths with a list of strings or '
+                                f'MDAnalysis trajectories')
+                
+                # you should have topology, so you can process initial_paths
+                value = self._process_initial_paths(value)
         
         # special check: engine
         if name == 'engine':
@@ -426,9 +504,14 @@ task together."""
         
         # called on instance: update in place
         for name, value in kwargs.items():
-            print(name, value)
-            old_value = getattr(self_or_cls, name)
+            if name == 'initial_paths':
+                continue
             setattr(self_or_cls, name, value)
+        
+        # initial paths are last
+        if 'initial_paths' in kwargs:
+            setattr(self_or_cls, 'initial_paths', kwargs['initial_paths'])
+        
         return self_or_cls
     
     @classmethod
