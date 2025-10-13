@@ -23,15 +23,19 @@ def limit_resources(localid=0, cpus_per_task=1, gpus_per_task=0):
             psutil.Process().cpu_affinity(cpus)
         except Exception as exception:
             print(f"Warning: could not set CPU affinity ({exception})")
+    else:
+        cpus = 'all'
     
     # GPU binding
     start = localid * gpus_per_task
     gpus = ','.join([f'{gpu_id}' for gpu_id in range(
         localid * gpus_per_task, start + gpus_per_task)])
     gpus = os.getenv("CUDA_VISIBLE_DEVICES", gpus if gpus else None)
-    os.environ["CUDA_VISIBLE_DEVICES"] = gpus
-    
-    cpus = ','.join([f'{cpu_id}' for cpu_id in cpus])
+    if gpus:
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpus
+
+    if cpus != 'all':
+        cpus = ','.join([f'{cpu_id}' for cpu_id in cpus])
     print(f'Local id: {localid}')
     print(f'CPU ids : {cpus}')
     print(f'CUDA ids: {gpus}')
