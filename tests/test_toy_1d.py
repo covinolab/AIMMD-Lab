@@ -1,4 +1,5 @@
 """ Test script for the 1D toy model example of AIMMD. """
+import pytest
 
 def test_toy_1d():
     """

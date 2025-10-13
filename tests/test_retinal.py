@@ -5,6 +5,7 @@ It runs with GROMACS in about five minutes.
 However, there is still the polishing left to do, and compatibility
 on different machines is not guaranteed.
 """
+import pytest
 
 @pytest.mark.slow
 def test_retinal():
