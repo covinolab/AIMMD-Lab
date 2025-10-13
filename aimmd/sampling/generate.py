@@ -3,7 +3,7 @@ from ..core import Params
 
 class Launcher:
     
-    def __init__(self, params, directory, n, nA, nB, eA, eB,
+    def __init__(self, params, directory, n, nA, nB, eA=0, eB=0,
                  nsteps=np.inf, nframes=np.inf, walltime=np.inf):
         """
         directory: where simulations carried
@@ -19,7 +19,10 @@ class Launcher:
         
         All parameters for the run can be updated before (re)launching a simulation.
         """
-        self.params = Params.update(params)
+        if type(params) is Params:
+            self.params = params
+        else:
+            self.params = Params.update(params)
         self.directory = directory
         self.nsteps = nsteps
         self.n = n
@@ -29,43 +32,74 @@ class Launcher:
         self.eB = eB
         
         # create folder structure (keep existing data)
-        os.system(f'mkdir {directory}')
+        os.system(f'mkdir {self.directory}')
         
         # save params to directory
-        self.params.save(f'{directory}/params.dill')
+        self.params.save(f'{self.directory}/params.dill')
         
         # folders for shooting simulations
         for worker_id in range(n):
-            os.system(f'mkdir {directory}/shots{worker_id}')
+            os.system(f'mkdir {self.directory}/shots{worker_id}')
         
         # folders for free simulations
-        os.system(f'mkdir {directory}/equilibriumA')
-        os.system(f'touch {directory}/equilibriumA/'
+        os.system(f'mkdir {self.directory}/equilibriumA')
+        os.system(f'touch {self.directory}/equilibriumA/'
                   f'indicted_trajectories.log')
-        os.system(f'mkdir {directory}/equilibriumB')
-        os.system(f'touch {directory}/equilibriumB/'
+        os.system(f'mkdir {self.directory}/equilibriumB')
+        os.system(f'touch {self.directory}/equilibriumB/'
                   f'indicted_trajectories.log')
         
         # folders for extension simulations
         if eA:
-            file.write(f'mkdir {directory}/extendA')
-            file.write(f'touch {directory}/extendA/'
+            file.write(f'mkdir {self.directory}/extendA')
+            file.write(f'touch {self.directory}/extendA/'
                        f'indicted_trajectories.log')
         if eB:
-            file.write(f'mkdir {directory}/extendB')
-            file.write(f'touch {directory}/extendB/'
+            file.write(f'mkdir {self.directory}/extendB')
+            file.write(f'touch {self.directory}/extendB/'
                        f'indicted_trajectories.log')
-
+        
+        # remove existing xtc and trajectory files
+        for filename in os.listdir(self.directory):
+            if filename.endswith('.xtc') or filename.endswith('.trr'):
+                print(f'Removing {self.directory}/{filename}')
+                os.system(f'rm {self.directory}/*{filename}*')
+        
+        # save initial paths
+        filenames = [path.filename for path in self.params.initial_paths]
+        for i, path in enumerate(self.params.initial_paths):
+            filename = filenames[i]
+            
+            # avoid duplicates 
+            if filename in filenames[:i]:
+                filename = (f'{".".join(filenames[i].split(".")[:-1])}'
+                            f'-2.{filenames[i].split(".")[-1]}')
+                filenames[i] = filename
+            
+            # report
+            print(f'Writing {self.directory}/{filename}')
+            
+            # actual save: get n_atoms
+            n_atoms = len(path[0].positions)
+            
+            # create an empty Universe with n_atoms (no topology required)
+            universe = mda.Universe.empty(n_atoms, trajectory=True)
+            
+            # write positions
+            with mda.Writer(f'{self.directory}/{filename}', n_atoms) as writer:
+                for frame in path:
+                    universe.atoms.positions = frame.positions
+                    writer.write(universe)
     
     def create_job(self, filename):
         """
         Returns a slurm script that can be launched by cluster.
         """
-                
+            
         # retrieve run information
         gpu = False
         ntasks_per_node = 1
-        for fields in self.params.slurm_options.split():
+        for fields in self.params.slurm_header.split():
             if ('gpu' in fields and
                 '=0' not in fields and
                 ':0' not in fields):
@@ -82,134 +116,85 @@ class Launcher:
         # write job script
         with open(filename, 'w') as file:
             
-            # header
-
-        
-            # remove completed information
-            file.write(f'rm {directory}/completed.flag')
-            file.write(f'rm {directory}/*.run')
+            # slurm header
+            file.write(f'#!/bin/bash -x\n')
+            file.write(f'#SBATCH --job-name={self.params.name}\n')
+            file.write(f'#SBATCH --nodes={nodes}\n')
+            file.write(f'{self.params.slurm_header}\n\n')
             
-            # srun command
+            # python executable
+            file.write(f'PYTHON={PYTHON}\n\n')
+            
+            # remove completed information and which to run
+            file.write(f'rm {self.directory}/completed.flag\n')
+            file.write(f'rm {self.directory}/*.run\n\n')
+            
+            # srun initialization
             file.write(f"srun --cpus-per-task={cpus_per_task} --cpu-bind=cores "
-                  f"bash -c '\n")
-            file.write(f'  # update task variables')
-            file.write(f'  export i=\$SLURM_PROCID')
-            file.write(f'  export li=\$SLURM_LOCALID')
+                       f"bash -c '\n\n")
+            file.write(f'  # update task variables\n')
+            file.write(f'  export i=\$SLURM_PROCID\n')
+            file.write(f'  export li=\$SLURM_LOCALID\n')
             if gpu:
-                file.write(f'  export CUDA_VISIBLE_DEVICES=\$li')
+                file.write(f'  export CUDA_VISIBLE_DEVICES=$li\n')
+            file.write(f'\n')
             
             # equilibrium workers
             i = -1
-            for i in range(nA + nB):
-                if i < nA:
+            for i in range(self.nA + self.nB):
+                if i < self.nA:
                     state = 'A'
                     j = i
                 else:
                     state = 'B'
-                    j = i - nA
-                file.write(f'  # worker {i} (equilibrium {state}{j})')
-                file.write(f'  if [ "\$i" -eq {i} ]; then')
-                file.write(f'    bash worker.sh "{directory}/worker{i}.run" '
-                           f'"{mdrun} -noappend" >> {directory}/worker{i}.log 2>&1',
-                      fname, logfile)
-                file.write('  fi\n')
+                    j = i - self.nA
+                file.write(f'  # worker {i} (equilibrium {state}{j})\n')
+                file.write(f'  if [ "$i" -eq {i} ]; then\n')
+                file.write(f'    bash worker.sh "{self.directory}/worker{i}.run" '
+                           f'"{self.params.mdrun} -noappend" >> {self.directory}/worker{i}.log 2>&1\n')
+                file.write(f'  fi\n\n')
             
             # extension workers
             begin = i + 1
-            for i in range(begin, begin + eA + eB):
+            for i in range(begin, begin + self.eA + self.eB):
                 j = i - begin
-                if j < eA:
+                if j < self.eA:
                     state = 'A'
                 else:
                     state = 'B'
-                    j -= eA
-                file.write(f'  # worker {i} (extension {state}{j})')
-                file.write(f'  if [ "\$i" -eq {i} ]; then')
-                file.write(f'    bash worker.sh "{directory}/worker{i}.run" '
-                           f'"{mdrun} -noappend" >> {directory}/worker{i}.log 2>&1',
-                      fname, logfile)
-                file.write('  fi\n')
+                    j -= self.eA
+                file.write(f'  # worker {i} (extension {state}{j})\n')
+                file.write(f'  if [ "$i" -eq {i} ]; then\n')
+                file.write(f'    \$PYTHON worker.py\n')  # noappend option here
+                file.write(f'  fi\n\n')
             
             # shooting workers
             begin = i + 1
-            for i in range(begin, begin + n):
+            for i in range(begin, begin + self.n):
                 j = i - begin
-                file.write(f'  # worker {i} (shooting {j})')
-                file.write(f'  if [ "\$i" -eq {i} ]; then')
-                file.write(f'    bash worker.sh "{directory}/worker{i}.run" '
-                           f'"{mdrun}" >> {directory}/worker{i}.log 2>&1',
-                      fname, logfile)
-                file.write('  fi\n')
+                file.write(f'  # worker {i} (shooting {j})\n')
+                file.write(f'  if [ "$i" -eq {i} ]; then\n')
+                file.write(f'    bash worker.sh "{self.directory}/worker{i}.run" '
+                           f'"{self.params.mdrun}" >> {self.directory}/worker{i}.log 2>&1\n')
+                file.write(f'  fi\n\n')
             
             # trainer and manager
-            file.write(f'  # trainer and manager')
-            file.write(f'  if [ "\$i" -eq {i + 1} ]; then')
-            file.write(f'    {PYTHON} trainer.py "{directory}" "{params}" >> '
-                      f'{directory}/trainer.log 2>&1 &')
-            file.write(f'    trainer_pid=\$!')
-            file.write('')
-            file.write(f'    {PYTHON} manager.py "{directory}" {nsteps} '
-                      f'{n} {nA} {nB} {eA} {eB} "{params}" >> '
-                      f'{directory}/manager.log 2>&1 &')
-            file.write(f'    manager_pid=\$!')
-            file.write('')
+            file.write(f'  # trainer and manager\n')
+            file.write(f'  if [ "$i" -eq {i + 1} ]; then\n')
+            file.write(f'    $PYTHON trainer.py "{self.directory}" >> '
+                      f'{self.directory}/trainer.log 2>&1 &\n')
+            file.write(f'    trainer_pid=$!\n\n')
+            file.write(f'    $PYTHON manager.py "{self.directory}" {self.nsteps} '
+                      f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} >> '
+                      f'{self.directory}/manager.log 2>&1 &\n')
+            file.write(f'    manager_pid=$!\n\n')
             
             # handle task termination
-            file.write(f'    # handle task termination')
-            file.write(f'    while kill -0 \$trainer_pid 2>/dev/null'
-                       f' || kill -0 \$manager_pid 2>/dev/null; do')
-            file.write(f'      wait -n')
-            file.write(f'      rm {directory}/*.run')
-            file.write( '      scancel \${SLURM_JOB_ID}')
-            file.write(f'    done')
-            file.write('  fi')
-    
-    def run(self, dependency):
-        """
-        Run on workstation. Detaches with nohup so that you can exit python.
-        dependency: wait for jobid to complete
-        """
-        # remove completed information
-        file.write(f'rm {directory}/completed.flag')
-        file.write(f'rm {directory}/*.run')
-
-if __name__ == '__main__':
-    
-    parser = argparse.ArgumentParser(description='AIMMD launcher')
-    parser.add_argument('directory', type=str,
-        help='project directory')
-    parser.add_argument('nsteps', type=int,
-        help='target 2-way-shooting excursions in the transition region')
-    parser.add_argument('n', type=int,
-        help='number of tasks dedicated to 2-way shooting')
-    parser.add_argument('nA', type=int,
-        help='number of tasks dedicated to equilibrium simulations in A')
-    parser.add_argument('nB', type=int,
-        help='number of tasks dedicated to equilibrium simulations in B')
-    parser.add_argument('-eA', '--extend_A', type=int, default=0,
-        help='number of tasks dedicated to extending transitin ending in A')
-    parser.add_argument('-eB', '--extend_B', type=int, default=0,
-        help='number of tasks dedicated to extending transitin ending in B')
-    parser.add_argument('-p', '--params', type=str, default='params.py',
-        help='aimmd run parameters (will override defaults)')
-    parser.add_argument('-s', '--slurm', action='store_true')
-    parser.add_argument('-d', '--dependency', type=str, default='',
-        help='wait for job to terminate before starting')
-    args = parser.parse_args()
-    directory = args.directory
-    nsteps = args.nsteps
-    n = args.n
-    nA = args.nA
-    nB = args.nB
-    eA = args.extend_A
-    eB = args.extend_B
-    params = args.params
-    slurm = args.slurm
-    dependency = args.dependency
-
-    # TODO put generate backend here as a bonus
-    
-    PYTHON = sys.executable
-    command = (f'{PYTHON} generate_backend.py '
-               f'"{directory}" {nsteps} {n} {nA} {nB} {eA} {eB} '
-               f'"{params}" {slurm} "{dependency}"')
+            file.write(f'    # handle task termination\n')
+            file.write(f'    while kill -0 $trainer_pid 2>/dev/null'
+                       f' || kill -0 $manager_pid 2>/dev/null; do\n')
+            file.write(f'      wait -n\n')
+            file.write(f'      rm {self.directory}/*.run\n')
+            file.write( '      scancel ${SLURM_JOB_ID}\n')
+            file.write(f'    done\n')
+            file.write(f'  fi\n\'\n')
