@@ -64,7 +64,7 @@ def run(params, run_file, log_file, append,
     # register signal handlers
     signal.signal(signal.SIGTERM, terminate_handler)
     signal.signal(signal.SIGINT, terminate_handler)
-        
+    
     try:
         while True:
             # get current simulation
