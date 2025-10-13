@@ -324,6 +324,14 @@ free simulation worker uses one task. Manager and trainer share an extra
 task together."""
                  })
     
+    # engine-dependent mdrun command
+    @property
+    def mdrun(self):
+        if self.engine == 'gromacs':
+            return self.gmx_mdrun
+        if self.engine == 'toy':
+            return self.toy_mdrun
+    
     def _check_initial_paths_and_states_function(self, initial_paths=[]):
         """Run states_function and inspect result. Replace initial_path
         strings with MDAnalysis trajectories. Ensure initial paths are
