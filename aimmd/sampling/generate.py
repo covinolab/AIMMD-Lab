@@ -19,7 +19,7 @@ class Launcher:
         
         All parameters for the run can be updated before (re)launching a simulation.
         """
-        self.params = Params().update(params)
+        self.params = Params.update(params)
         self.directory = directory
         self.nsteps = nsteps
         self.n = n
@@ -31,20 +31,22 @@ class Launcher:
         # create folder structure (keep existing data)
         os.system(f'mkdir {directory}')
         
-        # save directory
-        self.params.save(directory)
+        # save params to directory
+        self.params.save(f'{directory}/params.dill')
         
-        # create folder structure (keep existing data)
+        # folders for shooting simulations
         for worker_id in range(n):
             os.system(f'mkdir {directory}/shots{worker_id}')
-        if nA:
-            os.system(f'mkdir {directory}/equilibriumA')
-            os.system(f'touch {directory}/equilibriumA/'
-                      f'indicted_trajectories.log')
-        if nB:
-            os.system(f'mkdir {directory}/equilibriumB')
-            os.system(f'touch {directory}/equilibriumB/'
-                      f'indicted_trajectories.log')
+        
+        # folders for free simulations
+        os.system(f'mkdir {directory}/equilibriumA')
+        os.system(f'touch {directory}/equilibriumA/'
+                  f'indicted_trajectories.log')
+        os.system(f'mkdir {directory}/equilibriumB')
+        os.system(f'touch {directory}/equilibriumB/'
+                  f'indicted_trajectories.log')
+        
+        # folders for extension simulations
         if eA:
             file.write(f'mkdir {directory}/extendA')
             file.write(f'touch {directory}/extendA/'
@@ -54,9 +56,6 @@ class Launcher:
             file.write(f'touch {directory}/extendB/'
                        f'indicted_trajectories.log')
 
-        # remove completed information (needed?)
-        file.write(f'rm {directory}/completed.flag')
-        file.write(f'rm {directory}/*.run')
     
     def create_job(self, filename):
         """
@@ -84,6 +83,11 @@ class Launcher:
         with open(filename, 'w') as file:
             
             # header
+
+        
+            # remove completed information
+            file.write(f'rm {directory}/completed.flag')
+            file.write(f'rm {directory}/*.run')
             
             # srun command
             file.write(f"srun --cpus-per-task={cpus_per_task} --cpu-bind=cores "
@@ -165,7 +169,9 @@ class Launcher:
         Run on workstation. Detaches with nohup so that you can exit python.
         dependency: wait for jobid to complete
         """
-        pass
+        # remove completed information
+        file.write(f'rm {directory}/completed.flag')
+        file.write(f'rm {directory}/*.run')
 
 if __name__ == '__main__':
     
