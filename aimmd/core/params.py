@@ -570,6 +570,7 @@ task together."""
             if 'initial_paths' in kwargs:
                 setattr(self_or_cls, 'initial_paths',
                         kwargs['initial_paths'])
+                self._check_initial_paths_and_states_function()
             
             return self_or_cls
         
