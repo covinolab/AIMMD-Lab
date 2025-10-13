@@ -1,8 +1,8 @@
 import os
+import pty
 import sys
 import psutil
 import signal
-import selectors
 import subprocess
 from ..core import Params
 from ..core.utils import get_current_simulation
@@ -91,43 +91,46 @@ def run(params, run_file, log_file, append,
                 command.append('-noappend')
             
             # start subprocess
+            master_fd, slave_fd = pty.openpty()
             process = subprocess.Popen(
                 command,
-                stdout=subprocess.PIPE,
+                stdin=slave_fd,
+                stdout=slave_fd,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1,
-                universal_newlines=True,
-                env=os.environ.copy())
-            
-            sel = selectors.DefaultSelector()
-            sel.register(process.stdout, selectors.EVENT_READ)
+                env=os.environ.copy(),
+                close_fds=True)
+            os.close(slave_fd)
             
             try:
-                while True:
-                    # read available output
-                    for key, _ in sel.select(timeout=0.1):
-                        line = key.fileobj.readline()
-                        if not line:  # EOF
-                            continue
-            
-                        print(line, end="")  # print to terminal
-            
+                with os.fdopen(master_fd) as stdout:
+                    for line in stdout:
+                        # print and log in real time
+                        print(line, end="")
                         if log:
                             log.write(line)
                             log.flush()
-            
-                    # stop if simulation file changed
-                    if get_current_simulation(run_file) != fname:
-                        process.terminate()
-                        break
-            
-                    # exit if process finished
-                    if process.poll() is not None:
-                        break
+                        
+                        # stop condition: simulation file changed
+                        if get_current_simulation(run_file) != fname:
+                            print("Terminating process...")
+                            process.terminate()
+                            break
+                        
+                        # stop condition: process finished
+                        if process.poll() is not None:
+                            break
+                
+                # ensure child process has exited fully
+                process.wait()
             
             finally:
-                sel.unregister(process.stdout)
+                # cleanup and safe termination
+                try:
+                    if process.poll() is None:
+                        process.terminate()
+                except Exception:
+                    pass
                 process.stdout.close()
                 process = None
     
