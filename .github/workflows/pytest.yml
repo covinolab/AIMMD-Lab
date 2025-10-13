@@ -1,0 +1,39 @@
+name: pytest
+
+on: [push]
+
+defaults:
+  run:
+    # conda setup requires this special shell
+    shell: bash -l {0}
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 5
+
+    steps:
+    - uses: actions/checkout@v3
+    - uses: conda-incubator/setup-miniconda@v2
+      with:
+        python-version: 3.13
+        environment-file: devtools/conda-envs/test_env.yaml
+        channels: conda-forge,defaults
+        activate-environment: test
+        auto-update-conda: true
+        auto-activate-base: false
+        show-channel-urls: true
+    - name: Install AIMMD
+      run: |
+        python setup.py install
+    - name: Test with pytest
+      run: |
+        pytest -v --cov=AIMMD --cov-report=xml --color=yes AIMMD/tests/test_toy_1D.py
+        
+    - name: CodeCov
+      uses: codecov/codecov-action@v1
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-AIMMD
