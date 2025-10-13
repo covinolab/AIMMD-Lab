@@ -24,6 +24,8 @@ jobs:
         auto-update-conda: true
         auto-activate-base: false
         show-channel-urls: true
+    - name: Install build tools
+      run: pip install --upgrade pip setuptools
     - name: Install AIMMD
       run: |
         python setup.py install
