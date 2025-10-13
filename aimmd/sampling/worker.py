@@ -131,7 +131,6 @@ def run(params, run_file, log_file, append,
                         process.terminate()
                 except Exception:
                     pass
-                process.stdout.close()
                 process = None
     
     except KeyboardInterrupt:
