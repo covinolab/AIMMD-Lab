@@ -105,6 +105,12 @@ def run(params, run_file, log_file, append,
             try:
                 with os.fdopen(master_fd) as stdout:
                     while True:
+                         # stop condition: simulation file changed
+                        if get_current_simulation(run_file) != fname:
+                            print("Terminating process...")
+                            process.terminate()
+                            break
+                        
                         try:
                             # get line
                             line = stdout.readline()
@@ -120,12 +126,6 @@ def run(params, run_file, log_file, append,
                             if log:
                                 log.write(line)
                                 log.flush()
-                            
-                            # stop condition: simulation file changed
-                            if get_current_simulation(run_file) != fname:
-                                print("Terminating process...")
-                                process.terminate()
-                                break
                         
                         except OSError:
                             # I/O error: child closed PTY
@@ -135,7 +135,7 @@ def run(params, run_file, log_file, append,
                 process.wait()
             
             finally:
-                # cleanup and safe termination
+                # cleanup and safe termination (even with errors)
                 try:
                     if process.poll() is None:
                         process.terminate()
