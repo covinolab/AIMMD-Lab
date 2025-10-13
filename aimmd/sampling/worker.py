@@ -82,8 +82,7 @@ def run(params, run_file, log_file, append,
                 continue  # nothing to run
             
             # simulation command
-            command = [
-                params.mdrun.split(),
+            command = params.mdrun.split() + [
                 "-deffnm", fname,
                 "-cpo", f"{fname}.cpt",
                 "-cpi", f"{fname}.cpt",
@@ -97,6 +96,8 @@ def run(params, run_file, log_file, append,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,
+                universal_newlines=True,
                 env=os.environ.copy())
             
             sel = selectors.DefaultSelector()
@@ -104,26 +105,30 @@ def run(params, run_file, log_file, append,
             
             try:
                 while True:
-                    # read stdout
+                    # read available output
                     for key, _ in sel.select(timeout=0.1):
                         line = key.fileobj.readline()
-                        if line:
-                            print(line, end="")
-                            if log:
-                                log.write(line)
-                                log.flush()
-                    
+                        if not line:  # EOF
+                            continue
+            
+                        print(line, end="")  # print to terminal
+            
+                        if log:
+                            log.write(line)
+                            log.flush()
+            
                     # stop if simulation file changed
                     if get_current_simulation(run_file) != fname:
                         process.terminate()
                         break
-                    
+            
                     # exit if process finished
                     if process.poll() is not None:
                         break
-                
+            
             finally:
-                process.wait()
+                sel.unregister(process.stdout)
+                process.stdout.close()
                 process = None
     
     except KeyboardInterrupt:
