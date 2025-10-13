@@ -104,21 +104,31 @@ def run(params, run_file, log_file, append,
             
             try:
                 with os.fdopen(master_fd) as stdout:
-                    for line in stdout:
-                        # print and log in real time
-                        print(line, end="")
-                        if log:
-                            log.write(line)
-                            log.flush()
+                    while True:
+                        try:
+                            # get line
+                            line = stdout.readline()
+                            
+                            # got no line - is process finished?
+                            if not line:
+                                if process.poll() is not None:
+                                    break
+                                continue
+                            
+                            # print and log in real time
+                            print(line, end="")
+                            if log:
+                                log.write(line)
+                                log.flush()
+                            
+                            # stop condition: simulation file changed
+                            if get_current_simulation(run_file) != fname:
+                                print("Terminating process...")
+                                process.terminate()
+                                break
                         
-                        # stop condition: simulation file changed
-                        if get_current_simulation(run_file) != fname:
-                            print("Terminating process...")
-                            process.terminate()
-                            break
-                        
-                        # stop condition: process finished
-                        if process.poll() is not None:
+                        except OSError:
+                            # I/O error: child closed PTY
                             break
                 
                 # ensure child process has exited fully
