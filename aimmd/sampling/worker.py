@@ -25,15 +25,14 @@ def limit_resources(localid=0, cpus_per_task=1, gpus_per_task=0):
     
     # GPU binding
     start = localid * gpus_per_task
-    gpus_per_task = ','.join([f'{gpu_id}' for gpu_id in range(
+    gpus = ','.join([f'{gpu_id}' for gpu_id in range(
         localid * gpus_per_task, start + gpus_per_task)])
-    gpus_per_task = os.getenv("CUDA_VISIBLE_DEVICES",
-                              gpus_per_task if gpus_per_task else None)
+    gpus = os.getenv("CUDA_VISIBLE_DEVICES", gpus if gpus else None)
     os.environ["CUDA_VISIBLE_DEVICES"] = gpus_per_task
     
     print(f'Local id: {localid}')
-    print(f'Cores   : {cores}')
-    print(f'CUDA ids: {gpus_per_task}')
+    print(f'CPU ids : {cpus}')
+    print(f'CUDA ids: {gpus}')
 
 
 def run(params, run_file, log_file, append,
