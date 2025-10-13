@@ -2,12 +2,16 @@
 AIMMD parameters management / defaults.
 '''
 
+import sys
 import dill
+import types
 import shutil
+import linecache
 import numpy as np
 from tqdm import tqdm
 from .utils import fit  # base fit function
 from typing import List, Callable
+from pathlib import Path
 from dill.source import getsource
 from dataclasses import dataclass, field, fields
 
@@ -308,8 +312,31 @@ free simulation worker uses one task. Manager and trainer share an extra
 task together."""
                  })
     
-    # enforce data types when reassigning params
+    def __str__(self):
+        """Verbose string representation of params with descriptions and
+        function bodies."""
+        
+        lines = []
+        
+        for f in fields(self):
+            name = f.name
+            value = getattr(self, name)
+            if not callable(value):
+                lines.append(f'{name} = {repr(value)}')
+                if desc := f.metadata.get("description", ""):
+                    lines.append(f"\"\"\"{desc}\"\"\"")
+            else:  # if it's a function, show its content
+                try:
+                    lines.append(value.__source__)
+                except Exception:
+                    lines.append(
+                        f"def {name}\n:\n    # source unavailable\n    pass")
+            lines.append('')
+        
+        return "\n".join(lines)
+    
     def __setattr__(self, name, value):
+        """Enforce data types when reassigning params."""
         
         # get type hints dynamically from dataclass field definitions
         hints = {f.name: f.type for f in fields(self)}
@@ -321,6 +348,11 @@ task together."""
                 if not callable(value):
                     raise TypeError(f'{name} must be callable, '
                                     f'got {type(value).__name__}')
+                try:  # assign source
+                    value.__source__ = getsource(value)
+                except Exception:
+                    value.__source__ = (
+                        f"def {name}:\n    # source unavailable\n    pass")
             elif expected_type is List[str]:
                 if type(value) is not list:
                     raise TypeError(f'{name} must be list of strings, '
@@ -342,42 +374,70 @@ task together."""
         # assign
         super().__setattr__(name, value)
     
-    # save and load params (and functions)
-    def save(self, filename='params.dill'):
-        with open(filename, 'wb') as f:
-            dill.dump(self, f)
+    @class_or_instancemethod
+    def update(self_or_cls, filename='params.py'):
+        """
+        Load parameters and functions found in python file `filename`.
+        - If called on the class (Params.load()), creates a new instance.
+        - If called on an instance (params.load()), updates it in place.
+        """
+        
+        # load filename's content in "module" (named "_current_aimmd_params")
+        path = Path(filename).resolve()
+        if not path.exists():
+            raise FileNotFoundError(f'Parameter file \'{path}\' not found.')
+        
+        # read the source first
+        source = path.read_text()
+        
+        # register source code with linecache
+        linecache.cache[str(path)] = (
+            len(source),  # size
+            None,         # modification time
+            source.splitlines(True),  # list of lines
+            str(path)     # filename
+        )
+        
+        # create a new module object manually
+        module = types.ModuleType('_current_aimmd_params')
+        module.__file__ = str(path)
+        
+        # compile and execute code so that functions get correct co_filename
+        code = compile(source, str(path), 'exec')
+        exec(code, module.__dict__)
+        
+        # replace old module in sys.modules
+        sys.modules['_current_aimmd_params'] = module
+        
+        # parameters/functions you can update
+        param_fields = {f.name for f in fields(Params)}
+        
+        # parameters/functions found in "module"
+        kwargs = {}
+        for name in dir(module):
+            if name.startswith("__"):
+                continue
+            if name in param_fields:
+                kwargs[name] = getattr(module, name)
+        
+        # called on class: initialize
+        if isinstance(self_or_cls, type):
+            return self_or_cls(**kwargs)
+        
+        # called on instance: update in place
+        for name, value in kwargs.items():
+            print(name, value)
+            old_value = getattr(self_or_cls, name)
+            setattr(self_or_cls, name, value)
+        return self_or_cls
     
     @classmethod
     def load(cls, filename='params.dill'):
+        """Load from dill file."""
         with open(filename, 'rb') as f:
             return dill.load(f)
     
-    # human-readable
-    def __str__(self):
-        """Verbose string representation of params with descriptions and
-        function bodies."""
-        
-        lines = []
-        header = f"{self.__class__.__name__} parameters\n" + "-" * 80
-        lines.append(header)
-        
-        for f in fields(self):
-            name = f.name
-            value = getattr(self, name)
-            if not callable(value):
-                lines.append(f'{name} = {repr(value)}')
-                if desc := f.metadata.get("description", ""):
-                    lines.append(f"\"\"\"{desc}\"\"\"")
-            else:
-                # if it's a function, show its content
-                try:
-                    source = getsource(value)
-                    if len(source.splitlines()) > 30:
-                        source = "\n".join(source.splitlines())
-                    lines.append(source)
-                except Exception:
-                    lines.append(
-                        f"def {name}\n:\n    # source unavailable\n    pass")
-            lines.append('\n')
-        
-        return "\n".join(lines)
+    def save(self, filename='params.dill'):
+        """Save to dill file."""
+        with open(filename, 'wb') as f:
+            dill.dump(self, f)
