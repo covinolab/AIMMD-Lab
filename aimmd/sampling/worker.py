@@ -23,6 +23,7 @@ def limit_resources(localid=0, cpus_per_task=1, gpus_per_task=0):
             psutil.Process().cpu_affinity(cpus)
         except Exception as exception:
             print(f"Warning: could not set CPU affinity ({exception})")
+            cpus = 'all'
     else:
         cpus = 'all'
     
