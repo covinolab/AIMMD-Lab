@@ -4,6 +4,7 @@ import psutil
 import signal
 import selectors
 import subprocess
+from ..core import Params
 from ..core.utils import get_current_simulation
 
 def limit_resources(localid=0, cpus_per_task=1, gpus_per_task=0):
@@ -41,12 +42,15 @@ def run(params, run_file, log_file, append,
     """
     Run and log in real-time on the allocated resources.
     
-    params: Params class.
+    params: Params class or dill file with saved params.
     run_file: File indicating what to simulate.
     log_file: path to log file.
     append: Append to existing simulations or start a new part.
     localid, cpus_per_task, gpus_per_task: resource allocation.
     """
+    
+    if type(params) not Params:
+        params = Params.load(params)
     
     limit_resources(localid, cpus_per_task, gpus_per_task)
     
