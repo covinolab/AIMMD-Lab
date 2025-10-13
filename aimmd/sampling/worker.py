@@ -1,7 +1,7 @@
 import os
 import sys
 import psutil
-import sygnal
+import signal
 import selectors
 import subprocess
 from ..core.utils import get_current_simulation
