@@ -314,6 +314,7 @@ energy and rates estimates. Passed to `pathensemble.reweight`."""
     
     slurm_header : str = field(
         default=('#SBATCH --ntasks-per-node=1\n'
+                 '#SBATCH --cpus-per-task=16\n'
                  '#SBATCH --mail-type=FAIL'),
         metadata={'description':
 """Default SLURM configuration. Attention! It must include the
