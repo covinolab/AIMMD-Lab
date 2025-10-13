@@ -1,0 +1,21 @@
+name: test
+channels:
+
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+    # Base depends
+  - python
+  - pip
+
+    # Testing
+  - pytest
+  - pytest-cov
+  - codecov
+
+  - gromacs
+
+    # Pip-only installs
+  #- pip:
+  #  - codecov
