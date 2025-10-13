@@ -83,16 +83,20 @@ class MDATrajectory:
                       len(self.universes)),
             np.append(self.frame_trajectory_positions,
                       element.frame_trajectory_positions))
-
+    
     @property
     def filenames(self):
         return [universe.trajectory.filename
                 for universe in self.universes]
-
+    
+    @property
+    def filename(self):
+        return self.filenames[0] if len(self.filenames) else ''
+    
     def close(self):  # TODO check
         for universe in self.universes:
             universe.trajectory.close()
-
+    
     def write(self, filename, frame_indices=None, selection='all',
               invert_velocities=False, joined_shooting_segments=False,
               reset_time=False):
