@@ -10,7 +10,7 @@ import linecache
 import numpy as np
 import MDAnalysis as mda
 from tqdm import tqdm
-from .utils import fit  # base fit function
+from .utils import class_or_instancemethod, fit  # base fit function
 from typing import List, Callable
 from pathlib import Path
 from dill.source import getsource
