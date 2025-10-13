@@ -122,6 +122,15 @@ def initialize_plot():
     plt.subplots_adjust(left=0.18, bottom=0.18, right=0.99, top=0.8)
     return figure, ax
 
+
+class class_or_instancemethod(classmethod):
+    def __get__(self, instance, type_):
+        if instance is None:
+            descr_get = super().__get__
+        else:
+            descr_get = self.__func__.__get__
+        return descr_get(instance, type_)
+
 ###############################################################################
 # Math ########################################################################
 ###############################################################################
