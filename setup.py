@@ -32,6 +32,7 @@ setup(
         'torch',
         'matplotlib',
         'tqdm',
+        'psutil',
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',

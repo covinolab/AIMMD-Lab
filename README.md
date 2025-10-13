@@ -11,6 +11,7 @@ AI-enhanced path sampling simulations, both on a workstation and on HPC clusters
 - `matplotlib`
 - `MDAnalysis`
 - `mdtraj`
+- `psutil`
 - GROMACS
 From the point of view of the requirements, the code is rather light.
 
