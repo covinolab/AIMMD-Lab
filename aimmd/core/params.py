@@ -52,7 +52,7 @@ values."""
     initial_paths: list = field(
         metadata={'description':
 """List of trajectory filenames or MDAnalysis trajectories. They must
-contain transitions (checked automatically). Will replace strings by
+contain transitions (checked automatically). Will replace filenames by
 MDAnalysis trajectories.
 """
         })
@@ -455,14 +455,6 @@ task together."""
                 except Exception:
                     value.__source__ = (
                         f"def {name}:\n    # source unavailable\n    pass")
-                
-                # detach from existing module
-                value = types.FunctionType(
-                    value.__code__,
-                    globals(),       # globals() is the __main__ module
-                    name=value.__name__,
-                    argdefs=value.__defaults__,
-                    closure=value.__closure__)
             
             # list of strings
             elif expected_type is List[str]:
@@ -512,71 +504,102 @@ task together."""
         - If called on an instance (params.load()), updates it in place.
         """
         
-        # load filename's content in "module" (named "_current_aimmd_params")
+        # load filename's content in temporary module "_current_aimmd_params"
         path = Path(filename).resolve()
         if not path.exists():
             raise FileNotFoundError(f'Parameter file \'{path}\' not found.')
         
-        # read the source first
-        source = path.read_text()
+        # go to filename's folder
+        cwd = os.getcwd()
+        os.chdir(path.parent)
         
-        # register source code with linecache
-        linecache.cache[str(path)] = (
-            len(source),  # size
-            None,         # modification time
-            source.splitlines(True),  # list of lines
-            str(path)     # filename
-        )
+        try:
+            # read source
+            source = path.read_text()
+            
+            # register with linecache for traceback correctness
+            linecache.cache[str(path)] = (
+                len(source),
+                None,
+                source.splitlines(True),
+                str(path))
+            
+            # create isolated module
+            module = types.ModuleType('_current_aimmd_params')
+            module.__file__ = str(path)
+            
+            # compile and execute source
+            code = compile(source, str(path), 'exec')
+            exec(code, module.__dict__)
+            
+            # register in sys.modules (important for dill)
+            sys.modules['_current_aimmd_params'] = module
+            
+            # parameters/functions you can update
+            param_fields = {field.name for field in fields(Params)}
+            
+            # parameters/functions found in "module"
+            kwargs = {}
+            for name in dir(module):
+                if name.startswith("__"):
+                    continue
+                if name in param_fields:
+                    kwargs[name] = getattr(module, name)
+            
+            # called on class: initialize
+            if isinstance(self_or_cls, type):
+                return self_or_cls(**kwargs)
+            
+            # called on instance: update in place
+            for name, value in kwargs.items():
+                if name == 'initial_paths':
+                    continue
+                setattr(self_or_cls, name, value)
+            
+            # do initial paths last to check them with new states_function
+            if 'initial_paths' in kwargs:
+                setattr(self_or_cls, 'initial_paths',
+                        kwargs['initial_paths'])
+            
+            return self_or_cls
         
-        # create a new module object manually
-        module = types.ModuleType('_current_aimmd_params')
-        module.__file__ = str(path)
-        
-        # compile and execute code so that functions get correct co_filename
-        code = compile(source, str(path), 'exec')
-        # TODO different folder change relative path
-        exec(code, module.__dict__)
-        
-        # replace old module in sys.modules
-        sys.modules['_current_aimmd_params'] = module
-        
-        # parameters/functions you can update
-        param_fields = {f.name for f in fields(Params)}
-        
-        # parameters/functions found in "module"
-        kwargs = {}
-        for name in dir(module):
-            if name.startswith("__"):
-                continue
-            if name in param_fields:
-                kwargs[name] = getattr(module, name)
-        
-        # called on class: initialize
-        if isinstance(self_or_cls, type):
-            return self_or_cls(**kwargs)
-        
-        # called on instance: update in place
-        for name, value in kwargs.items():
-            if name == 'initial_paths':
-                continue
-            setattr(self_or_cls, name, value)
-        
-        # initial paths are last, so that it checks with new states_function
-        if 'initial_paths' in kwargs:
-            setattr(self_or_cls, 'initial_paths', kwargs['initial_paths'])
-        
-        return self_or_cls
+        # always restore working directory
+        finally:  
+            os.chdir(cwd)
     
-    def save(self, filename: str):
-        """Save only dataclass attributes (data + functions) to a dill file."""
-        # Extract dataclass fields only
-        data = {f.name: getattr(self, f.name) for f in fields(self)}
-        with open(filename, "wb") as f:
-            dill.dump(data, f)
+    def save(self, filename):
+        """
+        Save Params instance along with its associated module dictionary,
+        so that functions remain usable when reloaded elsewhere.
+        """
+        module = sys.modules.get('_current_aimmd_params', None)
+        module_dict = module.__dict__ if module else None
+        params_dict = {field.name: getattr(self, field.name)
+                       for field in fields(self)}
+        
+        with open(filename, 'wb') as f:
+            dill.dump({
+                'params_dict': params_dict,
+                'module_dict': module_dict},
+                f, protocol=dill.HIGHEST_PROTOCOL)
     
     @classmethod
-    def load(cls, filename: str) -> "Params":
-        """Load Params from a dill file, restoring only dataclass fields."""
-        with open(filename, "rb") as f:
+    def load(cls, filename):
+        """
+        Load Params instance and restore its module environment so that
+        all saved functions remain callable even without the original file.
+        """
+        with open(filename, 'rb') as f:
             data = dill.load(f)
-        return cls(**data)
+        
+        params_dict = data.get('params_dict')
+        module_dict = data.get('module_dict')
+        
+        # recreate the original module environment
+        module = types.ModuleType('_current_aimmd_params')
+        if module_dict:
+            module.__dict__.update(module_dict)
+        
+        sys.modules['_current_aimmd_params'] = module
+        
+        return Params(**params_dict)
