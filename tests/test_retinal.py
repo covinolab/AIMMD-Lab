@@ -6,6 +6,7 @@ However, there is still the polishing left to do, and compatibility
 on different machines is not guaranteed.
 """
 
+@pytest.mark.slow
 def test_retinal():
     import os, sys
     from time import sleep
