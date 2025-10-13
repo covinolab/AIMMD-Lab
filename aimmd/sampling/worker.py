@@ -83,7 +83,8 @@ def run(params, run_file, log_file, append,
             
             # simulation command
             command = [
-                params.mdrun, "-deffnm", fname,
+                params.mdrun.split(),
+                "-deffnm", fname,
                 "-cpo", f"{fname}.cpt",
                 "-cpi", f"{fname}.cpt",
                 "-cpt", ".1"]
