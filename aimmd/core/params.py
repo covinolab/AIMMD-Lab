@@ -455,6 +455,14 @@ task together."""
                 except Exception:
                     value.__source__ = (
                         f"def {name}:\n    # source unavailable\n    pass")
+                
+                # detach from existing module
+                value = types.FunctionType(
+                    value.__code__,
+                    globals(),       # globals() is the __main__ module
+                    name=value.__name__,
+                    argdefs=value.__defaults__,
+                    closure=value.__closure__)
             
             # list of strings
             elif expected_type is List[str]:
