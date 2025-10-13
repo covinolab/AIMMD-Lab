@@ -132,7 +132,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 5:
         print("Usage: worker.py "
               f"<params_file> <run_file> <log_file> <append> [optional]")
-        print(help(run))
+        help(run)
         sys.exit(1)
     
     run(*sys.argv[1:])
