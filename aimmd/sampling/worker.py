@@ -49,7 +49,7 @@ def run(params, run_file, log_file, append,
     localid, cpus_per_task, gpus_per_task: resource allocation.
     """
     
-    if type(params) not Params:
+    if type(params) != Params:
         params = Params.load(params)
     
     limit_resources(localid, cpus_per_task, gpus_per_task)
