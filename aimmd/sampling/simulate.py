@@ -12,9 +12,9 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
     """
 
     t0 = time.time()
-    self.log_file = log_file
     
     try:
+        self.log_file = log_file
         
         # run continuously
         while True:
