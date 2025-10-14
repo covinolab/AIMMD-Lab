@@ -956,7 +956,9 @@ def fit(network, pathensemble,
             q = bins[+1]
         elif i == len(bins) - 2:
             q = bins[-2]
-                    
+        if np.isinf(q):
+            q = 0.
+        
         # get mask
         mask = n_internal_frames + np.where(indices == i)[0]
         
