@@ -9,7 +9,8 @@ def simulate(self, run_file, log_file=None, noappend=False):
     noappend: bool, add Gromacs' -noappend flag.
     """
     
-    self.log = open(log_file, "a+") if log_file else None
+    self.log = open(
+        f'{self.directory}/{log_file}', "a+") if log_file else None
     self.report("Starting simulation loop...")
     print(f"Press Control+C to interrupt.")
     
@@ -27,7 +28,8 @@ def simulate(self, run_file, log_file=None, noappend=False):
                 continue  # no job assigned yet
             
             # (re)-start logging
-            self.log = open(log_file, "a+") if log_file else None
+            self.log = open(
+                f'{self.directory}/{log_file}', "a+") if log_file else None
             self.report(f"Starting simulating {fname}...")         
             
             # create command
