@@ -6,6 +6,7 @@ def manage(self, n, nA, nB, eA, eB,
     n: number of shooting workers
     """
     
+    pathensemble = None
     original_stdout = sys.stdout
     
     def cleanup(signum=None, frame=None, exit=True):
@@ -277,3 +278,5 @@ def manage(self, n, nA, nB, eA, eB,
     
     finally:
         cleanup(exit=False)
+        return pathensemble
+
