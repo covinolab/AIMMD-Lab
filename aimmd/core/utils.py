@@ -292,7 +292,7 @@ def stop_simulation(worker_id, fname=None):
 
 def fit(network, pathensemble,
         keys=None,
-        initial_path=None,
+        initial_paths=None,
         process_descriptors=lambda x: x,
         save_memory=False,
         nbins=0,
@@ -342,7 +342,7 @@ def fit(network, pathensemble,
         Use only the paths at these indices for training. Useful for
         bootstrapping or block averaging.
     
-    initial_path : PathEnsemble or PathEnsemblesCollection, optional
+    initial_paths : PathEnsemble or PathEnsemblesCollection, optional
         Initial paths used to start the simulation. Used to add extra data if
         `pathensemble` has too little.
     
@@ -459,8 +459,8 @@ def fit(network, pathensemble,
         pathensemble.update_values(only_reactive=True)  # with previous model
     
     # getting descriptors size
-    if initial_path is not None:
-        descriptors_size = len(initial_path.frame_descriptors[0])
+    if initial_paths is not None:
+        descriptors_size = len(initial_paths.frame_descriptors[0])
     else:
         descriptors_size = len(pathensemble.frame_descriptors[0])
     
@@ -496,20 +496,20 @@ def fit(network, pathensemble,
     shooting_values[shooting_states == 'A'] = -np.inf
     shooting_values[shooting_states == 'B'] = +np.inf
     
-    # get indices of A paths (use initial_path if not present)
+    # get indices of A paths (use initial_paths if not present)
     inA = keys[np.where(internal_states == 'A')[0]]
     if not len(inA):
-        temp = initial_path[:].unsplit()
+        temp = initial_paths[:].unsplit()
         temp = temp.crop(frame_indices=temp.frame_states == 'A')
         temp.are_accepted[:] = True
         pathensemble += temp
         keys = np.append(keys, len(pathensemble) - 1)
         inA = np.array([len(keys) - 1])
     
-    # get indices of in B paths (use initial_path if not present)
+    # get indices of in B paths (use initial_paths if not present)
     inB = keys[np.where(internal_states == 'B')[0]]
     if not len(inB):
-        temp = initial_path[:].unsplit()
+        temp = initial_paths[:].unsplit()
         temp = temp.crop(frame_indices=temp.frame_states == 'B')
         temp.are_accepted[:] = True
         pathensemble += temp
@@ -904,7 +904,7 @@ def fit(network, pathensemble,
     # uniformize selection probabilities in bins (if nbins > 0)
     if nbins:
         bins = get_bins(pathensemble, nbins,
-            cutoff_max=20.0, initial_path=initial_path, states=True)
+            cutoff_max=20.0, initial_paths=initial_paths, states=True)
     else:
         bins = np.array([-np.inf, +np.inf])
 
@@ -1683,7 +1683,7 @@ def update_selection_pool(
     chain,  # chain of reference, will add the last if pool_index is not None
     selection_pool_size,  # target size
     pool_index=None,  # index of pool to be removed
-    initial_path=PathEnsemble(),  # will there be?
+    initial_paths=PathEnsemble(),  # will there be?
     at_least_one_transition=False,  # in pool
     load_h5=False):
     """
@@ -1697,14 +1697,14 @@ def update_selection_pool(
     pool.descriptors_function = chain.descriptors_function
     pool.values_function = chain.values_function
     
-    def update_initial_path_directory(initial_path):
-        _initial_path = initial_path.copy()
-        _initial_path.directory = pool.directory
-        _initial_path.topology = os.path.relpath(f'{initial_path.directory}/{initial_path.topology}', pool.directory)
-        _initial_path._PathEnsemble__trajectory_files = [os.path.relpath(
-            f'{initial_path.directory}/{file}', pool.directory)
-            for file in _initial_path.trajectory_files]
-        return _initial_path
+    def update_initial_path_directory(initial_paths):
+        _initial_paths = initial_paths.copy()
+        _initial_paths.directory = pool.directory
+        _initial_paths.topology = os.path.relpath(f'{initial_paths.directory}/{initial_paths.topology}', pool.directory)
+        _initial_paths._PathEnsemble__trajectory_files = [os.path.relpath(
+            f'{initial_paths.directory}/{file}', pool.directory)
+            for file in _initial_paths.trajectory_files]
+        return _initial_paths
     
     if load_h5 and os.path.exists(f'{chain.directory}/pool.h5'):
         # it must not be corrupted or have weird paths
@@ -1715,7 +1715,7 @@ def update_selection_pool(
         if len(chain):
             pool = chain[-selection_pool_size:]
         else:
-            pool = update_initial_path_directory(initial_path)
+            pool = update_initial_path_directory(initial_paths)
             pool = pool[np.random.permutation(range(len(pool)))]
     
     # update with last element in the chain?
@@ -1735,8 +1735,8 @@ def update_selection_pool(
         if len(candidates):  # try adding the latest transition in chain
             transition = chain[candidates[-1]]
         else:
-            initial_path = update_initial_path_directory(initial_path)
-            transition = initial_path[np.random.choice(len(initial_path))]
+            initial_paths = update_initial_path_directory(initial_paths)
+            transition = initial_paths[np.random.choice(len(initial_paths))]
         print(f'+++ (re)added transition {transition.trajectory_files[0]}')
         pool = transition.merge(pool)
     
@@ -1837,7 +1837,7 @@ def update_equilibrium_trajectory(
 def update_equilibrium_simulations(
     eq_current, eq_completed,
     directory, nA, nB,
-    initial_path,
+    initial_paths,
     params,
     eA=0, eB=0,
     ext_current=[],
@@ -1981,8 +1981,8 @@ def update_equilibrium_simulations(
                 # get initial frame if not having them
                 if len(init_frames) < 2:
                     if not extend:
-                        transition = initial_path[
-                            np.random.choice(len(initial_path))]
+                        transition = initial_paths[
+                            np.random.choice(len(initial_paths))]
                     elif len(available_transitions):
                         T = available_transitions.completion_times
                         i = np.argmax(T)
@@ -2432,14 +2432,14 @@ def run_acceptance_rejection_on_latest_path(chain, network):
 
 def get_bins(pathensemble, nbins=10,
              cutoff_min=.5, cutoff_max=20.,
-             initial_path=None, states=False):
+             initial_paths=None, states=False):
     """
     nbins without the additional states.
     Two additional bins when `states = True`.
     """
     
     # special case
-    if not len(pathensemble) and initial_path is None:
+    if not len(pathensemble) and initial_paths is None:
         if states:
             return np.array([-np.inf, +np.inf])
         return np.zeros(0)
@@ -2452,11 +2452,11 @@ def get_bins(pathensemble, nbins=10,
         equilibriumA = pathensemble[:0]
         equilibriumB = pathensemble[:0]
     if not equilibriumA.nframes and not np.sum(pathensemble.are_transitions):
-        equilibriumA = initial_path.crop(
-            frame_indices=initial_path.frame_states =='A')
+        equilibriumA = initial_paths.crop(
+            frame_indices=initial_paths.frame_states =='A')
     if not equilibriumB.nframes and not np.sum(pathensemble.are_transitions):
-        equilibriumB = initial_path.crop(
-            frame_indices=initial_path.frame_states =='B')
+        equilibriumB = initial_paths.crop(
+            frame_indices=initial_paths.frame_states =='B')
     equilibrium = equilibriumA + equilibriumB
     pathensemble = shots + equilibrium
     
@@ -2940,7 +2940,7 @@ def initialize_shooting_simulation(
 ###############################################################################
 
 def extract_chain(pathensemble, shooting_chain_index,
-                  path_index, initial_path=None):
+                  path_index, initial_paths=None):
     shooting_chain = shooting_chain_index
     index = path_index
     directory = pathensemble.pathensembles[shooting_chain
@@ -2997,8 +2997,8 @@ def extract_chain(pathensemble, shooting_chain_index,
                                     split('.')[0][4:]) - 1
                         tracking.append(offset + index)
                     except:
-                        if initial_path is not None:
-                            tracking.append(-1 - initial_path.
+                        if initial_paths is not None:
+                            tracking.append(-1 - initial_paths.
                                             trajectory_files.index(
                                 lines[j].split('shooting point ')[1].
                                                 split(',')[0]))
@@ -3007,7 +3007,7 @@ def extract_chain(pathensemble, shooting_chain_index,
     
     tracking = np.array(tracking)[::-1]
     if tracking[0] < 0:
-        result = initial_path[-tracking[0] - 1]
+        result = initial_paths[-tracking[0] - 1]
     else:
         result = pathensemble[tracking[0]]
     result += pathensemble[tracking[1:]]
