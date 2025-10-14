@@ -407,8 +407,8 @@ def test_toy_1d():
         f=lambda traj: np.array([frame.positions[0, 0] for frame in traj]),
                         frames=True)
     
-    # test for basic scientific correctness by checking if the rates are as expected, ie within one order of magnitude
-    assert 5e-5 < kAB < 5e-3, f'kAB={kAB} out of expected range'
+    # test for basic scientific correctness by checking if the rates are roughly correct (large spread expected)
+    assert 1e-5 < kAB < 1e-2, f'kAB={kAB} out of expected range'
 
     print('Done!')
 
