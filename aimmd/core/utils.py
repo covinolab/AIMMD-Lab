@@ -1260,6 +1260,8 @@ def load_network_and_projections(
             bins = np.load(f'{directory}/bins.npy')
             densities = np.load(f'{directory}/densities.npy')
             break
+        except (KeyboardInterrupt, SystemExit):
+            return [], []
         except:
             if wait:
                 sleep(.1)
