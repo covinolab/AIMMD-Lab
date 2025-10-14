@@ -221,8 +221,8 @@ class Launcher:
             file.write(f'WORKER="{PYTHON} {WORKER}"\n\n')
             
             # remove completed information and which to run
-            file.write(f'rm {self.directory}/completed.flag\n')
-            file.write(f'rm {self.directory}/*.run\n\n')
+            file.write(f'rm -f {self.directory}/completed.flag\n')
+            file.write(f'rm -f {self.directory}/*.run\n\n')
             
             # srun initialization
             file.write(f"srun --cpus-per-task={cpus_per_task} --cpu-bind=cores "
@@ -269,20 +269,20 @@ class Launcher:
                 j = i - begin
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (shooting {j})\n')
-                file.write(f'  $WORKER params.dill {self.directory} simulate '
-                           f'worker{i}.run worker{i}.log\n')
+                file.write(f'  \'"$WORKER"\' params.dill {self.directory} simulate '
+                           f'worker{i}.run worker{i}.log &\n')
                 file.write(f'  ;;\n')
             
             # trainer
             file.write(f'{i + 1})\n')
             file.write(f'  # trainer\n')
-            file.write(f'  $WORKER params.dill {self.directory} train '
-                       f'trainer.log\n')
+            file.write(f'  \'"$WORKER"\' params.dill {self.directory} train '
+                       f'trainer.log &\n')
             file.write(f'  trainer_pid=$!\n\n')
 
             # manager
             file.write(f'  # manager\n')
-            file.write(f'  $WORKER params.dill {self.directory} manage '
+            file.write(f'  \'"$WORKER"\' params.dill {self.directory} manage '
                        f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
                        f'manager.log {nsteps} {nframes}\n')
             file.write(f'  manager_pid=$!\n\n')
@@ -292,7 +292,7 @@ class Launcher:
             file.write(f'  while kill -0 $trainer_pid 2>/dev/null'
                        f' || kill -0 $manager_pid 2>/dev/null; do\n')
             file.write(f'    wait -n\n  done\n')
-            file.write(f'  rm {self.directory}/*.run\n')
+            file.write(f'  rm -f {self.directory}/*.run\n')
             file.write(f'  scancel $SLURM_JOB_ID\n')
             file.write(f'  ;;\n')
 
