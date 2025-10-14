@@ -575,10 +575,14 @@ def fit(network, pathensemble,
     shot_BtoB = BtoB[shooting_values[BtoB] < thB2]
     
     # shot AtoB and BtoA paths (now within shot paths representation)
-    shot_AtoB = ((initial_states[shot_paths] == 'A') *
-                 (final_states[shot_paths] == 'B'))
-    shot_BtoA = ((initial_states[shot_paths] == 'B') *
-                 (final_states[shot_paths] == 'A'))
+    if np.sum(shot_paths):
+        shot_AtoB = ((initial_states[shot_paths] == 'A') *
+                     (final_states[shot_paths] == 'B'))
+        shot_BtoA = ((initial_states[shot_paths] == 'B') *
+                     (final_states[shot_paths] == 'A'))
+    else:
+        shot_AtoB = np.zeros(len(shot_paths), dtype=bool)
+        shot_BtoA = np.zeros(len(shot_paths), dtype=bool)
     
     # assign weights to shot TPs: 1 / density at shooting interface
     shot_paths_densities = pathensemble.densities(keys[shot_paths])
