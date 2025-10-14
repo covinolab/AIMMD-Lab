@@ -43,7 +43,7 @@ if __name__ == '__main__':
     states_function = params.states_function
     descriptors_function = params.descriptors_function
     values_function = params.values_function
-    network = params.network()
+    network = params.network
     
     print(f'\nEquilibrating system for {seconds} seconds')
     code = os.system(f'{grompp} -f {mdp} '
