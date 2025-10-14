@@ -883,7 +883,7 @@ def fit(network, pathensemble,
           f'          {len(shot_AtoB_values):9} shot A to B frames,\n'
           f'          {len(shot_BtoA_values):9} shot B to A frames,\n'
           f'          {len(free_AtoB_values):9} free A to B frames, and\n'
-          f'          {len(free_BtoA_values):9} free B to A frames,\n'
+          f'          {len(free_BtoA_values):9} free B to A frames\n'
           f'   TOTAL: {len(values):9} frames')
     
     # useful
