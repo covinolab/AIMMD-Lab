@@ -9,6 +9,10 @@ import importlib
 import shutil
 from typing import Dict
 
+# necessary for spawning independent AIMMD processes
+import multiprocessing
+multiprocessing.set_start_method('fork')
+
 # local imports
 import aimmd.core as core
 import aimmd.sampling as sampling
