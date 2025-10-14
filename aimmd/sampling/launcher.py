@@ -15,8 +15,8 @@ WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
 def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
              task, *args):
-    from aimmd import Params, Worker
-    params = Params.load(f'{directory}/{params}')
+    #from aimmd import Params, Worker
+    #params = Params.load(f'{directory}/{params}')
     worker = Worker(params, directory,
                     localid, cpus_per_task, gpus_per_task)
     worker.run(task, *args)
@@ -133,7 +133,7 @@ class Launcher:
             else:
                 noappend = False
             processes.append(Process(target=_run_task, args=(
-                'params.dill', self.directory,
+                self.params, self.directory,
                 localid, cpus_per_task, gpus_per_task,
                 'simulate', f'worker{localid}.run', f'worker{localid}.log',
                 noappend)))
@@ -141,13 +141,13 @@ class Launcher:
         # trainer (sharing the same localid as manager)
         localid = len(processes)
         processes.append(Process(target=_run_task, args=(
-            'params.dill', self.directory,
+            self.params, self.directory,
             localid, cpus_per_task, gpus_per_task,
             'train', 'trainer.log')))
         
         # manager (sharing the same localid as trainer)
         processes.append(Process(target=_run_task, args=(
-            'params.dill', self.directory,
+            self.params, self.directory,
             localid, cpus_per_task, gpus_per_task,
             'manage', 'manager.log', nsteps, nframes)))
         
