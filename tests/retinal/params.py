@@ -1,3 +1,4 @@
+import sys
 import torch
 import numpy as np
 import mdtraj as md
@@ -14,7 +15,7 @@ couples = [(i,j) for i in range(80) for j in range(i+1, 80)]
 def cv(trajectory, verbose=False):
     """Isomerization dihedral, good for plots."""
     result = []
-    for frame in tqdm(trajectory, disable=not verbose, position=0):
+    for frame in tqdm(trajectory, disable=not verbose, position=0, file=sys.stdout):
         positions = np.round(frame.positions / 10., 2)
         mdtraj_frame.xyz = positions.reshape((-1, *positions.shape))
         mdtraj_frame.unitcell_vectors = np.round(
@@ -26,7 +27,7 @@ def cv(trajectory, verbose=False):
 
 def states_function(trajectory, verbose=False):
     result = []
-    for frame in tqdm(trajectory, disable=not verbose, position=0):
+    for frame in tqdm(trajectory, disable=not verbose, position=0, file=sys.stdout):
         positions = np.round(frame.positions / 10., 2)
         mdtraj_frame.xyz = positions.reshape((-1, *positions.shape))
         mdtraj_frame.unitcell_vectors = np.round(
@@ -45,7 +46,7 @@ def states_function(trajectory, verbose=False):
 
 def descriptors_function(trajectory, verbose=False):
     result = []
-    for frame in tqdm(trajectory, disable=not verbose, position=0):
+    for frame in tqdm(trajectory, disable=not verbose, position=0, file=sys.stdout):
         result.append(np.append(frame.positions.ravel(),
                      frame._velocities.ravel()))
     if not len(result):
