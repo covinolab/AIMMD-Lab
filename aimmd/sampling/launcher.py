@@ -17,21 +17,23 @@ def _run_task(params, directory,
              task, *args):
     import dill
     from aimmd import Params, Worker
+    
+    print(params)
 
-    # explicitly load params and module
-    with open(f'{directory}/{params}', 'rb') as f:
-        data = dill.load(f)
+    # # explicitly load params and module
+    # with open(f'{directory}/{params}', 'rb') as f:
+    #     data = dill.load(f)
     
-    params_dict = data.get('params_dict')
-    module_dict = data.get('module_dict')
+    # params_dict = data.get('params_dict')
+    # module_dict = data.get('module_dict')
     
-    # recreate the original module environment
-    module = types.ModuleType('_current_aimmd_params')
-    if module_dict:
-        module.__dict__.update(module_dict)
+    # # recreate the original module environment
+    # module = types.ModuleType('_current_aimmd_params')
+    # if module_dict:
+    #     module.__dict__.update(module_dict)
     
-    sys.modules['_current_aimmd_params'] = module
-    params = Params(**params_dict)
+    # sys.modules['_current_aimmd_params'] = module
+    # params = Params(**params_dict)
 
     # initiate worker and run
     worker = Worker(params, directory,
@@ -149,7 +151,7 @@ class Launcher:
             else:
                 noappend = False
             processes.append(Process(target=_run_task, args=(
-                'params.dill', self.directory,
+                self.params, self.directory,
                 localid, cpus_per_task, gpus_per_task,
                 'simulate', f'worker{localid}.run', f'worker{localid}.log',
                 noappend)))
