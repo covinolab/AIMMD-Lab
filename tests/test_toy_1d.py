@@ -258,6 +258,7 @@ if __name__ == '__main__':
     
     print('\nStatistics')
     print('Number of paths  ', len(pathensemble))
+    print('Number of shots  ', np.sum(pathensemble.are_shot))
     print('Number of frames ', pathensemble.nframes)
     print('Lengths          ', pathensemble.lengths)
     print('Initial states   ', pathensemble.initial_states)
