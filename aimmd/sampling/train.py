@@ -19,7 +19,7 @@ def train(self, log_file=None, verbose=False):
     
     try:
         if log_file:
-            sys.stdout = open(os.path.join(self.directory, log_file_path), "a+")
+            sys.stdout = open(f'{self.directory}/{log_file}', "a+")
         
         # get aimmd run parameters
         print(f'\nLoading AIMMD run parameters ({now()})')
