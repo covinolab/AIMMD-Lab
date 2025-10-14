@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 
+topology = 'run.gro'
 initial_paths = ['initial.xtc']
 
 def descriptors_function(traj, verbose=False):
