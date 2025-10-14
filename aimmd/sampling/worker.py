@@ -25,7 +25,7 @@ class Worker:
         self.params = params
         self.process = None
         self.original_stdout = sys.stdout
-        self.log_file = None
+        self.__log_file = None
         
         # determine local id
         self.localid = int(os.getenv("SLURM_LOCALID", f"{localid}"))
@@ -60,15 +60,31 @@ class Worker:
         signal.signal(signal.SIGTERM, self.terminate_handler)
         signal.signal(signal.SIGINT, self.terminate_handler)  # (s, f)
     
+    @property
+    def log_file(self):
+        return self.__log_file
+    
+    @log_file.setter
+    def log_file(self, log_file):
+        if log_file == self.log_file:
+            continue
+        self.log_file = log_file
+        if self.original_stdout != sys.stdout:
+            sys.stdout.close()
+        if log_file == None:
+            sys.stdout = self.original_stdout
+        else:
+            sys.stdout = open(f'{self.directory}/{self.log_file}', 'a+')
+    
     def terminate_handler(self, signum=None, frame=None, report=True, exit=False):
         """Gracefully terminate the worker and its subprocess."""
         
         # report
         if report:
             if signum:
-                print(f"Received signal {signum}, terminating process.")
+                print(f"Received signal {signum}, terminating process ({now()}).")
             else:
-                print(f"Terminating process.")
+                print(f"Terminating process ({now()}).")
         
         # end current process
         if self.process and self.process.poll() is None:
@@ -81,15 +97,9 @@ class Worker:
             except Exception as exception:
                 print(f"Exception while killing process: {exception}")
         
-        # unbind process
+        # unbind process and log file, close log file
         self.process = None
-        
-        # close and unbind log
-        if sys.stdout:
-            if self.log_file is not None:
-                sys.stdout.close()
-                self.log_file = None
-            sys.stdout = self.original_stdout
+        self.log_file = None
         
         # exit if required
         if exit:
