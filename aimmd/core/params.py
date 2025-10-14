@@ -302,7 +302,7 @@ the target state, but rather continue for furhter `extra_extend_frames`."""
                  })
     
     rescale_committor : bool = field(
-        default=True,
+        default=False,
         metadata={'description':
 """If True: rescale the NN output to recover the expected crossing
 probability behavior ~ `1/p` (from A) and ~ `1/(1 - p)` (from B),
