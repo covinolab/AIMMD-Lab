@@ -502,7 +502,7 @@ def fit(network, pathensemble,
         shooting_values[shooting_states == 'A'] = -np.inf
         shooting_values[shooting_states == 'B'] = +np.inf
     
-    if len(keys):
+    if len(initial_states):
         # get indices of A paths (use initial_paths if not present)
         inA = keys[np.where(internal_states == 'A')[0]]
     else:
@@ -515,7 +515,7 @@ def fit(network, pathensemble,
         keys = np.append(keys, len(pathensemble) - 1)
         inA = np.array([len(keys) - 1])
     
-    if len(keys):
+    if len(initial_states):
         # get indices of in B paths (use initial_paths if not present)
         inB = keys[np.where(internal_states == 'B')[0]]
     else:
@@ -528,7 +528,7 @@ def fit(network, pathensemble,
         keys = np.append(keys, len(pathensemble) - 1)
         inB = np.array([len(keys) - 1])
     
-    if len(keys):
+    if len(initial_states):
         # get indices of shot paths
         shot_paths = np.where((internal_states == 'R') *
                               (shooting_indices > 0))[0]
@@ -536,7 +536,7 @@ def fit(network, pathensemble,
         shot_paths = np.zeros(0, dtype=int)
     
     # get indices of ARA paths (within keys representation)
-    if len(keys):
+    if len(initial_states):
         AtoA = np.where((initial_states == 'A') *
                         (internal_states == 'R') * 
                         (final_states == 'A'))[0]
@@ -544,7 +544,7 @@ def fit(network, pathensemble,
         AtoA = np.zeros(0, dtype=int)
     
     # get indices of BRB paths (within keys representation)
-    if len(keys):
+    if len(initial_states):
         BtoB = np.where((initial_states == 'B') *
                         (internal_states == 'R') * 
                         (final_states == 'B'))[0]
@@ -569,7 +569,7 @@ def fit(network, pathensemble,
         # report
         print(f'    thB {thB} associated value: {thB2:.3f}\n')            
 
-    if len(keys):
+    if len(initial_states):
         # get indices of equilibrium fromA paths
         # (starting at the effective boundary of state A)
         free_A = np.where((initial_states == 'A') *
