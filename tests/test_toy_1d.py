@@ -57,8 +57,8 @@ equilibrium = aimmd.PathEnsemble(
 print(':', equilibrium)
 
 print('\nLoading trajectory from "equilibrium" folder')
-nframes, time = equilibrium.append('run.xtc', verbose=True)
-print(f'Loaded {nframes} frames, time: {time}')
+nframes, times = equilibrium.append('run.xtc', verbose=True)
+print(f'Loaded {nframes} frames, time: {times}')
 if not nframes:
     raise RuntimeError('Could not load the trajectory file')
 
