@@ -115,7 +115,7 @@ def fit(network, pathensemble,
         keys=None,
         initial_paths=None,
         verbose=False,
-        worker=worker):
+        worker=None):
     return aimmd.core.utils.fit(network, pathensemble,
         keys=keys,
         initial_paths=initial_paths,
