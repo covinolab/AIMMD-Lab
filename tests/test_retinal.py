@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import aimmd
+import torch
 from aimmd import PathEnsemble
 from aimmd.core.utils import update_pathensemble
 import numpy as np
