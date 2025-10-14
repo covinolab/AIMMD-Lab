@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from tqdm import tqdm
 
 topology = 'run.gro'
 initial_paths = ['initial.xtc']
