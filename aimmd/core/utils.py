@@ -104,7 +104,8 @@ def write(text, *paths, wrap_text=False):
     text = text.replace('"',"'")
     os.system(f'''echo "{text}"''')
     for path in paths:
-        os.system(f'''echo "{text}" >> {path}''')
+        if path is not None:
+            os.system(f'''echo "{text}" >> {path}''')
 
 
 def remove(path, verbose=True):
