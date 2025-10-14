@@ -18,12 +18,13 @@ class Worker:
         Worker process responsible for running independent AIMMD tasks
         (simulations, training, or management) on allocated CPUs/GPUs.
         """
-
+        
         self.directory = directory
         if not isinstance(params, Params):
             params = Params.load(f'{directory}/{params}')
         self.params = params
         self.process = None
+        self.original_stdout = sys.stdout
         self.log = None
         
         # determine local id
@@ -65,10 +66,9 @@ class Worker:
         # report
         if report:
             if signum:
-                msg = f"Received signal {signum}, terminating process."
+                print(f"Received signal {signum}, terminating process.")
             else:
-                msg = f"Terminating process."
-            self.report(msg)
+                print(f"Terminating process.")
         
         # end current process
         if self.process and self.process.poll() is None:
@@ -76,10 +76,10 @@ class Worker:
                 self.process.terminate()
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.report("Process did not exit in time, killing...")
+                print("Process did not exit in time, killing...")
                 self.process.kill()
             except Exception as exception:
-                self.report(f"Exception while killing process: {exception}")
+                print(f"Exception while killing process: {exception}")
         
         # unbind process
         self.process = None
@@ -88,18 +88,11 @@ class Worker:
         if self.log:
             self.log.close()
             self.log = None
+            sys.stdout = self.original_stdout
         
         # exit if required
         if exit:
             sys.exit(0)
-    
-    def report(self, msg, preamble=True):
-        if preamble:
-            msg = f"[Worker {self.localid}] ({now()}) " + msg
-        print(msg)
-        if self.log and not self.log.closed:
-            self.log.write(msg + "\n")
-            self.log.flush()
     
     def run(self, task, *args):
         if task == 'train':
