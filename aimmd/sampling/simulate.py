@@ -1,6 +1,7 @@
 import os
 import pty
 import subprocess
+from ..core.utils import get_current_simulation
 
 def simulate(self, run_file, log_file=None, append=False):
     """
