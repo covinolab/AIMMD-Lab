@@ -13,15 +13,17 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
 
     t0 = time.time()
     
-    self.log = open(
-        f'{self.directory}/{log_file}', "a+") if log_file else None
-    self.report("Starting simulation loop...")
-    print(f"Press Control+C to interrupt.")
-    
     try:
         
         # run continuously
         while True:
+            
+            if log_file:
+                sys.stdout = open(f'{self.directory}/{log_file}', "a+")
+            
+            print("Starting simulation loop...")
+            if not log_file:
+                print(f"Press Control+C to interrupt.")
             
             # maximum time
             if time.time() - t0 > walltime:
@@ -38,7 +40,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
             # (re)-start logging
             self.log = open(
                 f'{self.directory}/{log_file}', "a+") if log_file else None
-            self.report(f"Starting simulating {fname}...")         
+            print(f"Starting simulating {fname} ({now()})...")         
             
             # create command
             command = self.params.mdrun.split() + [
@@ -69,15 +71,12 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
                         
                         if get_current_simulation(
                             f'{self.directory}/{run_file}') != fname:
-                            self.report("Target simulation file changed.")
+                            print("Target simulation file changed ({now()}).")
                             break
                         
                         try:
                             line = stdout.readline()
                             print(line, end="")
-                            if self.log:
-                                self.log.write(line)
-                                self.log.flush()
                         except OSError:
                             # PTY closed: treat as EOF
                             break
@@ -93,7 +92,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
         self.terminate_handler(exit=False)
     
     except Exception as exception:
-        self.report(f'Exception: {exception}')
+        print(f'Exception: {exception}')
         self.terminate_handler()
     
     finally:
