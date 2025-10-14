@@ -25,7 +25,7 @@ def train(self, log_file=None, verbose=False):
     do_tps = self.params.do_tps
     
     write(f'\nLoading initial path(s) ({now()})', log_file)
-    initial_paths = load_initial_paths(directory, topology,
+    initial_paths = load_initial_paths(f'{directory}/initial_paths', topology,
         states_function, descriptors_function, values_function)
     assert initial_paths.nframes
     write(f'    {initial_paths}')
