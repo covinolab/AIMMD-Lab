@@ -1269,13 +1269,13 @@ def import_aimmd_run_params(filename, obj='aimmd_run_params'):
         os.chdir(current_dir)
         
         if 'extra_equilibriumA' not in aimmd_run_params:
-            aimmd_run_params['extra_equilibriumA'] = []
+            params.extra_equilibriumA'] = []
         if 'extra_equilibriumB' not in aimmd_run_params:
-            aimmd_run_params['extra_equilibriumB'] = []
+            params.extra_equilibriumB'] = []
         if 'extra_equilibriumA_states_map' not in aimmd_run_params:
-            aimmd_run_params['extra_equilibriumA_states_map'] = ['']
+            params.extra_equilibriumA_states_map'] = ['']
         if 'extra_equilibriumB_states_map' not in aimmd_run_params:
-            aimmd_run_params['extra_equilibriumB_states_map'] = ['']
+            params.extra_equilibriumB_states_map'] = ['']
         return aimmd_run_params
     except:
         os.chdir(current_dir)
@@ -1313,11 +1313,14 @@ def load_network_and_projections(
 
 def update_shooting_simulation(
     backward, forward, worker_id,
-    aimmd_run_params, batch_size=100, verbose=True):
+    params, batch_size=100, verbose=True):
     
-    trajectory_extension = aimmd_run_params['trajectory_extension']
-    max_excursion_length = aimmd_run_params['max_excursion_length']
-    grompp = aimmd_run_params['grompp']
+    trajectory_extension = params.trajectory_extension
+    max_excursion_length = params.max_excursion_length
+    if params.engine == 'gromacs':
+        grompp = params.gmx_grompp
+    else:
+        grompp = ''
     
     def _stop_condition(segment, base=0):
         n_frames = 0
@@ -1488,9 +1491,7 @@ def update_shooting_simulation(
 # Manager utils ###############################################################
 ###############################################################################
 
-def initialize_simulation(frames, *fnames,
-                          randomize_velocities=False,
-                          **aimmd_run_params):
+def initialize_simulation(frames, params, *fnames):
     """
     Fnames without extension.
     Part only if frames has length > 1.
@@ -1499,15 +1500,15 @@ def initialize_simulation(frames, *fnames,
     """
     
     # get params
-    topology = aimmd_run_params['topology']
-    mdrun_parameters = aimmd_run_params['mdrun_parameters']
-    random_velocities = aimmd_run_params['random_velocities']
-    grompp = aimmd_run_params['grompp']
-    mdrun = aimmd_run_params['mdrun']
-    trajectory_extension = aimmd_run_params['trajectory_extension']
-
+    topology = params.topology
+    mdrun_parameters = params.mdrun_parameters
+    random_velocities = params.randomize_shooting_velocities
+    grompp = params.grompp
+    mdrun = params.mdrun
+    trajectory_extension = params.trajectory_extension
+    
     if trajectory_extension == '.xtc':
-        randomize_velocities = True
+        random_velocities = True
     
     # process directories and fname
     directories = ['/'.join(fname.split('/')[:-1])
@@ -1879,7 +1880,7 @@ def update_equilibrium_simulations(
     eq_current, eq_completed,
     directory, nA, nB,
     initial_path,
-    aimmd_run_params,
+    params,
     eA=0, eB=0,
     ext_current=[],
     available_transitions=PathEnsemble(),  
@@ -1888,16 +1889,13 @@ def update_equilibrium_simulations(
     verbose=False):
     
     # retrieve params
-    topology = aimmd_run_params['topology']
-    states_function = aimmd_run_params['states_function']
-    descriptors_function = aimmd_run_params['descriptors_function']
-    values_function = aimmd_run_params['values_function']
-    trajectory_extension = aimmd_run_params['trajectory_extension']
-    max_excursion_length = aimmd_run_params['max_excursion_length']
-    if 'extra_extend_frames' in aimmd_run_params:
-        extra_extend_frames = aimmd_run_params['extra_extend_frames']
-    else:
-        extra_extend_frames = 0
+    topology = params.topology
+    states_function = params.states_function
+    descriptors_function = params.descriptors_function
+    values_function = params.values_function
+    trajectory_extension = params.trajectory_extension
+    max_excursion_length = params.max_excursion_length
+    extra_extend_frames = params.extra_extend_frames
     
     if not len(eq_completed):
         if not nA:
@@ -2070,9 +2068,9 @@ def update_equilibrium_simulations(
                 # initialize and start simulation
                 initialize_simulation(
                     init_frames,  # also removes garbage
+                    params,
                     f'{trajectory.directory}/' +
-                    f'{trajectory.trajectory_files[0][:10]}',
-                    **aimmd_run_params)
+                    f'{trajectory.trajectory_files[0][:10]}')
             
             # update trajectory
             nframes = update_equilibrium_trajectory(trajectory,
@@ -2668,7 +2666,7 @@ def add_path_to_chain(path, chain,
 
 
 def initialize_shooting_simulation(
-    chain, pool, directory, aimmd_run_params,
+    chain, pool, directory, params,
     shooting_chains=None, equilibrium=PathEnsemblesCollection()):
     
     # report info
@@ -2682,21 +2680,14 @@ def initialize_shooting_simulation(
           f'{old_fname}{new_fname}  ({now()})')
 
     # get params
-    network = aimmd_run_params['network']
-    topology = aimmd_run_params['topology']
-    lorentzian = aimmd_run_params['lorentzian']
-    #selection_pool_size = aimmd_run_params['selection_pool_size']
-    adjust_selection_in_marginal_bins = aimmd_run_params[
-        'adjust_selection_in_marginal_bins']
-    equilibrium_overriding_rate = aimmd_run_params[
-        'equilibrium_overriding_rate']
-    if 'equilibrium_overriding_recovery_rate' in aimmd_run_params:
-        equilibrium_overriding_recovery_rate = aimmd_run_params[
-            'equilibrium_overriding_recovery_rate']
-    else:
-        equilibrium_overriding_recovery_rate = .05
-    randomize_shooting_velocities = aimmd_run_params[
-        'randomize_shooting_velocities']
+    network = params.network
+    topology = params.topology
+    lorentzian = params.lorentzian
+    #selection_pool_size = params.selection_pool_size
+    adjust_selection_in_marginal_bins = params.adjust_selection_in_marginal_bins
+    equilibrium_overriding_rate = params.equilibrium_overriding_rate
+    equilibrium_overriding_recovery_rate = params.equilibrium_overriding_recovery_rate
+    randomize_shooting_velocities = params.randomize_shooting_velocities
     
     # load most updated params, backup in chain's directory
     bins, densities = load_network_and_projections(
@@ -2971,16 +2962,15 @@ def initialize_shooting_simulation(
     except:
         print('!!! Attention! Frame extraction failed. Attempting a new one')
         return initialize_shooting_simulation(
-            chain, pool, directory, aimmd_run_params,
+            chain, pool, directory, params,
             shooting_chains, equilibrium)
     
     # initialize simulation
     initialize_simulation(
         shooting_point,
+        params,
         f'{chain.directory}/back',
-        f'{chain.directory}/forw',
-        randomize_velocities=randomize_shooting_velocities,
-        **aimmd_run_params)
+        f'{chain.directory}/forw')
     
     # save
     np.save(f'{chain.directory}/shoot_bias.npy', selection_bias)
