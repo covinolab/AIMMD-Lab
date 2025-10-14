@@ -25,10 +25,10 @@ def train(self, log_file=None, verbose=False):
     do_tps = self.params.do_tps
     
     write(f'\nLoading initial path(s) ({now()})', log_file)
-    initial_path = load_initial_path(directory, topology,
+    initial_paths = load_initial_paths(directory, topology,
         states_function, descriptors_function, values_function)
-    assert initial_path.nframes
-    write(f'    {initial_path}')
+    assert initial_paths.nframes
+    write(f'    {initial_paths}')
     
     # load the network if it is already possible
     load_network_and_projections(network, directory, wait=False)
@@ -61,7 +61,7 @@ def train(self, log_file=None, verbose=False):
         pathensemble = shooting_chains + equilibriumA + equilibriumB
         
         write(f'\nTraining the network ({now()})', log_file)
-        losses, *_ = fit(network, pathensemble, initial_path, verbose=verbose)
+        losses, *_ = fit(network, pathensemble, initial_paths, verbose=verbose)
         if not len(losses):
             if 'network.h5' in os.listdir(directory):
                 write('!!! reloaded most recent network because training failed', log_file)
@@ -72,12 +72,12 @@ def train(self, log_file=None, verbose=False):
         
         write(f'\nUpdating the path ensemble values ({now()})', log_file)
         pathensemble.update_values()
-        initial_path.update_values()
+        initial_paths.update_values()
         
         write(f'\nObtaining the adaptation bins ({now()})', log_file)
         bins = get_bins(pathensemble, nbins,
             cutoff_max=cutoff_max,
-            initial_path=initial_path,
+            initial_paths=initial_paths,
             states=include_marginal_bins)
         write(f'    bins: {array2string(bins, 9)}', log_file)
         
@@ -232,7 +232,7 @@ def train(self, log_file=None, verbose=False):
                 # rescaled bins
                 bins = get_bins(pathensemble, nbins,
                     cutoff_max=cutoff_max,
-                    initial_path=initial_path,
+                    initial_paths=initial_paths,
                     states=include_marginal_bins)
                 write(f'    rescaled bins: {array2string(bins, 18)}', log_file)
         else:  # only TPS weights
