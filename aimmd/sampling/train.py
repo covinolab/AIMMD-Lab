@@ -278,10 +278,14 @@ def train(self, log_file=None, verbose=False):
             np.save(f'{directory}/densities.npy', densities)
             sleep(1)
             
-    except Exception as exception:
-        print('Error: {exception}')
-        raise
+    except SystemExit:
+        cleanup()
     
-    finally:
+    except KeyboardInterrupt:
         cleanup(exit=False)
         return pathensemble
+    
+    except Exception as exception:
+        print('Error: {exception}')
+        cleanup()
+        raise
