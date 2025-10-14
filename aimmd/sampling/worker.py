@@ -10,6 +10,45 @@ from .simulate import simulate
 from ..core import Params
 from ..core.utils import now
 
+
+def save_initial_paths(initial_paths, directory):
+    # remove existing xtc and trajectory files
+    for filename in os.listdir(directory):
+        if filename.endswith('.xtc') or filename.endswith('.trr'):
+            print(f'Removing {directory}/{filename}')
+            os.system(f'rm {directory}/*{filename}*')
+    
+    # save initial paths
+    filenames = [path.filename for path in initial_paths]
+    for i, path in enumerate(initial_paths):
+        filename = filenames[i]
+        
+        # avoid duplicates 
+        if filename in filenames[:i]:
+            filename = (f'{".".join(filenames[i].split(".")[:-1])}'
+                        f'-2.{filenames[i].split(".")[-1]}')
+            filenames[i] = filename
+  
+        # report
+        print(f'Writing {directory}/{filename}')
+        
+        # actual save: get n_atoms
+        n_atoms = len(path[0].positions)
+        
+        # create an empty Universe with n_atoms (no topology required)
+        universe = mda.Universe.empty(n_atoms, trajectory=True)
+        
+        # write positions
+        with mda.Writer(
+            f'{directory}/{filename}', n_atoms) as writer:
+            for frame in path:
+                universe.trajectory.ts.positions = frame.positions
+                if hasattr(frame, 'velocities'):
+                    universe.trajectory.ts.velocities = frame._velocities
+                universe.trajectory.ts.triclinic_dimensions = frame.triclinic_dimensions
+                writer.write(universe)
+
+
 class Worker:
     
     def __init__(self, params, directory='.',
@@ -117,6 +156,8 @@ class Worker:
         raise TypeError(f'Task {task} not implented for AIMMD worker')
     
     def train(self, log_file=None, verbose=False, walltime=np.inf):
+        save_initial_paths(self.params.initial_paths,
+                           f'{self.directory}/initial_paths')
         self.interrupt = False
         return train(self, log_file, verbose, walltime)
     
