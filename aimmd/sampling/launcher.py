@@ -128,13 +128,15 @@ class Launcher:
                     f'worker{localid}.log', noappend)
             processes.append(Process(target=task))
         
-        # trainer and manager (sharing the same localid)
+        # trainer (sharing the same localid as manager)
         localid = len(processes)
         def task():
             return Worker(self.params, self.directory, localid,
                           cpus_per_task, gpus_per_task).run(
                 'train', f'trainer.log')
         processes.append(Process(target=task))
+        
+        # manager (sharing the same localid as trainer)
         def task():
             return Worker(self.params, self.directory, localid,
                           cpus_per_task, gpus_per_task).run(
