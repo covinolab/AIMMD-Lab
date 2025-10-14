@@ -22,7 +22,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
     do_tps = self.params.do_tps
     if do_tps:
         selection_pool_size = 1
-    eneconv = self.params.eneconv
+    eneconv = self.params.gmv_eneconv if self.params.engine == 'gromacs' else ''
     trajectory_extension = self.params.trajectory_extension
     save_interval = self.params.save_interval
     
