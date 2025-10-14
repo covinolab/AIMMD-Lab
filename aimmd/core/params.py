@@ -351,6 +351,20 @@ task together."""
         if self.engine == 'toy':
             return self.toy_mdrun
     
+    @property
+    def grompp(self):
+        if self.engine == 'gromacs':
+            return self.gmx_grompp
+        if self.engine == 'toy':
+            return ''
+        
+    @property
+    def eneconv(self):
+        if self.engine == 'gromacs':
+            return self.gmx_eneconv
+        if self.engine == 'toy':
+            return ''
+    
     def _check_initial_paths_and_states_function(self, initial_paths=[]):
         """Run states_function and inspect result. Replace initial_path
         strings with MDAnalysis trajectories. Ensure initial paths are
