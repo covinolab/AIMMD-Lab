@@ -121,7 +121,7 @@ class Launcher:
             process = Process(
                 target=Worker(
                     self.params, localid,
-                    cpus_per_task, gpus_per_task).simulate(
+                    cpus_per_task, gpus_per_task).run('simulate',
                         run_file, log_file, noappend=True))
             processes.append(process)
         
@@ -131,13 +131,15 @@ class Launcher:
         process = Process(
             target=Worker(
                 self.params, localid,
-                cpus_per_task, gpus_per_task).train(log_file))
+                cpus_per_task, gpus_per_task).run('train',
+                        log_file))
         processes.append(process)
         log_file = f'{self.directory}/manager.log'
         process = Process(
             target=Worker(
                 self.params, localid,
-                cpus_per_task, gpus_per_task).manage(log_file, nsteps, nframes))
+                cpus_per_task, gpus_per_task).run('manage',
+                        log_file, nsteps, nframes))
         processes.append(process)
         
         # function to terminate all workers
