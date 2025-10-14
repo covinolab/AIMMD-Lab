@@ -117,14 +117,17 @@ class Worker:
         raise TypeError(f'Task {task} not implented for AIMMD worker')
     
     def train(self, log_file=None, verbose=False, walltime=np.inf):
+        self.interrupt = False
         return _train(self, log_file, verbose, walltime)
     
     def manage(self, n, nA, nB, eA, eB,
            log_file=None, nsteps=int(1e6), nframes=np.inf, walltime=np.inf):
+        self.interrupt = False
         return _manage(self, n, nA, nB, eA, eB,
                        log_file, nsteps, nframes, walltime)
     
     def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
+        self.interrupt = False
         return _simulate(self, run_file, log_file, noappend, walltime)
 
 if __name__ == '__main__':
