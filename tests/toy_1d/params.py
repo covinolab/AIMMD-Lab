@@ -8,13 +8,13 @@ initial_paths = ['initial.xtc']
 def descriptors_function(traj, verbose=False):
     return np.array([
         frame.positions[0, 0] for frame in
-        tqdm(traj, disable=not verbose, position=0)]).reshape(-1, 1)
+        tqdm(traj, disable=not verbose, position=0, file=sys.stdout)]).reshape(-1, 1)
 
 def states_function(traj, verbose=False):
     return np.array([
         'A' if frame.positions[0, 0] <= 0.0 else
         'B' if frame.positions[0, 0] >= 1.0 else 'R' for frame in
-        tqdm(traj, disable=not verbose, position=0)], dtype='<U1')
+        tqdm(traj, disable=not verbose, position=0, file=sys.stdout)], dtype='<U1')
 
 class Network(torch.nn.Module):
     def __init__(self):
