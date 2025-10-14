@@ -58,12 +58,11 @@ class Worker:
         """Gracefully terminate the worker and its subprocess."""
         
         # report
-        msg = (f"[Worker {self.localid}] Received signal "
-               f"{signum}, terminating ({now})...")
-        print(msg)
-        if self.log:
-            self.log.write(msg + "\n")
-            self.log.flush()
+        if signum:
+            msg = f"Received signal {signum}, terminating process."
+        else:
+            msg = f"Terminating process."
+        self.report(msg)
         
         # end current process
         if self.process and self.process.poll() is None:
@@ -80,6 +79,14 @@ class Worker:
         if exit:
             sys.exit(0)
     
+    def report(self, msg, preamble=False):
+        if preamble:
+            msg = f"[Worker {self.localid}] ({now()}) " + msg
+        print(msg)
+        if self.log:
+            self.log.write(msg + "\n")
+            self.log.flush()
+    
     def simulate(self, run_file, log_file=None, append=False):
         """
         Continuously run simulations as directed by the run file.
@@ -87,7 +94,7 @@ class Worker:
         """
         
         self.log = open(log_file, "a+") if log_file else None
-        print(f"[Worker {self.localid}] Starting simulation loop...")
+        self.report("Starting simulation loop...")
         print(f"Press Control+C to interrupt.")
         
         try:
@@ -98,6 +105,7 @@ class Worker:
                 fname = get_current_simulation(run_file)
                 if not fname:
                     continue  # no job assigned yet
+                self.report(f"Starting simulating {fname}...")         
                 
                 # create command
                 command = self.params.mdrun.split() + [
@@ -105,7 +113,7 @@ class Worker:
                     "-cpo", f"{fname}.cpt",
                     "-cpi", f"{fname}.cpt",
                     "-cpt", ".1"]
-                if not self.append:
+                if not append:
                     command.append("-noappend")
                         
                 # open pseudo-terminal to capture real-time stdout
@@ -125,7 +133,7 @@ class Worker:
                 with os.fdopen(master_fd) as stdout:
                     for line in iter(stdout.readline, ''):
                         if get_current_simulation(run_file) != fname:
-                            msg =(f"[Worker {self.localid}] Simulation changed — terminating.")
+                            self.report("Simulation changed, terminating.")
                             self.process.terminate()
                             break
                         
@@ -141,10 +149,11 @@ class Worker:
         except SystemExit:
             self.terminate_handler()
         
-        except KeyBoardInterrupt:
+        except KeyboardInterrupt:
             self.terminate_handler(exit=False)
         
-        finally:
+        except Exception as exception:
+            self.report(f'Exception: {exception}')
             self.terminate_handler()
     
     def train(self):
@@ -154,7 +163,14 @@ class Worker:
     def manage(self):
         """Placeholder for management/supervisory task."""
         print(f"[Worker {self.localid}] Management task not yet implemented.")
+    
+    def run(self, task, *args):
+        if task == 'simulate':
+            return self.simulate(*args)
+        if task == 'train':
+            return self.train(*args)
+        if task == 'manage':
+            return self.manage(*args)
 
 if __name__ == '__main__':
-    Worker(Params.load('temp.py')).simulate(
-        sys.argv[1], sys.argv[2], len(sys.argv) > 3)
+    Worker(Params.load(sys.argv[1])).run(*sys.argv[2:])
