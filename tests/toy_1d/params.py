@@ -6,6 +6,25 @@ from tqdm import tqdm
 engine = 'toy'
 initial_paths = ['initial.xtc']
 
+def fit(network, pathensemble,
+        keys=None,
+        initial_paths=None,
+        verbose=False):
+    return aimmd.utils.fit(network, pathensemble,
+        keys=keys,
+        initial_paths=initial_paths,
+        process_descriptors=lambda x:x,
+        save_memory=False,
+        nbins=0,
+        state_bins='AB',
+        augment=False,
+        lr=5e-3,
+        loss_bayesian_factor=100,
+        epochs=100,
+        batch_size=4096,
+        stop=50.,
+        verbose=verbose)
+
 def descriptors_function(traj, verbose=False):
     return np.array([
         frame.positions[0, 0] for frame in
