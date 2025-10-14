@@ -1,5 +1,5 @@
 import sys
-import aimmd
+import aimmd.core.utils
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -11,7 +11,7 @@ def fit(network, pathensemble,
         keys=None,
         initial_paths=None,
         verbose=False):
-    return aimmd.utils.fit(network, pathensemble,
+    return aimmd.core.utils.fit(network, pathensemble,
         keys=keys,
         initial_paths=initial_paths,
         process_descriptors=lambda x:x,
