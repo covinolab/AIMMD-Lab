@@ -228,11 +228,11 @@ class Launcher:
             file.write(f"srun --cpus-per-task={cpus_per_task} --cpu-bind=cores "
                        f"bash -c '\n\n")
             file.write(f'  # update task variables\n')
-            file.write(f'  export i=\$SLURM_PROCID\n')
-            file.write(f'  export li=\$SLURM_LOCALID\n')
+            file.write(f'  export i=$SLURM_PROCID\n')
+            file.write(f'  export li=$SLURM_LOCALID\n')
             if gpu:
-                file.write(f'  export CUDA_VISIBLE_DEVICES=\$li\n')
-            file.write(f'\ncase \$i in\n')
+                file.write(f'  export CUDA_VISIBLE_DEVICES=$li\n')
+            file.write(f'\ncase $i in\n')
             
             # equilibrium workers
             for i in range(self.nA + self.nB):
@@ -297,5 +297,5 @@ class Launcher:
             file.write(f'  ;;\n')
 
             # end
-            file.write(f'*)\n  echo "[Worker \$i] No task assigned."\n;;\n')
+            file.write(f'*)\n  echo "[Worker $i] No task assigned."\n;;\n')
             file.write(f'esac\n\'\n')
