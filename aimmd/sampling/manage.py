@@ -1,6 +1,6 @@
 from aimmd.core.utils import *
 
-def manage(self, log_file, nsteps, nframes):
+def manage(self, log_file, nsteps, nframes=np.inf):
     
     # get aimmd run parameters
     write(f'\nLoading AIMMD run parameters ({now()})', log_file)
