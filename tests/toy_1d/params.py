@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 
+initial_paths = ['initial.xtc']
+
 def descriptors_function(traj, verbose=False):
     return np.array([
         frame.positions[0, 0] for frame in
