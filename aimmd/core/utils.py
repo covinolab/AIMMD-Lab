@@ -635,11 +635,11 @@ def fit(network, pathensemble,
     shot_TPs_weights = np.append(shot_AtoB_weights, shot_BtoA_weights)
     
     # equilibrium TPs (within keys representation)
-    if len(freeA):
+    if len(free_A):
         free_AtoB = free_A[final_states[free_A] == 'B']
     else:
         free_AtoB = np.zeros(0, dtype=int)
-    if len(freeB):
+    if len(free_B):
         free_BtoA = free_B[final_states[free_B] == 'A']
     else:
         free_BtoA = np.zeros(0, dtype=int)
