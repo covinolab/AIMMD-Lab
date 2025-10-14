@@ -227,6 +227,14 @@ around the states in `equilibrium_overriding_states`."""
         metadata={'description':
 """Number of overriding attempts per every selection."""
                  })
+
+    equilibrium_overriding_recovery_rate : int = field(
+        default=0.05,
+        metadata={'description':
+"""Attempt overriding from the same bin as the old shooting point with
+this probability. Too high values break the Markov Chain of paths too often.
+0.05 is a good compromise."""
+                 })
     
     restart_equilibrium_with_transitions : str = field(
         default='',
