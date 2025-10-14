@@ -67,7 +67,7 @@ class Worker:
     @log_file.setter
     def log_file(self, log_file):
         if log_file == self.log_file:
-            continue
+            return
         if self.original_stdout != sys.stdout:
             sys.stdout.close()
         sys.stdout = self.original_stdout
