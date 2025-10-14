@@ -17,10 +17,17 @@ def simulate(self, run_file, log_file=None, append=False):
         
         # run continuously
         while True:
+            
+            # interrupt everything currently running
+            self.terminate_handler(exit=False)
+            
             # what to simulate
             fname = get_current_simulation(run_file)
             if not fname:
                 continue  # no job assigned yet
+            
+            # (re)-start logging
+            self.log = open(log_file, "a+") if log_file else None
             self.report(f"Starting simulating {fname}...")         
             
             # create command
@@ -51,13 +58,7 @@ def simulate(self, run_file, log_file=None, append=False):
                     while True:
                         
                         if get_current_simulation(run_file) != fname:
-                            self.report("Simulation changed, terminating.")
-                            try:
-                                self.process.terminate()
-                                self.process.wait(timeout=5)
-                            except subprocess.TimeoutExpired:
-                                self.report("Process did not exit in time, killing...")
-                                self.process.kill()
+                            self.report("Target simulation file changed.")
                             break
                         
                         try:
@@ -72,7 +73,6 @@ def simulate(self, run_file, log_file=None, append=False):
                 
                 if self.process.poll() is None:
                     self.process.wait()
-                self.process = None
             
             # catch any final PTY read errors cleanly
             except OSError:
@@ -87,3 +87,6 @@ def simulate(self, run_file, log_file=None, append=False):
     except Exception as exception:
         self.report(f'Exception: {exception}')
         self.terminate_handler()
+    
+    finally:
+        self.terminate_handler(exit=False)
