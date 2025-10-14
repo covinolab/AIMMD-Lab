@@ -77,9 +77,13 @@ class Worker:
             except Exception as exception:
                 self.report(f"Exception while killing process: {exception}")
         
-        # close log
+        # unbind process
+        self.process = None
+        
+        # close and unbind log
         if self.log:
             self.log.close()
+            self.log = None
         
         # exit if required
         if exit:
