@@ -7,6 +7,7 @@ from .worker import Worker
 from ..core.params import Params
 
 # worker path
+PYTHON = sys.executable
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
 
 class Launcher:
