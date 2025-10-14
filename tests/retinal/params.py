@@ -1,4 +1,4 @@
-import aimmd.utils
+import aimmd.core.utils
 
 trajectory_extension = '.trr'
 initial_paths = ['initial.trr']
@@ -108,7 +108,7 @@ def fit(network, pathensemble,
         keys=None,
         initial_paths=None,
         verbose=False):
-    return aimmd.utils.fit(network, pathensemble,
+    return aimmd.core.utils.fit(network, pathensemble,
         keys=keys,
         initial_paths=initial_paths,
         process_descriptors=lambda x:x,
