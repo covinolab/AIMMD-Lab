@@ -297,4 +297,4 @@ class Launcher:
 
             # end
             file.write(f'*)\n  echo "[Worker \$i] No task assigned."\n;;\n')
-            file.werite(f'esac\n\'\n')
+            file.write(f'esac\n\'\n')
