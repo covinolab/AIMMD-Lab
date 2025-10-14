@@ -3708,7 +3708,7 @@ def create_equilibrium_tpe():
     trajs = [f'equilibrium/{file}' for file in sorted(os.listdir('equilibrium'))
             if len(file) == 20 and file[:10] == 'transition'
             and file[-4:] == '.npy']
-    for traj in trajs[:4000], position=0, file=sys.stdout):
+    for traj in tqdm(trajs[:4000], position=0, file=sys.stdout):
         t = np.load(traj)
         equilibrium._update(
             trajectory_files = equilibrium.trajectory_files + [f'{len(equilibrium)}'],
