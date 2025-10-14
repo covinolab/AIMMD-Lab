@@ -307,7 +307,8 @@ def fit(network, pathensemble,
         epochs=500,
         batch_size=4096,
         stop=50.,
-        verbose=False):
+        verbose=False,
+        worker=None):
     
     """
     Train a neural network to predict the logit committor from AIMMD
@@ -420,6 +421,9 @@ def fit(network, pathensemble,
     verbose : bool, default=False
         If True, be loud and noise. Among other things, show a progress bar
         during training.
+    
+    worker : aimmd.Worker
+        Linked worker, to know when to interrupt.
     
     Returns
     -------
@@ -1099,6 +1103,9 @@ def fit(network, pathensemble,
     
     # actual loop
     while True:
+        
+        if worker is not None and worker.interrupt:
+            return [], [], [], [], []
         
         for param_group in optimizer.param_groups:
             # slowly increase lr
