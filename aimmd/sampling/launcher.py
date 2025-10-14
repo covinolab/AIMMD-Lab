@@ -5,7 +5,7 @@ import numpy as np
 import signal
 import MDAnalysis as mda
 from multiprocessing import Process
-from .worker import Worker
+from .worker import Worker, save_initial_paths
 from ..core.params import Params
 
 # worker path
@@ -18,44 +18,6 @@ def _run_task(params, directory,
     worker = Worker(params, directory,
                     localid, cpus_per_task, gpus_per_task)
     return worker.run(task, *args)
-
-
-def save_initial_paths(initial_paths, directory):
-    # remove existing xtc and trajectory files
-    for filename in os.listdir(directory):
-        if filename.endswith('.xtc') or filename.endswith('.trr'):
-            print(f'Removing {directory}/{filename}')
-            os.system(f'rm {directory}/*{filename}*')
-    
-    # save initial paths
-    filenames = [path.filename for path in initial_paths]
-    for i, path in enumerate(initial_paths):
-        filename = filenames[i]
-        
-        # avoid duplicates 
-        if filename in filenames[:i]:
-            filename = (f'{".".join(filenames[i].split(".")[:-1])}'
-                        f'-2.{filenames[i].split(".")[-1]}')
-            filenames[i] = filename
-  
-        # report
-        print(f'Writing {directory}/{filename}')
-        
-        # actual save: get n_atoms
-        n_atoms = len(path[0].positions)
-        
-        # create an empty Universe with n_atoms (no topology required)
-        universe = mda.Universe.empty(n_atoms, trajectory=True)
-        
-        # write positions
-        with mda.Writer(
-            f'{directory}/{filename}', n_atoms) as writer:
-            for frame in path:
-                universe.trajectory.ts.positions = frame.positions
-                if hasattr(frame, 'velocities'):
-                    universe.trajectory.ts.velocities = frame._velocities
-                universe.trajectory.ts.triclinic_dimensions = frame.triclinic_dimensions
-                writer.write(universe)
 
 
 class Launcher:
