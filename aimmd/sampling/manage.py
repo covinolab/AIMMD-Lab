@@ -1,6 +1,8 @@
 from ..core.utils import *
 
 def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
+    if log_file:
+        log_file=f'{self.directory}/{log_file}'
     
     # get aimmd run parameters
     write(f'\nLoading AIMMD run parameters ({now()})', log_file)
