@@ -273,16 +273,16 @@ def manage(self, n, nA, nB, eA, eB,
         step_number.close()
     
     except SystemExit:
-        self.termination_handler()
+        self.terminate_handler()
     
     except KeyboardInterrupt:
-        self.termination_handler(exit=False)
+        self.terminate_handler(exit=False)
     
     except Exception as exception:
         print(f'Error: {exception}')
-        self.termination_handler()
+        self.terminate_handler()
         raise exception
     
     finally:
-        self.termination_handler(exit=False)
+        self.terminate_handler(exit=False)
         return pathensemble
