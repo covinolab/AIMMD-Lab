@@ -110,7 +110,7 @@ class Launcher:
                     writer.write(universe)
     
     def run(self, nsteps=int(1e6), nframes=np.inf, walltime=np.inf,
-                 cpus_per_task=1, gpus_per_task=1):
+                 cpus_per_task=1, gpus_per_task=0):
         """
         nsteps: default inf, maximum number of shooting simulations
         nframes: default inf, maximum number of simulated frames, has priority over nsteps
