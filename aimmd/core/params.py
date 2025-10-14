@@ -8,6 +8,7 @@ import dill
 import torch
 import types
 import shutil
+import inspect
 import linecache
 import numpy as np
 import MDAnalysis as mda
@@ -525,73 +526,64 @@ task together."""
     @class_or_instancemethod
     def update(self_or_cls, filename='params.py'):
         """
-        Load parameters and functions found in python file `filename`.
-        - If called on the class (Params.load()), creates a new instance.
-        - If called on an instance (params.load()), updates it in place.
+        Load parameters and functions from a Python file and update Params instance.
+        Ensures that all helpers/constants are visible to the functions and
+        network methods without creating a module.
         """
-        
-        # load filename's content in temporary module "_current_aimmd_params"
         path = Path(filename).resolve()
         if not path.exists():
-            raise FileNotFoundError(f'Parameter file \'{path}\' not found.')
+            raise FileNotFoundError(f'Parameter file {filename} not found.')
         
-        # go to filename's folder
         cwd = os.getcwd()
         os.chdir(path.parent)
         
         try:
-            # read source
+            # execute the file
             source = path.read_text()
+            exec_namespace = {}
+            exec(compile(source, str(path), 'exec'), exec_namespace)
             
-            # register with linecache for traceback correctness
-            linecache.cache[str(path)] = (
-                len(source),
-                None,
-                source.splitlines(True),
-                str(path))
-            
-            # create isolated module
-            module = types.ModuleType('_current_aimmd_params')
-            module.__file__ = str(path)
-            
-            # compile and execute source
-            code = compile(source, str(path), 'exec')
-            exec(code, module.__dict__)
-            
-            # register in sys.modules (important for dill)
-            sys.modules['_current_aimmd_params'] = module
-            
-            # parameters/functions you can update
+            # split dataclass fields vs helpers
             param_fields = {field.name for field in fields(Params)}
+            init_kwargs = {n: exec_namespace[n] for n in param_fields if n in exec_namespace}
+            extra_helpers = {
+                name: obj for name, obj in exec_namespace.items()
+                if name not in param_fields and not name.startswith("__")}
             
-            # parameters/functions found in "module"
-            kwargs = {}
-            for name in dir(module):
-                if name.startswith("__"):
-                    continue
-                if name in param_fields:
-                    kwargs[name] = getattr(module, name)
+            # pick only dill-picklable helpers
+            picklable_helpers = {
+                name: obj for name, obj in extra_helpers.items()
+                if dill.pickles(obj)}
             
-            # called on class: initialize
+            # inject helpers into all top-level functions and any methods
+            def inject_globals(obj):
+                if isinstance(obj, types.FunctionType):
+                    obj.__globals__.update(picklable_helpers)
+                elif isinstance(obj, torch.nn.Module):
+                    for _, member in inspect.getmembers(obj, inspect.ismethod):
+                        fn = member.__func__
+                        fn.__globals__.update(picklable_helpers)
+            
+            for key, value in init_kwargs.items():
+                inject_globals(value)
+            
+            # create or update instance
             if isinstance(self_or_cls, type):
-                return self_or_cls(**kwargs)
+                instance = self_or_cls(**init_kwargs)
+            else:
+                instance = self_or_cls
+                for name, value in init_kwargs.items():
+                    if name != 'initial_paths':
+                        setattr(instance, name, value)
             
-            # called on instance: update in place
-            for name, value in kwargs.items():
-                if name == 'initial_paths':
-                    continue
-                setattr(self_or_cls, name, value)
+            # handle initial_paths last
+            if 'initial_paths' in init_kwargs:
+                setattr(instance, 'initial_paths', init_kwargs['initial_paths'])
+                instance._check_initial_paths_and_states_function()
             
-            # do initial paths last to check them with new states_function
-            if 'initial_paths' in kwargs:
-                setattr(self_or_cls, 'initial_paths',
-                        kwargs['initial_paths'])
-                self._check_initial_paths_and_states_function()
+            return instance
             
-            return self_or_cls
-        
-        # always restore working directory
-        finally:  
+        finally:
             os.chdir(cwd)
     
     def save(self, filename):
@@ -599,16 +591,11 @@ task together."""
         Save Params instance along with its associated module dictionary,
         so that functions remain usable when reloaded elsewhere.
         """
-        module = sys.modules.get('_current_aimmd_params', None)
-        module_dict = module.__dict__ if module else None
         params_dict = {field.name: getattr(self, field.name)
                        for field in fields(self)}
         
         with open(filename, 'wb') as f:
-            dill.dump({
-                'params_dict': params_dict,
-                'module_dict': module_dict},
-                f, protocol=dill.HIGHEST_PROTOCOL)
+            dill.dump(params_dict, f, protocol=dill.HIGHEST_PROTOCOL)
     
     @classmethod
     def load(cls, filename):
@@ -617,16 +604,6 @@ task together."""
         all saved functions remain callable even without the original file.
         """
         with open(filename, 'rb') as f:
-            data = dill.load(f)
-        
-        params_dict = data.get('params_dict')
-        module_dict = data.get('module_dict')
-        
-        # recreate the original module environment
-        module = types.ModuleType('_current_aimmd_params')
-        if module_dict:
-            module.__dict__.update(module_dict)
-        
-        sys.modules['_current_aimmd_params'] = module
+            params_dict = dill.load(f)
         
         return Params(**params_dict)
