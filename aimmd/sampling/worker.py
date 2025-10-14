@@ -68,8 +68,12 @@ class Worker:
         if self.process and self.process.poll() is None:
             try:
                 self.process.terminate()
-            except Exception:
-                pass
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.report("Process did not exit in time, killing...")
+                self.process.kill()
+            except Exception as exception:
+                self.report(f"Exception while killing process: {exception}")
         
         # close log
         if self.log:
@@ -79,11 +83,11 @@ class Worker:
         if exit:
             sys.exit(0)
     
-    def report(self, msg, preamble=False):
+    def report(self, msg, preamble=True):
         if preamble:
             msg = f"[Worker {self.localid}] ({now()}) " + msg
         print(msg)
-        if self.log:
+        if self.log and not self.log.closed:
             self.log.write(msg + "\n")
             self.log.flush()
     
@@ -136,7 +140,12 @@ class Worker:
                             
                             if get_current_simulation(run_file) != fname:
                                 self.report("Simulation changed, terminating.")
-                                self.process.terminate()
+                                try:
+                                    self.process.terminate()
+                                    self.process.wait(timeout=5)
+                                except subprocess.TimeoutExpired:
+                                    self.report("Process did not exit in time, killing...")
+                                    self.process.kill()
                                 break
                             
                             try:
@@ -146,7 +155,7 @@ class Worker:
                                     self.log.write(line)
                                     self.log.flush()
                             except OSError:
-                                # PTY closed — treat as EOF
+                                # PTY closed: treat as EOF
                                 break
                     
                     if self.process.poll() is None:
