@@ -135,6 +135,10 @@ def _manage(self, n, nA, nB, eA, eB,
         print(f'\nStarting the main cycle ({now()})')
         while step_number.n < nsteps:
             
+            # received the signal
+            if self.interrupt:
+                break
+            
             # maximum time
             if time.time() - t0 > walltime:
                 break
