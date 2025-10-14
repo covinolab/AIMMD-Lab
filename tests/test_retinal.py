@@ -236,7 +236,7 @@ if __name__ == '__main__':
         print('FREE A & MANAGER & TRAINER FAILED')
     
     print('\nChecking if workers simulated...')
-    file = f'run1/equilibrium/traj000001.part0002{trajectory_extension}'
+    file = f'run1/equilibriumA/traj000001.part0002{trajectory_extension}'
     if not os.path.exists(file) or os.path.getsize(file) <= 68:
         raise RuntimeError('run1/worker0 failed')
     print('All fine')
@@ -270,6 +270,7 @@ if __name__ == '__main__':
     
     print('\nStatistics')
     print('Number of paths  ', len(pathensemble))
+    print('Number of shots  ', np.sum(pathensemble.are_shot))
     print('Number of frames ', pathensemble.nframes)
     print('Lengths          ', pathensemble.lengths)
     print('Initial states   ', pathensemble.initial_states)
