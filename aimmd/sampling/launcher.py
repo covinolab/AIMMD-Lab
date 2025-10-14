@@ -125,7 +125,7 @@ class Launcher:
             log_file = f'{self.directory}/worker{localid}.log'
             process = Process(
                 target=Worker(
-                    self.params, localid,
+                    self.params, self.directory, localid,
                     cpus_per_task, gpus_per_task).run('simulate',
                         run_file, log_file, noappend))
             processes.append(process)
@@ -135,14 +135,14 @@ class Launcher:
         log_file = f'{self.directory}/trainer.log'
         process = Process(
             target=Worker(
-                self.params, localid,
+                self.params, self.directory, localid,
                 cpus_per_task, gpus_per_task).run('train',
                         log_file))
         processes.append(process)
         log_file = f'{self.directory}/manager.log'
         process = Process(
             target=Worker(
-                self.params, localid,
+                self.params, self.directorty, localid,
                 cpus_per_task, gpus_per_task).run('manage',
                         log_file, nsteps, nframes))
         processes.append(process)
@@ -253,7 +253,7 @@ class Launcher:
                     state = 'B'
                     j = i - self.nA
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
-                file.write(f'  $WORKER {self.directory} params.dill simulate '
+                file.write(f'  $WORKER params.dill {self.directory} simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
@@ -268,7 +268,7 @@ class Launcher:
                     j -= self.eA
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (extension {state}{j})\n')
-                file.write(f'  $WORKER {self.directory} params.dill simulate '
+                file.write(f'  $WORKER params.dill {self.directory} simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
@@ -278,18 +278,18 @@ class Launcher:
                 j = i - begin
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (shooting {j})\n')
-                file.write(f'  $WORKER {self.directory} params.dill simulate '
+                file.write(f'  $WORKER params.dill {self.directory} simulate '
                            f'worker{i}.run worker{i}.log\n')
                 file.write(f'  ;;\n')
             
             # trainer and manager
             file.write(f'{i + 1})\n')
             file.write(f'  # trainer\n')
-            file.write(f'  $WORKER {self.directory} params.dill train '
+            file.write(f'  $WORKER params.dill {self.directory} train '
                        f'trainer.log\n')
             file.write(f'  trainer_pid=$!\n\n')
             file.write(f'  # manager\n')
-            file.write(f'  $WORKER {self.directory} params.dill manage '
+            file.write(f'  $WORKER params.dill {self.directory} manage '
                        f'manager.log {nsteps} {nframes}\n')
             file.write(f'  manager_pid=$!\n\n')
             
