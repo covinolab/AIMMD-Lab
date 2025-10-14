@@ -1162,7 +1162,7 @@ def fit(network, pathensemble,
         losses.append(float(loss.detach()))
         
         # report scales
-        q = network(d)
+        q = network(d).detach()
         scales.append(max(float(torch.max(q)), -float(torch.min(q))))
         Range = float(torch.min(q)), float(torch.max(q))
         
