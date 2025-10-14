@@ -295,9 +295,9 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
         return pathensemble
     
     except Exception as exception:
-        print('Error: {exception}')
+        print(f'Error: {exception}')
         cleanup()
-        raise
+        raise exception
     
     finally:
         cleanup(exit=False)
