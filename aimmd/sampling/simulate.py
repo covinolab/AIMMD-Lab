@@ -70,9 +70,6 @@ def simulate(self, run_file, log_file=None, append=False):
                         except OSError:
                             # PTY closed: treat as EOF
                             break
-                
-                if self.process.poll() is None:
-                    self.process.wait()
             
             # catch any final PTY read errors cleanly
             except OSError:
