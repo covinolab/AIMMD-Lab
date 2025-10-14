@@ -12,6 +12,12 @@ from ..core.params import Params
 PYTHON = sys.executable
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
 
+def _run_task(params, directory,
+             localid, cpus_per_task, gpus_per_task,
+             task, *args):
+    return Worker(params, directory,
+                  localid, cpus_per_task, gpus_per_task).run(task, *args)
+
 class Launcher:
     
     def __init__(self, params, directory, n, nA, nB, eA=0, eB=0):
@@ -122,27 +128,24 @@ class Launcher:
                 noappend = True
             else:
                 noappend = False
-            def task():
-                return Worker(self.params, self.directory, localid,
-                              cpus_per_task, gpus_per_task).run(
-                    'simulate', f'worker{localid}.run',
-                    f'worker{localid}.log', noappend)
-            processes.append(Process(target=task))
+            processes.append(Process(target=_run_task(
+                self.params, self.directory,
+                localid, cpus_per_task, gpus_per_task,
+                'simulate', f'worker{localid}.run', f'worker{localid}.log',
+                noappend)))
         
         # trainer (sharing the same localid as manager)
         localid = len(processes)
-        def task():
-            return Worker(self.params, self.directory, localid,
-                          cpus_per_task, gpus_per_task).run(
-                'train', f'trainer.log')
-        processes.append(Process(target=task))
+        processes.append(Process(target=_run_task(
+            self.params, self.directory,
+            localid, cpus_per_task, gpus_per_task,
+            'train', 'trainer.log')))
         
         # manager (sharing the same localid as trainer)
-        def task():
-            return Worker(self.params, self.directory, localid,
-                          cpus_per_task, gpus_per_task).run(
-                'manage', f'manager.log', nsteps, nframes)
-        processes.append(Process(target=task))
+        processes.append(Process(target=_run_task(
+            self.params, self.directory,
+            localid, cpus_per_task, gpus_per_task,
+            'manage', 'manager.log', nsteps, nframes)))
         
         # function to terminate all workers
         def terminate_all(signum, frame):
