@@ -1,4 +1,5 @@
 import sys
+import aimmd
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -18,9 +19,9 @@ def fit(network, pathensemble,
         nbins=0,
         state_bins='AB',
         augment=False,
-        lr=5e-3,
+        lr=1e-2,
         loss_bayesian_factor=100,
-        epochs=100,
+        epochs=500,
         batch_size=4096,
         stop=50.,
         verbose=verbose)
