@@ -51,6 +51,7 @@ if __name__ == '__main__':
     
     print('Loading AIMMD params')
     params = aimmd.Params.update('params.py')
+    network = params.network
     
     print('\nEquilibrium path ensemble initialization', end='')
     equilibrium = aimmd.PathEnsemble(
