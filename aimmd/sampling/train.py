@@ -2,7 +2,7 @@ import time
 import numpy as np
 from ..core.utils import *
 
-def _train(self, log_file=None, verbose=False, walltime=np.inf):
+def train(self, log_file=None, verbose=False, walltime=np.inf):
     
     pathensemble = None
     
