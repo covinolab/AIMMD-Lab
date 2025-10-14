@@ -12,14 +12,12 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
     """
 
     t0 = time.time()
+    self.log_file = log_file
     
     try:
         
         # run continuously
         while True:
-            
-            if log_file:
-                sys.stdout = open(f'{self.directory}/{log_file}', "a+")
             
             print("Starting simulation loop...")
             if not log_file:
