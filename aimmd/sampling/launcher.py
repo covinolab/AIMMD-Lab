@@ -15,12 +15,27 @@ WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
 def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
              task, *args):
-    #from aimmd import Params, Worker
-    #params = Params.load(f'{directory}/{params}')
+    from aimmd import Params, Worker
+
+    # explicitly load params and module
+    with open(f'{directory}/{params}', 'rb') as f:
+        data = dill.load(f)
+    
+    params_dict = data.get('params_dict')
+    module_dict = data.get('module_dict')
+    
+    # recreate the original module environment
+    module = types.ModuleType('_current_aimmd_params')
+    if module_dict:
+        module.__dict__.update(module_dict)
+    
+    sys.modules['_current_aimmd_params'] = module
+    params = Params(**params_dict)
+
+    # initiate worker and run
     worker = Worker(params, directory,
                     localid, cpus_per_task, gpus_per_task)
-    worker.run(task, *args)
-    return
+    return worker.run(task, *args)
 
 class Launcher:
     
@@ -133,7 +148,7 @@ class Launcher:
             else:
                 noappend = False
             processes.append(Process(target=_run_task, args=(
-                self.params, self.directory,
+                'params.dill', self.directory,
                 localid, cpus_per_task, gpus_per_task,
                 'simulate', f'worker{localid}.run', f'worker{localid}.log',
                 noappend)))
@@ -141,13 +156,13 @@ class Launcher:
         # trainer (sharing the same localid as manager)
         localid = len(processes)
         processes.append(Process(target=_run_task, args=(
-            self.params, self.directory,
+            'params.dill', self.directory,
             localid, cpus_per_task, gpus_per_task,
             'train', 'trainer.log')))
         
         # manager (sharing the same localid as trainer)
         processes.append(Process(target=_run_task, args=(
-            self.params, self.directory,
+            'params.dill', self.directory,
             localid, cpus_per_task, gpus_per_task,
             'manage', 'manager.log', nsteps, nframes)))
         
