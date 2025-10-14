@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import aimmd
+from aimmd import PathEnsemble
 import numpy as np
 import mdtraj as md
 import matplotlib.pyplot as plt
