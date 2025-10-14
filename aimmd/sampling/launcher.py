@@ -121,27 +121,25 @@ class Launcher:
                 noappend = True
             else:
                 noappend = False
-            process = Process(
-                target=Worker(
-                    self.params, self.directory, localid,
-                    cpus_per_task, gpus_per_task).run('simulate',
-                        f'worker{localid}.run', f'worker{localid}.log', noappend))
-            processes.append(process)
+            def task():
+                return Worker(self.params, self.directory, localid,
+                              cpus_per_task, gpus_per_task).run(
+                    'simulate', f'worker{localid}.run',
+                    f'worker{localid}.log', noappend)
+            processes.append(Process(target=task))
         
         # trainer and manager (sharing the same localid)
         localid = len(processes)
-        process = Process(
-            target=Worker(
-                self.params, self.directory, localid,
-                cpus_per_task, gpus_per_task).run('train',
-                        f'trainer.log'))
-        processes.append(process)
-        process = Process(
-            target=Worker(
-                self.params, self.directorty, localid,
-                cpus_per_task, gpus_per_task).run('manage',
-                        f'manager.log', nsteps, nframes))
-        processes.append(process)
+        def task():
+            return Worker(self.params, self.directory, localid,
+                          cpus_per_task, gpus_per_task).run(
+                'train', f'trainer.log')
+        processes.append(Process(target=task))
+        def task():
+            return Worker(self.params, self.directory, localid,
+                          cpus_per_task, gpus_per_task).run(
+                'manage', f'manager.log', nsteps, nframes)
+        processes.append(Process(target=task))
         
         # function to terminate all workers
         def terminate_all(signum, frame):
