@@ -15,27 +15,6 @@ WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
 def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
              task, *args):
-    import dill
-    from aimmd import Params, Worker
-    
-    print(params)
-
-    # # explicitly load params and module
-    # with open(f'{directory}/{params}', 'rb') as f:
-    #     data = dill.load(f)
-    
-    # params_dict = data.get('params_dict')
-    # module_dict = data.get('module_dict')
-    
-    # # recreate the original module environment
-    # module = types.ModuleType('_current_aimmd_params')
-    # if module_dict:
-    #     module.__dict__.update(module_dict)
-    
-    # sys.modules['_current_aimmd_params'] = module
-    # params = Params(**params_dict)
-
-    # initiate worker and run
     worker = Worker(params, directory,
                     localid, cpus_per_task, gpus_per_task)
     return worker.run(task, *args)
@@ -159,21 +138,28 @@ class Launcher:
         # trainer (sharing the same localid as manager)
         localid = len(processes)
         processes.append(Process(target=_run_task, args=(
-            'params.dill', self.directory,
+            self.params, self.directory,
             localid, cpus_per_task, gpus_per_task,
             'train', 'trainer.log')))
         
         # manager (sharing the same localid as trainer)
         processes.append(Process(target=_run_task, args=(
-            'params.dill', self.directory,
+            self.params, self.directory,
             localid, cpus_per_task, gpus_per_task,
             'manage', 'manager.log', nsteps, nframes)))
         
         # function to terminate all workers
-        def terminate_all(signum=None, frame=None, exit=True):
+        def terminate_all(signum=None, frame=None, timeout=5, exit=True):
             for process in processes:
                 if process.is_alive():
                     process.terminate()  # sends SIGTERM
+            
+            # force termination
+            for process in processes:
+                process.join(timeout)
+                if process.is_alive():
+                    process.kill()
+            
             if exit:
                 sys.exit(0)
         
