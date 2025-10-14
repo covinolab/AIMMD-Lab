@@ -129,7 +129,7 @@ def manage(self, n, nA, nB, eA, eB,
         print(f'\nWaiting for neural network parameters ({now()})')
         try:
             bins, densities = load_network_and_projections(network, directory)
-        except SystemExit, KeyboardInterrupt:
+        except (SystemExit, KeyboardInterrupt):
             pass
         
         # update full pathensemble
