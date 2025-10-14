@@ -19,7 +19,7 @@ def simulate(self, run_file, log_file=None, append=False):
         while True:
             
             # interrupt everything currently running
-            self.terminate_handler(exit=False)
+            self.terminate_handler(report=False, exit=False)
             
             # what to simulate
             fname = get_current_simulation(run_file)
