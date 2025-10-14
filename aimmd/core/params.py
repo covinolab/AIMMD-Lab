@@ -306,7 +306,9 @@ the target state, but rather continue for furhter `extra_extend_frames`."""
     fit : Callable = field(
         default=fit,
         metadata={'description':
-"""Fit neural network parameters to pathensemble data."""
+"""Fit neural network parameters to pathensemble data. It must accept the
+following arguments: network, pathensemble (positional arguments),
+initial_paths, verbose, worker (otional arguments)."""
                  })
     
     rescale_committor : bool = field(
