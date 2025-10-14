@@ -161,7 +161,7 @@ if __name__ == '__main__':
     path = equilibrium.path(i)
     print(':', path)
     print('Saving the path as a separate trajectory file')
-    path.write('initial2.xtc')
+    path.write('initial2.xtc', overwrite=True)
     print('Adding it to the "initial path" ensemble', end='')
     initial_path = equilibrium[:0]
     initial_path.add_path('../initial2.xtc')
