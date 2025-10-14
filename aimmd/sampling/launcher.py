@@ -19,6 +19,45 @@ def _run_task(params, directory,
                     localid, cpus_per_task, gpus_per_task)
     return worker.run(task, *args)
 
+
+def save_initial_paths(initial_paths, directory):
+    # remove existing xtc and trajectory files
+    for filename in os.listdir(directory):
+        if filename.endswith('.xtc') or filename.endswith('.trr'):
+            print(f'Removing {directory}/{filename}')
+            os.system(f'rm {directory}/*{filename}*')
+    
+    # save initial paths
+    filenames = [path.filename for path in initial_paths]
+    for i, path in enumerate(initial_paths):
+        filename = filenames[i]
+        
+        # avoid duplicates 
+        if filename in filenames[:i]:
+            filename = (f'{".".join(filenames[i].split(".")[:-1])}'
+                        f'-2.{filenames[i].split(".")[-1]}')
+            filenames[i] = filename
+  
+        # report
+        print(f'Writing {directory}/{filename}')
+        
+        # actual save: get n_atoms
+        n_atoms = len(path[0].positions)
+        
+        # create an empty Universe with n_atoms (no topology required)
+        universe = mda.Universe.empty(n_atoms, trajectory=True)
+        
+        # write positions
+        with mda.Writer(
+            f'{directory}/{filename}', n_atoms) as writer:
+            for frame in path:
+                universe.trajectory.ts.positions = frame.positions
+                if hasattr(frame, 'velocities'):
+                    universe.trajectory.ts.velocities = frame._velocities
+                universe.trajectory.ts.triclinic_dimensions = frame.triclinic_dimensions
+                writer.write(universe)
+
+
 class Launcher:
     
     def __init__(self, params, directory, n, nA, nB, eA=0, eB=0):
@@ -76,39 +115,9 @@ class Launcher:
             file.write(f'touch {self.directory}/extendB/'
                        f'indicted_trajectories.log')
         
-        # remove existing xtc and trajectory files
-        for filename in os.listdir(self.directory):
-            if filename.endswith('.xtc') or filename.endswith('.trr'):
-                print(f'Removing {self.directory}/initial_paths/{filename}')
-                os.system(f'rm {self.directory}/initial_paths/*{filename}*')
-        
         # save initial paths
-        filenames = [path.filename for path in self.params.initial_paths]
-        for i, path in enumerate(self.params.initial_paths):
-            filename = filenames[i]
-            
-            # avoid duplicates 
-            if filename in filenames[:i]:
-                filename = (f'{".".join(filenames[i].split(".")[:-1])}'
-                            f'-2.{filenames[i].split(".")[-1]}')
-                filenames[i] = filename
-
-            # report
-            print(f'Writing {self.directory}/initial_paths/{filename}')
-            
-            # actual save: get n_atoms
-            n_atoms = len(path[0].positions)
-            
-            # create an empty Universe with n_atoms (no topology required)
-            universe = mda.Universe.empty(n_atoms, trajectory=True)
-            
-            # write positions
-            with mda.Writer(
-                f'{self.directory}/initial_paths/{filename}', n_atoms) as writer:
-                for frame in path:
-                    universe.atoms.positions = frame.positions
-                    universe.atoms.dimensions = frame.dimensions
-                    writer.write(universe)
+        save_initial_paths(self.params.initial_paths,
+                           f'{self.directory}/initial_paths')
     
     def run(self, nsteps=int(1e6), nframes=np.inf, walltime=np.inf,
                  cpus_per_task=1, gpus_per_task=0):
