@@ -32,7 +32,7 @@ setup(
         'torch',
         'mdtraj',
         'MDAnalysis',
-        'matploblib'
+        'matplotlib'
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
