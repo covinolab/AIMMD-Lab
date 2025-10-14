@@ -292,11 +292,10 @@ def manage(self, n, nA, nB, eA, eB,
         cleanup(exit=False)
     
     except Exception as exception:
-        print('Error: {exception}')
+        print(f'Error: {exception}')
         cleanup()
-        raise
-
+        raise exception
+    
     finally:
         cleanup(exit=False)
         return pathensemble
-
