@@ -10,20 +10,6 @@ def manage(self, n, nA, nB, eA, eB,
     """
     
     pathensemble = None
-    original_stdout = sys.stdout
-    
-    def cleanup(signum=None, frame=None, exit=True):
-        if log_file:
-            if not sys.stdout.closed:
-                sys.stdout.close()
-            sys.stdout = original_stdout
-        
-        if exit:
-            sys.exit(0)  # exit gracefully
-    
-    # Catch SIGTERM and SIGINT
-    signal.signal(signal.SIGTERM, cleanup)
-    signal.signal(signal.SIGINT, cleanup)
     
     t0 = time.time()
     
@@ -286,16 +272,16 @@ def manage(self, n, nA, nB, eA, eB,
         step_number.close()
     
     except SystemExit:
-        cleanup()
+        self.termination_handler()
     
     except KeyboardInterrupt:
-        cleanup(exit=False)
+        self.termination_handler(exit=False)
     
     except Exception as exception:
         print(f'Error: {exception}')
-        cleanup()
+        self.termination_handler()
         raise exception
     
     finally:
-        cleanup(exit=False)
+        self.termination_handler(exit=False)
         return pathensemble
