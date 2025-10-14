@@ -8,6 +8,13 @@ def manage(self, n, nA, nB, eA, eB,
     """
     n: number of shooting workers
     """
+    n = int(n)
+    nA = int(nA)
+    nB = int(nB)
+    eA = int(eA)
+    eB = int(eB)
+    nframes = float(nframes)
+    walltime = float(walltime)
     
     pathensemble = None
     
