@@ -130,21 +130,32 @@ class Worker:
                     close_fds=True)
                 os.close(slave_fd)
                 
-                with os.fdopen(master_fd) as stdout:
-                    for line in iter(stdout.readline, ''):
-                        if get_current_simulation(run_file) != fname:
-                            self.report("Simulation changed, terminating.")
-                            self.process.terminate()
-                            break
-                        
-                        print(line, end="")
-                        if self.log:
-                            self.log.write(line)
-                            self.log.flush()
+                try:
+                    with os.fdopen(master_fd) as stdout:
+                        while True:
+                            
+                            if get_current_simulation(run_file) != fname:
+                                self.report("Simulation changed, terminating.")
+                                self.process.terminate()
+                                break
+                            
+                            try:
+                                line = stdout.readline()
+                                print(line, end="")
+                                if self.log:
+                                    self.log.write(line)
+                                    self.log.flush()
+                            except OSError:
+                                # PTY closed — treat as EOF
+                                break
+                    
+                    if self.process.poll() is None:
+                        self.process.wait()
+                    self.process = None
                 
-                if self.process.poll() is None:
-                    self.process.wait()
-                self.process = None
+                # catch any final PTY read errors cleanly
+                except OSError:
+                    pass
         
         except SystemExit:
             self.terminate_handler()
