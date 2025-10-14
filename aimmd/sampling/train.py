@@ -277,6 +277,10 @@ def train(self, log_file=None, verbose=False):
             np.save(f'{directory}/bins.npy', bins)
             np.save(f'{directory}/densities.npy', densities)
             sleep(1)
+            
+    except Exception as exception:
+        print('Error: {exception}')
+        raise
     
     finally:
         cleanup(exit=False)
