@@ -124,8 +124,16 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
                 wB, xPB, extremesB = resultB[0], resultB[4], resultB[6]
                 pathensemble.weights = (wA + wB) * pathensemble.are_excursions
                 # bonus track: estimate rates
-                kAB = np.nan_to_num(1 / np.sum(wA * pathensemble.internal_lengths))
-                kBA = np.nan_to_num(1 / np.sum(wB * pathensemble.internal_lengths))
+                kAB = np.sum(wA * pathensemble.internal_lengths)
+                if kAB:
+                    kAB = 1 / kAB
+                else:
+                    kAB = np.nan
+                kBA = np.sum(wB * pathensemble.internal_lengths)
+                if kBA:
+                    kBA = 1 / kBA
+                else:
+                    kBA = np.nan
                 print(f'    kAB estimate: {kAB:.3e} [1/dt]')
                 print(f'    kBA estimate: {kBA:.3e} [1/dt]')
                 
