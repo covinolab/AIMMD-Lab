@@ -114,7 +114,7 @@ class Launcher:
         processes = []
         
         # simulators
-        for i in range(nA + nB + eA + eB + n):
+        for i in range(self.nA + self.nB + self.eA + self.eB + self.n):
             localid = len(processes)
             run_file = f'{self.directory}/worker{localid}.run'
             log_file = f'{self.directory}/worker{localid}.log'
