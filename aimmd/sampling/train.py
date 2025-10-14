@@ -3,6 +3,7 @@ from ..core.utils import *
 def train(self, log_file=None, verbose=False):
     
     original_stdout = sys.stdout
+    pathensemble = None
     
     def cleanup(signum=None, frame=None, exit=True):
         if log_file:
@@ -279,3 +280,4 @@ def train(self, log_file=None, verbose=False):
     
     finally:
         cleanup(exit=False)
+        return pathensemble
