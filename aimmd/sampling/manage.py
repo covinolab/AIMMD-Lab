@@ -1,6 +1,7 @@
 from ..core.utils import *
 
-def manage(self, n, log_file=None, nsteps=int(1e6), nframes=np.inf):
+def manage(self, n, nA, nB, eA, eB,
+           log_file=None, nsteps=int(1e6), nframes=np.inf):
     """
     n: number of shooting workers
     """
