@@ -23,7 +23,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
             sys.stdout = open(os.path.join(self.directory, log_file_path), "a+")
         
         # get aimmd run parameters
-        log_file.write(f'\nLoading AIMMD run parameters ({now()})')
+        print(f'\nLoading AIMMD run parameters ({now()})')
         
         # extract necessary parameters (in order of appearance)
         directory = self.directory
@@ -46,13 +46,13 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
         trajectory_extension = self.params.trajectory_extension
         save_interval = self.params.save_interval
         
-        log_file.write(f'\nLoading initial path(s) ({now()})')
+        print(f'\nLoading initial path(s) ({now()})')
         initial_paths = load_initial_paths(f'{directory}/initial_paths', topology,
             states_function, descriptors_function, values_function)
-        log_file.write(f'    {initial_paths}')
+        print(f'    {initial_paths}')
         assert initial_paths.nframes
         
-        log_file.write(f'\nLoading shooting chains ({now()})')
+        print(f'\nLoading shooting chains ({now()})')
         chains = []
         backwards = []  # shooting simulation segments
         forwards = []
@@ -63,7 +63,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
                 values_function, load_h5=True)
             chain.save(f'{chain.directory}/chain.h5', directory='.')
             chains.append(chain)
-            log_file.write(f'    {chain}')
+            print(f'    {chain}')
             backwards.append(chain[:0])
             forwards.append(chain[:0])
         
@@ -74,10 +74,10 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
         else:
             available_transitions = []
         
-        log_file.write(f'\nLoading selection pools ({now()})')
+        print(f'\nLoading selection pools ({now()})')
         pools = []
         for chain_id in range(n):
-            log_file.write(f'\n    shots{chain_id}')
+            print(f'\n    shots{chain_id}')
             chain = chains[chain_id]
             pool = update_selection_pool(PathEnsemble(), chain, selection_pool_size,
                 None, initial_paths, at_least_one_transition_in_pool, True)
@@ -86,7 +86,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
             if len(chain) and chain.weights[-1] and \
                 pool.trajectory_files[-1] != chain.trajectory_files[-1]:
                 pool_index = np.load(f'{chain.directory}/pool_index.npy')
-                log_file.write(f'\n!!! updating pool with missing {chain.directory}/'
+                print(f'\n!!! updating pool with missing {chain.directory}/'
                       f'{chain.trajectory_files[-1]}')
                 pool = update_selection_pool(
                     pool, chain, selection_pool_size, pool_index,
@@ -96,7 +96,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
             pool.save(f'{chains[chain_id].directory}/pool.h5', directory='.')
             pools.append(pool)
         
-        log_file.write(f'\nLoading free simulations ({now()})')
+        print(f'\nLoading free simulations ({now()})')
         eq_current, eq_completed, ext_current = [], [], []
         update_equilibrium_simulations(
             eq_current, eq_completed, directory, nA, nB, initial_paths, 
@@ -110,7 +110,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
         
         # extra equilibriumA and equilibriumB
         if len(extra_equilibriumA):
-            log_file.write(f'\nLoading extra free simulations around A ({now()})')
+            print(f'\nLoading extra free simulations around A ({now()})')
             equilibriumA += update_pathensemble(directory, topology,
                 states_function, descriptors_function, values_function,
                 add_missing_paths=False, add_missing_frames=False,
@@ -118,7 +118,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
                 equilibriumA_states_map=extra_equilibriumA_states_map,
                 verbose=True)[0]
         if len(extra_equilibriumB):
-            log_file.write(f'\nLoading extra free simulations around B ({now()})')
+            print(f'\nLoading extra free simulations around B ({now()})')
             equilibriumB += update_pathensemble(directory, topology,
                 states_function, descriptors_function, values_function,
                 add_missing_paths=False, add_missing_frames=False,
@@ -127,7 +127,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
                 verbose=True)[0]  
         
         # will wait until the training part completed at least one cycle
-        log_file.write(f'\nWaiting for neural network parameters ({now()})')
+        print(f'\nWaiting for neural network parameters ({now()})')
         bins, densities = load_network_and_projections(network, directory)
         
         # update full pathensemble
@@ -138,7 +138,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
             initial=int(sum([len(chain) for chain in chains])), file=log_file)
         
         # main cycle
-        log_file.write(f'\nStarting the main cycle ({now()})')
+        print(f'\nStarting the main cycle ({now()})')
         while step_number.n < nsteps:
             
             # update candidate transitions
@@ -159,7 +159,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
                 scorporate_pathensembles(pathensemble)
             
             if pathensemble.nframes > nframes:
-                log_file.write(f'\nReached target total number of frames {nframes} ({now()})')
+                print(f'\nReached target total number of frames {nframes} ({now()})')
                 break
             
             # extra equilibriumA and equilibriumB
@@ -223,13 +223,13 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
                 # update pool
                 pool_index = np.load(f'{chains[k].directory}/pool_index.npy')
                 if chains[k].weights[-1]:
-                    log_file.write(f'\nUpdating selection pool shots{k}')
+                    print(f'\nUpdating selection pool shots{k}')
                     pools[k] = update_selection_pool(
                         pools[k], chains[k], selection_pool_size, pool_index,
                         initial_paths, at_least_one_transition_in_pool)
                 
                 # update step number and save
-                log_file.write(''); step_number.update(1); write('\n')
+                print(''); step_number.update(1); write('\n')
                 chains[k].save(f'{chains[k].directory}/chain.h5', directory='.')
                 pools[k].save(f'{pools[k].directory}/pool.h5', directory='.')
                 if step_number.n % save_interval == 0:
@@ -258,16 +258,16 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
         
         # complete
         step_number.close()
-        log_file.write(f'\nReached target nsteps {step_number.n} >= {nsteps} ({now()})')
+        print(f'\nReached target nsteps {step_number.n} >= {nsteps} ({now()})')
         
         # two last training rounds (sure to have most updated data)
-        log_file.write(f'\nLast training rounds')
+        print(f'\nLast training rounds')
         for _ in range(2):
             remove(f'{directory}/network.h5')
             remove(f'{directory}/bins.npy')
             remove(f'{directory}/densities.npy')
             load_network_and_projections(network, directory)
-        log_file.write(f'*** completed ({now()})')
+        print(f'*** completed ({now()})')
         
         # handle dependency
         step_number.close()
