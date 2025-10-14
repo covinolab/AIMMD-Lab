@@ -11,6 +11,12 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
     Continuously run simulations as directed by the run file.
     noappend: bool, add Gromacs' -noappend flag.
     """
+
+    if noappend == 'False' or noappend == 'false':
+        noappend = False
+    else:
+        noappend = bool(noappend)
+    walltime = float(walltime)
     
     try:
         self.log_file = log_file
