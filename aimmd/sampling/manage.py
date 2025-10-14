@@ -6,6 +6,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
     write(f'\nLoading AIMMD run parameters ({now()})', log_file)
     
     # extract necessary parameters (in order of appearance)
+    directory = self.directory
     topology = self.params.topology
     states_function = self.params.states_function
     descriptors_function = self.params.descriptors_function
