@@ -114,7 +114,6 @@ class Launcher:
             'train', 'trainer.log')))
         
         # manager (sharing the same localid as trainer)
-        localid = len(processes)
         processes.append(Process(target=_run_task, args=(
             'params.dill', self.directory,
             localid, cpus_per_task, gpus_per_task,
