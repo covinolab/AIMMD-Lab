@@ -43,6 +43,7 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
         # start the main loop
         t0 = time.time()
         while True:
+            
             # maximum time
             if time.time() - t0 > walltime:
                 self.interrupt = True
