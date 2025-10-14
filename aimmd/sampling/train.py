@@ -1,11 +1,11 @@
 from ..core.utils import *
 
 def train(self, log_file=None, verbose=False):
-    if log_file:
-        log_file = f'{self.directory}/{logfile}'
+    with (open(f'{self.directory}/{log_file}', 'a+') if log_file
+          else nullcontext(sys.stdout)) as log_file:
     
     # get aimmd run parameters
-    write(f'\nLoading AIMMD run parameters ({now()})', log_file)
+    log_file.write(f'\nLoading AIMMD run parameters ({now()})')
     
     # extract necessary parameters (in order of appearance)
     directory = self.directory
@@ -26,17 +26,17 @@ def train(self, log_file=None, verbose=False):
     reweight_parameters = self.params.reweight_parameters
     do_tps = self.params.do_tps
     
-    write(f'\nLoading initial path(s) ({now()})', log_file)
+    log_file.write(f'\nLoading initial path(s) ({now()})')
     initial_paths = load_initial_paths(f'{directory}/initial_paths', topology,
         states_function, descriptors_function, values_function)
     assert initial_paths.nframes
-    write(f'    {initial_paths}')
+    log_file.write(f'    {initial_paths}')
     
     # load the network if it is already possible
     load_network_and_projections(network, directory, wait=False)
     
     while True:    
-        write(f'\nLoading most recent path ensemble ({now()})', log_file)
+        log_file.write(f'\nLoading most recent path ensemble ({now()})')
         pathensemble, added_nframes = update_pathensemble(directory, topology,
             states_function, descriptors_function, values_function,
             add_missing_paths=False, add_missing_frames=False, verbose=True)
@@ -45,7 +45,7 @@ def train(self, log_file=None, verbose=False):
         
         # extra equilibriumA and equilibriumB
         if len(extra_equilibriumA):
-            write(f'\nLoading extra free simulations around A ({now()})', log_file)
+            log_file.write(f'\nLoading extra free simulations around A ({now()})')
             equilibriumA += update_pathensemble(directory, topology,
                 states_function, descriptors_function, values_function,
                 add_missing_paths=False, add_missing_frames=False,
@@ -53,7 +53,7 @@ def train(self, log_file=None, verbose=False):
                 equilibriumA_states_map=extra_equilibriumA_states_map,
                 verbose=True)[0]
         if len(extra_equilibriumB):
-            write(f'\nLoading extra free simulations around B ({now()})', log_file)
+            log_file.write(f'\nLoading extra free simulations around B ({now()})')
             equilibriumB += update_pathensemble(directory, topology,
                 states_function, descriptors_function, values_function,
                 add_missing_paths=False, add_missing_frames=False,
@@ -62,28 +62,28 @@ def train(self, log_file=None, verbose=False):
                 verbose=True)[0]
         pathensemble = shooting_chains + equilibriumA + equilibriumB
         
-        write(f'\nTraining the network ({now()})', log_file)
+        log_file.write(f'\nTraining the network ({now()})')
         losses, *_ = fit(network, pathensemble, initial_paths, verbose=verbose)
         if not len(losses):
             if 'network.h5' in os.listdir(directory):
-                write('!!! reloaded most recent network because training failed', log_file)
+                log_file.write('!!! reloaded most recent network because training failed')
                 bins, densities = load_network_and_projections(network, directory)
             else:
-                write('!!! training failed, retrying', log_file)
+                log_file.write('!!! training failed, retrying')
                 continue
         
-        write(f'\nUpdating the path ensemble values ({now()})', log_file)
+        log_file.write(f'\nUpdating the path ensemble values ({now()})')
         pathensemble.update_values()
         initial_paths.update_values()
         
-        write(f'\nObtaining the adaptation bins ({now()})', log_file)
+        log_file.write(f'\nObtaining the adaptation bins ({now()})')
         bins = get_bins(pathensemble, nbins,
             cutoff_max=cutoff_max,
             initial_paths=initial_paths,
             states=include_marginal_bins)
-        write(f'    bins: {array2string(bins, 9)}', log_file)
+        log_file.write(f'    bins: {array2string(bins, 9)}')
         
-        write(f'\nReweighting the full path ensemble ({now()})', log_file)
+        log_file.write(f'\nReweighting the full path ensemble ({now()})')
         if not do_tps:
             _reweight_parameters = reweight_parameters.copy()
             if 'sp_cutoff_min' not in _reweight_parameters and len(bins) > 3:
@@ -98,13 +98,13 @@ def train(self, log_file=None, verbose=False):
             # bonus track: estimate rates
             kAB = np.nan_to_num(1 / np.sum(wA * pathensemble.internal_lengths))
             kBA = np.nan_to_num(1 / np.sum(wB * pathensemble.internal_lengths))
-            write(f'    kAB estimate: {kAB:.3e} [1/dt]', log_file)
-            write(f'    kBA estimate: {kBA:.3e} [1/dt]', log_file)
+            log_file.write(f'    kAB estimate: {kAB:.3e} [1/dt]')
+            log_file.write(f'    kBA estimate: {kBA:.3e} [1/dt]')
             
             # rescale committor: determine params
             if rescale_committor:
-                write(f'\nRescaling committor to match '
-                      f'the crossing probability ({now()})', log_file)
+                log_file.write(f'\nRescaling committor to match '
+                      f'the crossing probability ({now()})')
                 
                 # process crossing probability
                 if len(xPA):
@@ -172,8 +172,8 @@ def train(self, log_file=None, verbose=False):
                     ts = q[np.argmin(np.abs(xPA / 2 - 1.))]
                 elif xPB[0] > 2 and np.sum(from_B_wins):
                     ts = np.clip(q[np.argmin(np.abs(xPB / 2 - 1.))], -8., 8.)
-                write(f'*** transition state shift by {ts:.3f}, '
-                      f'total xP rescaling by {r:.3f}', log_file)
+                log_file.write(f'*** transition state shift by {ts:.3f}, '
+                      f'total xP rescaling by {r:.3f}')
                                 
                 # theoretical line
                 y = np.zeros(len(q))
@@ -199,9 +199,9 @@ def train(self, log_file=None, verbose=False):
                 except:
                     n = 0
                 if not n:
-                    write(f'!!! rescaling is not possible (yet)', log_file)
+                    log_file.write(f'!!! rescaling is not possible (yet)')
                 else:
-                    write(f'*** generating {n} knots', log_file)
+                    log_file.write(f'*** generating {n} knots')
                 
                 # fill
                 knots = np.zeros(n)
@@ -221,7 +221,7 @@ def train(self, log_file=None, verbose=False):
                     knots = np.append(knots[0], knots[1:][keepers])
                 
                 for knot, value in zip(knots, values):
-                    write(f'    {knot:+7.3f} -> {value:+7.3f}', log_file)
+                    log_file.write(f'    {knot:+7.3f} -> {value:+7.3f}')
                 
                 # load interpolation in network
                 network.rescale_knots[:len(knots)] = torch.from_numpy(knots)
@@ -236,12 +236,12 @@ def train(self, log_file=None, verbose=False):
                     cutoff_max=cutoff_max,
                     initial_paths=initial_paths,
                     states=include_marginal_bins)
-                write(f'    rescaled bins: {array2string(bins, 18)}', log_file)
+                log_file.write(f'    rescaled bins: {array2string(bins, 18)}')
         else:  # only TPS weights
             equilibriumA.weights = 0.
             equilibriumB.weights = 0.
         
-        write(f'\nProjecting the {"T" if do_tps else ""}PE density ({now()})', log_file)
+        log_file.write(f'\nProjecting the {"T" if do_tps else ""}PE density ({now()})')
         densities = pathensemble.project(bins)
         if not hasattr(densities, '__len__'):
             densities = np.zeros(len(bins) - 1)
@@ -249,11 +249,11 @@ def train(self, log_file=None, verbose=False):
             densities[-1] += 1.
         densities[densities == 0.] = 1e-9
         densities /= np.sum(densities)
-        write(f'    densities: {array2string(densities, 14)}', log_file)
+        log_file.write(f'    densities: {array2string(densities, 14)}')
         
         # save
         fname = f'network.h5'
-        write(f'\nSaving network parameters to {fname} ({now()})', log_file)
+        log_file.write(f'\nSaving network parameters to {fname} ({now()})')
         torch.save(network.state_dict(), f'{directory}/{fname}')
         np.save(f'{directory}/bins.npy', bins)
         np.save(f'{directory}/densities.npy', densities)
