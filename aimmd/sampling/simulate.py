@@ -15,6 +15,9 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
     
     try:
         self.log_file = log_file
+        print("Starting simulation loop ({now()})...")
+        if not log_file:
+            print(f"Press Control+C to interrupt.")
         
         # run continuously
         while True:
@@ -22,10 +25,6 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
             # received the signal
             if self.interrupt:
                 break
-            
-            print("Starting simulation loop...")
-            if not log_file:
-                print(f"Press Control+C to interrupt.")
             
             # maximum time
             if time.time() - t0 > walltime:
@@ -40,8 +39,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
                 continue  # no job assigned yet
             
             # (re)-start logging
-            self.log = open(
-                f'{self.directory}/{log_file}', "a+") if log_file else None
+            self.log_file = log_file
             print(f"Starting simulating {fname} ({now()})...")         
             
             # create command
