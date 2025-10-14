@@ -15,6 +15,7 @@ WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
 def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
              task, *args):
+    import dill
     from aimmd import Params, Worker
 
     # explicitly load params and module
