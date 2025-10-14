@@ -2,9 +2,9 @@ import time
 import numpy as np
 from ..core.utils import *
 
-def manage(self, n, nA, nB, eA, eB,
-           log_file=None, nsteps=int(1e6),
-           nframes=np.inf, walltime=np.inf):
+def _manage(self, n, nA, nB, eA, eB,
+            log_file=None, nsteps=int(1e6),
+            nframes=np.inf, walltime=np.inf):
     """
     n: number of shooting workers
     """
