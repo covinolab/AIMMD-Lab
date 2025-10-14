@@ -120,7 +120,7 @@ class Worker:
                 master_fd, slave_fd = pty.openpty()
                 
                 # run command
-                process = subprocess.Popen(
+                self.process = subprocess.Popen(
                     command,
                     stdin=slave_fd,
                     stdout=slave_fd,
