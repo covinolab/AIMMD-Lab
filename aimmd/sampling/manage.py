@@ -26,10 +26,10 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
     save_interval = self.params.save_interval
     
     write(f'\nLoading initial path(s) ({now()})', log_file)
-    initial_path = load_initial_paths(f'{directory}/initial_paths', topology,
+    initial_paths = load_initial_paths(f'{directory}/initial_paths', topology,
         states_function, descriptors_function, values_function)
-    write(f'    {initial_path}', log_file)
-    assert initial_path.nframes
+    write(f'    {initial_paths}', log_file)
+    assert initial_paths.nframes
     
     write(f'\nLoading shooting chains ({now()})', log_file)
     chains = []
@@ -59,7 +59,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
         write(f'\n    shots{chain_id}', log_file)
         chain = chains[chain_id]
         pool = update_selection_pool(PathEnsemble(), chain, selection_pool_size,
-            None, initial_path, at_least_one_transition_in_pool, True)
+            None, initial_paths, at_least_one_transition_in_pool, True)
     
         # attempt recovery from unpleasant situation (not supported with TPS)
         if len(chain) and chain.weights[-1] and \
@@ -69,7 +69,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
                   f'{chain.trajectory_files[-1]}', log_file)
             pool = update_selection_pool(
                 pool, chain, selection_pool_size, pool_index,
-                initial_path, at_least_one_transition_in_pool)
+                initial_paths, at_least_one_transition_in_pool)
             remove(f'{chain.directory}/back.xtc')  # call for new simulation
         
         pool.save(f'{chains[chain_id].directory}/pool.h5', directory='.')
@@ -78,7 +78,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
     write(f'\nLoading free simulations ({now()})', log_file)
     eq_current, eq_completed, ext_current = [], [], []
     update_equilibrium_simulations(
-        eq_current, eq_completed, directory, nA, nB, initial_path, 
+        eq_current, eq_completed, directory, nA, nB, initial_paths, 
         aimmd_run_params, eA, eB, ext_current, available_transitions,
         save_h5=True, simulate=False, verbose=True)
     
@@ -128,7 +128,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
         
         # manage free simulations
         update_equilibrium_simulations(
-            eq_current, eq_completed, directory, nA, nB, initial_path, 
+            eq_current, eq_completed, directory, nA, nB, initial_paths, 
             aimmd_run_params, eA, eB, ext_current, available_transitions,
             save_h5=True, simulate=True, verbose=False)
         
@@ -205,7 +205,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
                 write(f'\nUpdating selection pool shots{k}', log_file)
                 pools[k] = update_selection_pool(
                     pools[k], chains[k], selection_pool_size, pool_index,
-                    initial_path, at_least_one_transition_in_pool)
+                    initial_paths, at_least_one_transition_in_pool)
             
             # update step number and save
             write('', log_file); step_number.update(1); write('\n', log_file)
