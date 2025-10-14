@@ -1,6 +1,8 @@
+import time
+import numpy as np
 from ..core.utils import *
 
-def train(self, log_file=None, verbose=False):
+def train(self, log_file=None, verbose=False, walltime=np.inf):
     
     original_stdout = sys.stdout
     pathensemble = None
@@ -17,6 +19,8 @@ def train(self, log_file=None, verbose=False):
     # Catch SIGTERM and SIGINT
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
+    
+    t0 = time.time()
     
     try:
         if log_file:
@@ -53,7 +57,12 @@ def train(self, log_file=None, verbose=False):
         # load the network if it is already possible
         load_network_and_projections(network, directory, wait=False)
         
-        while True:    
+        while True:
+            
+            # maximum time
+            if time.time() - t0 > walltime:
+                break
+            
             print(f'\nLoading most recent path ensemble ({now()})')
             pathensemble, added_nframes = update_pathensemble(directory, topology,
                 states_function, descriptors_function, values_function,
@@ -289,3 +298,7 @@ def train(self, log_file=None, verbose=False):
         print('Error: {exception}')
         cleanup()
         raise
+    
+    finally:
+        cleanup(exit=False)
+        return pathensemble
