@@ -31,7 +31,7 @@ setup(
         'scipy',
         'torch',
         'mdtraj',
-        'MDAnalysis'
+        'MDAnalysis',
         'matploblib'
     ],
     classifiers=[
