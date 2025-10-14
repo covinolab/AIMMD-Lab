@@ -129,7 +129,7 @@ class Launcher:
             else:
                 noappend = False
             processes.append(Process(target=_run_task, args=(
-                self.params, self.directory,
+                'params.dill', self.directory,
                 localid, cpus_per_task, gpus_per_task,
                 'simulate', f'worker{localid}.run', f'worker{localid}.log',
                 noappend)))
@@ -137,13 +137,13 @@ class Launcher:
         # trainer (sharing the same localid as manager)
         localid = len(processes)
         processes.append(Process(target=_run_task, args=(
-            self.params, self.directory,
+            'params.dill', self.directory,
             localid, cpus_per_task, gpus_per_task,
             'train', 'trainer.log')))
         
         # manager (sharing the same localid as trainer)
         processes.append(Process(target=_run_task, args=(
-            self.params, self.directory,
+            'params.dill', self.directory,
             localid, cpus_per_task, gpus_per_task,
             'manage', 'manager.log', nsteps, nframes)))
         
@@ -159,7 +159,6 @@ class Launcher:
         signal.signal(signal.SIGTERM, terminate_all)
         
         # start all processes
-        print('here')
         for process in processes:
             process.start()
         
