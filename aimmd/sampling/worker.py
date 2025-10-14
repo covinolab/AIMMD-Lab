@@ -81,9 +81,9 @@ class Worker:
         # report
         if report:
             if signum:
-                print(f"Received signal {signum}, terminating process ({now()}).")
+                print(f"Received signal {signum}, terminating process ({now()})")
             else:
-                print(f"Terminating process ({now()}).")
+                print(f"Terminating process ({now()})")
         
         # end current process
         if self.process and self.process.poll() is None:
