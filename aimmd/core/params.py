@@ -4,13 +4,14 @@ AIMMD parameters management / defaults.
 
 import sys
 import dill
+import torch
 import types
 import shutil
 import linecache
 import numpy as np
 import MDAnalysis as mda
 from tqdm import tqdm
-from .utils import class_or_instancemethod, fit  # base fit function
+from .utils import class_or_instancemethod, fit, DummyNetwork
 from typing import List, Callable
 from pathlib import Path
 from dill.source import getsource
@@ -138,6 +139,13 @@ as Gromacs."""
     
     # other engines will be defined here
     # [...]
+    
+    # neural network
+    network : torch.nn.Module = field(
+        default=DummyNetwork(),
+        metadata={'description':
+"""Neural network model (used for logit committor estimates in AIMMD)."""
+                 })
     
     # shooting point selection options
     
@@ -452,7 +460,7 @@ task together."""
         hints = {f.name: f.type for f in fields(self)}
         
         # check
-        if name in hints and name not in ['initial_paths', 'engine']:
+        if name in hints and name not in ['initial_paths', 'engine', 'network']:
             expected_type = hints[name]
             
             # function
@@ -493,7 +501,13 @@ task together."""
             value = value.lower()
             if value not in ['gromacs', 'toy']:
                 raise TypeError(f'{name} must be either "gromacs" or "toy", '
-                                f'got {name}')
+                                f'got {value}')
+        
+        # special check: network
+        if name == 'network':
+            if not isinstance(value, torch.nn.Module):
+                raise TypeError(f'{name} must be an instance of torch.nn.Module, '
+                                f'got {type(value)}')
         
         # assign
         super().__setattr__(name, value)
