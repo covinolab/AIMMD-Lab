@@ -96,7 +96,7 @@ class Launcher:
                     universe.atoms.positions = frame.positions
                     writer.write(universe)
     
-    def run(self, nsteps=np.inf, nframes=np.inf, walltime=np.inf,
+    def run(self, nsteps=int(1e6), nframes=np.inf, walltime=np.inf,
                  cpus_per_task=1, gpus_per_task=1):
         """
         nsteps: default inf, maximum number of shooting simulations
