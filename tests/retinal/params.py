@@ -114,7 +114,8 @@ def values_function(descriptors):
 def fit(network, pathensemble,
         keys=None,
         initial_paths=None,
-        verbose=False):
+        verbose=False,
+        worker=worker):
     return aimmd.core.utils.fit(network, pathensemble,
         keys=keys,
         initial_paths=initial_paths,
@@ -128,4 +129,5 @@ def fit(network, pathensemble,
         epochs=100,
         batch_size=4096,
         stop=50.,
-        verbose=verbose)
+        verbose=verbose,
+        worker=worker)
