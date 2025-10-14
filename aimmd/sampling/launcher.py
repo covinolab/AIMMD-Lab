@@ -248,7 +248,7 @@ class Launcher:
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
                 file.write(f'  $WORKER {self.directory} params.dill simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
-                file.write(f';;\n')
+                file.write(f'  ;;\n')
             
             # extension workers
             begin = i + 1
@@ -263,7 +263,7 @@ class Launcher:
                 file.write(f'  # worker {i} (extension {state}{j})\n')
                 file.write(f'  $WORKER {self.directory} params.dill simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
-                file.write(f';;\n')
+                file.write(f'  ;;\n')
             
             # shooting workers
             begin = i + 1
@@ -273,7 +273,7 @@ class Launcher:
                 file.write(f'  # worker {i} (shooting {j})\n')
                 file.write(f'  $WORKER {self.directory} params.dill simulate '
                            f'worker{i}.run worker{i}.log\n')
-                file.write(f';;\n')
+                file.write(f'  ;;\n')
             
             # trainer and manager
             file.write(f'{i + 1})\n')
@@ -293,7 +293,7 @@ class Launcher:
             file.write(f'    wait -n\n  done\n')
             file.write(f'  rm {self.directory}/*.run\n')
             file.write(f'  scancel $SLURM_JOB_ID\n')
-            file.write(f';;\n')
+            file.write(f'  ;;\n')
 
             # end
             file.write(f'*)\n  echo "[Worker \$i] No task assigned."\n;;\n')
