@@ -1,5 +1,4 @@
 import os
-import pty
 import sys
 import psutil
 import signal
