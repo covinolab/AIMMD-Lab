@@ -1,4 +1,5 @@
 import time
+import numpy as np
 from ..core.utils import *
 
 def manage(self, n, nA, nB, eA, eB,
