@@ -276,7 +276,13 @@ def manage(self, n, nA, nB, eA, eB,
         # handle dependency
         step_number.close()
     
-    finally:
+    except SystemExit:
+        cleanup()
+    
+    except KeyboardInterrupt:
         cleanup(exit=False)
-        return pathensemble
-
+    
+    except Exception as exception:
+        print('Error: {exception}')
+        cleanup()
+        raise
