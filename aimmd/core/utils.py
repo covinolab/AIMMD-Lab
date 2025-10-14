@@ -1533,7 +1533,7 @@ def initialize_simulation(frames, params, *fnames):
     print(f'*** kinetic factor: {kinetic_factor:.3e}')
     
     # just copy the frame and rescale energy
-    if not grompp or not randomize_velocities:
+    if not grompp or not random_velocities:
         frames.write(f'{_fname}.trr', frame_indices=[-1], 
                      invert_velocities=invert_velocities)
         
