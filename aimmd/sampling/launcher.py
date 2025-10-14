@@ -107,6 +107,7 @@ class Launcher:
                 f'{self.directory}/initial_paths/{filename}', n_atoms) as writer:
                 for frame in path:
                     universe.atoms.positions = frame.positions
+                    universe.atoms.dimensions = frame.dimensions
                     writer.write(universe)
     
     def run(self, nsteps=int(1e6), nframes=np.inf, walltime=np.inf,
