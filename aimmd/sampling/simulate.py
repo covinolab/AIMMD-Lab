@@ -23,7 +23,7 @@ def simulate(self, run_file, log_file=None, noappend=False):
             self.terminate_handler(report=False, exit=False)
             
             # what to simulate
-            fname = get_current_simulation(run_file)
+            fname = get_current_simulation(f'{self.directory}/{run_file}')
             if not fname:
                 continue  # no job assigned yet
             
@@ -59,7 +59,8 @@ def simulate(self, run_file, log_file=None, noappend=False):
                 with os.fdopen(master_fd) as stdout:
                     while True:
                         
-                        if get_current_simulation(run_file) != fname:
+                        if get_current_simulation(
+                            f'{self.directory}/{run_file}') != fname:
                             self.report("Target simulation file changed.")
                             break
                         
