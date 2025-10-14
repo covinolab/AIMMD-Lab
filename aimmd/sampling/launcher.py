@@ -16,7 +16,7 @@ def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
              task, *args):
     from aimmd.core.params import Params
-    return Worker(Params.load(params), directory,
+    return Worker(Params.load(f'{directory}/{params}'), directory,
                   localid, cpus_per_task, gpus_per_task).run(task, *args)
 
 class Launcher:
@@ -149,11 +149,12 @@ class Launcher:
             'manage', 'manager.log', nsteps, nframes)))
         
         # function to terminate all workers
-        def terminate_all(signum=None, frame=None):
+        def terminate_all(signum=None, frame=None, exit=True):
             for process in processes:
                 if process.is_alive():
                     process.terminate()  # sends SIGTERM
-            sys.exit(0)
+            if exit:
+                sys.exit(0)
         
         # register signal handlers in the main process
         signal.signal(signal.SIGINT, terminate_all)
@@ -174,7 +175,7 @@ class Launcher:
                         # one process terminated
                         print(f"Worker {process.pid} terminated "
                               f"(exitcode={process.exitcode}), terminating all")
-                        terminate_all()
+                        terminate_all(exit=False)
                     if process.is_alive():
                         all_done = False
                 
@@ -184,7 +185,7 @@ class Launcher:
                 # check wall time
                 if time.time() - t0 > walltime:
                     print(f"Wall time {walltime} exceeded, terminating all")
-                    terminate_all()
+                    terminate_all(exit=False)
                 
                 time.sleep(1)
         
