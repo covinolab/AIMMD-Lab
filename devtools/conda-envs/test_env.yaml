@@ -9,6 +9,15 @@ dependencies:
   - python
   - pip
 
+  - tqdm
+  - numpy
+  - scipy
+  - pytorch
+  - matplotlib
+  - MDAnalysis
+  - mdtraj
+  - psutil
+
     # Testing
   - pytest
   - pytest-cov
