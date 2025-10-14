@@ -15,6 +15,7 @@ def manage(self, n, nA, nB, eA, eB,
     
     try:
         if log_file:
+            self.log_file = log_file
             sys.stdout = open(f'{self.directory}/{log_file}', "a+")
         
         # get aimmd run parameters
