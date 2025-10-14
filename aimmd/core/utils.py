@@ -1249,7 +1249,7 @@ def fit(network, pathensemble,
 ###############################################################################
 
 def load_network_and_projections(
-    network, directory, backup_directory=None, wait=True):
+    network, directory, backup_directory=None, wait=True, worker=None):
     device = next(network.parameters()).device
     
     # advance only if data are present
@@ -1260,13 +1260,10 @@ def load_network_and_projections(
             bins = np.load(f'{directory}/bins.npy')
             densities = np.load(f'{directory}/densities.npy')
             break
-        except (KeyboardInterrupt, SystemExit):
-            return [], []
         except:
-            if wait:
-                sleep(.1)
-            else:  # nothing here
+            if not wait or (worker is not None and worker.interrupt):
                 return [], []
+            sleep(.1)
     
     # backup
     if backup_directory is not None:  # at time of shooting init
