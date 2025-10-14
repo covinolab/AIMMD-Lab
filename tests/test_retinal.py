@@ -206,12 +206,12 @@ if __name__ == '__main__':
         print('MANAGER FAILED')
     
     t0 = time.time()
-    aimmd.Worker(params, 'run1').simulate('worker0.run', append=True, walltime=10)
+    aimmd.Worker(params, 'run1').simulate('worker0.run', noappend=True, walltime=10)
     if time.time() - t0 < 10:
         print('FREE A FAILED')
 
     t0 = time.time()
-    aimmd.Worker(params, 'run1').simulate('worker1.run', append=True, walltime=10)
+    aimmd.Worker(params, 'run1').simulate('worker1.run', noappend=True, walltime=10)
     if time.time() - t0 < 10:
         print('FREE B FAILED')
 
@@ -230,7 +230,7 @@ if __name__ == '__main__':
 
     print('\nTest appending')
     t0 = time.time()
-    aimmd.Worker(params, 'run1').simulate('worker0.run', append=True, walltime=10)
+    aimmd.Worker(params, 'run1').simulate('worker0.run', noappend=True, walltime=10)
     if time.time() - t0 < 10:
         print('FREE A FAILED')
     
