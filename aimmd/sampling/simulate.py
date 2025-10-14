@@ -11,8 +11,6 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
     Continuously run simulations as directed by the run file.
     noappend: bool, add Gromacs' -noappend flag.
     """
-
-    t0 = time.time()
     
     try:
         self.log_file = log_file
@@ -21,6 +19,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
             print(f"Press Control+C to interrupt.")
         
         # run continuously
+        t0 = time.time()
         while True:
             
             # maximum time
@@ -70,6 +69,10 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
             try:
                 with os.fdopen(master_fd) as stdout:
                     while True:
+                        
+                        # maximum time
+                        if time.time() - t0 > walltime:
+                            self.interrupt = True
                         
                         # received the signal
                         if self.interrupt:
