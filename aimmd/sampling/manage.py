@@ -265,11 +265,11 @@ def manage(self, n, nA, nB, eA, eB,
         if not self.interrupt:
             print(f'\nLast training rounds')
             for _ in range(2):
-            remove(f'{directory}/network.h5')
-            remove(f'{directory}/bins.npy')
-            remove(f'{directory}/densities.npy')
-            load_network_and_projections(network, directory)
-            print(f'*** completed ({now()})')
+                remove(f'{directory}/network.h5')
+                remove(f'{directory}/bins.npy')
+                remove(f'{directory}/densities.npy')
+                load_network_and_projections(network, directory)
+                print(f'*** completed ({now()})')
         
         # handle dependency
         step_number.close()
