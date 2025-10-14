@@ -234,11 +234,11 @@ class Launcher:
             file.write(f'  export li=\$SLURM_LOCALID\n')
             if gpu:
                 file.write(f'  export CUDA_VISIBLE_DEVICES=$li\n')
-            file.write(f'\n')
+            file.write(f'\ncase \$i in\n')
             
             # equilibrium workers
-            i = -1
             for i in range(self.nA + self.nB):
+                file.write(f'{i})\n')
                 if i < self.nA:
                     state = 'A'
                     j = i
@@ -246,10 +246,9 @@ class Launcher:
                     state = 'B'
                     j = i - self.nA
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
-                file.write(f'  if [ "$i" -eq {i} ]; then\n')
-                file.write(f'    $WORKER {self.directory} params.dill simulate '
+                file.write(f'  $WORKER {self.directory} params.dill simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
-                file.write(f'  fi\n\n')
+                file.write(f';;\n')
             
             # extension workers
             begin = i + 1
@@ -260,38 +259,42 @@ class Launcher:
                 else:
                     state = 'B'
                     j -= self.eA
+                file.write(f'{i})\n')
                 file.write(f'  # worker {i} (extension {state}{j})\n')
-                file.write(f'  if [ "$i" -eq {i} ]; then\n')
-                file.write(f'    $WORKER {self.directory} params.dill simulate '
+                file.write(f'  $WORKER {self.directory} params.dill simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
-                file.write(f'  fi\n\n')
+                file.write(f';;\n')
             
             # shooting workers
             begin = i + 1
             for i in range(begin, begin + self.n):
                 j = i - begin
+                file.write(f'{i})\n')
                 file.write(f'  # worker {i} (shooting {j})\n')
-                file.write(f'  if [ "$i" -eq {i} ]; then\n')
-                file.write(f'    $WORKER {self.directory} params.dill simulate '
+                file.write(f'  $WORKER {self.directory} params.dill simulate '
                            f'worker{i}.run worker{i}.log\n')
-                file.write(f'  fi\n\n')
+                file.write(f';;\n')
             
             # trainer and manager
-            file.write(f'  # trainer and manager\n')
-            file.write(f'  if [ "$i" -eq {i + 1} ]; then\n')
-            file.write(f'    $WORKER {self.directory} params.dill train '
+            file.write(f'{i + 1})\n')
+            file.write(f'  # trainer\n')
+            file.write(f'  $WORKER {self.directory} params.dill train '
                        f'trainer.log\n')
-            file.write(f'    trainer_pid=$!\n\n')
-            file.write(f'    $WORKER {self.directory} params.dill manage '
+            file.write(f'  trainer_pid=$!\n\n')
+            file.write(f'  # manager\n')
+            file.write(f'  $WORKER {self.directory} params.dill manage '
                        f'manager.log {nsteps} {nframes}\n')
-            file.write(f'    manager_pid=$!\n\n')
+            file.write(f'  manager_pid=$!\n\n')
             
             # handle task termination
-            file.write(f'    # handle task termination\n')
-            file.write(f'    while kill -0 $trainer_pid 2>/dev/null'
+            file.write(f'  # handle task termination\n')
+            file.write(f'  while kill -0 $trainer_pid 2>/dev/null'
                        f' || kill -0 $manager_pid 2>/dev/null; do\n')
-            file.write(f'      wait -n\n')
-            file.write(f'      rm {self.directory}/*.run\n')
-            file.write( '      scancel ${SLURM_JOB_ID}\n')
-            file.write(f'    done\n')
-            file.write(f'  fi\n\'\n')
+            file.write(f'    wait -n\n  done\n')
+            file.write(f'  rm {self.directory}/*.run\n')
+            file.write(f'  scancel $SLURM_JOB_ID\n')
+            file.write(f';;\n')
+
+            # end
+            file.write(f'*)\n  echo "[Worker \$i] No task assigned."\n;;\n')
+            file.werite(f'esac\n\'\n')
