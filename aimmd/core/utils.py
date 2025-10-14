@@ -1277,10 +1277,7 @@ def update_shooting_simulation(
     
     trajectory_extension = params.trajectory_extension
     max_excursion_length = params.max_excursion_length
-    if params.engine == 'gromacs':
-        grompp = params.gmx_grompp
-    else:
-        grompp = ''
+    grompp = params.grompp
     
     def _stop_condition(segment, base=0):
         n_frames = 0
@@ -1461,7 +1458,8 @@ def initialize_simulation(frames, params, *fnames):
     
     # get params
     topology = params.topology
-    mdrun_parameters = params.mdrun_parameters
+    gmx_init_mdp = params.gmx_init_mdp
+    gmx_run_mdp = params.gmx_run_mdp
     random_velocities = params.randomize_shooting_velocities
     grompp = params.grompp
     mdrun = params.mdrun
@@ -1500,13 +1498,13 @@ def initialize_simulation(frames, params, *fnames):
     
     # randomize velocities
     if grompp:
-        if randomize_velocities:
+        if random_velocities:
             print('=== randomize velocities')
         else:
             print('=== sampling kinetic energy')
         remove(f'{_fname}.gro', False)
         frames.write(f'{_fname}.gro', frame_indices=[-1])
-        command = (f'{grompp} -nobackup -f {random_velocities} '
+        command = (f'{grompp} -nobackup -f {gmx_init_mdp} '
                   f'-r {_fname}.gro -c {_fname}.gro -o {_fname}.tpr')
         os.system(command)
         os.system(f'{mdrun} -deffnm {_fname} -nsteps 0 -nobackup')
@@ -1562,7 +1560,7 @@ def initialize_simulation(frames, params, *fnames):
             with mda.Writer(f'{_fname}.trr', atomgroup.n_atoms) as writer:
                 writer.write(atomgroup)
             
-            command = (f'{grompp} -nobackup -f {mdrun_parameters} '
+            command = (f'{grompp} -nobackup -f {gmx_run_mdp} '
                       f'-r {_fname}.gro -c {_fname}.gro -t {_fname}.trr '
                       f'-o {directory}/{fname}.tpr')
             os.system(command)
