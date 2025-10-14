@@ -131,6 +131,23 @@ class class_or_instancemethod(classmethod):
             descr_get = self.__func__.__get__
         return descr_get(instance, type_)
 
+class DummyNetwork(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        # no parameters, empty network
+    
+    def forward(self, x):
+        # just returns the input unchanged
+        return x
+    
+    def state_dict(self, *args, **kwargs):
+        # override to return empty dict
+        return {}
+    
+    def load_state_dict(self, state_dict, strict=True):
+        # accept any input but do nothing
+        pass
+
 ###############################################################################
 # Math ########################################################################
 ###############################################################################
