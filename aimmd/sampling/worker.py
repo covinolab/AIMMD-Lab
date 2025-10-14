@@ -4,9 +4,9 @@ import sys
 import psutil
 import signal
 import subprocess
-from .train import _train
-from .manage import _manage
-from .simulate import _simulate
+from .train import train
+from .manage import manage
+from .simulate import simulate
 from ..core import Params
 from ..core.utils import now
 
@@ -118,17 +118,17 @@ class Worker:
     
     def train(self, log_file=None, verbose=False, walltime=np.inf):
         self.interrupt = False
-        return _train(self, log_file, verbose, walltime)
+        return train(self, log_file, verbose, walltime)
     
     def manage(self, n, nA, nB, eA, eB,
            log_file=None, nsteps=int(1e6), nframes=np.inf, walltime=np.inf):
         self.interrupt = False
-        return _manage(self, n, nA, nB, eA, eB,
+        return manage(self, n, nA, nB, eA, eB,
                        log_file, nsteps, nframes, walltime)
     
     def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
         self.interrupt = False
-        return _simulate(self, run_file, log_file, noappend, walltime)
+        return simulate(self, run_file, log_file, noappend, walltime)
 
 if __name__ == '__main__':
     Worker(*sys.argv[1:3]).run(*sys.argv[3:])
