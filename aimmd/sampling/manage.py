@@ -56,7 +56,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
         chains = []
         backwards = []  # shooting simulation segments
         forwards = []
-        for chain_id in range(n):
+        for chain_id in range(self.n):
             chain = PathEnsemble()
             update_shooting_chain(chain, chain_id,
                 directory, topology, states_function, descriptors_function,
@@ -76,7 +76,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
         
         print(f'\nLoading selection pools ({now()})')
         pools = []
-        for chain_id in range(n):
+        for chain_id in range(self.n):
             print(f'\n    shots{chain_id}')
             chain = chains[chain_id]
             pool = update_selection_pool(PathEnsemble(), chain, selection_pool_size,
@@ -182,7 +182,7 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
             pathensemble = shooting_chains + equilibriumA + equilibriumB
             
             # manage shooting simulations (permutated k for less bias, two times)
-            for k in np.random.permutation(np.arange(n)):
+            for k in np.random.permutation(np.arange(self.n)):
                 files = os.listdir(chains[k].directory)
                 worker_id = f'{directory}/worker{k + nA + nB + eA + eB}.run'
                 
