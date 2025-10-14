@@ -114,15 +114,20 @@ class Launcher:
         processes = []
         
         # simulators
-        for i in range(self.nA + self.nB + self.eA + self.eB + self.n):
+        total = self.nA + self.nB + self.eA + self.eB + self.n
+        for i in range(total):
             localid = len(processes)
+            if i < total - self.n:
+                noappend = True
+            else:
+                noappend = False
             run_file = f'{self.directory}/worker{localid}.run'
             log_file = f'{self.directory}/worker{localid}.log'
             process = Process(
                 target=Worker(
                     self.params, localid,
                     cpus_per_task, gpus_per_task).run('simulate',
-                        run_file, log_file, noappend=True))
+                        run_file, log_file, noappend))
             processes.append(process)
         
         # trainer and manager (sharing the same localid)
