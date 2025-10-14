@@ -4,7 +4,6 @@ def train(self, log_file=None, verbose=False):
     
     # get aimmd run parameters
     write(f'\nLoading AIMMD run parameters ({now()})', log_file)
-    aimmd_run_params = import_aimmd_run_params(params)
     
     # extract necessary parameters (in order of appearance)
     directory = self.directory
