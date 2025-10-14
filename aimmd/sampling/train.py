@@ -80,7 +80,8 @@ def train(self, log_file=None, verbose=False):
             pathensemble = shooting_chains + equilibriumA + equilibriumB
             
             print(f'\nTraining the network ({now()})')
-            losses, *_ = fit(network, pathensemble, initial_paths, verbose=verbose)
+            losses, *_ = fit(network, pathensemble,
+                             initial_paths=initial_paths, verbose=verbose)
             if not len(losses):
                 if 'network.h5' in os.listdir(directory):
                     print('!!! reloaded most recent network because training failed')
