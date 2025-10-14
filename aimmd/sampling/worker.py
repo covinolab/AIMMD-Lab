@@ -7,7 +7,7 @@ from .train import train
 from .manage import manage
 from .simulate import simulate
 from ..core import Params
-from ..core.utils import get_current_simulation, now
+from ..core.utils import now
 
 class Worker:
     
