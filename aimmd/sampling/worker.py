@@ -26,6 +26,7 @@ class Worker:
         self.process = None
         self.original_stdout = sys.stdout
         self.__log_file = None
+        self.interrupt = False
         
         # determine local id
         self.localid = int(os.getenv("SLURM_LOCALID", f"{localid}"))
