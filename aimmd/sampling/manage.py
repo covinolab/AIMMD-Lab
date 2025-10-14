@@ -262,13 +262,14 @@ def manage(self, n, nA, nB, eA, eB,
         print(f'\nReached {step_number.n} steps ({now()}), {pathensemble.nframes} total frames')
         
         # two last training rounds (sure to have most updated data)
-        print(f'\nLast training rounds')
-        for _ in range(2):
+        if not self.interrupt:
+            print(f'\nLast training rounds')
+            for _ in range(2):
             remove(f'{directory}/network.h5')
             remove(f'{directory}/bins.npy')
             remove(f'{directory}/densities.npy')
             load_network_and_projections(network, directory)
-        print(f'*** completed ({now()})')
+            print(f'*** completed ({now()})')
         
         # handle dependency
         step_number.close()
