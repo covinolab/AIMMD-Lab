@@ -1,19 +1,8 @@
-"""
-Overridden parameters.
-"""
+import aimmd.utils
 
 trajectory_extension = '.trr'
+initial_paths = ['initial.trr']
 
-"""
-Functions
-"""
-
-from aimmd.core.utils import *
-from aimmd.core.utils import fit as _fit
-
-"""
-Directly define
-"""
 couples = [(i,j) for i in range(80) for j in range(i+1, 80)]
 
 def cv(trajectory, verbose=False):
@@ -114,46 +103,22 @@ def values_function(descriptors):
     # return
     return np.concatenate(results)
 
-def fit(network, pathensemble, initial_path=None, verbose=False,
-        keys=None, save_memory=False):
-    return _fit(network, pathensemble,
-        lr=1e-2,
-        epochs=100,
-        nbins=9,
-        state_bins='AB',
-        initial_path=initial_path,
-        verbose=verbose,
+
+def fit(network, pathensemble,
+        keys=None,
+        initial_paths=None,
+        verbose=False):
+    return aimmd.utils.fit(network, pathensemble,
         keys=keys,
+        initial_paths=initial_paths,
+        process_descriptors=lambda x:x,
         save_memory=False,
-        process_descriptors=process_descriptors,
-        augment=True,
-        loss_bayesian_factor=100)
-
-
-import importlib.util
-from pathlib import Path
-
-def import_params(params_filename: str, ParamsClass):
-    """
-    Load a params.py file and return an instance of ParamsClass
-    with attributes from the file.
-    
-    Args:
-        params_filename: path to the Python file with parameters
-        ParamsClass: the dataclass or class to instantiate
-    
-    Returns:
-        An instance of ParamsClass with values from the file
-    """
-    params_path = Path(params_filename).resolve()
-
-    spec = importlib.util.spec_from_file_location("params_module", str(params_path))
-    params_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(params_module)
-
-    kwargs = {}
-    for name in dir(params_module):
-        if not name.startswith("__") and hasattr(ParamsClass, name):
-            kwargs[name] = getattr(params_module, name)
-
-    return ParamsClass(**kwargs)
+        nbins=0,
+        state_bins='AB',
+        augment=False,
+        lr=1e-2,
+        loss_bayesian_factor=100,
+        epochs=100,
+        batch_size=4096,
+        stop=50.,
+        verbose=verbose)
