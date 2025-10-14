@@ -15,7 +15,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
     
     try:
         self.log_file = log_file
-        print("Starting simulation loop ({now()})...")
+        print(f"Starting simulation loop ({now()})...")
         if not log_file:
             print(f"Press Control+C to interrupt.")
         
@@ -32,6 +32,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
             
             # interrupt everything currently running
             self.terminate_handler(report=False, exit=False)
+            self.interrupt = False  # ...but continue simulating
             
             # what to simulate
             fname = get_current_simulation(f'{self.directory}/{run_file}')
