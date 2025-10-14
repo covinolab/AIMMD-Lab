@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import numpy as np
+import signal
 import MDAnalysis as mda
 from multiprocessing import Process
 from .worker import Worker
