@@ -1231,7 +1231,7 @@ def fit(network, pathensemble,
         network.load_state_dict(state_dict0)
     
     # recompute scales and range in case they changed
-    q = network(d)
+    q = network(d).detach()
     scales[-1] = max(float(torch.max(q)), -float(torch.min(q)))
     Range = float(torch.min(q)), float(torch.max(q))
     
