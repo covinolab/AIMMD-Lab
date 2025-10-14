@@ -103,7 +103,7 @@ def manage(self, n, nA, nB, eA, eB,
         eq_current, eq_completed, ext_current = [], [], []
         update_equilibrium_simulations(
             eq_current, eq_completed, directory, nA, nB, initial_paths, 
-            aimmd_run_params, eA, eB, ext_current, available_transitions,
+            self.params, eA, eB, ext_current, available_transitions,
             save_h5=True, simulate=False, verbose=True)
         
         # update full pathensemble (with equilibrium simulations)
@@ -153,7 +153,7 @@ def manage(self, n, nA, nB, eA, eB,
             # manage free simulations
             update_equilibrium_simulations(
                 eq_current, eq_completed, directory, nA, nB, initial_paths, 
-                aimmd_run_params, eA, eB, ext_current, available_transitions,
+                self.params, eA, eB, ext_current, available_transitions,
                 save_h5=True, simulate=True, verbose=False)
             
             # update full pathensemble (with equilibrium simulations)
@@ -201,7 +201,7 @@ def manage(self, n, nA, nB, eA, eB,
                     if 'B' in equilibrium_overriding_states:
                         eq_overriding += equilibriumB
                     initialize_shooting_simulation(chains[k], pools[k],
-                    directory, aimmd_run_params, shooting_chains, eq_overriding)
+                    directory, self.params, shooting_chains, eq_overriding)
                     
                     # reset segments
                     backwards[k] = backwards[k][:0]
@@ -209,7 +209,7 @@ def manage(self, n, nA, nB, eA, eB,
                 
                 # advance simulation
                 path, states, descriptors = update_shooting_simulation(
-                    backwards[k], forwards[k], worker_id, aimmd_run_params)
+                    backwards[k], forwards[k], worker_id, self.params)
                 
                 # path is not completed
                 if not len(path):
@@ -249,7 +249,7 @@ def manage(self, n, nA, nB, eA, eB,
                 if 'B' in equilibrium_overriding_states:
                     eq_overriding += equilibriumB
                 initialize_shooting_simulation(chains[k], pools[k],
-                    directory, aimmd_run_params, shooting_chains, eq_overriding)
+                    directory, self.params, shooting_chains, eq_overriding)
                 
                 # reset segments
                 backwards[k] = backwards[k][:0]
@@ -257,7 +257,7 @@ def manage(self, n, nA, nB, eA, eB,
                 
                 # advance simulation
                 update_shooting_simulation(backwards[k], forwards[k],
-                    worker_id, aimmd_run_params)
+                    worker_id, self.params)
         
         # complete
         step_number.close()
