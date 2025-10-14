@@ -4,6 +4,7 @@ import sys
 import psutil
 import signal
 import subprocess
+import MDAnalysis as mda
 from .train import train
 from .manage import manage
 from .simulate import simulate
