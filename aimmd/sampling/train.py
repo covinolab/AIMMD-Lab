@@ -6,8 +6,6 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
     
     pathensemble = None
     
-    t0 = time.time()
-    
     try:
         self.log_file = log_file
         
@@ -42,6 +40,8 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
         # load the network if it is already possible
         load_network_and_projections(network, directory, wait=False)
         
+        # start the main loop
+        t0 = time.time()
         while True:
             
             # received the signal
