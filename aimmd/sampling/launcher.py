@@ -16,7 +16,8 @@ def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
              task, *args):
     from aimmd import Params, Worker
-    worker = Worker(Params.load(f'{directory}/{params}'), directory,
+    params = Params.load(f'{directory}/{params}')
+    worker = Worker(params, directory,
                     localid, cpus_per_task, gpus_per_task)
     worker.run(task, *args)
     return
