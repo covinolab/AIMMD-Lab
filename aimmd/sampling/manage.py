@@ -125,7 +125,7 @@ def manage(self, n, nA, nB, eA, eB,
                 equilibriumB_states_map=extra_equilibriumB_states_map,
                 verbose=True)[0]  
         
-        # will wait until the training part completed at least one cycle
+        # will wait until the training part has completed at least one cycle
         print(f'\nWaiting for neural network parameters ({now()})')
         try:
             bins, densities = load_network_and_projections(network, directory)
