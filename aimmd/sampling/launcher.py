@@ -1,5 +1,6 @@
 import os
 import time
+import numpy as np
 from multiprocessing import Process
 from .worker import Worker
 
