@@ -1242,46 +1242,6 @@ def fit(network, pathensemble,
 # AIMMD run utils #############################################################
 ###############################################################################
 
-def import_aimmd_run_params(filename, obj='aimmd_run_params'):
-    wkdir = filename.split('/')
-    if len(wkdir) > 1:
-        wkdir, filename = '/'.join(wkdir[:-1]), wkdir[-1]
-    else:
-        wkdir = '.'
-    current_dir = os.getcwd()
-    os.chdir(wkdir)
-    try:
-        def _import_fresh_module(filename):
-            unique_name = f"mod_{np.random.random(12345678)}"
-            spec = importlib.util.spec_from_file_location(unique_name, filename)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-
-        if obj != 'aimmd_run_params':
-            result = getattr(_import_fresh_module(
-            filename), obj)
-            os.chdir(current_dir)
-            return result
-        
-        aimmd_run_params = getattr(_import_fresh_module(
-            filename), obj)
-        os.chdir(current_dir)
-        
-        if 'extra_equilibriumA' not in aimmd_run_params:
-            params.extra_equilibriumA'] = []
-        if 'extra_equilibriumB' not in aimmd_run_params:
-            params.extra_equilibriumB'] = []
-        if 'extra_equilibriumA_states_map' not in aimmd_run_params:
-            params.extra_equilibriumA_states_map'] = ['']
-        if 'extra_equilibriumB_states_map' not in aimmd_run_params:
-            params.extra_equilibriumB_states_map'] = ['']
-        return aimmd_run_params
-    except:
-        os.chdir(current_dir)
-        raise
-
-
 def load_network_and_projections(
     network, directory, backup_directory=None, wait=True):
     device = next(network.parameters()).device
