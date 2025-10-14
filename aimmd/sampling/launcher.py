@@ -15,7 +15,8 @@ WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
 def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
              task, *args):
-    return Worker(params, directory,
+    from aimmd.core.params import Params
+    return Worker(Params.load(params), directory,
                   localid, cpus_per_task, gpus_per_task).run(task, *args)
 
 class Launcher:
@@ -148,7 +149,7 @@ class Launcher:
             'manage', 'manager.log', nsteps, nframes)))
         
         # function to terminate all workers
-        def terminate_all(signum, frame):
+        def terminate_all(signum=None, frame=None):
             for process in processes:
                 if process.is_alive():
                     process.terminate()  # sends SIGTERM
