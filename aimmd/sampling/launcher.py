@@ -30,7 +30,6 @@ class Launcher:
             except:
                 self.params = Params.update(params)
         self.directory = directory
-        self.nsteps = nsteps
         self.n = n
         self.nA = nA
         self.nB = nB
