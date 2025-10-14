@@ -217,9 +217,6 @@ class Launcher:
             file.write(f'#SBATCH --nodes={nodes}\n')
             file.write(f'{self.params.slurm_header}\n\n')
             
-            # python executable
-            file.write(f'WORKER="{PYTHON} {WORKER}"\n\n')
-            
             # remove completed information and which to run
             file.write(f'rm -f {self.directory}/completed.flag\n')
             file.write(f'rm -f {self.directory}/*.run\n\n')
@@ -244,7 +241,7 @@ class Launcher:
                     state = 'B'
                     j = i - self.nA
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
-                file.write(f'  $WORKER params.dill {self.directory} simulate '
+                file.write(f'  {PYTHON} {WORKER} params.dill {self.directory} simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
@@ -259,7 +256,7 @@ class Launcher:
                     j -= self.eA
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (extension {state}{j})\n')
-                file.write(f'  $WORKER params.dill {self.directory} simulate '
+                file.write(f'  "{PYTHON}" "{WORKER}" params.dill {self.directory} simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
@@ -269,20 +266,20 @@ class Launcher:
                 j = i - begin
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (shooting {j})\n')
-                file.write(f'  \'"$WORKER"\' params.dill {self.directory} simulate '
+                file.write(f'  "{PYTHON}" "{WORKER}" params.dill {self.directory} simulate '
                            f'worker{i}.run worker{i}.log &\n')
                 file.write(f'  ;;\n')
             
             # trainer
             file.write(f'{i + 1})\n')
             file.write(f'  # trainer\n')
-            file.write(f'  \'"$WORKER"\' params.dill {self.directory} train '
+            file.write(f'  "{PYTHON}" "{WORKER}" params.dill {self.directory} train '
                        f'trainer.log &\n')
             file.write(f'  trainer_pid=$!\n\n')
 
             # manager
             file.write(f'  # manager\n')
-            file.write(f'  \'"$WORKER"\' params.dill {self.directory} manage '
+            file.write(f'  "{PYTHON}" "{WORKER}" params.dill {self.directory} manage '
                        f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
                        f'manager.log {nsteps} {nframes}\n')
             file.write(f'  manager_pid=$!\n\n')
