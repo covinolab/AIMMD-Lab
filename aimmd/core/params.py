@@ -228,7 +228,7 @@ around the states in `equilibrium_overriding_states`."""
 """Number of overriding attempts per every selection."""
                  })
 
-    equilibrium_overriding_recovery_rate : int = field(
+    equilibrium_overriding_recovery_rate : float = field(
         default=0.05,
         metadata={'description':
 """Attempt overriding from the same bin as the old shooting point with
