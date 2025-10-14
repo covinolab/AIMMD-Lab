@@ -16,8 +16,10 @@ def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
              task, *args):
     from aimmd import Params, Worker
-    return Worker(Params.load(f'{directory}/{params}'), directory,
-                  localid, cpus_per_task, gpus_per_task).run(task, *args)
+    worker = Worker(Params.load(f'{directory}/{params}'), directory,
+                    localid, cpus_per_task, gpus_per_task)
+    worker.run(task, *args)
+    return
 
 class Launcher:
     
