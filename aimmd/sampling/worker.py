@@ -5,107 +5,113 @@ import psutil
 import signal
 import subprocess
 from ..core import Params
-from ..core.utils import get_current_simulation
+from ..core.utils import get_current_simulation, now
 
 class Worker:
     
-    def __init__(self, params, run_file, log_file, append,
-        localid=0, cpus_per_task=1, gpus_per_task=0):
+    def __init__(self, params, localid=0, cpus_per_task=1, gpus_per_task=0):
+        """
+        Worker process responsible for running independent AIMMD tasks
+        (simulations, training, or management) on allocated CPUs/GPUs.
+        """
         
+        if not isinstance(params, Params):
+            params = Params.load(params)
         self.params = params
-        self.run_file = run_file
-        self.log_file = log_file
-        self.append = append
+        self.process = None
+        self.log = None
         
-        """Restrict this process to the allocated CPUs and GPUs."""
-        
-        # local id 
-        localid = int(os.getenv("SLURM_LOCALID", f'{localid}'))
+        # determine local id
+        self.localid = int(os.getenv("SLURM_LOCALID", f"{localid}"))
         
         # CPU binding
-        cpus_per_task = os.getenv("SLURM_CPUS_PER_TASK", f'{cpus_per_task}')
-        if cpus_per_task:
-            try:
-                cpus_per_task = int(cpus_per_task)
-                start = localid * cpus_per_task
-                cpus = list(range(start, start + cpus_per_task))
-                psutil.Process().cpu_affinity(cpus)
-            except Exception as exception:
-                print(f"Warning: could not set CPU affinity ({exception})")
-                cpus = 'all'
-        else:
-            cpus = 'all'
+        cpus_per_task = int(os.getenv("SLURM_CPUS_PER_TASK", f"{cpus_per_task}"))
+        try:
+            start = self.localid * cpus_per_task
+            cpus = list(range(start, start + cpus_per_task))
+            psutil.Process().cpu_affinity(cpus)
+        except Exception as exception:
+            print(f"[Warning] Could not set CPU affinity: {exception}")
+            cpus = []
         
         # GPU binding
-        start = localid * gpus_per_task
-        gpus = ','.join([f'{gpu_id}' for gpu_id in range(
-            localid * gpus_per_task, start + gpus_per_task)])
+        start = self.localid * gpus_per_task
+        gpus = ",".join([f"{i}" for i in range(start, start + gpus_per_task)])
         gpus = os.getenv("CUDA_VISIBLE_DEVICES", gpus if gpus else None)
         if gpus:
             os.environ["CUDA_VISIBLE_DEVICES"] = gpus
-    
-        if cpus != 'all':
-            cpus = ','.join([f'{cpu_id}' for cpu_id in cpus])
-        print(f'Local id: {localid}')
-        print(f'CPU ids : {cpus}')
-        print(f'CUDA ids: {gpus}')
         
-        self.localid = localid
+        # report resource allocation
+        print(f"[Worker {self.localid}] CPU ids: {','.join(map(str, cpus))}")
+        print(f"[Worker {self.localid}] GPU ids: {gpus}")
+        
         self.cpus = cpus
         self.gpus = gpus
         self.cpus_per_task = cpus_per_task
         self.gpus_per_task = gpus_per_task
+        
+        # register signal handlers (for all future tasks)
+        signal.signal(signal.SIGTERM, self.terminate_handler)
+        signal.signal(signal.SIGINT, self.terminate_handler)  # (s, f)
     
-    def run(params, run_file, log_file, append,
-            localid=0, cpus_per_task=1, gpus_per_task=0):
-        """
-        Run and log in real-time on the allocated resources.
+    def terminate_handler(self, signum=None, frame=None, exit=False):
+        """Gracefully terminate the worker and its subprocess."""
         
-        params: Params class or dill file with saved params.
-        run_file: File indicating what to simulate.
-        log_file: path to log file.
-        append: Append to existing simulations or start a new part.
-        localid, cpus_per_task, gpus_per_task: resource allocation.
-        """
+        # report
+        msg = (f"[Worker {self.localid}] Received signal "
+               f"{signum}, terminating ({now})...")
+        print(msg)
+        if self.log:
+            self.log.write(msg + "\n")
+            self.log.flush()
         
-        if type(params) != Params:
-            params = Params.load(params)
+        # end current process
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.terminate()
+            except Exception:
+                pass
         
-        limit_resources(localid, cpus_per_task, gpus_per_task)
+        # close log
+        if self.log:
+            self.log.close()
         
-        log = open(log_file, "a+") if log_file else None
-        process = None  # current subprocess
-        
-        def terminate_handler(signum, frame):
-            print(f"Received signal {signum}, terminating...")
-            if log:
-                log.write(f"Received signal {signum}, terminating...")
-            if process and process.poll() is None:
-                process.terminate()
+        # exit if required
+        if exit:
             sys.exit(0)
+    
+    def simulate(self, run_file, log_file=None, append=False):
+        """
+        Continuously run simulations as directed by the run file.
+        append: bool, if True: do not create new part (Gromacs' -noappend).
+        """
         
-        # register signal handlers
-        signal.signal(signal.SIGTERM, terminate_handler)
-        signal.signal(signal.SIGINT, terminate_handler)
+        self.log = open(log_file, "a+") if log_file else None
+        print(f"[Worker {self.localid}] Starting simulation loop...")
+        print(f"Press Control+C to interrupt.")
         
         try:
+            
+            # run continuously
             while True:
-                # get current simulation
+                # what to simulate
                 fname = get_current_simulation(run_file)
                 if not fname:
-                    continue  # nothing to run
+                    continue  # no job assigned yet
                 
-                # simulation command
-                command = params.mdrun.split() + [
+                # create command
+                command = self.params.mdrun.split() + [
                     "-deffnm", fname,
                     "-cpo", f"{fname}.cpt",
                     "-cpi", f"{fname}.cpt",
                     "-cpt", ".1"]
-                if not append:
-                    command.append('-noappend')
-                
-                # start subprocess
+                if not self.append:
+                    command.append("-noappend")
+                        
+                # open pseudo-terminal to capture real-time stdout
                 master_fd, slave_fd = pty.openpty()
+                
+                # run command
                 process = subprocess.Popen(
                     command,
                     stdin=slave_fd,
@@ -116,60 +122,39 @@ class Worker:
                     close_fds=True)
                 os.close(slave_fd)
                 
-                try:
-                    with os.fdopen(master_fd) as stdout:
-                        while True:
-                             # stop condition: simulation file changed
-                            if get_current_simulation(run_file) != fname:
-                                print("Terminating process...")
-                                process.terminate()
-                                break
-                            
-                            try:
-                                # get line
-                                line = stdout.readline()
-                                
-                                # got no line - is process finished?
-                                if not line:
-                                    if process.poll() is not None:
-                                        break
-                                    continue
-                                
-                                # print and log in real time
-                                print(line, end="")
-                                if log:
-                                    log.write(line)
-                                    log.flush()
-                            
-                            except OSError:
-                                # I/O error: child closed PTY
-                                break
-                    
-                    # ensure child process has exited fully
-                    process.wait()
+                with os.fdopen(master_fd) as stdout:
+                    for line in iter(stdout.readline, ''):
+                        if get_current_simulation(run_file) != fname:
+                            msg =(f"[Worker {self.localid}] Simulation changed — terminating.")
+                            self.process.terminate()
+                            break
+                        
+                        print(line, end="")
+                        if self.log:
+                            self.log.write(line)
+                            self.log.flush()
                 
-                finally:
-                    # cleanup and safe termination (even with errors)
-                    try:
-                        if process.poll() is None:
-                            process.terminate()
-                    except Exception:
-                        pass
-                    process = None
+                if self.process.poll() is None:
+                    self.process.wait()
+                self.process = None
         
-        except KeyboardInterrupt:
-            print(f"[Worker {localid}] Exiting main loop due to interrupt.")
+        except SystemExit:
+            self.terminate_handler()
+        
+        except KeyBoardInterrupt:
+            self.terminate_handler(exit=False)
         
         finally:
-            if log:
-                log.close()
-
-
-if __name__ == "__main__":
-    if len(sys.argv) < 5:
-        print("Usage: worker.py "
-              f"<params_file> <run_file> <log_file> <append> [optional]")
-        print(run.__doc__)
-        sys.exit(1)
+            self.terminate_handler()
     
-    Worker(*sys.argv[1:]).run()
+    def train(self):
+        """Placeholder for ML training task."""
+        print(f"[Worker {self.localid}] Training task not yet implemented.")
+
+    def manage(self):
+        """Placeholder for management/supervisory task."""
+        print(f"[Worker {self.localid}] Management task not yet implemented.")
+
+if __name__ == '__main__':
+    Worker(Params.load('temp.py')).simulate(
+        sys.argv[1], sys.argv[2], len(sys.argv) > 3)
