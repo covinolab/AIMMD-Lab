@@ -134,12 +134,12 @@ def manage(self, n, nA, nB, eA, eB,
         t0 = time.time()
         while step_number.n < nsteps:
             
-            # received the signal
-            if self.interrupt:
-                break
-            
             # maximum time
             if time.time() - t0 > walltime:
+                self.interrupt = True
+            
+            # received the signal
+            if self.interrupt:
                 break
             
             # update candidate transitions
