@@ -77,9 +77,9 @@ if __name__ == '__main__':
     print(':', equilibrium)
     
     print('\nLoading trajectory from "equilibrium" folder')
-    nframes, time = equilibrium.append(
+    nframes, times = equilibrium.append(
         f'run{trajectory_extension}', verbose=True)
-    print(f'Loaded {nframes} frames, time: {time}')
+    print(f'Loaded {nframes} frames, time: {times}')
     if not nframes:
         raise RuntimeError('Could not load the trajectory file')
     print('Obtained', equilibrium)
