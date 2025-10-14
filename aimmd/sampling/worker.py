@@ -79,6 +79,8 @@ class Worker:
     def terminate_handler(self, signum=None, frame=None, report=True, exit=False):
         """Gracefully terminate the worker and its subprocess."""
         
+        self.interrupt = True
+        
         # report
         if report:
             if signum:
