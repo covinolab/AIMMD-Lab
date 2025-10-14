@@ -4,27 +4,12 @@ from ..core.utils import *
 
 def train(self, log_file=None, verbose=False, walltime=np.inf):
     
-    original_stdout = sys.stdout
     pathensemble = None
-    
-    def cleanup(signum=None, frame=None, exit=True):
-        if log_file:
-            if not sys.stdout.closed:
-                sys.stdout.close()
-            sys.stdout = original_stdout
-        
-        if exit:
-            sys.exit(0)  # exit gracefully
-    
-    # Catch SIGTERM and SIGINT
-    signal.signal(signal.SIGTERM, cleanup)
-    signal.signal(signal.SIGINT, cleanup)
     
     t0 = time.time()
     
     try:
-        if log_file:
-            sys.stdout = open(f'{self.directory}/{log_file}', "a+")
+        self.log_file = log_file
         
         # get aimmd run parameters
         print(f'\nLoading AIMMD run parameters ({now()})')
@@ -296,17 +281,17 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
             sleep(1)
             
     except SystemExit:
-        cleanup()
+        self.terminate_handler()
     
     except KeyboardInterrupt:
-        cleanup(exit=False)
+        self.terminate_handler(exit=False)
         return pathensemble
     
     except Exception as exception:
         print(f'Error: {exception}')
-        cleanup()
+        self.terminate_handler()
         raise exception
     
     finally:
-        cleanup(exit=False)
+        self.terminate_handler(exit=False)
         return pathensemble
