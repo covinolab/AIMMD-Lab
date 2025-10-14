@@ -1,6 +1,7 @@
 import os
 import time
 import numpy as np
+import MDAnalysis as mda
 from multiprocessing import Process
 from .worker import Worker
 from ..core.params import Params
