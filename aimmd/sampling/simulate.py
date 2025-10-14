@@ -9,7 +9,8 @@ def simulate(self, run_file, log_file=None, noappend=False):
     noappend: bool, add Gromacs' -noappend flag.
     """
     
-    self.log = open(log_file, "a+") if log_file else None
+    self.log = open(
+        f'{self.directory}/{log_file}', "a+") if log_file else None
     self.report("Starting simulation loop...")
     print(f"Press Control+C to interrupt.")
     
@@ -22,12 +23,13 @@ def simulate(self, run_file, log_file=None, noappend=False):
             self.terminate_handler(report=False, exit=False)
             
             # what to simulate
-            fname = get_current_simulation(run_file)
+            fname = get_current_simulation(f'{self.directory}/{run_file}')
             if not fname:
                 continue  # no job assigned yet
             
             # (re)-start logging
-            self.log = open(log_file, "a+") if log_file else None
+            self.log = open(
+                f'{self.directory}/{log_file}', "a+") if log_file else None
             self.report(f"Starting simulating {fname}...")         
             
             # create command
@@ -57,7 +59,8 @@ def simulate(self, run_file, log_file=None, noappend=False):
                 with os.fdopen(master_fd) as stdout:
                     while True:
                         
-                        if get_current_simulation(run_file) != fname:
+                        if get_current_simulation(
+                            f'{self.directory}/{run_file}') != fname:
                             self.report("Target simulation file changed.")
                             break
                         
