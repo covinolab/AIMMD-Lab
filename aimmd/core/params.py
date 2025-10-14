@@ -305,7 +305,8 @@ the target state, but rather continue for furhter `extra_extend_frames`."""
 """If True: rescale the NN output to recover the expected crossing
 probability behavior ~ `1/p` (from A) and ~ `1/(1 - p)` (from B),
 where p is the committor, in case of diffusive system with small
-enough interval between frames."""
+enough interval between frames. Attention! For that, `params.network`
+must support `rescale_knots` and `rescale_values`!"""
                  })
     
     # paths reweighting options 
