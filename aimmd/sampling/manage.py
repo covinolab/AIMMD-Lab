@@ -1,4 +1,4 @@
-from aimmd.core.utils import *
+from ..core.utils import *
 
 def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
     
