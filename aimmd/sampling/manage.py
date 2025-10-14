@@ -11,8 +11,6 @@ def manage(self, n, nA, nB, eA, eB,
     
     pathensemble = None
     
-    t0 = time.time()
-    
     try:
         self.log_file = log_file
         
@@ -133,6 +131,7 @@ def manage(self, n, nA, nB, eA, eB,
         
         # main cycle
         print(f'\nStarting the main cycle ({now()})')
+        t0 = time.time()
         while step_number.n < nsteps:
             
             # received the signal
