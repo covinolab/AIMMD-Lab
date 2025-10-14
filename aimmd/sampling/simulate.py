@@ -1,13 +1,16 @@
 import os
 import pty
+import numpy as np
 import subprocess
 from ..core.utils import get_current_simulation
 
-def simulate(self, run_file, log_file=None, noappend=False):
+def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
     """
     Continuously run simulations as directed by the run file.
     noappend: bool, add Gromacs' -noappend flag.
     """
+
+    t0 = time.time()
     
     self.log = open(
         f'{self.directory}/{log_file}', "a+") if log_file else None
@@ -18,6 +21,10 @@ def simulate(self, run_file, log_file=None, noappend=False):
         
         # run continuously
         while True:
+            
+            # maximum time
+            if time.time() - t0 > walltime:
+                break
             
             # interrupt everything currently running
             self.terminate_handler(report=False, exit=False)
