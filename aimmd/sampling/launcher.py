@@ -233,7 +233,7 @@ class Launcher:
             file.write(f'  export i=\$SLURM_PROCID\n')
             file.write(f'  export li=\$SLURM_LOCALID\n')
             if gpu:
-                file.write(f'  export CUDA_VISIBLE_DEVICES=$li\n')
+                file.write(f'  export CUDA_VISIBLE_DEVICES=\$li\n')
             file.write(f'\ncase \$i in\n')
             
             # equilibrium workers
