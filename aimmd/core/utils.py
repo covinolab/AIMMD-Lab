@@ -1637,13 +1637,12 @@ def initialize_simulation(frames, *fnames,
                     writer.write(atomgroup)
 
 
-def load_initial_path(directory, topology, states_function,
+def load_initial_paths(directory, topology, states_function,
                       descriptors_function, values_function,
                       verbose=True):
     fnames = sorted([fname for fname in os.listdir(directory)
-                     if fname[:7] == 'initial' and
-                     ('.xtc' == fname[-4:] or '.trr' == fname[-4:])])
-    initial_path = PathEnsemble()
+                     if '.xtc' == fname[-4:] or '.trr' == fname[-4:]])
+    initial_paths = PathEnsemble()
     for fname in fnames:
         temp = PathEnsemble()
         temp.directory = directory
@@ -1658,8 +1657,8 @@ def load_initial_path(directory, topology, states_function,
         except:
             write(f'!!! no transitions in {fname}', wrap_text=True)
             raise
-        initial_path = initial_path.merge(temp)
-    return initial_path
+        initial_paths = initial_paths.merge(temp)
+    return initial_paths
 
 
 def update_shooting_chain(
