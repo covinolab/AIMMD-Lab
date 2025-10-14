@@ -17,7 +17,7 @@ def _run_task(params, directory,
              task, *args):
     
     # immediately limit threads before heavy computation
-    if task != 'simulate':
+    if True:#task != 'simulate':
         import torch
         os.environ["OMP_NUM_THREADS"] = "1"
         os.environ["MKL_NUM_THREADS"] = "1"
