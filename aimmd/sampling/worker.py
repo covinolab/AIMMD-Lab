@@ -25,6 +25,7 @@ class Worker:
         self.params = params
         self.process = None
         self.original_stdout = sys.stdout
+        self.log_file = None
         
         # determine local id
         self.localid = int(os.getenv("SLURM_LOCALID", f"{localid}"))
@@ -85,7 +86,9 @@ class Worker:
         
         # close and unbind log
         if sys.stdout:
-            self.log.close()
+            if self.log_file is not None:
+                sys.stdout.close()
+                self.log_file = None
             sys.stdout = self.original_stdout
         
         # exit if required
