@@ -11,7 +11,7 @@ import sys
 import time
 import aimmd
 from aimmd import PathEnsemble
-import aimmd.core.utils import update_pathensemble
+from aimmd.core.utils import update_pathensemble
 import numpy as np
 import mdtraj as md
 import matplotlib.pyplot as plt
