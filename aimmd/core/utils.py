@@ -951,13 +951,14 @@ def fit(network, pathensemble,
                   f'({expit(bins[i]):.3e}, {expit(bins[i+1]):.3e})')
         
         # bin "center"
-        q = (bins[i] + bins[i + 1]) / 2
+        if not np.isinf(bins[i]) and not np.isinf(bins[i + 1]):
+            q = (bins[i] + bins[i + 1]) / 2
+        else:
+            q = 0.
         if i == 0:
             q = bins[+1]
         elif i == len(bins) - 2:
             q = bins[-2]
-        if np.isinf(q):
-            q = 0.
         
         # get mask
         mask = n_internal_frames + np.where(indices == i)[0]
@@ -1158,7 +1159,7 @@ def fit(network, pathensemble,
         # update network
         network.train()
         loss = optimizer.step(closure)
-        losses.append(float(loss))
+        losses.append(float(loss.detach()))
         
         # report scales
         q = network(d)
