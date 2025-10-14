@@ -36,6 +36,7 @@ if __name__ == '__main__':
     os.system('rm -rf run1')
     
     print('\nImporting parameters')
+    from params import cv
     params = aimmd.Params.update('params.py')
     topology = params.topology
     grompp = params.grompp
