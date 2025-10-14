@@ -23,12 +23,12 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
         # run continuously
         while True:
             
-            # received the signal
-            if self.interrupt:
-                break
-            
             # maximum time
             if time.time() - t0 > walltime:
+                self.interrupt = True
+            
+            # received the signal
+            if self.interrupt:
                 break
             
             # interrupt everything currently running
