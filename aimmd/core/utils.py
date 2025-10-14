@@ -1059,7 +1059,7 @@ def fit(network, pathensemble,
     keepers = selection_probabilities > 0
     if not np.sum(keepers):  # no other choice
         selection_probabilities += 1.
-        mask = np.ones(len(selection_probabilities), dtype=bool)
+        keepers = np.ones(len(selection_probabilities), dtype=bool)
     selection_probabilities = selection_probabilities[keepers]
     values = values[keepers]
     descriptors = descriptors[keepers]
