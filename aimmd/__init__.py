@@ -9,16 +9,6 @@ import importlib
 import shutil
 from typing import Dict
 
-# necessary for spawning independent workers
-import multiprocessing
-multiprocessing.set_start_method('fork')
-
-# initialize BLAS safely in main process
-import torch
-a = torch.randn(1, 1)
-b = torch.randn(1, 1)
-_ = torch.matmul(a, b)
-
 # local imports
 import aimmd.core as core
 import aimmd.sampling as sampling
