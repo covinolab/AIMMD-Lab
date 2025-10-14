@@ -5,11 +5,11 @@ import psutil
 import signal
 import subprocess
 import MDAnalysis as mda
-from .train import train
-from .manage import manage
-from .simulate import simulate
-from ..core import Params
-from ..core.utils import now
+from aimmd.sampling.train import train
+from aimmd.sampling.manage import manage
+from aimmd.sampling.simulate import simulate
+from aimmd.core import Params
+from aimmd.core.utils import now
 
 
 def save_initial_paths(initial_paths, directory):
