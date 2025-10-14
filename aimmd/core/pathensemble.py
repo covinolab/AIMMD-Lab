@@ -99,8 +99,8 @@ class MDATrajectory:
     
     def write(self, filename, frame_indices=None, selection='all',
               invert_velocities=False, joined_shooting_segments=False,
-              reset_time=False):
-        if os.path.exists(filename):
+              reset_time=False, overwrite=False):
+        if os.path.exists(filename) and not overwrite:
             raise ValueError('Cannot write to an existing file.')
         atom_groups = [universe.select_atoms(selection)
                        for universe in self.universes]
