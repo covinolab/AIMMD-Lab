@@ -487,7 +487,8 @@ def fit(network, pathensemble,
     final_states = pathensemble.final_states[keys]
     
     # remove "hopeless" paths
-    keys = keys[internal_states != initial_states]
+    if len(keys):
+        keys = keys[internal_states != initial_states]
     initial_states = pathensemble.initial_states[keys]
     internal_states = pathensemble.internal_states[keys]
     final_states = pathensemble.final_states[keys]
@@ -497,11 +498,15 @@ def fit(network, pathensemble,
     shooting_indices = pathensemble.shooting_indices[keys]
     shooting_states = pathensemble.shooting_states[keys]
     shooting_values = pathensemble.shooting_values[keys]
-    shooting_values[shooting_states == 'A'] = -np.inf
-    shooting_values[shooting_states == 'B'] = +np.inf
+    if len(keys):
+        shooting_values[shooting_states == 'A'] = -np.inf
+        shooting_values[shooting_states == 'B'] = +np.inf
     
-    # get indices of A paths (use initial_paths if not present)
-    inA = keys[np.where(internal_states == 'A')[0]]
+    if len(keys):
+        # get indices of A paths (use initial_paths if not present)
+        inA = keys[np.where(internal_states == 'A')[0]]
+    else:
+        inA = []
     if not len(inA):
         temp = initial_paths[:].unsplit()
         temp = temp.crop(frame_indices=temp.frame_states == 'A')
@@ -510,8 +515,11 @@ def fit(network, pathensemble,
         keys = np.append(keys, len(pathensemble) - 1)
         inA = np.array([len(keys) - 1])
     
-    # get indices of in B paths (use initial_paths if not present)
-    inB = keys[np.where(internal_states == 'B')[0]]
+    if len(keys):
+        # get indices of in B paths (use initial_paths if not present)
+        inB = keys[np.where(internal_states == 'B')[0]]
+    else:
+        inB = []
     if not len(inB):
         temp = initial_paths[:].unsplit()
         temp = temp.crop(frame_indices=temp.frame_states == 'B')
@@ -520,19 +528,28 @@ def fit(network, pathensemble,
         keys = np.append(keys, len(pathensemble) - 1)
         inB = np.array([len(keys) - 1])
     
-    # get indices of shot paths
-    shot_paths = np.where((internal_states == 'R') *
-                          (shooting_indices > 0))[0]
+    if len(keys):
+        # get indices of shot paths
+        shot_paths = np.where((internal_states == 'R') *
+                              (shooting_indices > 0))[0]
+    else:
+        shot_paths = np.zeros(0, dtype=int)
     
     # get indices of ARA paths (within keys representation)
-    AtoA = np.where((initial_states == 'A') *
-                    (internal_states == 'R') * 
-                    (final_states == 'A'))[0]
+    if len(keys):
+        AtoA = np.where((initial_states == 'A') *
+                        (internal_states == 'R') * 
+                        (final_states == 'A'))[0]
+    else:
+        AtoA = np.zeros(0, dtype=int)
     
     # get indices of BRB paths (within keys representation)
-    BtoB = np.where((initial_states == 'B') *
-                    (internal_states == 'R') * 
-                    (final_states == 'B'))[0]
+    if len(keys):
+        BtoB = np.where((initial_states == 'B') *
+                        (internal_states == 'R') * 
+                        (final_states == 'B'))[0]
+    else:
+        BtoB = np.zeros(0, dtype=int)
     
     # determine effective state A boundary
     thA2 = -np.inf
@@ -551,57 +568,81 @@ def fit(network, pathensemble,
             thB2 = +np.inf
         # report
         print(f'    thB {thB} associated value: {thB2:.3f}\n')            
-    
-    # get indices of equilibrium fromA paths
-    # (starting at the effective boundary of state A)
-    free_A = np.where((initial_states == 'A') *
-                      (internal_states == 'R') * 
-                      (shooting_values <= thA2))[0]
-    
-    # get indices of equilibrium fromB paths
-    # (starting or ending at the effective boundary of state B)
-    free_B = np.where((initial_states == 'B') *
-                      (internal_states == 'R') * 
-                      (shooting_values >= thB2))[0]
-    
+
+    if len(keys):
+        # get indices of equilibrium fromA paths
+        # (starting at the effective boundary of state A)
+        free_A = np.where((initial_states == 'A') *
+                          (internal_states == 'R') * 
+                          (shooting_values <= thA2))[0]
+        
+        # get indices of equilibrium fromB paths
+        # (starting or ending at the effective boundary of state B)
+        free_B = np.where((initial_states == 'B') *
+                          (internal_states == 'R') * 
+                          (shooting_values >= thB2))[0]
+    else:
+        free_A = np.zeros(0, dtype=int)
+        free_B = np.zeros(0, dtype=int)
+
     # which AtoA paths are free? (within keys representation)
-    # which BtoB paths are free? (within keys representation)
-    free_AtoA = AtoA[shooting_values[AtoA] <= thA2]
-    free_BtoB = BtoB[shooting_values[BtoB] >= thB2]
-    
     # which AtoA paths are shot? (within keys representation)
+    if len(AtoA):
+        free_AtoA = AtoA[shooting_values[AtoA] <= thA2]
+        shot_AtoA = AtoA[shooting_values[AtoA] > thA2]
+    else:
+        free_AtoA = np.zeros(0, dtype=int)
+        shot_AtoA = np.zeros(0, dtype=int)
+    
+    # which BtoB paths are free? (within keys representation)
     # which BtoB paths are shot? (within keys representation)
-    shot_AtoA = AtoA[shooting_values[AtoA] > thA2]
-    shot_BtoB = BtoB[shooting_values[BtoB] < thB2]
+    if len(BtoB):
+        free_BtoB = BtoB[shooting_values[BtoB] >= thB2]
+        shot_BtoB = BtoB[shooting_values[BtoB] < thB2]
+    else:
+        free_BtoB = np.zeros(0, dtype=int)
+        shot_BtoB = np.zeros(0, dtype=int)
     
     # shot AtoB and BtoA paths (now within shot paths representation)
-    if np.sum(shot_paths):
+    if len(shot_paths):
         shot_AtoB = ((initial_states[shot_paths] == 'A') *
                      (final_states[shot_paths] == 'B'))
         shot_BtoA = ((initial_states[shot_paths] == 'B') *
                      (final_states[shot_paths] == 'A'))
+        
+        # assign weights to shot TPs: 1 / density at shooting interface
+        shot_paths_densities = pathensemble.densities(keys[shot_paths])
+        shot_AtoB_densities = shot_paths_densities[shot_AtoB]
+        shot_BtoA_densities = shot_paths_densities[shot_BtoA]
+        if len(shot_AtoB_densities):
+            shot_AtoB_densities[shot_AtoB_densities == 0.] = np.inf  # stay safe
+        if len(shot_BtoA_densities):
+            shot_BtoA_densities[shot_BtoA_densities == 0.] = np.inf  # stay safe
+        shot_AtoB_weights = 1 / shot_AtoB_densities
+        shot_BtoA_weights = 1 / shot_BtoA_densities
+        
+        # convert to within keys representation
+        shot_AtoB = shot_paths[shot_AtoB]
+        shot_BtoA = shot_paths[shot_BtoA]
     else:
-        shot_AtoB = np.zeros(len(shot_paths), dtype=bool)
-        shot_BtoA = np.zeros(len(shot_paths), dtype=bool)
+        shot_AtoB = np.zeros(0, dtype=int)
+        shot_BtoA = np.zeros(0, dtype=int)
+        shot_AtoB_weights = np.zeros(0)
+        shot_BtoA_weights = np.zeros(0)
     
-    # assign weights to shot TPs: 1 / density at shooting interface
-    shot_paths_densities = pathensemble.densities(keys[shot_paths])
-    shot_AtoB_densities = shot_paths_densities[shot_AtoB]
-    shot_BtoA_densities = shot_paths_densities[shot_BtoA]
-    shot_AtoB_densities[shot_AtoB_densities == 0.] = np.inf  # stay safe
-    shot_BtoA_densities[shot_BtoA_densities == 0.] = np.inf  # stay safe
-    shot_AtoB_weights = 1 / shot_AtoB_densities
-    shot_BtoA_weights = 1 / shot_BtoA_densities
-    
-    # convert to within keys representation
-    shot_AtoB = shot_paths[shot_AtoB]
-    shot_BtoA = shot_paths[shot_BtoA]
+    # join
     shot_TPs = np.append(shot_AtoB, shot_BtoA).astype(int)
     shot_TPs_weights = np.append(shot_AtoB_weights, shot_BtoA_weights)
     
     # equilibrium TPs (within keys representation)
-    free_AtoB = free_A[final_states[free_A] == 'B']
-    free_BtoA = free_B[final_states[free_B] == 'A']
+    if len(freeA):
+        free_AtoB = free_A[final_states[free_A] == 'B']
+    else:
+        free_AtoB = np.zeros(0, dtype=int)
+    if len(freeB):
+        free_BtoA = free_B[final_states[free_B] == 'A']
+    else:
+        free_BtoA = np.zeros(0, dtype=int)
     free_TPs = np.append(free_AtoB, free_BtoA).astype(int)
     
     # TPs weights (default for equilibrium: 1)
