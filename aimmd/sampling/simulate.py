@@ -3,10 +3,10 @@ import pty
 import subprocess
 from ..core.utils import get_current_simulation
 
-def simulate(self, run_file, log_file=None, append=False):
+def simulate(self, run_file, log_file=None, noappend=False):
     """
     Continuously run simulations as directed by the run file.
-    append: bool, if True: do not create new part (Gromacs' -noappend).
+    noappend: bool, add Gromacs' -noappend flag.
     """
     
     self.log = open(log_file, "a+") if log_file else None
@@ -36,7 +36,7 @@ def simulate(self, run_file, log_file=None, append=False):
                 "-cpo", f"{fname}.cpt",
                 "-cpi", f"{fname}.cpt",
                 "-cpt", ".1"]
-            if not append:
+            if noappend:
                 command.append("-noappend")
                     
             # open pseudo-terminal to capture real-time stdout
