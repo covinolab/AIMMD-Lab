@@ -275,6 +275,7 @@ def manage(self, n, nA, nB, eA, eB,
     
     except KeyboardInterrupt:
         self.terminate_handler(exit=False)
+        return pathensemble
     
     except Exception as exception:
         print(f'Error: {exception}')
