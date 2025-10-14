@@ -66,14 +66,14 @@ class Worker:
     
     @log_file.setter
     def log_file(self, log_file):
-        if log_file == self.log_file:
+        if log_file == self.__log_file:
             return
         if self.original_stdout != sys.stdout:
             sys.stdout.close()
         sys.stdout = self.original_stdout
         if log_file:
             sys.stdout = open(f'{self.directory}/{log_file}', 'a+')
-        self.log_file = log_file
+        self.__log_file = log_file
     
     def terminate_handler(self, signum=None, frame=None, report=True, exit=False):
         """Gracefully terminate the worker and its subprocess."""
