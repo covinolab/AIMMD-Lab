@@ -11,14 +11,16 @@ from ..core.utils import now
 
 class Worker:
     
-    def __init__(self, params, localid=0, cpus_per_task=1, gpus_per_task=0):
+    def __init__(self, params, directory='.',
+                 localid=0, cpus_per_task=1, gpus_per_task=0):
         """
         Worker process responsible for running independent AIMMD tasks
         (simulations, training, or management) on allocated CPUs/GPUs.
         """
-        
+
+        self.directory = directory
         if not isinstance(params, Params):
-            params = Params.load(params)
+            params = Params.load(f'{directory}/{params}')
         self.params = params
         self.process = None
         self.log = None
@@ -107,4 +109,4 @@ class Worker:
             return simulate(self, *args)
 
 if __name__ == '__main__':
-    Worker(Params.load(sys.argv[1])).run(*sys.argv[2:])
+    Worker(*sys.argv[1:3]).run(*sys.argv[3:])
