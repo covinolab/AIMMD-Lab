@@ -127,10 +127,7 @@ def manage(self, n, nA, nB, eA, eB,
         
         # will wait until the training part has completed at least one cycle
         print(f'\nWaiting for neural network parameters ({now()})')
-        try:
-            bins, densities = load_network_and_projections(network, directory)
-        except (SystemExit, KeyboardInterrupt):
-            pass
+        bins, densities = load_network_and_projections(network, directory)
         
         # update full pathensemble
         pathensemble = shooting_chains + equilibriumA + equilibriumB
