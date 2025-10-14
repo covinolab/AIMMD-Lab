@@ -9,7 +9,7 @@ import importlib
 import shutil
 from typing import Dict
 
-# necessary for spawning independent AIMMD processes
+# necessary for spawning independent workers
 import multiprocessing
 multiprocessing.set_start_method('fork')
 
