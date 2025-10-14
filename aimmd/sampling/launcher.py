@@ -15,7 +15,7 @@ WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
 def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
              task, *args):
-    from aimmd.core.params import Params
+    from aimmd import Params, Worker
     return Worker(Params.load(f'{directory}/{params}'), directory,
                   localid, cpus_per_task, gpus_per_task).run(task, *args)
 
