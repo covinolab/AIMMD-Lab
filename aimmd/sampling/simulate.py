@@ -77,7 +77,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
                         
                         if get_current_simulation(
                             f'{self.directory}/{run_file}') != fname:
-                            print("Target simulation file changed ({now()}).")
+                            print(f"Target simulation file changed ({now()}).")
                             break
 
                         if select.select([stdout], [], [], 0.1)[0]:
