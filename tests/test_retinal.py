@@ -45,6 +45,7 @@ if __name__ == '__main__':
     values_function = params.values_function
     network = params.network
     mdrun = params.mdrun
+    trajectory_extension = params.trajectory_extension
     
     # no max time option here
     mdrun = mdrun.split()
