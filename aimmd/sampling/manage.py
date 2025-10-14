@@ -14,9 +14,7 @@ def manage(self, n, nA, nB, eA, eB,
     t0 = time.time()
     
     try:
-        if log_file:
-            self.log_file = log_file
-            sys.stdout = open(f'{self.directory}/{log_file}', "a+")
+        self.log_file = log_file
         
         # get aimmd run parameters
         print(f'\nLoading AIMMD run parameters ({now()})')
