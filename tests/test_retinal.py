@@ -220,7 +220,7 @@ if __name__ == '__main__':
     t0 = time.time()
     launcher.run(walltime=60)
     if time.time() - t0 < 60:
-        print('SHOOTING FAILED')
+        print('SHOOTING & MANAGER & TRAINER FAILED')
     
     print('\nChecking if workers simulated...')
     file = f'run1/equilibriumA/traj000001.part0001{trajectory_extension}'
@@ -229,10 +229,11 @@ if __name__ == '__main__':
     print('All fine')
 
     print('\nTest appending')
+    launcher = aimmd.Launcher(params, 'run1', 0, 1, 0)
     t0 = time.time()
-    aimmd.Worker(params, 'run1').simulate('worker0.run', noappend=True, walltime=10)
-    if time.time() - t0 < 10:
-        print('FREE A FAILED')
+    launcher.run(walltime=30)
+    if time.time() - t0 < 30:
+        print('FREE A & MANAGER & TRAINER FAILED')
     
     print('\nChecking if workers simulated...')
     file = f'run1/equilibrium/traj000001.part0002{trajectory_extension}'
