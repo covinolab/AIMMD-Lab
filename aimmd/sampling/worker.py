@@ -56,15 +56,16 @@ class Worker:
         signal.signal(signal.SIGTERM, self.terminate_handler)
         signal.signal(signal.SIGINT, self.terminate_handler)  # (s, f)
     
-    def terminate_handler(self, signum=None, frame=None, exit=False):
+    def terminate_handler(self, signum=None, frame=None, report=True, exit=False):
         """Gracefully terminate the worker and its subprocess."""
         
         # report
-        if signum:
-            msg = f"Received signal {signum}, terminating process."
-        else:
-            msg = f"Terminating process."
-        self.report(msg)
+        if report:
+            if signum:
+                msg = f"Received signal {signum}, terminating process."
+            else:
+                msg = f"Terminating process."
+            self.report(msg)
         
         # end current process
         if self.process and self.process.poll() is None:
