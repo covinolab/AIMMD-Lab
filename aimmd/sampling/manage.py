@@ -1,7 +1,9 @@
+import time
 from ..core.utils import *
 
 def manage(self, n, nA, nB, eA, eB,
-           log_file=None, nsteps=int(1e6), nframes=np.inf):
+           log_file=None, nsteps=int(1e6),
+           nframes=np.inf, walltime=np.inf):
     """
     n: number of shooting workers
     """
@@ -21,6 +23,8 @@ def manage(self, n, nA, nB, eA, eB,
     # Catch SIGTERM and SIGINT
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
+    
+    t0 = time.time()
     
     try:
         if log_file:
@@ -144,6 +148,10 @@ def manage(self, n, nA, nB, eA, eB,
         # main cycle
         print(f'\nStarting the main cycle ({now()})')
         while step_number.n < nsteps:
+           
+           # maximum time
+           if time.time() - t0 > walltime:
+               break
             
             # update candidate transitions
             if len(pathensemble):
@@ -286,3 +294,8 @@ def manage(self, n, nA, nB, eA, eB,
         print('Error: {exception}')
         cleanup()
         raise
+
+    finally:
+        cleanup(exit=False)
+        return pathensemble
+
