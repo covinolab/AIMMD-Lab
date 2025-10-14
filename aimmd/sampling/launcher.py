@@ -154,11 +154,21 @@ class Launcher:
                 if process.is_alive():
                     process.terminate()  # sends SIGTERM
             
+            # wait
+            t0 = time.time()
+            while time.time() - t0 < timeout:
+                completed = True
+                for process in processes:
+                    if process.is_alive():
+                        completed = False
+                if completed:
+                    break
+            
             # force termination
-            for process in processes:
-                process.join(timeout)
-                if process.is_alive():
-                    process.kill()
+            if not completed:
+                for process in processes:
+                    if process.is_alive():
+                        process.kill()
             
             if exit:
                 sys.exit(0)
