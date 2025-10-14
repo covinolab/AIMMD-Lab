@@ -39,6 +39,7 @@ class Launcher:
         
         # create folder structure (keep existing data)
         os.system(f'mkdir {self.directory}')
+        os.system(f'mkdir {self.directory}/initial_paths')
         
         # save params to directory
         self.params.save(f'{self.directory}/params.dill')
