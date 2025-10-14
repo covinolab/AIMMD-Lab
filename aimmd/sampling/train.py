@@ -1,6 +1,7 @@
 from ..core.utils import *
 
 def train(self, log_file=None, verbose=False):
+    log_file = f'{self.directory}/{logfile}'
     
     # get aimmd run parameters
     write(f'\nLoading AIMMD run parameters ({now()})', log_file)
