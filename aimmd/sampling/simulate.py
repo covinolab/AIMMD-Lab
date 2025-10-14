@@ -78,13 +78,14 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
                             f'{self.directory}/{run_file}') != fname:
                             print("Target simulation file changed ({now()}).")
                             break
-                        
-                        try:
-                            line = stdout.readline()
-                            print(line, end="")
-                        except OSError:
-                            # PTY closed: treat as EOF
-                            break
+
+                        if select.select([stdout], [], [], 0.1)[0]:
+                            try:
+                                line = stdout.readline()
+                                print(line, end="")
+                            except OSError:
+                                # PTY closed: treat as EOF
+                                break
             
             # catch any final PTY read errors cleanly
             except OSError:
