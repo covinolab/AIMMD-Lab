@@ -44,6 +44,10 @@ def _train(self, log_file=None, verbose=False, walltime=np.inf):
         
         while True:
             
+            # received the signal
+            if self.interrupt:
+                break
+            
             # maximum time
             if time.time() - t0 > walltime:
                 break
