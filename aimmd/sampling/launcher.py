@@ -3,6 +3,7 @@ import time
 import numpy as np
 from multiprocessing import Process
 from .worker import Worker
+from ..core.params import Params
 
 # worker path
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
