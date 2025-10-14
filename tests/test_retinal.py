@@ -17,7 +17,7 @@ import numpy as np
 import mdtraj as md
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from scipy.stats import logit, expit
+from scipy.special import logit, expit
 
 np.set_printoptions(threshold=20)  # better visualization
 
