@@ -2,6 +2,7 @@ import os
 import pty
 import time
 import numpy as np
+import select
 import subprocess
 from ..core.utils import get_current_simulation, now
 
