@@ -2,6 +2,7 @@
 AIMMD parameters management / defaults.
 '''
 
+import os
 import sys
 import dill
 import torch
