@@ -28,7 +28,7 @@ os.system('rm -rf equilibrium; mkdir equilibrium')
 print('\nImporting integrator')
 sys.path.append('./')
 from integrator import run
-from params import states_function
+from params import states_function, descriptors_function, values_function
 
 print(f'\nEquilibrating 1D system for {nframes} frames')
 traj = np.zeros(nframes)
