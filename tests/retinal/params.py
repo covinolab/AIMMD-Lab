@@ -7,6 +7,7 @@ from tqdm import tqdm
 mdtraj_frame = md.load('run.gro')
 trajectory_extension = '.trr'
 initial_paths = ['initial.trr']
+gmx_grompp = 'gmx grompp -maxwarn 4'
 
 couples = [(i,j) for i in range(80) for j in range(i+1, 80)]
 
