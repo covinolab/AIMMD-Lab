@@ -4,6 +4,12 @@ from ..core.utils import *
 
 def train(self, log_file=None, verbose=False, walltime=np.inf):
     
+    if verbose == 'False' or verbose == 'false':
+        verbose = False
+    else:
+        verbose = bool(verbose)
+    walltime = float(walltime)
+    
     pathensemble = None
     
     try:
