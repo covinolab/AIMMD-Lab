@@ -27,8 +27,9 @@ if __name__ == '__main__':
     
     print('Cleaning directories')
     os.system('rm -rf equilibrium; mkdir equilibrium')
+    os.system('rm -rf run1')
     
-    print('\nImporting integrator')
+    print('\nImporting integrator and functions')
     sys.path.append('./')
     from integrator import run
     from params import states_function, descriptors_function, values_function
@@ -208,6 +209,20 @@ if __name__ == '__main__':
     file = 'run1/equilibriumA/traj000001.part0001.xtc'
     if not os.path.exists(file) or os.path.getsize(file) <= 68:
         file = 'run1/equilibriumA/traj000001.part0002.xtc'
+        if not os.path.exists(file) or os.path.getsize(file) <= 68:
+            raise RuntimeError('run1/worker0 failed')
+    print('All fine')
+
+    print('\nTest appending')
+    t0 = time.time()
+    launcher.run(walltime=60)
+    if time.time() - t0 < 60:
+        print('TEST FAILED')
+        
+    print('\nChecking if workers simulated...')
+    file = 'run1/equilibriumA/traj000001.part0002.xtc'
+    if not os.path.exists(file) or os.path.getsize(file) <= 68:
+        file = 'run1/equilibriumA/traj000001.part0003.xtc'
         if not os.path.exists(file) or os.path.getsize(file) <= 68:
             raise RuntimeError('run1/worker0 failed')
     print('All fine')
