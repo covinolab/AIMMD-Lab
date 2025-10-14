@@ -1,3 +1,5 @@
+[![pytest](https://github.com/gl95/AIMMD/actions/workflows/pytest.yml/badge.svg)](https://github.com/gl95/AIMMD/actions/workflows/pytest.yml)
+
 # AIMMD
 AI for Molecular Mechanism Discovery
 
