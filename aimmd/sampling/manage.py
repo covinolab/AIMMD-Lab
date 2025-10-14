@@ -260,7 +260,7 @@ def manage(self, n, nA, nB, eA, eB,
         
         # complete
         step_number.close()
-        print(f'\nReached target nsteps {step_number.n} >= {nsteps} ({now()})')
+        print(f'\nReached {step_number.n} steps ({now()}), {pathensemble.nframes} total frames')
         
         # two last training rounds (sure to have most updated data)
         print(f'\nLast training rounds')
