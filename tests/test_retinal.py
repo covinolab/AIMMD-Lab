@@ -44,6 +44,16 @@ if __name__ == '__main__':
     descriptors_function = params.descriptors_function
     values_function = params.values_function
     network = params.network
+    mdrun = params.mdrun
+    
+    # no max time option here
+    mdrun = mdrun.split()
+    for i, field in enumerate(mdrun):
+        if field == '-maxh':
+            mdrun[i] = ''
+            mdrun[i + 1] = ''
+            break
+    mdrun = ' '.join(mdrun)
     
     print(f'\nEquilibrating system for {seconds} seconds')
     code = os.system(f'{grompp} -f {mdp} '
@@ -51,7 +61,7 @@ if __name__ == '__main__':
               f'-o equilibrium/run.tpr')
     if code:
         raise RuntimeError('Error during tpr generation')
-    code = os.system(f'{params.mdrun} -deffnm equilibrium/run '
+    code = os.system(f'{mdrun} -deffnm equilibrium/run '
                      f'-maxh {seconds/3600}')
     if code:
         raise RuntimeError('Error during simulation')
