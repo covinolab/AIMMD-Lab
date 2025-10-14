@@ -3,7 +3,9 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
+engine = 'toy'
 topology = 'run.gro'
+trajectory_extension = '.xtc'
 initial_paths = ['initial.xtc']
 
 def descriptors_function(traj, verbose=False):
