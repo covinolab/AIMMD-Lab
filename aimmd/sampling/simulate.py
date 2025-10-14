@@ -19,6 +19,10 @@ def _simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
         # run continuously
         while True:
             
+            # received the signal
+            if self.interrupt:
+                break
+            
             print("Starting simulation loop...")
             if not log_file:
                 print(f"Press Control+C to interrupt.")
@@ -66,6 +70,10 @@ def _simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
             try:
                 with os.fdopen(master_fd) as stdout:
                     while True:
+                        
+                        # received the signal
+                        if self.interrupt:
+                            break
                         
                         if get_current_simulation(
                             f'{self.directory}/{run_file}') != fname:
