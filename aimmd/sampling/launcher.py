@@ -146,7 +146,7 @@ class Launcher:
         processes.append(Process(target=_run_task, args=(
             'params.dill', self.directory,
             localid, cpus_per_task, gpus_per_task,
-            'manage', 'manager.log', nsteps, nframes)))
+            'manage', self.n, 'manager.log', nsteps, nframes)))
         
         # function to terminate all workers
         def terminate_all(signum=None, frame=None, timeout=5, exit=True):
@@ -301,15 +301,17 @@ class Launcher:
                            f'worker{i}.run worker{i}.log\n')
                 file.write(f'  ;;\n')
             
-            # trainer and manager
+            # trainer
             file.write(f'{i + 1})\n')
             file.write(f'  # trainer\n')
             file.write(f'  $WORKER params.dill {self.directory} train '
                        f'trainer.log\n')
             file.write(f'  trainer_pid=$!\n\n')
+
+            # manager
             file.write(f'  # manager\n')
             file.write(f'  $WORKER params.dill {self.directory} manage '
-                       f'manager.log {nsteps} {nframes}\n')
+                       f'{self.n + 1} manager.log {nsteps} {nframes}\n')
             file.write(f'  manager_pid=$!\n\n')
             
             # handle task termination
