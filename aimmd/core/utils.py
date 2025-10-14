@@ -102,10 +102,11 @@ def write(text, *paths, wrap_text=False):
         text = "\n".join(wrap(text, 80,
             break_long_words=False, replace_whitespace=False))
     text = text.replace('"',"'")
-    os.system(f'''echo "{text}"''')
     for path in paths:
         if path is not None:
             os.system(f'''echo "{text}" >> {path}''')
+    if not len(paths):
+        print(text)
 
 
 def remove(path, verbose=True):
