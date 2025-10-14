@@ -149,10 +149,10 @@ def manage(self, n, nA, nB, eA, eB,
         # main cycle
         print(f'\nStarting the main cycle ({now()})')
         while step_number.n < nsteps:
-           
-           # maximum time
-           if time.time() - t0 > walltime:
-               break
+            
+            # maximum time
+            if time.time() - t0 > walltime:
+                break
             
             # update candidate transitions
             if len(pathensemble):
