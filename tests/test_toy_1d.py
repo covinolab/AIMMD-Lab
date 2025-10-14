@@ -159,10 +159,10 @@ else:
 path = equilibrium.path(i)
 print(':', path)
 print('Saving the path as a separate trajectory file')
-path.write('initial.xtc')
+path.write('initial2.xtc')
 print('Adding it to the "initial path" ensemble', end='')
 initial_path = equilibrium[:0]
-initial_path.add_path('../initial.xtc')
+initial_path.add_path('../initial2.xtc')
 print(':', initial_path)
 
 print('\nReweighting (the weights should be constants)')
