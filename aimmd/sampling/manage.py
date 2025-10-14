@@ -1,8 +1,26 @@
 from ..core.utils import *
 
 def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
-    with (open(f'{self.directory}/{log_file}', 'a+') if log_file
-          else nullcontext(sys.stdout)) as log_file:
+
+    
+    original_stdout = sys.stdout
+    
+    def cleanup(signum=None, frame=None, exit=True):
+        if log_file:
+            if not sys.stdout.closed:
+                sys.stdout.close()
+            sys.stdout = original_stdout
+        
+        if exit:
+            sys.exit(0)  # exit gracefully
+    
+    # Catch SIGTERM and SIGINT
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+    
+    try:
+        if log_file:
+            sys.stdout = open(os.path.join(self.directory, log_file_path), "a+")
         
         # get aimmd run parameters
         log_file.write(f'\nLoading AIMMD run parameters ({now()})')
@@ -253,3 +271,6 @@ def manage(self, log_file=None, nsteps=int(1e6), nframes=np.inf):
         
         # handle dependency
         step_number.close()
+    
+    finally:
+        cleanup(exit=False)
