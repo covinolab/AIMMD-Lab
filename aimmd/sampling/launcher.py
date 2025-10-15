@@ -260,7 +260,7 @@ class Launcher:
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
                 file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
                            f'"{self.directory}" simulate '
-                           f'worker{i}.run worker{i}.log noappend\n')
+                           f'worker{i}.run worker{i}.log noappend' + '\n')
                 file.write(f'  ;;\n')
             
             # extension workers
