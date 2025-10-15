@@ -53,7 +53,7 @@ if __name__ == '__main__':
     traj_md.save('initial.xtc')
     
     print('Loading AIMMD params')
-    params = aimmd.Params.update('params.py')
+    params = aimmd.Params.load('params.py')
     params.crop_initial_paths()  # shorter than nframes frames
     network = params.network
     
