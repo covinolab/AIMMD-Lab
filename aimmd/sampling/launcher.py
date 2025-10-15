@@ -86,13 +86,13 @@ class Launcher:
                            f'{self.directory}/initial_paths')
     
     def run(self, nsteps=int(1e6), nframes=np.inf, walltime=np.inf,
-                 cpus_per_task=1, gpus_per_task=0):
+                 cpus_per_task=1, gpus_per_task=1):
         """
         nsteps: default inf, maximum number of shooting simulations
         nframes: default inf, maximum number of simulated frames, has priority over nsteps
         walltime: default inf, maximum number of simulation time, has priority over nframes and nsteps
         cpus_per_task
-        gpus_per_task
+        gpus_per_task (if present)
         """
         
         processes = []
