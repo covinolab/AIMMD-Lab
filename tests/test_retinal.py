@@ -24,7 +24,6 @@ np.set_printoptions(threshold=20)  # better visualization
 if __name__ == '__main__':
     
     FOLDER = 'retinal'
-    topology = 'run.gro'
     seconds = 12  # of equilibration
     
     # Attention! Gromacs options come from "retinal/params.py"
@@ -39,7 +38,7 @@ if __name__ == '__main__':
     
     print('\nImporting parameters')
     from params import cv
-    params = aimmd.Params.update('params.py')
+    params = aimmd.Params.load('params.py')
     topology = params.topology
     grompp = params.grompp
     mdp = params.gmx_run_mdp
