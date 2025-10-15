@@ -401,7 +401,8 @@ def fit(network, pathensemble,
     
     loss_bayesian_factor : float, default=100.0
         In defining the logit committor square deviation training loss,
-        necessary with discrete data.
+        necessary with discrete data. If zero: apply standard logit
+        binomial loss (worse close to the states).
     
     loss_smoothening_weight : float, default=0.0
         Weight of an additional term to the loss, corresponding to the
@@ -1184,24 +1185,34 @@ def fit(network, pathensemble,
             optimizer.zero_grad()
             q = network(d)
             
-            qA = - (torch.log(1 + torch.exp(-q[:, 0])) +
-                    loss_bayesian_factor)
-            qB = + (torch.log(1 + torch.exp(+q[:, 0])) +
-                    loss_bayesian_factor)
+            if loss_bayesian_factor:
+                
+                qA = - (torch.log(1 + torch.exp(-q[:, 0])) +
+                        loss_bayesian_factor)
+                qB = + (torch.log(1 + torch.exp(+q[:, 0])) +
+                        loss_bayesian_factor)
+                
+                toA_contribution = (q[:, 0] - qA) ** 2
+                toB_contribution = (q[:, 0] - qB) ** 2
+                
+                q2 = q[:,0].detach()
+                
+                loss = torch.sum(q2 ** 2 *
+                    (r[:, 0] * toA_contribution +
+                     r[:, 1] * toB_contribution))
+                
+                # normalize
+                loss /= torch.sum(q2 ** 2 * (r[:, 0] + r[:, 1]) *
+                                  loss_bayesian_factor ** 2)
+                loss -= 1.0
             
-            toA_contribution = (q[:, 0] - qA) ** 2
-            toB_contribution = (q[:, 0] - qB) ** 2
-            
-            q = q[:, 0].detach()
-            
-            loss = torch.sum(q ** 2 *
-                (r[:, 0] * toA_contribution +
-                 r[:, 1] * toB_contribution))
-            
-            # normalize
-            loss /= torch.sum(q ** 2 * (r[:, 0] + r[:, 1]) *
-                              loss_bayesian_factor ** 2)
-            loss -= 1.0
+            # standard binomial loss
+            else:
+                exp_pos_q = torch.exp(+q[:, 0])
+                exp_neg_q = torch.exp(-q[:, 0])
+                toA_contrib = r[:, 0] * torch.log(1. + exp_pos_q)
+                toB_contrib = r[:, 1] * torch.log(1. + exp_neg_q)
+                loss = torch.sum((toA_contrib + toB_contrib) / torch.sum(r))
             
             # Compute the smoothness penalty
             if loss_smoothening_weight:
