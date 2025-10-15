@@ -527,6 +527,7 @@ task together."""
         
         except Exception as exception:
             print(exception)
+            raise
         
         finally:
             os.chdir(cwd)    
