@@ -375,10 +375,13 @@ task together."""
         if self.engine == 'toy':
             return ''
     
-    def _check_initial_paths_and_states_function(self, initial_paths=[]):
+    def _check_initial_paths_and_states_function(
+        self, initial_paths=[], crop=False):
         """Run states_function and inspect result. Replace initial_path
         strings with MDAnalysis trajectories. Ensure initial paths are
-        transitions. Return processed initial paths."""
+        transitions. Return processed initial paths.
+        crop: if True, crop each trajectory to first transition.
+        """
         
         # either new paths or already attributed ones
         if not initial_paths:
@@ -414,6 +417,10 @@ task together."""
                 if states[b] != states[e + 1]:
                     # transition found
                     transition_found = True
+                    if crop:
+                        path = path[b:e]
+                        initial_paths[i] = path
+                    break
             
             # transition not found
             if not transition_found:
@@ -631,3 +638,12 @@ task together."""
             params_dict = dill.load(f)
         
         return Params(**params_dict)
+
+    def crop_initial_paths(self):
+        """
+        Leave only the transition parts in `params.inital_paths`, to
+        speed up future computations. Attention! May then need to reassign
+        `initial transitions` when changing `states_function`.
+        """
+        setattr(self, 'initial_paths',
+                self._check_initial_paths_and_states_function(crop=True))
