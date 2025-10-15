@@ -130,5 +130,5 @@ def fit(network, pathensemble,
         epochs=500,
         batch_size=4096,
         stop=50.,
-        verbose=verbose,
+        verbose=True,
         worker=worker)
