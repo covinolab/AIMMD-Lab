@@ -198,7 +198,7 @@ if __name__ == '__main__':
     launcher.create_job('job.sh')
     
     print('Running AIMMD for 10 steps')
-    launcher.run(nsteps=10)
+    launcher.run(nsteps=10, walltime=150)
     
     # how to understand what is failing? would need to run individual workers....
     #from aimmd import Worker
