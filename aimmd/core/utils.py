@@ -16,6 +16,7 @@ import argparse
 import warnings
 import importlib
 import importlib.util
+import functools
 import itertools
 import threading
 import MDAnalysis as mda
@@ -29,6 +30,9 @@ from textwrap import wrap
 from scipy.special import logit, expit
 from mdtraj.formats import TRRTrajectoryFile
 from .pathensemble import *
+
+# quick logging
+print = functools.partial(print, flush=True)
 
 ###############################################################################
 # Base utils ##################################################################
