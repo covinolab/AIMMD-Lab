@@ -54,6 +54,7 @@ if __name__ == '__main__':
     
     print('Loading AIMMD params')
     params = aimmd.Params.update('params.py')
+    params.crop_initial_paths()  # shorter than nframes frames
     network = params.network
     
     print('\nEquilibrium path ensemble initialization', end='')
@@ -196,18 +197,14 @@ if __name__ == '__main__':
     print('Testing slurm job creation')
     launcher.create_job('job.sh')
     
-    print('Performing AIMMD run for one minute')
-    t0 = time.time()
-    launcher.run(walltime=60)
-    if time.time() - t0 < 60:
-        print('TEST FAILED')
-        # TODO return false
-        # what is failing? would need to run individual workers....
-        
-        #from aimmd import Worker
-        #Worker(params, 'run1').train(walltime=30)
-        #Worker(params, 'run1').manage(options, walltime=30) ...
-        #Worker(params, 'run1').simulate(options, walltime=30) ...
+    print('Running AIMMD for 10 steps')
+    launcher.run(nsteps=10)
+    
+    # how to understand what is failing? would need to run individual workers....
+    #from aimmd import Worker
+    #Worker(params, 'run1').train(walltime=30)
+    #Worker(params, 'run1').manage(options, walltime=30) ...
+    #Worker(params, 'run1').simulate(options, walltime=30) ...
     
     print('\nChecking if workers simulated...')
     file = 'run1/equilibriumA/traj000001.part0001.xtc'
@@ -216,13 +213,13 @@ if __name__ == '__main__':
         if not os.path.exists(file) or os.path.getsize(file) <= 68:
             raise RuntimeError('run1/worker0 failed')
     print('All fine')
-
+    
     print('\nTest appending')
     t0 = time.time()
     launcher.run(walltime=60)
     if time.time() - t0 < 60:
         print('TEST FAILED')
-        
+    
     print('\nChecking if workers simulated...')
     file = 'run1/equilibriumA/traj000001.part0002.xtc'
     if not os.path.exists(file) or os.path.getsize(file) <= 68:
