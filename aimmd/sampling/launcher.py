@@ -16,6 +16,7 @@ def _run_task(params, directory,
              task, *args):
     worker = Worker(params, directory,
                     localid, cpus_per_task, gpus_per_task)
+    worker.is_process = True  # so to handle termination correctly
     return worker.run(task, *args)
 
 
