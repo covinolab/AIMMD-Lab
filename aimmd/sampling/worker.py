@@ -1,6 +1,7 @@
 import os
-import numpy as np
+import time
 import sys
+import numpy as np
 import psutil
 import signal
 import subprocess
@@ -151,8 +152,14 @@ class Worker:
         self.log_file = None
         
         # exit if required or if worker is a child process
-        if exit or self.is_process:
+        if exit:
             sys.exit(0)
+        
+        # kill current process
+        if self.is_process:
+            parent_pid = os.getpid()  # get PID
+            os.kill(parent_pid, signal.SIGTERM)  # send termination signal
+            time.sleep(10)
     
     def run(self, task, *args):
         if task == 'train':
