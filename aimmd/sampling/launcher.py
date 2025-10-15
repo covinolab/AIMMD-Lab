@@ -6,7 +6,7 @@ import time
 import numpy as np
 import signal
 import multiprocessing
-from .worker import Worker, save_initial_paths
+from .worker import Worker
 from ..core.params import Params
 
 # worker path
@@ -258,9 +258,9 @@ class Launcher:
                     state = 'B'
                     j = i - self.nA
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
-                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
+                file.write('  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
                            f'"{self.directory}" simulate '
-                           f'worker{i}.run worker{i}.log noappend' + '\n')
+                           f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
             # extension workers
@@ -274,7 +274,7 @@ class Launcher:
                     j -= self.eA
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (extension {state}{j})\n')
-                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
+                file.write('  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
                            f'"{self.directory}" simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
@@ -285,7 +285,7 @@ class Launcher:
                 j = i - begin
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (shooting {j})\n')
-                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
+                file.write('  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
                            f'"{self.directory}" simulate '
                            f'worker{i}.run worker{i}.log &\n')
                 file.write(f'  ;;\n')
@@ -293,14 +293,14 @@ class Launcher:
             # trainer
             file.write(f'{i + 1})\n')
             file.write(f'  # trainer\n')
-            file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}"'
+            file.write('  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}"'
                        '"{self.directory}" train '
                        f'trainer.log &\n')
             file.write(f'  trainer_pid=$!\n\n')
 
             # manager
             file.write(f'  # manager\n')
-            file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}"'
+            file.write('  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}"'
                        '"{self.directory}" manage '
                        f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
                        f'manager.log {nsteps} {nframes} &\n')
