@@ -64,6 +64,7 @@ class Worker:
             params = Params.load(f'{directory}/{params}')
         self.params = params
         self.process = None
+        self.is_process = False
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
         self.__log_file = None
@@ -149,8 +150,8 @@ class Worker:
         self.process = None
         self.log_file = None
         
-        # exit if required
-        if exit:
+        # exit if required or if worker is a child process
+        if exit or self.is_process:
             sys.exit(0)
     
     def run(self, task, *args):
