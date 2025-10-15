@@ -19,8 +19,8 @@ import importlib.util
 import functools
 import itertools
 import threading
-import MDAnalysis as mda
 import subprocess
+import MDAnalysis as mda
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from time import sleep
@@ -37,6 +37,13 @@ print = functools.partial(print, flush=True)
 ###############################################################################
 # Base utils ##################################################################
 ###############################################################################
+
+def run_with_timeout(cmd, timeout):
+    try:
+        result = subprocess.run(cmd, shell=True, timeout=timeout)
+        return result.returncode
+    except subprocess.TimeoutExpired:
+        return 0
 
 def has_param(func, param_name):
     signature = inspect.signature(func)
