@@ -3,13 +3,16 @@ import sys
 import time
 import numpy as np
 import signal
-from multiprocessing import Process
+import multiprocessing
 from .worker import Worker, save_initial_paths
 from ..core.params import Params
 
 # worker path
 PYTHON = sys.executable
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
+
+# multiprocessing context: spwan
+ctx = mp.get_context('spawn')
 
 def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
@@ -102,7 +105,7 @@ class Launcher:
                 noappend = True
             else:
                 noappend = False
-            processes.append(Process(target=_run_task, args=(
+            processes.append(ctx.Process(target=_run_task, args=(
                 'params.dill', self.directory,
                 localid, cpus_per_task, gpus_per_task,
                 'simulate', f'worker{localid}.run', f'worker{localid}.log',
@@ -110,13 +113,13 @@ class Launcher:
         
         # trainer (sharing the same localid as manager)
         localid = len(processes)
-        processes.append(Process(target=_run_task, args=(
+        processes.append(ctx.Process(target=_run_task, args=(
             'params.dill', self.directory,
             localid, cpus_per_task, gpus_per_task,
             'train', 'trainer.log')))
         
         # manager (sharing the same localid as trainer)
-        processes.append(Process(target=_run_task, args=(
+        processes.append(ctx.Process(target=_run_task, args=(
             'params.dill', self.directory,
             localid, cpus_per_task, gpus_per_task,
             'manage', self.n, self.nA, self.nB, self.eA, self.eB,
