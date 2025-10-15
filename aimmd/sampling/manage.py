@@ -13,6 +13,7 @@ def manage(self, n, nA, nB, eA, eB,
     nB = int(nB)
     eA = int(eA)
     eB = int(eB)
+    nsteps = int(nsteps)
     nframes = float(nframes)
     walltime = float(walltime)
     
