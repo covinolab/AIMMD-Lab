@@ -290,7 +290,7 @@ class Launcher:
                        f' || kill -0 $manager_pid 2>/dev/null; do\n')
             file.write(f'    wait -n\n')
             file.write(f'    rm -f {self.directory}/*.run\n')
-            file.write(f'    scancel ${SLURM_JOB_ID}\n')
+            file.write( '    scancel ${SLURM_JOB_ID}\n')
             file.write(f'  done\n  ;;\n')
 
             # end
