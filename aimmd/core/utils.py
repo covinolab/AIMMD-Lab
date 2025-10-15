@@ -1324,11 +1324,11 @@ def fit(network, pathensemble,
 
 def load_network_and_projections(
     network, directory, backup_directory=None, wait=True, worker=None):
-    device = next(network.parameters()).device
     
     # advance only if data are present
     while True:
-        try:  
+        try:
+            device = next(network.parameters()).device
             state_dict = torch.load(
                 f'{directory}/network.h5', map_location=device)
             bins = np.load(f'{directory}/bins.npy')
