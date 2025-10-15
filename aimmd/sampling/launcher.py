@@ -12,7 +12,7 @@ PYTHON = sys.executable
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
 
 # multiprocessing context: spwan
-ctx = mp.get_context('spawn')
+ctx = multiprocessing.get_context('spawn')
 
 def _run_task(params, directory,
              localid, cpus_per_task, gpus_per_task,
