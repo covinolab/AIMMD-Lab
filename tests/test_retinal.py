@@ -219,7 +219,7 @@ if __name__ == '__main__':
 
     # worker, trainer, and shooting together
     launcher = aimmd.Launcher(params, 'run1', 1, 0, 0)
-    launcher.run(nsteps=10, walltime=150)
+    launcher.run(nsteps=10, walltime=120)
     
     print('\nChecking if workers simulated...')
     file = f'run1/equilibriumA/traj000001.part0001{trajectory_extension}'
