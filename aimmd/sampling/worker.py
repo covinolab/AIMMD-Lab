@@ -65,6 +65,7 @@ class Worker:
         self.params = params
         self.process = None
         self.original_stdout = sys.stdout
+        self.original_stderr = sys.stderr
         self.__log_file = None
         self.interrupt = False
         
@@ -112,8 +113,10 @@ class Worker:
         if self.original_stdout != sys.stdout:
             sys.stdout.close()
         sys.stdout = self.original_stdout
+        sys.stderr = self.original_stderr
         if log_file:
             sys.stdout = open(f'{self.directory}/{log_file}', 'a+')
+            sys.stderr = sys.stdout
         self.__log_file = log_file
     
     def terminate_handler(self, signum=None, frame=None, report=True, exit=False):
