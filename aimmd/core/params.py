@@ -539,6 +539,7 @@ task together."""
         self._check_initial_paths_and_states_function()
         self._check_descriptors_function()
         self._check_values_function()
+        setattr(self, 'path', Path('.').resolve())  # will set to file later
     
     def __str__(self):
         """Verbose string representation of params with descriptions and
