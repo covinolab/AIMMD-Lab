@@ -1,3 +1,5 @@
+#WIP for now it works if class is called in the same location as params' working directory
+
 import os
 import sys
 import time
@@ -15,10 +17,10 @@ WORKER = os.path.join(os.path.dirname(
 # multiprocessing context: spwan
 ctx = multiprocessing.get_context('spawn')
 
-def _run_task(params, directory,
+def _run_task(params_file, directory,
              localid, cpus_per_task, gpus_per_task,
              task, *args):
-    worker = Worker(params, directory,
+    worker = Worker(params_file, directory,
                     localid, cpus_per_task, gpus_per_task)
     if task != 'simulate':
         worker.is_process = True  # so to handle termination correctly
@@ -30,7 +32,7 @@ class Launcher:
     def __init__(self, params, directory, n, nA, nB, eA=0, eB=0):
         """
         directory: where simulations carried
-        params: python file with params or dill file or Params
+        params: python file with params or Params
         n: number of replicas dedicated to shooting simulations
         nA: number of replicas dedicated to free simulations around A
         nB: number of replicas dedicated to free simulations around B
@@ -39,13 +41,9 @@ class Launcher:
         
         All parameters for the run can be updated before (re)launching a simulation.
         """
-        if type(params) is Params:
-            self.params = params
-        else:
-            try:
-                self.params = Params.load(params)
-            except:
-                self.params = Params.update(params)
+        if not isinstance(params, Params):
+            params = Params.load(params)
+        self.params = params
         self.directory = directory
         self.n = n
         self.nA = nA
@@ -53,12 +51,19 @@ class Launcher:
         self.eA = eA
         self.eB = eB
         
+        # params need a file
+        i = 0
+        while not params.path.is_file():
+            fname = f'{params.path}/params{str(i) if i else ""}.py'
+            while os.path.exists(fname):
+                i += 1
+            with open(fname, 'w') as file:
+                file.write(f'{params}')  # already good
+            params.path = Path(fname).resolve()
+        
         # create folder structure (keep existing data)
         os.system(f'mkdir {self.directory}')
         os.system(f'mkdir {self.directory}/initial_paths')
-        
-        # save params to directory
-        self.params.save(f'{self.directory}/params.dill')
         
         # folders for shooting simulations
         for worker_id in range(n):
@@ -83,8 +88,8 @@ class Launcher:
                        f'indicted_trajectories.log')
         
         # save initial paths
-        save_initial_paths(self.params.initial_paths,
-                           f'{self.directory}/initial_paths')
+        os.system(f'rm -f {self.directory}/initial_paths/*')
+        self.params.save_initial_paths(f'{self.directory}/initial_paths')
     
     def run(self, nsteps=int(1e6), nframes=np.inf, walltime=np.inf,
                  cpus_per_task=1, gpus_per_task=1):
@@ -109,7 +114,7 @@ class Launcher:
             else:
                 noappend = False
             processes.append(ctx.Process(target=_run_task, args=(
-                'params.dill', self.directory,
+                params.path, self.directory,
                 localid, cpus_per_task, gpus_per_task,
                 'simulate', f'worker{localid}.run', f'worker{localid}.log',
                 noappend)))
@@ -117,13 +122,13 @@ class Launcher:
         # trainer (sharing the same localid as manager)
         localid = len(processes)
         processes.append(ctx.Process(target=_run_task, args=(
-            'params.dill', self.directory,
+            params.path, self.directory,
             localid, cpus_per_task, gpus_per_task,
             'train', 'trainer.log')))
         
         # manager (sharing the same localid as trainer)
         processes.append(ctx.Process(target=_run_task, args=(
-            'params.dill', self.directory,
+            params.path, self.directory,
             localid, cpus_per_task, gpus_per_task,
             'manage', self.n, self.nA, self.nB, self.eA, self.eB,
             'manager.log', nsteps, nframes)))
@@ -240,6 +245,7 @@ class Launcher:
             file.write(f'  # default names\n')
             file.write(f'  PYTHON="{PYTHON}"\n')
             file.write(f'  WORKER="{WORKER}"\n')
+            file.write(f'  PARAMS="{params.path}"\n')
             file.write(f'\ncase $i in\n')
             
             # equilibrium workers
@@ -252,8 +258,8 @@ class Launcher:
                     state = 'B'
                     j = i - self.nA
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
-                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" '
-                           f'params.dill {self.directory} simulate '
+                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
+                           f'"{self.directory}" simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
@@ -268,8 +274,8 @@ class Launcher:
                     j -= self.eA
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (extension {state}{j})\n')
-                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" '
-                           f'params.dill {self.directory} simulate '
+                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
+                           f'"{self.directory}" simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
@@ -279,23 +285,23 @@ class Launcher:
                 j = i - begin
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (shooting {j})\n')
-                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" '
-                           f'params.dill {self.directory} simulate '
+                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
+                           f'"{self.directory}" simulate '
                            f'worker{i}.run worker{i}.log &\n')
                 file.write(f'  ;;\n')
             
             # trainer
             file.write(f'{i + 1})\n')
             file.write(f'  # trainer\n')
-            file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" '
-                       'params.dill {self.directory} train '
+            file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}"'
+                       '"{self.directory}" train '
                        f'trainer.log &\n')
             file.write(f'  trainer_pid=$!\n\n')
 
             # manager
             file.write(f'  # manager\n')
-            file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" '
-                       'params.dill {self.directory} manage '
+            file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}"'
+                       '"{self.directory}" manage '
                        f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
                        f'manager.log {nsteps} {nframes} &\n')
             file.write(f'  manager_pid=$!\n\n')
