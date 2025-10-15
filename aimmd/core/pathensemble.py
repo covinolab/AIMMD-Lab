@@ -5,7 +5,6 @@ import pickle
 import inspect
 import warnings
 import MDAnalysis as mda
-from tqdm import tqdm
 from itertools import chain
 from scipy.special import logit, expit
 
