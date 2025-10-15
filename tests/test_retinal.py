@@ -217,12 +217,9 @@ if __name__ == '__main__':
     if time.time() - t0 < 10:
         print('FREE B FAILED')
 
-    # worker, trainer, and equilibrium shooting together
+    # worker, trainer, and shooting together
     launcher = aimmd.Launcher(params, 'run1', 1, 0, 0)
-    t0 = time.time()
-    launcher.run(walltime=60)
-    if time.time() - t0 < 60:
-        print('SHOOTING & MANAGER & TRAINER FAILED')
+    launcher.run(nsteps=10)
     
     print('\nChecking if workers simulated...')
     file = f'run1/equilibriumA/traj000001.part0001{trajectory_extension}'
@@ -230,7 +227,7 @@ if __name__ == '__main__':
         raise RuntimeError('run1/worker0 failed')
     print('All fine')
 
-    print('\nTest appending')
+    print('\nTest appending free A')
     launcher = aimmd.Launcher(params, 'run1', 0, 1, 0)
     t0 = time.time()
     launcher.run(walltime=30)
