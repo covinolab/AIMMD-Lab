@@ -526,8 +526,7 @@ task together."""
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
         
         except Exception as exception:
-            print(exception)
-            raise
+            raise exception
         
         finally:
             os.chdir(cwd)    
