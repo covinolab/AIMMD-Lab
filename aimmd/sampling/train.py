@@ -1,5 +1,6 @@
 import time
 import numpy as np
+import traceback
 from ..core.utils import *
 
 def train(self, log_file=None, verbose=False, walltime=np.inf):
@@ -299,6 +300,7 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
     
     except Exception as exception:
         print(f'Error: {exception}')
+        traceback.print_exc()
         self.terminate_handler()
         raise exception
     
