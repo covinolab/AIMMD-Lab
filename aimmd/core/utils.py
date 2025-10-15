@@ -1116,6 +1116,7 @@ def fit(network, pathensemble,
     # keep only the training set frames
     keepers = selection_probabilities > 0
     if not np.sum(keepers):  # no other choice
+        print('Extending to states')
         selection_probabilities += 1.
         results[:len(inA_values), 0] += 1.
         results[len(inB_values):n_internal_frames, 1] += 1.
