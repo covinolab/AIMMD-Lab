@@ -620,7 +620,7 @@ task together."""
         
         # special check: path
         if name == 'path':
-            if not os.path.exists(path):
+            if not os.path.exists(value):
                 raise TypeError(f'Source path {value} does not exist.')
         
         # assign
