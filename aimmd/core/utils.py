@@ -1051,7 +1051,7 @@ def fit(network, pathensemble,
            0 < len(mask_TPs) / len(mask_free_BtoB) < 100:
             # ratio = (np.sum(results[mask_free_BtoB]) /
             #          np.sum(results[mask])) / factor_fromB_toA
-            ratio = 1 / max(factor_fromA_toB, expit(-q))
+            ratio = 1 / max(factor_fromB_toA, expit(-q))
             results[mask_free_BtoB, 1] += ratio
             results[mask_TPs, 0] += (
             wTPs[mask_TPs - shot_AtoB_frames_begin] *
