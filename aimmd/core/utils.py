@@ -504,7 +504,7 @@ def fit(network, pathensemble,
     
     if len(initial_states):
         # get indices of A paths (use initial_paths if not present)
-        inA = keys[np.where(internal_states == 'A')[0]]
+        inA = np.where(internal_states == 'A')[0]
     else:
         inA = []
     if not len(inA):
@@ -517,7 +517,7 @@ def fit(network, pathensemble,
     
     if len(initial_states):
         # get indices of in B paths (use initial_paths if not present)
-        inB = keys[np.where(internal_states == 'B')[0]]
+        inB = np.where(internal_states == 'B')[0]
     else:
         inB = []
     if not len(inB):
