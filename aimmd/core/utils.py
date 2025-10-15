@@ -178,7 +178,7 @@ def solve_committor_by_relaxation(
     -------
     P0: committor estimate
     """
-    for split in tqdm(progress, position=0, file=sys.stdout):
+    for split in tqdm(progress):
         X1 = X[::split, ::split]
         Y1 = Y[::split, ::split]
         P1 = P0[::split, ::split]
@@ -1156,7 +1156,7 @@ def fit(network, pathensemble,
     # R = []
     i = 0
     if verbose:
-        counter = tqdm(range(epochs), position=0, file=sys.stdout)
+        counter = tqdm(range(epochs))
     
     # actual loop
     while True:
@@ -3336,7 +3336,7 @@ def compute_energies_and_rates(pathensemble,
     bootstrapping_e = []
     bootstrapping_z = []
     
-    for _ in tqdm(range(bootstrapping), position=0, disable=not verbose, file=sys.stdout):
+    for _ in tqdm(range(bootstrapping), disable=not verbose):
         k = np.random.choice(len(pathensemble), len(pathensemble))
         if reweight_while_bootstrapping:
             E = []
@@ -3735,7 +3735,7 @@ def create_equilibrium_tpe():
     trajs = [f'equilibrium/{file}' for file in sorted(os.listdir('equilibrium'))
             if len(file) == 20 and file[:10] == 'transition'
             and file[-4:] == '.npy']
-    for traj in tqdm(trajs[:4000], position=0, file=sys.stdout):
+    for traj in tqdm(trajs[:4000]):
         t = np.load(traj)
         equilibrium._update(
             trajectory_files = equilibrium.trajectory_files + [f'{len(equilibrium)}'],
@@ -3796,7 +3796,7 @@ def compute_average_tps_lenghts(tps, dt=1.):
     TP_length_min = []
     lengths = tps.internal_lengths * dt
     weights = tps.weights
-    for i in tqdm(range(len(tps)), position=0, file=sys.stdout):
+    for i in tqdm(range(len(tps))):
         TP_length.append(
             np.average(lengths[:i + 1], weights=weights[:i + 1]))
         temp = []
