@@ -421,13 +421,13 @@ task together."""
                     if crop:
                         if type(path) == MemoryReader:
                             path = MemoryReader(
-                                path.coordinate_array[b:e],
-                                dimensions=path.dimensions_array[b:e],
-                                velocities=path.velocity_array[b:e]
+                                path.coordinate_array[b:e + 1],
+                                dimensions=path.dimensions_array[b:e + 1],
+                                velocities=path.velocity_array[b:e + 1]
                                     if path.velocity_array else None,
                                 filename=path.filename)
                         else:
-                            path = path[b:e]
+                            path = path[b:e + 1]
                         initial_paths[i] = path
                     break
             
