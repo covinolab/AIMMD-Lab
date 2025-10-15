@@ -43,4 +43,4 @@ Worker(params, folder).train(walltime=300)
 ```
 
 ## Left to do
-- Adapt `PathEnsemble` class to the new structure (will point to a `Params` object for values, states, and descriptors function).
+- All `PathEnsemble` to inherit functions from `Params` for more convenient reloading.
