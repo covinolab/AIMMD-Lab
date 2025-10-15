@@ -296,14 +296,14 @@ class Launcher:
             file.write(f'{i + 1})\n')
             file.write(f'  # trainer\n')
             file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       '"{self.directory}" train '
+                       f'"{self.directory}" train '
                        f'trainer.log &\n')
             file.write(f'  trainer_pid=$!\n\n')
 
             # manager
             file.write(f'  # manager\n')
             file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       '"{self.directory}" manage '
+                       f'"{self.directory}" manage '
                        f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
                        f'manager.log {nsteps} {nframes} &\n')
             file.write(f'  manager_pid=$!\n\n')
