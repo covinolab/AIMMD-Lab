@@ -657,7 +657,7 @@ task together."""
             # extract fields
             kwargs = {}
             for name in exec_namespace:
-                if name in fields(Params):
+                if name in {field.name for field in fields(Params)}:
                     kwargs[name] = exec_namespace[name]
             
             # create or update instance
