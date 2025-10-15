@@ -525,8 +525,7 @@ task together."""
             if self.engine == 'toy':
                 fname = f'.params_check_engine{self.trajectory_extension}'
                 md.load(self.topology).save(fname)
-                cmd = (f'{self.toy_mdrun} -deffnm '
-                       f'.params_check_engine{self.trajectory_extension}')
+                cmd = f'{self.toy_mdrun} -deffnm .params_check_engine'
                 if exit := run_with_timeout(cmd, timeout):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
         
