@@ -4,9 +4,13 @@ import numpy as np
 import pickle
 import inspect
 import warnings
+import functools
 import MDAnalysis as mda
 from itertools import chain
 from scipy.special import logit, expit
+
+# quick logging
+print = functools.partial(print, flush=True)
 
 warnings.filterwarnings("ignore", category=UserWarning, module="MDAnalysis")
 
