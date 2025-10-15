@@ -483,28 +483,29 @@ task together."""
             os.system(f'rm -f .params_check_engine*')
             
             if self.engine == 'gromacs':
-
-                if self.random_velocities:                    
+                
+                if self.randomize_shooting_velocities:                    
                     # gromacs grompp: init velocities
                     cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_init_mdp} '
-                           f'-r {self.topology}.gro -c {self.topology}.gro '
+                           f'-r {self.topology} -c {self.topology} '
                            f'-o .params_check_engine.tpr')
                     if exit := os.system(cmd):
                         raise RuntimeError(f'{cmd} failed with exit code {exit}')
                     
                     # gromacs grompp: mdrun
-                    cmd = f'{self.gmx_mdrun} -nobackup -deffnm .params_check_engine'
-                    if exit := os.system(command):
+                    cmd = (f'{self.gmx_mdrun} -nobackup '
+                           f'-deffnm .params_check_engine -nsteps 0')
+                    if exit := os.system(cmd):
                         raise RuntimeError(f'{cmd} failed with exit code {exit}')
-                                
+                        
                 # gromacs grompp: mdrun
                 cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_run_mdp} '
-                       f'-r {self.topology}.gro -c {self.topology}.gro '
+                       f'-r {self.topology} -c {self.topology} '
                        f'-o .params_check_engine.tpr') + (
                        f'-t .params_check_engine.trr' if self.random_velocities else '')
                 if exit := os.system(cmd):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
-
+                
                 # gromacs mdrun
                 cmd = (f'{self.gmx_mdrun} -nobackup -deffnm '
                        f'.params_check_engine -nsteps 1')
@@ -515,7 +516,7 @@ task together."""
                 fname = f'.params_check_engine{self.trajectory_extension}'
                 if not os.path.exists(fname):
                     raise IOError(f'{self.trajectory_extension} file not generated')
-
+            
             # toy mdrun
             if self.engine == 'toy':
                 fname = f'.params_check_engine{self.trajectory_extension}'
@@ -529,7 +530,7 @@ task together."""
             raise exception
         
         finally:
-            os.chdir(cwd)    
+            os.chdir(cwd)   
     
     def __post_init__(self):
         """Check provided functions. Replace initial_path strings with
