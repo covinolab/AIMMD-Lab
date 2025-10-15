@@ -1,7 +1,11 @@
 import time
 import numpy as np
+import functools
 import traceback
 from ..core.utils import *
+
+# quick logging
+print = functools.partial(print, flush=True)
 
 def manage(self, n, nA, nB, eA, eB,
             log_file=None, nsteps=int(1e6),
