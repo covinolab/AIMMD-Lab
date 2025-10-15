@@ -249,6 +249,10 @@ def manage(self, n, nA, nB, eA, eB,
                 if step_number.n % save_interval == 0:
                     os.system(f'cp {directory}/network.h5 '
                               f'{directory}/network{step_number.n:06g}.h5')
+
+                # maximum time
+                if time.time() - t0 > walltime:
+                    self.terminate_handler(exit=False)
                 
                 # call for a new simulation
                 remove(f'{backwards[k].directory}/back{trajectory_extension}')
