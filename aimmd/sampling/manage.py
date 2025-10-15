@@ -149,7 +149,7 @@ def manage(self, n, nA, nB, eA, eB,
             
             # maximum time
             if time.time() - t0 > walltime:
-                self.interrupt = True
+                self.terminate_handler(exit=False)
             
             # received the signal
             if self.interrupt:
