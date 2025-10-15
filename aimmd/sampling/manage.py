@@ -140,7 +140,7 @@ def manage(self, n, nA, nB, eA, eB,
         
         # initialize step counter
         step_number = tqdm(total=nsteps if nsteps < 1000000 else np.inf, ncols=70,
-            initial=int(sum([len(chain) for chain in chains])), file=sys.stdout)
+            initial=int(sum([len(chain) for chain in chains])))
         
         # main cycle
         print(f'\nStarting the main cycle ({now()})')
