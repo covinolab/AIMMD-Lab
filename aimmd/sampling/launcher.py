@@ -9,7 +9,8 @@ from ..core.params import Params
 
 # worker path
 PYTHON = sys.executable
-WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
+WORKER = os.path.join(os.path.dirname(
+  os.path.abspath(__file__)), "worker.py")
 
 # multiprocessing context: spwan
 ctx = multiprocessing.get_context('spawn')
@@ -89,8 +90,10 @@ class Launcher:
                  cpus_per_task=1, gpus_per_task=1):
         """
         nsteps: default inf, maximum number of shooting simulations
-        nframes: default inf, maximum number of simulated frames, has priority over nsteps
-        walltime: default inf, maximum number of simulation time, has priority over nframes and nsteps
+        nframes: default inf, maximum number of simulated frames,
+                 has priority over nsteps
+        walltime: default inf, maximum number of simulation time,
+                  has priority over nframes and nsteps
         cpus_per_task
         gpus_per_task (if present)
         """
@@ -189,11 +192,10 @@ class Launcher:
                 if process.is_alive():
                     process.terminate()
     
-    def create_job(self, filename,
-                   nsteps=int(1e6), nframes=np.inf, walltime=np.inf):
+    def create_job(self, filename, nsteps=int(1e6), nframes=np.inf):
         """
         Returns a slurm script that can be launched by cluster.
-        Walltime in slurm header!
+        Walltime's default is in slurm header!
         """
         
         # retrieve run information
@@ -234,6 +236,10 @@ class Launcher:
             file.write(f'  export li=$SLURM_LOCALID\n')
             if gpu:
                 file.write(f'  export CUDA_VISIBLE_DEVICES=$li\n')
+            
+            file.write(f'  # default names\n')
+            file.write(f'  PYTHON="{PYTHON}"\n')
+            file.write(f'  WORKER="{WORKER}"\n')
             file.write(f'\ncase $i in\n')
             
             # equilibrium workers
@@ -246,7 +252,8 @@ class Launcher:
                     state = 'B'
                     j = i - self.nA
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
-                file.write(f'  {PYTHON} {WORKER} params.dill {self.directory} simulate '
+                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" '
+                           f'params.dill {self.directory} simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
@@ -261,7 +268,8 @@ class Launcher:
                     j -= self.eA
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (extension {state}{j})\n')
-                file.write(f'  "{PYTHON}" "{WORKER}" params.dill {self.directory} simulate '
+                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" '
+                           f'params.dill {self.directory} simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
@@ -271,20 +279,23 @@ class Launcher:
                 j = i - begin
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (shooting {j})\n')
-                file.write(f'  "{PYTHON}" "{WORKER}" params.dill {self.directory} simulate '
+                file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" '
+                           f'params.dill {self.directory} simulate '
                            f'worker{i}.run worker{i}.log &\n')
                 file.write(f'  ;;\n')
             
             # trainer
             file.write(f'{i + 1})\n')
             file.write(f'  # trainer\n')
-            file.write(f'  "{PYTHON}" "{WORKER}" params.dill {self.directory} train '
+            file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" '
+                       'params.dill {self.directory} train '
                        f'trainer.log &\n')
             file.write(f'  trainer_pid=$!\n\n')
 
             # manager
             file.write(f'  # manager\n')
-            file.write(f'  "{PYTHON}" "{WORKER}" params.dill {self.directory} manage '
+            file.write(f'  "$\{PYTHON\}" "$\{WORKER\}" '
+                       'params.dill {self.directory} manage '
                        f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
                        f'manager.log {nsteps} {nframes} &\n')
             file.write(f'  manager_pid=$!\n\n')
