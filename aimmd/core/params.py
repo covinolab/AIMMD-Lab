@@ -18,6 +18,7 @@ from typing import List, Callable
 from pathlib import Path
 from dill.source import getsource
 from dataclasses import dataclass, field, fields
+from MDAnalysis.coordinates.memory import MemoryReader
 
 # find executables
 PYTHON = sys.executable
