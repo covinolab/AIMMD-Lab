@@ -116,7 +116,7 @@ class Launcher:
             else:
                 noappend = False
             processes.append(ctx.Process(target=_run_task, args=(
-                params.path, self.directory,
+                self.params.path, self.directory,
                 localid, cpus_per_task, gpus_per_task,
                 'simulate', f'worker{localid}.run', f'worker{localid}.log',
                 noappend)))
@@ -124,13 +124,13 @@ class Launcher:
         # trainer (sharing the same localid as manager)
         localid = len(processes)
         processes.append(ctx.Process(target=_run_task, args=(
-            params.path, self.directory,
+            self.params.path, self.directory,
             localid, cpus_per_task, gpus_per_task,
             'train', 'trainer.log')))
         
         # manager (sharing the same localid as trainer)
         processes.append(ctx.Process(target=_run_task, args=(
-            params.path, self.directory,
+            self.params.path, self.directory,
             localid, cpus_per_task, gpus_per_task,
             'manage', self.n, self.nA, self.nB, self.eA, self.eB,
             'manager.log', nsteps, nframes)))
