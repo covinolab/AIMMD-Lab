@@ -714,6 +714,7 @@ def fit(network, pathensemble,
     boundaries = np.cumsum(np.append([0], internal_lengths[shot_AtoA]))
     for si, begin, end in zip(
         shooting_indices[shot_AtoA], boundaries, boundaries[1:]):
+        si -= 1  # since internal
         
         # backward
         if augment:
@@ -747,6 +748,7 @@ def fit(network, pathensemble,
     boundaries = np.cumsum(np.append([0], internal_lengths[shot_BtoB]))
     for si, begin, end in zip(
         shooting_indices[shot_BtoB], boundaries, boundaries[1:]):
+        si -= 1  # since internal
         
         # backward
         if augment:
@@ -809,6 +811,7 @@ def fit(network, pathensemble,
     boundaries = np.cumsum(np.append([0], internal_lengths[shot_AtoB]))
     for si, begin, end in zip(
         shooting_indices[shot_AtoB], boundaries, boundaries[1:]):
+        si -= 1  # since internal
         
         # backward
         if augment:
@@ -839,6 +842,7 @@ def fit(network, pathensemble,
     boundaries = np.cumsum(np.append([0], internal_lengths[shot_BtoA]))
     for si, begin, end in zip(
         shooting_indices[shot_BtoA], boundaries, boundaries[1:]):
+        si -= 1  # since internal
         
         # backward
         if augment:
