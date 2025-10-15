@@ -291,8 +291,8 @@ class Launcher:
             file.write(f'    wait -n\n')
             file.write(f'    rm -f {self.directory}/*.run\n')
             file.write(f'    scancel ${SLURM_JOB_ID}\n')
-            file.write(f'  done\n;;\n')
+            file.write(f'  done\n  ;;\n')
 
             # end
-            file.write(f'*)\n  echo "[Worker $i] No task assigned."\n;;\n')
+            file.write(f'*)\n  echo "[Worker $i] No task assigned."\n  ;;\n')
             file.write(f'esac\n\'\n')
