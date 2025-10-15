@@ -6,6 +6,7 @@ import time
 import numpy as np
 import signal
 import multiprocessing
+from pathlib import Path
 from .worker import Worker
 from ..core.params import Params
 
@@ -52,13 +53,14 @@ class Launcher:
         self.eB = eB
         
         # params need a file
-        i = 0
-        while not params.path.is_file():
-            fname = f'{params.path}/params{str(i) if i else ""}.py'
-            while os.path.exists(fname):
+        if not params.path.is_file():
+            i = 0
+            while os.path.exists(
+              fname := f'{params.path}/params{str(i) if i else ""}.py'):
                 i += 1
             with open(fname, 'w') as file:
                 file.write(f'{params}')  # already good
+            print(f'Written {fname} for params')
             params.path = Path(fname).resolve()
         
         # create folder structure (keep existing data)
