@@ -34,7 +34,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
             
             # maximum time
             if time.time() - t0 > walltime:
-                self.interrupt = True
+                self.terminate_handler(exit=False)
             
             # received the signal
             if self.interrupt:
@@ -82,7 +82,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
                         
                         # maximum time
                         if time.time() - t0 > walltime:
-                            self.interrupt = True
+                            self.terminate_handler(exit=False)
                         
                         # received the signal
                         if self.interrupt:
