@@ -1,5 +1,6 @@
 import time
 import numpy as np
+import traceback
 from ..core.utils import *
 
 def manage(self, n, nA, nB, eA, eB,
@@ -291,6 +292,7 @@ def manage(self, n, nA, nB, eA, eB,
     
     except Exception as exception:
         print(f'Error: {exception}')
+        traceback.print_exc()
         self.terminate_handler()
         raise exception
     
