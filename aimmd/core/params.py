@@ -8,6 +8,7 @@ import torch
 import types
 import numpy as np
 import shutil
+import mdtraj as md
 import inspect
 import linecache
 import subprocess
