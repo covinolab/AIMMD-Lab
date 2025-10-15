@@ -281,7 +281,7 @@ class Launcher:
             file.write(f'  # manager\n')
             file.write(f'  "{PYTHON}" "{WORKER}" params.dill {self.directory} manage '
                        f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
-                       f'manager.log {nsteps} {nframes}\n')
+                       f'manager.log {nsteps} {nframes} &\n')
             file.write(f'  manager_pid=$!\n\n')
             
             # handle task termination
