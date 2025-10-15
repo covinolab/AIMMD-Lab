@@ -688,7 +688,7 @@ task together."""
         setattr(self, 'initial_paths',
                 self._check_initial_paths_and_states_function(crop=True))
     
-    def save_initial_paths(self, folder, crop=False):
+    def save_initial_paths(self, folder, crop=True):
         """Save (cropped) version of initial paths to `folder` with unique
         names derived from the original files. Attention! Overwrites."""
         
