@@ -299,7 +299,6 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
         return pathensemble
     
     except Exception as exception:
-        print(f'Error: {exception}')
         traceback.print_exc()
         self.terminate_handler()
         raise exception
