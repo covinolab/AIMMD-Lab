@@ -662,16 +662,16 @@ task together."""
             
             # create or update instance
             if isinstance(self_or_cls, type):
-                instance = self_or_cls(**init_kwargs)
+                instance = self_or_cls(**kwargs)
             else:
                 instance = self_or_cls
-                for name, value in init_kwargs.items():
+                for name, value in kwargs.items():
                     if name != 'initial_paths':
                         setattr(instance, name, value)
             
             # handle initial_paths last
-            if 'initial_paths' in init_kwargs:
-                setattr(instance, 'initial_paths', init_kwargs['initial_paths'])
+            if 'initial_paths' in kwargs:
+                setattr(instance, 'initial_paths', kwargs['initial_paths'])
                 instance._check_initial_paths_and_states_function()
             
             # assign path and return
