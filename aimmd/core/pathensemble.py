@@ -1306,8 +1306,6 @@ class PathEnsemble(AbstractPathEnsemble):
         # populate all attributes
         if self.states_function is not None and states is None:
             if has_param(self.states_function, 'verbose'):
-                if verbose:
-                    print('Computing states')
                 new_frame_states = self.states_function(trajectory,
                     verbose=verbose)
             else:
@@ -1318,8 +1316,6 @@ class PathEnsemble(AbstractPathEnsemble):
             new_frame_states = np.repeat('R', len(trajectory))
         if self.descriptors_function is not None and descriptors is None:
             if has_param(self.descriptors_function, 'verbose'):
-                if verbose:
-                    print('Computing descriptors')
                 new_frame_descriptors = self.descriptors_function(
                     trajectory, verbose=verbose)
             else:
