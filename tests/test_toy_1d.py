@@ -54,7 +54,7 @@ if __name__ == '__main__':
     
     print('Loading AIMMD params')
     params = aimmd.Params.load('params.py')
-    params._test_engine()
+    params._check_engine()
     network = params.network
     
     print('\nEquilibrium path ensemble initialization', end='')
