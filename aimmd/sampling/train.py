@@ -1,7 +1,11 @@
 import time
 import numpy as np
+import functools
 import traceback
 from ..core.utils import *
+
+# quick logging
+print = functools.partial(print, flush=True)
 
 def train(self, log_file=None, verbose=False, walltime=np.inf):
     
