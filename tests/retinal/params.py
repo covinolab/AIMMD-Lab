@@ -50,7 +50,7 @@ def descriptors_function(trajectory, verbose=False):
         result.append(np.append(frame.positions.ravel(),
                      frame._velocities.ravel()))
     if not len(result):
-        result = np.zeros((1, 0))
+        result = np.zeros((0, 80*6))
     return np.array(result)
 
 
