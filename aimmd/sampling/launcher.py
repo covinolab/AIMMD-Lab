@@ -185,7 +185,7 @@ class Launcher:
                     process.terminate()
     
     def create_job(self, filename,
-                   nsteps=np.inf, nframes=np.inf, walltime=np.inf):
+                   nsteps=int(1e6), nframes=np.inf, walltime=np.inf):
         """
         Returns a slurm script that can be launched by cluster.
         Walltime in slurm header!
@@ -288,10 +288,10 @@ class Launcher:
             file.write(f'  # handle task termination\n')
             file.write(f'  while kill -0 $trainer_pid 2>/dev/null'
                        f' || kill -0 $manager_pid 2>/dev/null; do\n')
-            file.write(f'    wait -n\n  done\n')
-            file.write(f'  rm -f {self.directory}/*.run\n')
-            file.write(f'  scancel $SLURM_JOB_ID\n')
-            file.write(f'  ;;\n')
+            file.write(f'    wait -n\n')
+            file.write(f'    rm -f {self.directory}/*.run\n')
+            file.write(f'    scancel ${SLURM_JOB_ID}\n')
+            file.write(f'  done\n;;\n')
 
             # end
             file.write(f'*)\n  echo "[Worker $i] No task assigned."\n;;\n')
