@@ -501,7 +501,7 @@ task together."""
                 cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_run_mdp} '
                        f'-r {self.topology}.gro -c {self.topology}.gro '
                        f'-o .params_check_engine.tpr') + (
-                       f'-t .params_check_engine.trr if self.random_velocities else '')
+                       f'-t .params_check_engine.trr' if self.random_velocities else '')
                 if exit := os.system(cmd):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
 
