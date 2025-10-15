@@ -94,8 +94,9 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
                              verbose=verbose, worker=self)
             if not len(losses):
                 if 'network.h5' in os.listdir(directory):
+                    bins, densities = load_network_and_projections(
+                        network, directory, wait=False)
                     print('!!! reloaded most recent network because training failed')
-                    bins, densities = load_network_and_projections(network, directory)
                 else:
                     print('!!! training failed, retrying')
                     continue
