@@ -690,46 +690,37 @@ task together."""
     
     def save_initial_paths(self, folder, crop=False):
         """Save (cropped) version of initial paths to `folder` with unique
-        names derived from the original files. Directory is relative to
-        `self.directory`. Attention! Overwrites."""
-
-        cwd = os.getcwd()
-        os.chdir(self.directory)
+        names derived from the original files. Attention! Overwrites."""
         
-        try:
-            
-            initial_paths = self._check_initial_paths_and_states_function(
-                crop=crop)
-            
-            # save initial paths
-            filenames = [path.filename.split('/')[-1]
-                         for path in initial_paths]
-            for i, path in enumerate(initial_paths):
-                filename = filenames[i]
-                
-                # avoid duplicates 
-                if filename in filenames[:i]:
-                    filename = (f'{".".join(filenames[i].split(".")[:-1])}'
-                                f'-2.{filenames[i].split(".")[-1]}')
-                    filenames[i] = filename
-                
-                # report
-                print(f'Writing {folder}/{filename}')
-                
-                # actual save: get n_atoms
-                n_atoms = len(path[0].positions)
-                
-                # create an empty Universe with n_atoms (no topology required)
-                universe = mda.Universe.empty(n_atoms, trajectory=True)
-                
-                # write positions
-                with mda.Writer(f'{folder}/{filename}', n_atoms) as writer:
-                    for frame in path:
-                        universe.trajectory.ts.positions = frame.positions
-                        if hasattr(frame, 'velocities'):
-                            universe.trajectory.ts.velocities = frame._velocities
-                        universe.trajectory.ts.triclinic_dimensions = frame.triclinic_dimensions
-                        writer.write(universe)
+        initial_paths = self._check_initial_paths_and_states_function(
+            crop=crop)
         
-        finally:
-            os.chdir(cwd)
+        # save initial paths
+        filenames = [path.filename.split('/')[-1]
+                     for path in initial_paths]
+        for i, path in enumerate(initial_paths):
+            filename = filenames[i]
+            
+            # avoid duplicates 
+            if filename in filenames[:i]:
+                filename = (f'{".".join(filenames[i].split(".")[:-1])}'
+                            f'-2.{filenames[i].split(".")[-1]}')
+                filenames[i] = filename
+            
+            # report
+            print(f'Writing {folder}/{filename}')
+            
+            # actual save: get n_atoms
+            n_atoms = len(path[0].positions)
+            
+            # create an empty Universe with n_atoms (no topology required)
+            universe = mda.Universe.empty(n_atoms, trajectory=True)
+            
+            # write positions
+            with mda.Writer(f'{folder}/{filename}', n_atoms) as writer:
+                for frame in path:
+                    universe.trajectory.ts.positions = frame.positions
+                    if hasattr(frame, 'velocities'):
+                        universe.trajectory.ts.velocities = frame._velocities
+                    universe.trajectory.ts.triclinic_dimensions = frame.triclinic_dimensions
+                    writer.write(universe)
