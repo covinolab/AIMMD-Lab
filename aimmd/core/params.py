@@ -14,7 +14,7 @@ import MDAnalysis as mda
 from tqdm import tqdm
 from .utils import class_or_instancemethod, fit, DummyNetwork
 from typing import List, Callable
-from pathlib import Path
+from pathlib import Path, PosixPath
 from dataclasses import dataclass, field, fields
 from MDAnalysis.coordinates.memory import MemoryReader
 
@@ -352,13 +352,13 @@ free simulation worker uses one task. Manager and trainer share an extra
 task together."""
                  })
     
-    # working directory (will be updated when loading a params file)
+    # (full) path from which params were loaded
     
-    directory : str = field(
+    path : PosixPath = field(
         init=False,
-        default='.',
+        default=Path('.').resolve(),
         metadata={'description':
-"""Will perform engine operations relative to `directory`."""
+"""Will perform engine operations relative to `path`'s directory."""
                  })
     
     # engine-dependent mdrun command
@@ -476,7 +476,7 @@ task together."""
         """Will be called by user if necessary."""
         
         cwd = os.getcwd()
-        os.chdir(self.directory)
+        os.chdir(self.path.parent if self.path.is_file() else self.path)
         
         try:
             # reset
@@ -618,10 +618,10 @@ task together."""
                 raise TypeError(f'{name} must be an instance of torch.nn.Module, '
                                 f'got {type(value)}')
         
-        # special check: directory
-        if name == 'directory':
-            if not os.path.exists(value):
-                raise TypeError(f'Working directory {value} does not exist.')
+        # special check: path
+        if name == 'path':
+            if not os.path.exists(path):
+                raise TypeError(f'Source path {value} does not exist.')
         
         # assign
         super().__setattr__(name, value)
@@ -674,8 +674,8 @@ task together."""
                 setattr(instance, 'initial_paths', init_kwargs['initial_paths'])
                 instance._check_initial_paths_and_states_function()
             
-            # assign directory and return
-            setattr(instance, 'directory', str(path.parent))
+            # assign path and return
+            setattr(instance, 'path', path)
             return instance
         
         finally:
