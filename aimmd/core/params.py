@@ -512,7 +512,7 @@ task together."""
                 
                 # gromacs mdrun
                 cmd = (f'{self.gmx_mdrun} -nobackup -deffnm '
-                       f'.params_check_engine -nsteps 1')
+                       f'.params_check_engine')
                 if exit := run_with_timeout(cmd, timeout):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
                 
