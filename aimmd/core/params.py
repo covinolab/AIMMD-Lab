@@ -591,9 +591,14 @@ task together."""
                 if name not in param_fields and not name.startswith("__")}
             
             # pick only dill-picklable helpers
-            picklable_helpers = {
-                name: obj for name, obj in extra_helpers.items()
-                if dill.pickles(obj)}
+            picklable_helpers = {}
+            for name, obj in extra_helpers.items():
+                try:
+                    if dill.pickles(obj):
+                        picklable_helpers[name] = obj
+                except:
+                    raise ValueError(f'Could not evaluate {name}: {obj} '
+                                     f'as dill-picklable helper.')
             
             # inject helpers into all top-level functions and any methods
             def inject_globals(obj):
