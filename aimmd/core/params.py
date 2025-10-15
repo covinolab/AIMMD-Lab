@@ -6,13 +6,15 @@ import os
 import sys
 import torch
 import types
+import numpy as np
 import shutil
 import inspect
 import linecache
-import numpy as np
+import subprocess
 import MDAnalysis as mda
 from tqdm import tqdm
-from .utils import class_or_instancemethod, fit, DummyNetwork
+from .utils import (class_or_instancemethod, fit,
+                    DummyNetwork, run_with_timeout)
 from typing import List, Callable
 from pathlib import Path, PosixPath
 from dataclasses import dataclass, field, fields
@@ -502,7 +504,8 @@ task together."""
                 cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_run_mdp} '
                        f'-r {self.topology} -c {self.topology} '
                        f'-o .params_check_engine.tpr') + (
-                       f'-t .params_check_engine.trr' if self.random_velocities else '')
+                       f' -t .params_check_engine.trr'
+                    if self.randomize_shooting_velocities else '')
                 if exit := os.system(cmd):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
                 
