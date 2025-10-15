@@ -74,6 +74,9 @@ class Worker:
         
         # CPU binding
         cpus_per_task = int(os.getenv("SLURM_CPUS_PER_TASK", f"{cpus_per_task}"))
+        os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
+        os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
+        os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
         try:
             start = self.localid * cpus_per_task
             cpus = list(range(start, start + cpus_per_task))
