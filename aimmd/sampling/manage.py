@@ -291,7 +291,6 @@ def manage(self, n, nA, nB, eA, eB,
         return pathensemble
     
     except Exception as exception:
-        print(f'Error: {exception}')
         traceback.print_exc()
         self.terminate_handler()
         raise exception
