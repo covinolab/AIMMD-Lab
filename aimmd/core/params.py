@@ -474,7 +474,7 @@ task together."""
             raise TypeError(f'values_function does not return '
                             f'an array of size 1 and correct length')
     
-    def _check_engine(self):
+    def _check_engine(self, timeout=10):
         """Will be called by user if necessary."""
         
         cwd = os.getcwd()
@@ -491,13 +491,13 @@ task together."""
                     cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_init_mdp} '
                            f'-r {self.topology} -c {self.topology} '
                            f'-o .params_check_engine.tpr')
-                    if exit := os.system(cmd):
+                    if exit := run_with_timeout(cmd, timeout):
                         raise RuntimeError(f'{cmd} failed with exit code {exit}')
                     
                     # gromacs grompp: mdrun
                     cmd = (f'{self.gmx_mdrun} -nobackup '
                            f'-deffnm .params_check_engine -nsteps 0')
-                    if exit := os.system(cmd):
+                    if exit := run_with_timeout(cmd, timeout):
                         raise RuntimeError(f'{cmd} failed with exit code {exit}')
                         
                 # gromacs grompp: mdrun
@@ -506,13 +506,13 @@ task together."""
                        f'-o .params_check_engine.tpr') + (
                        f' -t .params_check_engine.trr'
                     if self.randomize_shooting_velocities else '')
-                if exit := os.system(cmd):
+                if exit := run_with_timeout(cmd, timeout):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
                 
                 # gromacs mdrun
                 cmd = (f'{self.gmx_mdrun} -nobackup -deffnm '
                        f'.params_check_engine -nsteps 1')
-                if exit := os.system(cmd):
+                if exit := run_with_timeout(cmd, timeout):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
                 
                 # right extension?
@@ -526,7 +526,7 @@ task together."""
                 md.load(self.topology).save(fname)
                 cmd = (f'{self.toy_mdrun} -deffnm '
                        f'.params_check_engine{self.trajectory_extension}')
-                if exit := os.system(cmd):
+                if exit := run_with_timeout(cmd, timeout):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
         
         except Exception as exception:
