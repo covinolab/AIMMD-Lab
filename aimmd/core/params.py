@@ -4,7 +4,6 @@ AIMMD parameters management / defaults.
 
 import os
 import sys
-import dill
 import torch
 import types
 import shutil
@@ -16,7 +15,6 @@ from tqdm import tqdm
 from .utils import class_or_instancemethod, fit, DummyNetwork
 from typing import List, Callable
 from pathlib import Path
-from dill.source import getsource
 from dataclasses import dataclass, field, fields
 from MDAnalysis.coordinates.memory import MemoryReader
 
@@ -354,6 +352,15 @@ free simulation worker uses one task. Manager and trainer share an extra
 task together."""
                  })
     
+    # working directory (will be updated when loading a params file)
+    
+    directory : str = field(
+        init=False,
+        default='.',
+        metadata={'description':
+"""Will perform engine operations relative to `directory`."""
+                 })
+    
     # engine-dependent mdrun command
     @property
     def mdrun(self):
@@ -465,6 +472,65 @@ task together."""
             raise TypeError(f'values_function does not return '
                             f'an array of size 1 and correct length')
     
+    def _check_engine(self):
+        """Will be called by user if necessary."""
+        
+        cwd = os.getcwd()
+        os.chdir(self.directory)
+        
+        try:
+            # reset
+            os.system(f'rm -f .params_check_engine*')
+            
+            if self.engine == 'gromacs':
+
+                if self.random_velocities:                    
+                    # gromacs grompp: init velocities
+                    cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_init_mdp} '
+                           f'-r {self.topology}.gro -c {self.topology}.gro '
+                           f'-o .params_check_engine.tpr')
+                    if exit := os.system(cmd):
+                        raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                    
+                    # gromacs grompp: mdrun
+                    cmd = f'{self.gmx_mdrun} -nobackup -deffnm .params_check_engine'
+                    if exit := os.system(command):
+                        raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                                
+                # gromacs grompp: mdrun
+                cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_run_mdp} '
+                       f'-r {self.topology}.gro -c {self.topology}.gro '
+                       f'-o .params_check_engine.tpr') +
+                      (f'-t .params_check_engine.trr if self.random_velocities else '')
+                if exit := os.system(cmd):
+                    raise RuntimeError(f'{cmd} failed with exit code {exit}')
+
+                # gromacs mdrun
+                cmd = (f'{self.gmx_mdrun} -nobackup -deffnm '
+                       f'.params_check_engine -nsteps 1')
+                if exit := os.system(cmd):
+                    raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                
+                # right extension?
+                fname = f'.params_check_engine{self.trajectory_extension}'
+                if not os.path.exists(fname):
+                    raise IOError(f'{self.trajectory_extension} file not generated')
+
+            # toy mdrun
+            if self.engine == 'toy':
+                fname = f'.params_check_engine{self.trajectory_extension}'
+                md.load(self.topology).save(fname)
+                cmd = (f'{self.toy_mdrun} -deffnm '
+                       f'.params_check_engine{self.trajectory_extension}')
+                if exit := os.system(cmd):
+                    raise RuntimeError(f'{cmd} failed with exit code {exit}')
+        
+        except Exception as exception:
+            print(exception)
+        
+        finally:
+            os.chdir(cwd)    
+    
     def __post_init__(self):
         """Check provided functions. Replace initial_path strings with
         MDAnalysis trajectories. Ensure initial paths are transitions.
@@ -552,6 +618,11 @@ task together."""
                 raise TypeError(f'{name} must be an instance of torch.nn.Module, '
                                 f'got {type(value)}')
         
+        # special check: directory
+        if name == 'directory':
+            if not os.path.exists(value):
+                raise TypeError(f'Working directory {value} does not exist.')
+        
         # assign
         super().__setattr__(name, value)
         
@@ -564,7 +635,7 @@ task together."""
             self._check_values_function()
     
     @class_or_instancemethod
-    def update(self_or_cls, filename='params.py'):
+    def load(self_or_cls, filename='params.py'):
         """
         Load parameters and functions from a Python file and update Params instance.
         Ensures that all helpers/constants are visible to the functions and
@@ -582,35 +653,12 @@ task together."""
             source = path.read_text()
             exec_namespace = {}
             exec(compile(source, str(path), 'exec'), exec_namespace)
-            
-            # split dataclass fields vs helpers
-            param_fields = {field.name for field in fields(Params)}
-            init_kwargs = {n: exec_namespace[n] for n in param_fields if n in exec_namespace}
-            extra_helpers = {
-                name: obj for name, obj in exec_namespace.items()
-                if name not in param_fields and not name.startswith("__")}
-            
-            # pick only dill-picklable helpers
-            picklable_helpers = {}
-            for name, obj in extra_helpers.items():
-                try:
-                    if dill.pickles(obj):
-                        picklable_helpers[name] = obj
-                except:
-                    raise ValueError(f'Could not evaluate {name}: {obj} '
-                                     f'as dill-picklable helper.')
-            
-            # inject helpers into all top-level functions and any methods
-            def inject_globals(obj):
-                if isinstance(obj, types.FunctionType):
-                    obj.__globals__.update(picklable_helpers)
-                elif isinstance(obj, torch.nn.Module):
-                    for _, member in inspect.getmembers(obj, inspect.ismethod):
-                        fn = member.__func__
-                        fn.__globals__.update(picklable_helpers)
-            
-            for key, value in init_kwargs.items():
-                inject_globals(value)
+
+            # extract fields
+            kwargs = {}
+            for name in exec_namespace:
+                if name in fields(Params):
+                    kwargs[name] = exec_namespace[name]
             
             # create or update instance
             if isinstance(self_or_cls, type):
@@ -626,38 +674,62 @@ task together."""
                 setattr(instance, 'initial_paths', init_kwargs['initial_paths'])
                 instance._check_initial_paths_and_states_function()
             
+            # assign directory and return
+            setattr(instance, 'directory', str(path.parent))
             return instance
-            
+        
         finally:
             os.chdir(cwd)
     
-    def save(self, filename):
-        """
-        Save Params instance along with its associated module dictionary,
-        so that functions remain usable when reloaded elsewhere.
-        """
-        params_dict = {field.name: getattr(self, field.name)
-                       for field in fields(self)}
-        
-        with open(filename, 'wb') as f:
-            dill.dump(params_dict, f, protocol=dill.HIGHEST_PROTOCOL)
-    
-    @classmethod
-    def load(cls, filename):
-        """
-        Load Params instance and restore its module environment so that
-        all saved functions remain callable even without the original file.
-        """
-        with open(filename, 'rb') as f:
-            params_dict = dill.load(f)
-        
-        return Params(**params_dict)
-
     def crop_initial_paths(self):
-        """
-        Leave only the transition parts in `params.inital_paths`, to
+        """Leave only the transition parts in `params.inital_paths`, to
         speed up future computations. Attention! May then need to reassign
-        `initial transitions` when changing `states_function`.
-        """
+        `initial transitions` when changing `states_function`."""
         setattr(self, 'initial_paths',
                 self._check_initial_paths_and_states_function(crop=True))
+    
+    def save_initial_paths(self, folder, crop=False):
+        """Save (cropped) version of initial paths to `folder` with unique
+        names derived from the original files. Directory is relative to
+        `self.directory`. Attention! Overwrites."""
+
+        cwd = os.getcwd()
+        os.chdir(self.directory)
+        
+        try:
+            
+            initial_paths = self._check_initial_paths_and_states_function(
+                crop=crop)
+            
+            # save initial paths
+            filenames = [path.filename.split('/')[-1]
+                         for path in initial_paths]
+            for i, path in enumerate(initial_paths):
+                filename = filenames[i]
+                
+                # avoid duplicates 
+                if filename in filenames[:i]:
+                    filename = (f'{".".join(filenames[i].split(".")[:-1])}'
+                                f'-2.{filenames[i].split(".")[-1]}')
+                    filenames[i] = filename
+                
+                # report
+                print(f'Writing {folder}/{filename}')
+                
+                # actual save: get n_atoms
+                n_atoms = len(path[0].positions)
+                
+                # create an empty Universe with n_atoms (no topology required)
+                universe = mda.Universe.empty(n_atoms, trajectory=True)
+                
+                # write positions
+                with mda.Writer(f'{folder}/{filename}', n_atoms) as writer:
+                    for frame in path:
+                        universe.trajectory.ts.positions = frame.positions
+                        if hasattr(frame, 'velocities'):
+                            universe.trajectory.ts.velocities = frame._velocities
+                        universe.trajectory.ts.triclinic_dimensions = frame.triclinic_dimensions
+                        writer.write(universe)
+        
+        finally:
+            os.chdir(cwd)
