@@ -244,10 +244,10 @@ class Launcher:
             if gpu:
                 file.write(f'  export CUDA_VISIBLE_DEVICES=$li\n')
             
-            file.write(f'  # default names\n')
+            file.write(f'\n  # default names\n')
             file.write(f'  PYTHON="{PYTHON}"\n')
             file.write(f'  WORKER="{WORKER}"\n')
-            file.write(f'  PARAMS="{params.path}"\n')
+            file.write(f'  PARAMS="{self.params.path}"\n')
             file.write(f'\ncase $i in\n')
             
             # equilibrium workers
@@ -260,7 +260,7 @@ class Launcher:
                     state = 'B'
                     j = i - self.nA
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
-                file.write('  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
+                file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
                            f'"{self.directory}" simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
@@ -276,7 +276,7 @@ class Launcher:
                     j -= self.eA
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (extension {state}{j})\n')
-                file.write('  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
+                file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
                            f'"{self.directory}" simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
@@ -287,7 +287,7 @@ class Launcher:
                 j = i - begin
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (shooting {j})\n')
-                file.write('  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}" '
+                file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
                            f'"{self.directory}" simulate '
                            f'worker{i}.run worker{i}.log &\n')
                 file.write(f'  ;;\n')
@@ -295,14 +295,14 @@ class Launcher:
             # trainer
             file.write(f'{i + 1})\n')
             file.write(f'  # trainer\n')
-            file.write('  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}"'
+            file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
                        '"{self.directory}" train '
                        f'trainer.log &\n')
             file.write(f'  trainer_pid=$!\n\n')
 
             # manager
             file.write(f'  # manager\n')
-            file.write('  "$\{PYTHON\}" "$\{WORKER\}" "$\{PARAMS\}"'
+            file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
                        '"{self.directory}" manage '
                        f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
                        f'manager.log {nsteps} {nframes} &\n')
