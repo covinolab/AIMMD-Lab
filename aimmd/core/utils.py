@@ -1117,6 +1117,8 @@ def fit(network, pathensemble,
     keepers = selection_probabilities > 0
     if not np.sum(keepers):  # no other choice
         selection_probabilities += 1.
+        results[:len(inA_values), 0] += 1.
+        results[len(inB_values):n_internal_frames, 1] += 1.
         keepers = np.ones(len(selection_probabilities), dtype=bool)
     selection_probabilities = selection_probabilities[keepers]
     values = values[keepers]
