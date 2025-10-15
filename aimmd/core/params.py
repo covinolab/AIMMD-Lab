@@ -418,7 +418,15 @@ task together."""
                     # transition found
                     transition_found = True
                     if crop:
-                        path = path[b:e]
+                        if type(path) == MemoryReader:
+                            path = MemoryReader(
+                                path.coordinate_array[b:e],
+                                dimensions=path.dimensions_array[b:e],
+                                velocities=path.velocity_array[b:e]
+                                    if path.velocity_array else None,
+                                filename=path.filename)
+                        else:
+                            path = path[b:e]
                         initial_paths[i] = path
                     break
             
