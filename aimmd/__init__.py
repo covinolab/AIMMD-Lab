@@ -29,7 +29,6 @@ __version__ = '0.1.0'
 
 # required Python dependencies (import name → pip name)
 _REQUIRED_DEPS: Dict[str, str] = {
-    'dill': 'dill',  # save/load (also functions!)
     'tqdm': 'tqdm',  # show progress bars
     'numpy': 'numpy',
     'scipy': 'scipy',
