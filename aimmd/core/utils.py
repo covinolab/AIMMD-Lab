@@ -280,6 +280,7 @@ def fit(network, pathensemble,
         epochs=500,
         batch_size=4096,
         stop=50.,
+        graphs=False,
         verbose=False):
     
     """
@@ -392,6 +393,10 @@ def fit(network, pathensemble,
         Size of each training batch. Since the batch is drawn with selection
         selection probabilities, its size will always be `batch_size`, even
         with very small training sets.
+
+    graphs : bool, default=False
+        If True, the descriptors are graphs, stored in the mlcolvar DataDict
+        format. If False, they are numpy arrays.
     
     verbose : bool, default=False
         If True, be loud and noise. Among other things, show a progress bar
@@ -420,6 +425,11 @@ def fit(network, pathensemble,
     TODO: include free/shot A-R and B-R paths.
     """
     
+    if graphs:
+        # only need to import this torch_geometric Batch if graphs
+        # are used as descriptors. Otherwise, avoid the dependency.
+        from torch_geometric.data import Batch
+
     if not augment:
         thA = None
         thB = None
@@ -1078,12 +1088,23 @@ def fit(network, pathensemble,
         # sample batch
         indices = np.random.choice(len(selection_probabilities),
                                    batch_size, p=selection_probabilities)
-        if save_memory:  # separately to save memory
-            d = process_descriptors(descriptors[indices])
+        
+        if not graphs:
+            if save_memory:  # separately to save memory
+                d = process_descriptors(descriptors[indices])
+            else:
+                d = descriptors[indices]
+            d = torch.tensor(d, dtype=dtype, device=device)
+            d.requires_grad = True
         else:
-            d = descriptors[indices]
-        d = torch.tensor(d, dtype=dtype, device=device)
-        d.requires_grad = True
+            # when using graphs, we need to process the the DataDict objects
+            # instead of arrays
+            if save_memory:  # separately to save memory
+                d = process_descriptors([descriptors['data_list'][i] for i in indices])
+            else:
+                d = [descriptors['data_list'][i] for i in indices]
+            d = Batch.from_data_list(d).to(device).to_dict()
+               
         r = torch.tensor(results[indices], dtype=dtype, device=device)
         
         # define loss function
