@@ -16,10 +16,11 @@ import argparse
 import warnings
 import importlib
 import importlib.util
+import functools
 import itertools
 import threading
-import MDAnalysis as mda
 import subprocess
+import MDAnalysis as mda
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from time import sleep
@@ -30,9 +31,19 @@ from scipy.special import logit, expit
 from mdtraj.formats import TRRTrajectoryFile
 from .pathensemble import *
 
+# quick logging
+print = functools.partial(print, flush=True)
+
 ###############################################################################
 # Base utils ##################################################################
 ###############################################################################
+
+def run_with_timeout(cmd, timeout):
+    try:
+        result = subprocess.run(cmd, shell=True, timeout=timeout)
+        return result.returncode
+    except subprocess.TimeoutExpired:
+        return 0
 
 def has_param(func, param_name):
     signature = inspect.signature(func)
@@ -102,9 +113,11 @@ def write(text, *paths, wrap_text=False):
         text = "\n".join(wrap(text, 80,
             break_long_words=False, replace_whitespace=False))
     text = text.replace('"',"'")
-    os.system(f'''echo "{text}"''')
     for path in paths:
-        os.system(f'''echo "{text}" >> {path}''')
+        if path is not None:
+            os.system(f'''echo "{text}" >> {path}''')
+    if not len(paths):
+        print(text)
 
 
 def remove(path, verbose=True):
@@ -114,13 +127,39 @@ def remove(path, verbose=True):
         except:
             continue
         if verbose:
-            write(f'--- removed {path}', wrap_text=True)
+            print(f'--- removed {path}')
 
 
 def initialize_plot():
     figure, ax = plt.subplots(1, 1, figsize=(3, 2.5))
     plt.subplots_adjust(left=0.18, bottom=0.18, right=0.99, top=0.8)
     return figure, ax
+
+
+class class_or_instancemethod(classmethod):
+    def __get__(self, instance, type_):
+        if instance is None:
+            descr_get = super().__get__
+        else:
+            descr_get = self.__func__.__get__
+        return descr_get(instance, type_)
+
+class DummyNetwork(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        # no parameters, empty network
+    
+    def forward(self, x):
+        # just returns the input unchanged
+        return x
+    
+    def state_dict(self, *args, **kwargs):
+        # override to return empty dict
+        return {}
+    
+    def load_state_dict(self, state_dict, strict=True):
+        # accept any input but do nothing
+        pass
 
 ###############################################################################
 # Math ########################################################################
@@ -146,7 +185,7 @@ def solve_committor_by_relaxation(
     -------
     P0: committor estimate
     """
-    for split in tqdm(progress, position=0):
+    for split in tqdm(progress):
         X1 = X[::split, ::split]
         Y1 = Y[::split, ::split]
         P1 = P0[::split, ::split]
@@ -247,7 +286,7 @@ def continue_simulation(worker_id, fname):
     with open(f'{worker_id}.temp', 'w') as file:
         file.write(fname)
     os.rename(f'{worker_id}.temp', worker_id)
-    write(f'>>> starting simulating {fname} ({now()})')
+    print(f'>>> starting simulating {fname} ({now()})')
 
 
 def stop_simulation(worker_id, fname=None):
@@ -264,7 +303,7 @@ def stop_simulation(worker_id, fname=None):
 
 def fit(network, pathensemble,
         keys=None,
-        initial_path=None,
+        initial_paths=None,
         process_descriptors=lambda x: x,
         save_memory=False,
         nbins=0,
@@ -280,7 +319,8 @@ def fit(network, pathensemble,
         epochs=500,
         batch_size=4096,
         stop=50.,
-        verbose=False):
+        verbose=False,
+        worker=None):
     
     """
     Train a neural network to predict the logit committor from AIMMD
@@ -315,7 +355,7 @@ def fit(network, pathensemble,
         Use only the paths at these indices for training. Useful for
         bootstrapping or block averaging.
     
-    initial_path : PathEnsemble or PathEnsemblesCollection, optional
+    initial_paths : PathEnsemble or PathEnsemblesCollection, optional
         Initial paths used to start the simulation. Used to add extra data if
         `pathensemble` has too little.
     
@@ -372,7 +412,8 @@ def fit(network, pathensemble,
     
     loss_bayesian_factor : float, default=100.0
         In defining the logit committor square deviation training loss,
-        necessary with discrete data.
+        necessary with discrete data. If zero: apply standard logit
+        binomial loss (worse close to the states).
     
     loss_smoothening_weight : float, default=0.0
         Weight of an additional term to the loss, corresponding to the
@@ -396,6 +437,9 @@ def fit(network, pathensemble,
     verbose : bool, default=False
         If True, be loud and noise. Among other things, show a progress bar
         during training.
+    
+    worker : aimmd.Worker
+        Linked worker, to know when to interrupt.
     
     Returns
     -------
@@ -431,12 +475,12 @@ def fit(network, pathensemble,
         return np.concatenate(l, **kwargs)
 
     if nbins or thA is not None or thB is not None:  # needed in these cases
-        write(f'Updating the pathensemble values ({now()})')
+        print(f'Updating the pathensemble values ({now()})')
         pathensemble.update_values(only_reactive=True)  # with previous model
     
     # getting descriptors size
-    if initial_path is not None:
-        descriptors_size = len(initial_path.frame_descriptors[0])
+    if initial_paths is not None:
+        descriptors_size = len(initial_paths.frame_descriptors[0])
     else:
         descriptors_size = len(pathensemble.frame_descriptors[0])
     
@@ -459,7 +503,8 @@ def fit(network, pathensemble,
     final_states = pathensemble.final_states[keys]
     
     # remove "hopeless" paths
-    keys = keys[internal_states != initial_states]
+    if len(keys):
+        keys = keys[internal_states != initial_states]
     initial_states = pathensemble.initial_states[keys]
     internal_states = pathensemble.internal_states[keys]
     final_states = pathensemble.final_states[keys]
@@ -469,42 +514,58 @@ def fit(network, pathensemble,
     shooting_indices = pathensemble.shooting_indices[keys]
     shooting_states = pathensemble.shooting_states[keys]
     shooting_values = pathensemble.shooting_values[keys]
-    shooting_values[shooting_states == 'A'] = -np.inf
-    shooting_values[shooting_states == 'B'] = +np.inf
+    if len(keys):
+        shooting_values[shooting_states == 'A'] = -np.inf
+        shooting_values[shooting_states == 'B'] = +np.inf
     
-    # get indices of A paths (use initial_path if not present)
-    inA = keys[np.where(internal_states == 'A')[0]]
+    if len(initial_states):
+        # get indices of A paths (use initial_paths if not present)
+        inA = np.where(internal_states == 'A')[0]
+    else:
+        inA = []
     if not len(inA):
-        temp = initial_path[:].unsplit()
+        temp = initial_paths[:].unsplit()
         temp = temp.crop(frame_indices=temp.frame_states == 'A')
         temp.are_accepted[:] = True
         pathensemble += temp
         keys = np.append(keys, len(pathensemble) - 1)
         inA = np.array([len(keys) - 1])
     
-    # get indices of in B paths (use initial_path if not present)
-    inB = keys[np.where(internal_states == 'B')[0]]
+    if len(initial_states):
+        # get indices of in B paths (use initial_paths if not present)
+        inB = np.where(internal_states == 'B')[0]
+    else:
+        inB = []
     if not len(inB):
-        temp = initial_path[:].unsplit()
+        temp = initial_paths[:].unsplit()
         temp = temp.crop(frame_indices=temp.frame_states == 'B')
         temp.are_accepted[:] = True
         pathensemble += temp
         keys = np.append(keys, len(pathensemble) - 1)
         inB = np.array([len(keys) - 1])
     
-    # get indices of shot paths
-    shot_paths = np.where((internal_states == 'R') *
-                          (shooting_indices > 0))[0]
+    if len(initial_states):
+        # get indices of shot paths
+        shot_paths = np.where((internal_states == 'R') *
+                              (shooting_indices > 0))[0]
+    else:
+        shot_paths = np.zeros(0, dtype=int)
     
     # get indices of ARA paths (within keys representation)
-    AtoA = np.where((initial_states == 'A') *
-                    (internal_states == 'R') * 
-                    (final_states == 'A'))[0]
+    if len(initial_states):
+        AtoA = np.where((initial_states == 'A') *
+                        (internal_states == 'R') * 
+                        (final_states == 'A'))[0]
+    else:
+        AtoA = np.zeros(0, dtype=int)
     
     # get indices of BRB paths (within keys representation)
-    BtoB = np.where((initial_states == 'B') *
-                    (internal_states == 'R') * 
-                    (final_states == 'B'))[0]
+    if len(initial_states):
+        BtoB = np.where((initial_states == 'B') *
+                        (internal_states == 'R') * 
+                        (final_states == 'B'))[0]
+    else:
+        BtoB = np.zeros(0, dtype=int)
     
     # determine effective state A boundary
     thA2 = -np.inf
@@ -513,7 +574,7 @@ def fit(network, pathensemble,
         if np.isnan(thA2):
             thA2 = -np.inf
         # report
-        write(f'\n    thA {thA} associated value: {thA2:.3f}')
+        print(f'\n    thA {thA} associated value: {thA2:.3f}')
     
     # determine effective state B boundary
     thB2 = +np.inf
@@ -522,54 +583,82 @@ def fit(network, pathensemble,
         if np.isnan(thB2):
             thB2 = +np.inf
         # report
-        write(f'    thB {thB} associated value: {thB2:.3f}\n')            
-    
-    # get indices of equilibrium fromA paths
-    # (starting at the effective boundary of state A)
-    free_A = np.where((initial_states == 'A') *
-                      (internal_states == 'R') * 
-                      (shooting_values <= thA2))[0]
-    
-    # get indices of equilibrium fromB paths
-    # (starting or ending at the effective boundary of state B)
-    free_B = np.where((initial_states == 'B') *
-                      (internal_states == 'R') * 
-                      (shooting_values >= thB2))[0]
-    
+        print(f'    thB {thB} associated value: {thB2:.3f}\n')            
+
+    if len(initial_states):
+        # get indices of equilibrium fromA paths
+        # (starting at the effective boundary of state A)
+        free_A = np.where((initial_states == 'A') *
+                          (internal_states == 'R') * 
+                          (shooting_values <= thA2))[0]
+        
+        # get indices of equilibrium fromB paths
+        # (starting or ending at the effective boundary of state B)
+        free_B = np.where((initial_states == 'B') *
+                          (internal_states == 'R') * 
+                          (shooting_values >= thB2))[0]
+    else:
+        free_A = np.zeros(0, dtype=int)
+        free_B = np.zeros(0, dtype=int)
+
     # which AtoA paths are free? (within keys representation)
-    # which BtoB paths are free? (within keys representation)
-    free_AtoA = AtoA[shooting_values[AtoA] <= thA2]
-    free_BtoB = BtoB[shooting_values[BtoB] >= thB2]
-    
     # which AtoA paths are shot? (within keys representation)
+    if len(AtoA):
+        free_AtoA = AtoA[shooting_values[AtoA] <= thA2]
+        shot_AtoA = AtoA[shooting_values[AtoA] > thA2]
+    else:
+        free_AtoA = np.zeros(0, dtype=int)
+        shot_AtoA = np.zeros(0, dtype=int)
+    
+    # which BtoB paths are free? (within keys representation)
     # which BtoB paths are shot? (within keys representation)
-    shot_AtoA = AtoA[shooting_values[AtoA] > thA2]
-    shot_BtoB = BtoB[shooting_values[BtoB] < thB2]
+    if len(BtoB):
+        free_BtoB = BtoB[shooting_values[BtoB] >= thB2]
+        shot_BtoB = BtoB[shooting_values[BtoB] < thB2]
+    else:
+        free_BtoB = np.zeros(0, dtype=int)
+        shot_BtoB = np.zeros(0, dtype=int)
     
     # shot AtoB and BtoA paths (now within shot paths representation)
-    shot_AtoB = ((initial_states[shot_paths] == 'A') *
-                 (final_states[shot_paths] == 'B'))
-    shot_BtoA = ((initial_states[shot_paths] == 'B') *
-                 (final_states[shot_paths] == 'A'))
+    if len(shot_paths):
+        shot_AtoB = ((initial_states[shot_paths] == 'A') *
+                     (final_states[shot_paths] == 'B'))
+        shot_BtoA = ((initial_states[shot_paths] == 'B') *
+                     (final_states[shot_paths] == 'A'))
+        
+        # assign weights to shot TPs: 1 / density at shooting interface
+        shot_paths_densities = pathensemble.densities(keys[shot_paths])
+        shot_AtoB_densities = shot_paths_densities[shot_AtoB]
+        shot_BtoA_densities = shot_paths_densities[shot_BtoA]
+        if len(shot_AtoB_densities):
+            shot_AtoB_densities[shot_AtoB_densities == 0.] = np.inf  # stay safe
+        if len(shot_BtoA_densities):
+            shot_BtoA_densities[shot_BtoA_densities == 0.] = np.inf  # stay safe
+        shot_AtoB_weights = 1 / shot_AtoB_densities
+        shot_BtoA_weights = 1 / shot_BtoA_densities
+        
+        # convert to within keys representation
+        shot_AtoB = shot_paths[shot_AtoB]
+        shot_BtoA = shot_paths[shot_BtoA]
+    else:
+        shot_AtoB = np.zeros(0, dtype=int)
+        shot_BtoA = np.zeros(0, dtype=int)
+        shot_AtoB_weights = np.zeros(0)
+        shot_BtoA_weights = np.zeros(0)
     
-    # assign weights to shot TPs: 1 / density at shooting interface
-    shot_paths_densities = pathensemble.densities(keys[shot_paths])
-    shot_AtoB_densities = shot_paths_densities[shot_AtoB]
-    shot_BtoA_densities = shot_paths_densities[shot_BtoA]
-    shot_AtoB_densities[shot_AtoB_densities == 0.] = np.inf  # stay safe
-    shot_BtoA_densities[shot_BtoA_densities == 0.] = np.inf  # stay safe
-    shot_AtoB_weights = 1 / shot_AtoB_densities
-    shot_BtoA_weights = 1 / shot_BtoA_densities
-    
-    # convert to within keys representation
-    shot_AtoB = shot_paths[shot_AtoB]
-    shot_BtoA = shot_paths[shot_BtoA]
+    # join
     shot_TPs = np.append(shot_AtoB, shot_BtoA).astype(int)
     shot_TPs_weights = np.append(shot_AtoB_weights, shot_BtoA_weights)
     
     # equilibrium TPs (within keys representation)
-    free_AtoB = free_A[final_states[free_A] == 'B']
-    free_BtoA = free_B[final_states[free_B] == 'A']
+    if len(free_A):
+        free_AtoB = free_A[final_states[free_A] == 'B']
+    else:
+        free_AtoB = np.zeros(0, dtype=int)
+    if len(free_B):
+        free_BtoA = free_B[final_states[free_B] == 'A']
+    else:
+        free_BtoA = np.zeros(0, dtype=int)
     free_TPs = np.append(free_AtoB, free_BtoA).astype(int)
     
     # TPs weights (default for equilibrium: 1)
@@ -591,14 +680,14 @@ def fit(network, pathensemble,
     if total and thA is not None:
         factor_fromA_toB = min(np.sum(expit(+free_A_values)) / total, 1)
         if verbose:
-            write(f'Conversion factor from A to B: {factor_fromA_toB:.5e}')
+            print(f'Conversion factor from A to B: {factor_fromA_toB:.5e}')
     else:
         factor_fromA_toB = 0.
     
     if total and thB is not None:
         factor_fromB_toA = min(np.sum(expit(-free_B_values)) / total, 1)
         if verbose:
-            write(f'Conversion factor from B to A: {factor_fromB_toA:.5e}')
+            print(f'Conversion factor from B to A: {factor_fromB_toA:.5e}')
     else:
         factor_fromB_toA = 0.
     
@@ -641,6 +730,7 @@ def fit(network, pathensemble,
     boundaries = np.cumsum(np.append([0], internal_lengths[shot_AtoA]))
     for si, begin, end in zip(
         shooting_indices[shot_AtoA], boundaries, boundaries[1:]):
+        si -= 1  # since internal
         
         # backward
         if augment:
@@ -674,6 +764,7 @@ def fit(network, pathensemble,
     boundaries = np.cumsum(np.append([0], internal_lengths[shot_BtoB]))
     for si, begin, end in zip(
         shooting_indices[shot_BtoB], boundaries, boundaries[1:]):
+        si -= 1  # since internal
         
         # backward
         if augment:
@@ -736,6 +827,7 @@ def fit(network, pathensemble,
     boundaries = np.cumsum(np.append([0], internal_lengths[shot_AtoB]))
     for si, begin, end in zip(
         shooting_indices[shot_AtoB], boundaries, boundaries[1:]):
+        si -= 1  # since internal
         
         # backward
         if augment:
@@ -766,6 +858,7 @@ def fit(network, pathensemble,
     boundaries = np.cumsum(np.append([0], internal_lengths[shot_BtoA]))
     for si, begin, end in zip(
         shooting_indices[shot_BtoA], boundaries, boundaries[1:]):
+        si -= 1  # since internal
         
         # backward
         if augment:
@@ -850,7 +943,7 @@ def fit(network, pathensemble,
         free_BtoA_results], axis=0)
     selection_probabilities = np.ones(len(values))
     
-    write(f'\nCollected {len(inA_values):9} in A frames,\n'
+    print(f'\nCollected {len(inA_values):9} in A frames,\n'
           f'          {len(inB_values):9} in B frames,\n'
           f'          {len(shot_AtoA_values):9} shot A to A frames,\n'
           f'          {len(shot_BtoB_values):9} shot B to B frames,\n'
@@ -859,7 +952,7 @@ def fit(network, pathensemble,
           f'          {len(shot_AtoB_values):9} shot A to B frames,\n'
           f'          {len(shot_BtoA_values):9} shot B to A frames,\n'
           f'          {len(free_AtoB_values):9} free A to B frames, and\n'
-          f'          {len(free_BtoA_values):9} free B to A frames,\n'
+          f'          {len(free_BtoA_values):9} free B to A frames\n'
           f'   TOTAL: {len(values):9} frames')
     
     # useful
@@ -902,9 +995,8 @@ def fit(network, pathensemble,
             bins = np.delete(bins, i)
         i -= 1
     
-    write(f'\nUniformizing selection probabilities\n'
-          f'in bins: {array2string(bins, 20)}',
-          wrap_text=True)
+    print(f'\nUniformizing selection probabilities\n'
+          f'in bins: {array2string(bins, 20)}')
     
     # internal A and internal B
     mask = range(0, len(inA_values))
@@ -924,16 +1016,19 @@ def fit(network, pathensemble,
     indices = np.digitize(values[n_internal_frames:], bins) - 1
     for i in range(len(bins) - 1):
         if verbose:
-            write(f'    bin {i}: '
+            print(f'    bin {i}: '
                   f'({expit(bins[i]):.3e}, {expit(bins[i+1]):.3e})')
         
         # bin "center"
-        q = (bins[i] + bins[i + 1]) / 2
+        if not np.isinf(bins[i]) and not np.isinf(bins[i + 1]):
+            q = (bins[i] + bins[i + 1]) / 2
+        else:
+            q = 0.
         if i == 0:
             q = bins[+1]
         elif i == len(bins) - 2:
             q = bins[-2]
-                    
+        
         # get mask
         mask = n_internal_frames + np.where(indices == i)[0]
         
@@ -955,10 +1050,10 @@ def fit(network, pathensemble,
                 wTPs[mask_TPs - shot_AtoB_frames_begin] *
                 ratio * factor_fromA_toB)
             if verbose:
-                write(f'    ... {len(mask_free_AtoA):<9} '
+                print(f'    ... {len(mask_free_AtoA):<9} '
                       f'free A to A frames get additional '
                       f'{ratio:.3e} result to A')
-                write(f'    ... {len(mask_TPs):<9} '
+                print(f'    ... {len(mask_TPs):<9} '
                       f'transition frames get additional '
                       f'f{ratio * factor_fromA_toB:.3e} result to B')
         
@@ -967,16 +1062,16 @@ def fit(network, pathensemble,
            0 < len(mask_TPs) / len(mask_free_BtoB) < 100:
             # ratio = (np.sum(results[mask_free_BtoB]) /
             #          np.sum(results[mask])) / factor_fromB_toA
-            ratio = 1 / max(factor_fromA_toB, expit(-q))
+            ratio = 1 / max(factor_fromB_toA, expit(-q))
             results[mask_free_BtoB, 1] += ratio
             results[mask_TPs, 0] += (
             wTPs[mask_TPs - shot_AtoB_frames_begin] *
             ratio * factor_fromB_toA)
             if verbose:
-                write(f'    ... {len(mask_free_BtoB):<9} '
+                print(f'    ... {len(mask_free_BtoB):<9} '
                       f'free B to B frames get additional '
                       f'{ratio:.3e} result to B')
-                write(f'    ... {len(mask_TPs):<9} '
+                print(f'    ... {len(mask_TPs):<9} '
                       f'transition frames get additional '
                       f'f{ratio * factor_fromB_toA:.3e} result to A')
         
@@ -1026,17 +1121,23 @@ def fit(network, pathensemble,
         if not verbose:
             continue
         
-        write(f'    ... {len(mask):<9} frames')
-        write(f'    ... {a:.3e} average result to A')
-        write(f'    ... {b:.3e} average result to B')
+        print(f'    ... {len(mask):<9} frames')
+        print(f'    ... {a:.3e} average result to A')
+        print(f'    ... {b:.3e} average result to B')
     
     # keep only the training set frames
     keepers = selection_probabilities > 0
+    if not np.sum(keepers):  # no other choice
+        print('Extending to states')
+        selection_probabilities += 1.
+        results[:len(inA_values), 0] += 1.
+        results[len(inB_values):n_internal_frames, 1] += 1.
+        keepers = np.ones(len(selection_probabilities), dtype=bool)
     selection_probabilities = selection_probabilities[keepers]
     values = values[keepers]
     descriptors = descriptors[keepers]
     results = results[keepers]
-    write(f'\nTraining set size {len(selection_probabilities)}')
+    print(f'\nTraining set size {len(selection_probabilities)}')
     
     selection_probabilities /= np.sum(selection_probabilities)
     
@@ -1057,7 +1158,7 @@ def fit(network, pathensemble,
     min_loss_step1 = 0
     min_loss_step2 = 0
     
-    write(f'Reseting the network parameters ({now()})\n')
+    print(f'Reseting the network parameters ({now()})\n')
     network.reset_parameters()
     
     losses = []
@@ -1066,10 +1167,13 @@ def fit(network, pathensemble,
     # R = []
     i = 0
     if verbose:
-        counter = tqdm(range(epochs), position=0)
+        counter = tqdm(range(epochs))
     
     # actual loop
     while True:
+        
+        if worker is not None and worker.interrupt:
+            return [], [], [], [], []
         
         for param_group in optimizer.param_groups:
             # slowly increase lr
@@ -1092,24 +1196,34 @@ def fit(network, pathensemble,
             optimizer.zero_grad()
             q = network(d)
             
-            qA = - (torch.log(1 + torch.exp(-q[:, 0])) +
-                    loss_bayesian_factor)
-            qB = + (torch.log(1 + torch.exp(+q[:, 0])) +
-                    loss_bayesian_factor)
+            if loss_bayesian_factor:
+                
+                qA = - (torch.log(1 + torch.exp(-q[:, 0])) +
+                        loss_bayesian_factor)
+                qB = + (torch.log(1 + torch.exp(+q[:, 0])) +
+                        loss_bayesian_factor)
+                
+                toA_contribution = (q[:, 0] - qA) ** 2
+                toB_contribution = (q[:, 0] - qB) ** 2
+                
+                q2 = q[:,0].detach()
+                
+                loss = torch.sum(q2 ** 2 *
+                    (r[:, 0] * toA_contribution +
+                     r[:, 1] * toB_contribution))
+                
+                # normalize
+                loss /= torch.sum(q2 ** 2 * (r[:, 0] + r[:, 1]) *
+                                  loss_bayesian_factor ** 2)
+                loss -= 1.0
             
-            toA_contribution = (q[:, 0] - qA) ** 2
-            toB_contribution = (q[:, 0] - qB) ** 2
-            
-            q = q[:, 0].detach()
-            
-            loss = torch.sum(q ** 2 *
-                (r[:, 0] * toA_contribution +
-                 r[:, 1] * toB_contribution))
-            
-            # normalize
-            loss /= torch.sum(q ** 2 * (r[:, 0] + r[:, 1]) *
-                              loss_bayesian_factor ** 2)
-            loss -= 1.0
+            # standard binomial loss
+            else:
+                exp_pos_q = torch.exp(+q[:, 0])
+                exp_neg_q = torch.exp(-q[:, 0])
+                toA_contrib = r[:, 0] * torch.log(1. + exp_pos_q)
+                toB_contrib = r[:, 1] * torch.log(1. + exp_neg_q)
+                loss = torch.sum((toA_contrib + toB_contrib) / torch.sum(r))
             
             # Compute the smoothness penalty
             if loss_smoothening_weight:
@@ -1130,10 +1244,10 @@ def fit(network, pathensemble,
         # update network
         network.train()
         loss = optimizer.step(closure)
-        losses.append(float(loss))
+        losses.append(float(loss.detach()))
         
         # report scales
-        q = network(d)
+        q = network(d).detach()
         scales.append(max(float(torch.max(q)), -float(torch.min(q))))
         Range = float(torch.min(q)), float(torch.max(q))
         
@@ -1142,14 +1256,14 @@ def fit(network, pathensemble,
         
         # handle termination: too high scales
         if scales[-1] >= stop or np.isnan(scales[-1]):
-            write(f'!!! stopping early since scale '
+            print(f'!!! stopping early since scale '
                   f'{scales[-1]:.3f} > {stop:.3f}')
             if (i + 1) < 1.25 * epochs:
-                write(f'    restoring lowest loss\' ({min_loss1:.3e}) '
+                print(f'    restoring lowest loss\' ({min_loss1:.3e}) '
                       f'weights, step {min_loss_step1 + 1}')
                 network.load_state_dict(state_dict1)
             else:
-                write(f'    restoring lowest loss\' ({min_loss2:.3e}) '
+                print(f'    restoring lowest loss\' ({min_loss2:.3e}) '
                       f'weights, step {min_loss_step2 + 1}')
                 network.load_state_dict(state_dict2)
             break
@@ -1176,7 +1290,7 @@ def fit(network, pathensemble,
         
         # at most 1.5 * epochs
         if (i + 1) >= 1.5 * epochs:
-            write(f'    restoring lowest loss\' ({min_loss2:.3e}) '
+            print(f'    restoring lowest loss\' ({min_loss2:.3e}) '
                   f'weights, step {min_loss_step2 + 1}')
             network.load_state_dict(state_dict2)
             break
@@ -1188,7 +1302,7 @@ def fit(network, pathensemble,
         
         # report
         if verbose and i % (epochs // 20) == 0:
-            write(f'    loss {losses[-1]:.3e}, '
+            print(f'    loss {losses[-1]:.3e}, '
                   f'scale {scales[-1]:.3f}, '
                   f'range ({Range[0]:.3f}, {Range[1]:.3f})')
     
@@ -1197,21 +1311,21 @@ def fit(network, pathensemble,
     
     # error handling: result not as expected
     if Range[0] > 0 or Range[1] < 0 or scales[-1] < 1:
-        write(f'!!! bad range ({Range[0]:.3f}, {Range[1]:.3f}), '
+        print(f'!!! bad range ({Range[0]:.3f}, {Range[1]:.3f}), '
               f'restoring original parameters')
         network.load_state_dict(state_dict0)
     
     # recompute scales and range in case they changed
-    q = network(d)
+    q = network(d).detach()
     scales[-1] = max(float(torch.max(q)), -float(torch.min(q)))
     Range = float(torch.min(q)), float(torch.max(q))
     
     # report and return
-    write(f'\nTraining took {time.time()-t0:.1f}s')
-    write(f'    {i + 1} epochs')
-    write(f'    last loss {losses[-1]:.3e}')
-    write(f'    last scale {scales[-1]:.3f}')
-    write(f'    last range ({Range[0]:.3f}, {Range[1]:.3f})')
+    print(f'\nTraining took {time.time()-t0:.1f}s')
+    print(f'    {i + 1} epochs')
+    print(f'    last loss {losses[-1]:.3e}')
+    print(f'    last scale {scales[-1]:.3f}')
+    print(f'    last range ({Range[0]:.3f}, {Range[1]:.3f})')
     return losses, scales, values, selection_probabilities, results#, D, R
 
 
@@ -1219,63 +1333,26 @@ def fit(network, pathensemble,
 # AIMMD run utils #############################################################
 ###############################################################################
 
-def import_aimmd_run_params(filename, obj='aimmd_run_params'):
-    wkdir = filename.split('/')
-    if len(wkdir) > 1:
-        wkdir, filename = '/'.join(wkdir[:-1]), wkdir[-1]
-    else:
-        wkdir = '.'
-    current_dir = os.getcwd()
-    os.chdir(wkdir)
-    try:
-        def _import_fresh_module(filename):
-            unique_name = f"mod_{np.random.random(12345678)}"
-            spec = importlib.util.spec_from_file_location(unique_name, filename)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-
-        if obj != 'aimmd_run_params':
-            result = getattr(_import_fresh_module(
-            filename), obj)
-            os.chdir(current_dir)
-            return result
-        
-        aimmd_run_params = getattr(_import_fresh_module(
-            filename), obj)
-        os.chdir(current_dir)
-        
-        if 'extra_equilibriumA' not in aimmd_run_params:
-            aimmd_run_params['extra_equilibriumA'] = []
-        if 'extra_equilibriumB' not in aimmd_run_params:
-            aimmd_run_params['extra_equilibriumB'] = []
-        if 'extra_equilibriumA_states_map' not in aimmd_run_params:
-            aimmd_run_params['extra_equilibriumA_states_map'] = ['']
-        if 'extra_equilibriumB_states_map' not in aimmd_run_params:
-            aimmd_run_params['extra_equilibriumB_states_map'] = ['']
-        return aimmd_run_params
-    except:
-        os.chdir(current_dir)
-        raise
-
-
 def load_network_and_projections(
-    network, directory, backup_directory=None, wait=True):
-    device = next(network.parameters()).device
+    network, directory, backup_directory=None, wait=True, worker=None):
+    
+    try:  # a mockup network has no device
+        device = next(network.parameters()).device
+    except:
+        device = torch.device('cpu')
     
     # advance only if data are present
     while True:
-        try:  
+        try:
             state_dict = torch.load(
                 f'{directory}/network.h5', map_location=device)
             bins = np.load(f'{directory}/bins.npy')
             densities = np.load(f'{directory}/densities.npy')
             break
         except:
-            if wait:
-                sleep(.1)
-            else:  # nothing here
+            if not wait or (worker is not None and worker.interrupt):
                 return [], []
+            sleep(.1)
     
     # backup
     if backup_directory is not None:  # at time of shooting init
@@ -1290,11 +1367,11 @@ def load_network_and_projections(
 
 def update_shooting_simulation(
     backward, forward, worker_id,
-    aimmd_run_params, batch_size=100, verbose=True):
+    params, batch_size=100, verbose=True):
     
-    trajectory_extension = aimmd_run_params['trajectory_extension']
-    max_excursion_length = aimmd_run_params['max_excursion_length']
-    grompp = aimmd_run_params['grompp']
+    trajectory_extension = params.trajectory_extension
+    max_excursion_length = params.max_excursion_length
+    grompp = params.grompp
     
     def _stop_condition(segment, base=0):
         n_frames = 0
@@ -1335,7 +1412,7 @@ def update_shooting_simulation(
             except:
                 cpt_present = False
             if not tpr_present or (cpt_present and not trj_present):
-                write(f'!!! {backward.directory}/back missing; resetting!')
+                print(f'!!! {backward.directory}/back missing; resetting!')
                 backward.reset() # reset to pristine state
                 added_frames = 0
                 stop_simulation(worker_id, f'{backward.directory}/back')
@@ -1348,7 +1425,7 @@ def update_shooting_simulation(
                 start=backward.nframes,
                 stop=backward.nframes + batch_size)[0]
         except:
-            write(f'!!! error updating {backward.directory}/back; resetting!')
+            print(f'!!! error updating {backward.directory}/back; resetting!')
             backward.reset() # reset to pristine state
             added_frames = 0
             stop_simulation(worker_id, f'{backward.directory}/back')
@@ -1363,18 +1440,17 @@ def update_shooting_simulation(
         n_frames_back = len(states)
         if n_frames_back:
             if stop_simulation(worker_id, f'{backward.directory}/back'):
-                write(f'xxx stopping {backward.directory}/'
+                print(f'xxx stopping {backward.directory}/'
                       f'back{trajectory_extension} in state {states[-1]} '
-                      f'after {n_frames_back} frames ({now()})',
-                      wrap_text=True)
+                      f'after {n_frames_back} frames ({now()})')
             break
 
         # continue simulation
         continue_simulation(worker_id, f'{backward.directory}/back')
     if report:
-        write(f'... {backward.directory}/'
+        print(f'... {backward.directory}/'
               f'back{trajectory_extension} '
-              f'hit {backward.nframes} frames ({now()})', wrap_text=True)
+              f'hit {backward.nframes} frames ({now()})')
     
     # forward part
     # add last simulated frames in batches,
@@ -1405,7 +1481,7 @@ def update_shooting_simulation(
             except:
                 cpt_present = False
             if not tpr_present or (cpt_present and not trj_present):
-                write(f'!!! {forward.directory}/forw missing; resetting!')
+                print(f'!!! {forward.directory}/forw missing; resetting!')
                 forward.reset() # reset to pristine state
                 added_frames = 0
                 stop_simulation(worker_id, f'{forward.directory}/forw')
@@ -1417,7 +1493,7 @@ def update_shooting_simulation(
                 start=forward.nframes,
                 stop=forward.nframes + batch_size)[0]
         except:
-            write(f'!!! error updating {forward.directory}/forw; resetting!')
+            print(f'!!! error updating {forward.directory}/forw; resetting!')
             forward.reset() # reset to pristine state
             added_frames = 0
             stop_simulation(worker_id, f'{forward.directory}/forw')
@@ -1432,15 +1508,14 @@ def update_shooting_simulation(
         n_frames_forw = len(states)
         if n_frames_forw:
             if report:
-                write(f'... {forward.directory}/'
+                print(f'... {forward.directory}/'
                       f'forw{trajectory_extension} '
-                      f'hit {forward.nframes} frames ({now()})', wrap_text=True)
+                      f'hit {forward.nframes} frames ({now()})')
             
             if stop_simulation(worker_id, f'{forward.directory}/forw'):
-                write(f'xxx stopping {forward.directory}/'
+                print(f'xxx stopping {forward.directory}/'
                       f'forw{trajectory_extension} in state {states[-1]} '
-                      f'after {n_frames_forw} frames ({now()})',
-                      wrap_text=True)
+                      f'after {n_frames_forw} frames ({now()})')
             
             # compose and return full path
             frames_back = range(n_frames_back - 1, 0, -1)
@@ -1458,18 +1533,16 @@ def update_shooting_simulation(
         elif get_current_simulation(worker_id) != f'{backward.directory}/back':
             continue_simulation(worker_id, f'{forward.directory}/forw')
     if report:
-        write(f'... {forward.directory}/'
+        print(f'... {forward.directory}/'
               f'forw{trajectory_extension} '
-              f'hit {forward.nframes} frames ({now()})', wrap_text=True)
+              f'hit {forward.nframes} frames ({now()})')
     return [], [], []  # no path: empty
 
 ###############################################################################
 # Manager utils ###############################################################
 ###############################################################################
 
-def initialize_simulation(frames, *fnames,
-                          randomize_velocities=False,
-                          **aimmd_run_params):
+def initialize_simulation(frames, params, *fnames):
     """
     Fnames without extension.
     Part only if frames has length > 1.
@@ -1478,15 +1551,16 @@ def initialize_simulation(frames, *fnames,
     """
     
     # get params
-    topology = aimmd_run_params['topology']
-    mdrun_parameters = aimmd_run_params['mdrun_parameters']
-    random_velocities = aimmd_run_params['random_velocities']
-    grompp = aimmd_run_params['grompp']
-    mdrun = aimmd_run_params['mdrun']
-    trajectory_extension = aimmd_run_params['trajectory_extension']
-
+    topology = params.topology
+    gmx_init_mdp = params.gmx_init_mdp
+    gmx_run_mdp = params.gmx_run_mdp
+    random_velocities = params.randomize_shooting_velocities
+    grompp = params.grompp
+    mdrun = params.mdrun
+    trajectory_extension = params.trajectory_extension
+    
     if trajectory_extension == '.xtc':
-        randomize_velocities = True
+        random_velocities = True
     
     # process directories and fname
     directories = ['/'.join(fname.split('/')[:-1])
@@ -1518,13 +1592,13 @@ def initialize_simulation(frames, *fnames,
     
     # randomize velocities
     if grompp:
-        if randomize_velocities:
-            write('=== randomize velocities')
+        if random_velocities:
+            print('=== randomize velocities')
         else:
-            write('=== sampling kinetic energy')
+            print('=== sampling kinetic energy')
         remove(f'{_fname}.gro', False)
         frames.write(f'{_fname}.gro', frame_indices=[-1])
-        command = (f'{grompp} -nobackup -f {random_velocities} '
+        command = (f'{grompp} -nobackup -f {gmx_init_mdp} '
                   f'-r {_fname}.gro -c {_fname}.gro -o {_fname}.tpr')
         os.system(command)
         os.system(f'{mdrun} -deffnm {_fname} -nsteps 0 -nobackup')
@@ -1544,10 +1618,10 @@ def initialize_simulation(frames, *fnames,
     
     # report kinetic energy
     kinetic_factor = np.sum(frame._velocities ** 2)
-    write(f'*** kinetic factor: {kinetic_factor:.3e}')
+    print(f'*** kinetic factor: {kinetic_factor:.3e}')
     
     # just copy the frame and rescale energy
-    if not grompp or not randomize_velocities:
+    if not grompp or not random_velocities:
         frames.write(f'{_fname}.trr', frame_indices=[-1], 
                      invert_velocities=invert_velocities)
         
@@ -1560,8 +1634,8 @@ def initialize_simulation(frames, *fnames,
         if grompp:
             kinetic_factor0 = np.sum(frame._velocities ** 2)
             rescaling = min(10., (kinetic_factor / kinetic_factor0) ** .5)
-            write(f'*** shooting point kinetic factor: {kinetic_factor0:.3e}')
-            write(f'=== rescaling velocities by {rescaling:.3f}')
+            print(f'*** shooting point kinetic factor: {kinetic_factor0:.3e}')
+            print(f'=== rescaling velocities by {rescaling:.3f}')
             frame._velocities *= rescaling
             
     # iterate through files
@@ -1580,7 +1654,7 @@ def initialize_simulation(frames, *fnames,
             with mda.Writer(f'{_fname}.trr', atomgroup.n_atoms) as writer:
                 writer.write(atomgroup)
             
-            command = (f'{grompp} -nobackup -f {mdrun_parameters} '
+            command = (f'{grompp} -nobackup -f {gmx_run_mdp} '
                       f'-r {_fname}.gro -c {_fname}.gro -t {_fname}.trr '
                       f'-o {directory}/{fname}.tpr')
             os.system(command)
@@ -1601,8 +1675,8 @@ def initialize_simulation(frames, *fnames,
         if nframes > 1:
             dt = np.abs(frames[1].time - frames[0].time)
             atomgroups = [universe.atoms for universe in frames.universes]
-            write(f'=== saving {directory}/'
-                  f'{fname}.part0000{trajectory_extension}', wrap_text=True)
+            print(f'=== saving {directory}/'
+                  f'{fname}.part0000{trajectory_extension}')
             with mda.Writer(
                 f'{directory}/{fname}.part0000{trajectory_extension}',
                 atomgroups[0].n_atoms) as writer:
@@ -1615,13 +1689,12 @@ def initialize_simulation(frames, *fnames,
                     writer.write(atomgroup)
 
 
-def load_initial_path(directory, topology, states_function,
+def load_initial_paths(directory, topology, states_function,
                       descriptors_function, values_function,
                       verbose=True):
     fnames = sorted([fname for fname in os.listdir(directory)
-                     if fname[:7] == 'initial' and
-                     ('.xtc' == fname[-4:] or '.trr' == fname[-4:])])
-    initial_path = PathEnsemble()
+                     if '.xtc' == fname[-4:] or '.trr' == fname[-4:]])
+    initial_paths = PathEnsemble()
     for fname in fnames:
         temp = PathEnsemble()
         temp.directory = directory
@@ -1634,10 +1707,10 @@ def load_initial_path(directory, topology, states_function,
         try:
             temp = temp[np.where(temp.are_transitions)[0][0]]
         except:
-            write(f'!!! no transitions in {fname}', wrap_text=True)
+            print(f'!!! no transitions in {fname}')
             raise
-        initial_path = initial_path.merge(temp)
-    return initial_path
+        initial_paths = initial_paths.merge(temp)
+    return initial_paths
 
 
 def update_shooting_chain(
@@ -1670,8 +1743,8 @@ def update_shooting_chain(
         except:
             try:
                 chain.load(f'{directory}/chain_backup.h5')
-                write(f'!!! shots{directory}/chain.h5 '
-                      f'corrupted, reloaded backup', wrap_text=True)
+                print(f'!!! shots{directory}/chain.h5 '
+                      f'corrupted, reloaded backup')
             except:
                 pass
     
@@ -1690,11 +1763,10 @@ def update_shooting_chain(
             if path not in chain.trajectory_files:
                 nframes, _ = chain.add_path(path, selection_bias=1., weight=1.)
                 if not nframes:
-                    write(f'!!! no frames in {directory}/{path}',
-                          wrap_text=True)
+                    print(f'!!! no frames in {directory}/{path}')
                     raise
-                write(f'+++ added {path} with {nframes} frames '
-                      f'to chain in {directory}', wrap_text=True)
+                print(f'+++ added {path} with {nframes} frames '
+                      f'to chain in {directory}')
                 added_nframes += nframes
     
     return added_nframes
@@ -1705,7 +1777,7 @@ def update_selection_pool(
     chain,  # chain of reference, will add the last if pool_index is not None
     selection_pool_size,  # target size
     pool_index=None,  # index of pool to be removed
-    initial_path=PathEnsemble(),  # will there be?
+    initial_paths=PathEnsemble(),  # will there be?
     at_least_one_transition=False,  # in pool
     load_h5=False):
     """
@@ -1719,14 +1791,14 @@ def update_selection_pool(
     pool.descriptors_function = chain.descriptors_function
     pool.values_function = chain.values_function
     
-    def update_initial_path_directory(initial_path):
-        _initial_path = initial_path.copy()
-        _initial_path.directory = pool.directory
-        _initial_path.topology = os.path.relpath(f'{initial_path.directory}/{initial_path.topology}', pool.directory)
-        _initial_path._PathEnsemble__trajectory_files = [os.path.relpath(
-            f'{initial_path.directory}/{file}', pool.directory)
-            for file in _initial_path.trajectory_files]
-        return _initial_path
+    def update_initial_path_directory(initial_paths):
+        _initial_paths = initial_paths.copy()
+        _initial_paths.directory = pool.directory
+        _initial_paths.topology = os.path.relpath(f'{initial_paths.directory}/{initial_paths.topology}', pool.directory)
+        _initial_paths._PathEnsemble__trajectory_files = [os.path.relpath(
+            f'{initial_paths.directory}/{file}', pool.directory)
+            for file in _initial_paths.trajectory_files]
+        return _initial_paths
     
     if load_h5 and os.path.exists(f'{chain.directory}/pool.h5'):
         # it must not be corrupted or have weird paths
@@ -1737,7 +1809,7 @@ def update_selection_pool(
         if len(chain):
             pool = chain[-selection_pool_size:]
         else:
-            pool = update_initial_path_directory(initial_path)
+            pool = update_initial_path_directory(initial_paths)
             pool = pool[np.random.permutation(range(len(pool)))]
     
     # update with last element in the chain?
@@ -1757,10 +1829,9 @@ def update_selection_pool(
         if len(candidates):  # try adding the latest transition in chain
             transition = chain[candidates[-1]]
         else:
-            initial_path = update_initial_path_directory(initial_path)
-            transition = initial_path[np.random.choice(len(initial_path))]
-        write(f'+++ (re)added transition {transition.trajectory_files[0]}',
-              wrap_text=True)
+            initial_paths = update_initial_path_directory(initial_paths)
+            transition = initial_paths[np.random.choice(len(initial_paths))]
+        print(f'+++ (re)added transition {transition.trajectory_files[0]}')
         pool = transition.merge(pool)
     
     # if pool too small: replicate up to selection_pool_size // 2
@@ -1769,7 +1840,7 @@ def update_selection_pool(
             selection_pool_size)[:selection_pool_size // 2]]
     
     for fname in pool.shooting_trajectory_filenames:
-        write(f'    {pool.directory}/{fname}')
+        print(f'    {pool.directory}/{fname}')
     
     return pool
 
@@ -1801,14 +1872,12 @@ def update_equilibrium_trajectory(
         except:
             try:
                 trajectory.load(f'{directory}/{fname}_backup.h5')
-                write(f'!!! {directory}/{fname}.h5 corrupted, reloaded backup',
-                      wrap_text=True)
+                print(f'!!! {directory}/{fname}.h5 corrupted, reloaded backup')
             except:
                 pass
         nframes = trajectory.nframes
         if verbose and nframes:
-            write(f'=== loaded {directory}/{fname} with {nframes} frames',
-                  wrap_text=True)
+            print(f'=== loaded {directory}/{fname} with {nframes} frames')
     
     # retrieve current part and remove temporary files
     part = int(trajectory.trajectory_files[-1][15:19])
@@ -1844,13 +1913,13 @@ def update_equilibrium_trajectory(
             last_state = state
         n_file = np.sum(trajectory.frame_trajectory_indices == 
                         trajectory.frame_trajectory_indices[-1])
-        write(f'... {trajectory.directory}/'
+        print(f'... {trajectory.directory}/'
               f'{trajectory.trajectory_files[-1]} '
               f'hit {trajectory.nframes} frames ({n_file} in file), '
               f'last states {last_states}, '
               f'last path lengths '
               f'{" ".join([str(x) for x in trajectory.lengths[-3:]])} '
-              f'({now()})', wrap_text=True)
+              f'({now()})')
     
     # save only if added more frames
     if save_h5 and trajectory.nframes > nframes:
@@ -1862,8 +1931,8 @@ def update_equilibrium_trajectory(
 def update_equilibrium_simulations(
     eq_current, eq_completed,
     directory, nA, nB,
-    initial_path,
-    aimmd_run_params,
+    initial_paths,
+    params,
     eA=0, eB=0,
     ext_current=[],
     available_transitions=PathEnsemble(),  
@@ -1872,16 +1941,13 @@ def update_equilibrium_simulations(
     verbose=False):
     
     # retrieve params
-    topology = aimmd_run_params['topology']
-    states_function = aimmd_run_params['states_function']
-    descriptors_function = aimmd_run_params['descriptors_function']
-    values_function = aimmd_run_params['values_function']
-    trajectory_extension = aimmd_run_params['trajectory_extension']
-    max_excursion_length = aimmd_run_params['max_excursion_length']
-    if 'extra_extend_frames' in aimmd_run_params:
-        extra_extend_frames = aimmd_run_params['extra_extend_frames']
-    else:
-        extra_extend_frames = 0
+    topology = params.topology
+    states_function = params.states_function
+    descriptors_function = params.descriptors_function
+    values_function = params.values_function
+    trajectory_extension = params.trajectory_extension
+    max_excursion_length = params.max_excursion_length
+    extra_extend_frames = params.extra_extend_frames
     
     if not len(eq_completed):
         if not nA:
@@ -1968,7 +2034,7 @@ def update_equilibrium_simulations(
                 i = k - nA * (k >= nA)
             else:
                 i = k - eA * (k >= eA)
-            write(f'\n*** worker {h}: '
+            print(f'\n*** worker {h}: '
                   f'{state}{i}{" (extension)" if extend else ""}')
         
         # create trajectory object if necessary
@@ -2009,8 +2075,8 @@ def update_equilibrium_simulations(
                 # get initial frame if not having them
                 if len(init_frames) < 2:
                     if not extend:
-                        transition = initial_path[
-                            np.random.choice(len(initial_path))]
+                        transition = initial_paths[
+                            np.random.choice(len(initial_paths))]
                     elif len(available_transitions):
                         T = available_transitions.completion_times
                         i = np.argmax(T)
@@ -2020,11 +2086,11 @@ def update_equilibrium_simulations(
                             transition = available_transitions[i]
                         else:  # wait a suitable available transition
                             if verbose:
-                                write(f'=== no transition available yet')
+                                print(f'=== no transition available yet')
                             break
                     else:  # wait a suitable available transition
                         if verbose:
-                            write(f'=== no transition available yet')
+                            print(f'=== no transition available yet')
                         break
                     if transition.final_states[0] == state:
                         if not extend:
@@ -2047,17 +2113,16 @@ def update_equilibrium_simulations(
                 index = init_frames.frame_trajectory_indices[-1]
                 position = init_frames.frame_trajectory_positions[-1]
                 frame1 = f'({init_frames.filenames[index]}, {position})'
-                write(f'=== using {frame0} -> {frame1} '
+                print(f'=== using {frame0} -> {frame1} '
                       f'for initializing {trajectory.directory}/'
-                      f'{trajectory.trajectory_files[0][:10]}',
-                      wrap_text=True)
+                      f'{trajectory.trajectory_files[0][:10]}')
                 
                 # initialize and start simulation
                 initialize_simulation(
                     init_frames,  # also removes garbage
+                    params,
                     f'{trajectory.directory}/' +
-                    f'{trajectory.trajectory_files[0][:10]}',
-                    **aimmd_run_params)
+                    f'{trajectory.trajectory_files[0][:10]}')
             
             # update trajectory
             nframes = update_equilibrium_trajectory(trajectory,
@@ -2069,7 +2134,7 @@ def update_equilibrium_simulations(
             # trajectory is completed (len(init_frames) > 0): go to the next
             if len(init_frames):
                 stop_simulation(f'{directory}/worker{h}.run')
-                write(f'=== {trajectory.directory}/'
+                print(f'=== {trajectory.directory}/'
                       f'{trajectory.trajectory_files[0][:10]} completed')
                 if save_h5:
                     trajectory.save(f'{trajectory.directory}/'
@@ -2122,10 +2187,10 @@ def check_equilibrium_stop_condition(
             initial_frames = trajectory.frames([index + 1, index])
         else:
             initial_frames = trajectory.frames([index, index + 1])
-        write(f'xxx stopping {trajectory.directory}/'
+        print(f'xxx stopping {trajectory.directory}/'
               f'{trajectory.trajectory_files[0][:10]} '
               f'after {trajectory.nframes} frames '
-              f'because the last segment is too long', wrap_text=True)
+              f'because the last segment is too long')
         trajectory.are_accepted[k[0]:] = False  # no selection/reweighting
         return initial_frames
     
@@ -2141,11 +2206,10 @@ def check_equilibrium_stop_condition(
     if len(max_index):
         max_index = max_index[0]
         if max_index < len(states) - extra_frames:
-            write(f'xxx stopping {trajectory.directory}/'
+            print(f'xxx stopping {trajectory.directory}/'
                   f'{trajectory.trajectory_files[0][:10]} '
                   f'because it reached state {states[max_index]} '
-                  f'after {max_index + 1} frames',
-                  wrap_text=True)
+                  f'after {max_index + 1} frames')
             # no selection/reweighting
             trajectory.are_accepted[
                 trajectory.initial_states == states[max_index]] = False
@@ -2163,14 +2227,14 @@ def check_equilibrium_stop_condition(
             index = np.where(states == 'R')[0]
             index = index[index < max_index]
             if not len(index):
-                write(f'!!! trajectory was never in state R '
+                print(f'!!! trajectory was never in state R '
                       f'before state {states[max_index]}')
                 return [0]  # flag for using eq path for initializing
             max_index = index[-1]
             index = np.where(states == state)[0]
             index = index[index < max_index]
             if not len(index):
-                write(f'!!! trajectory was never in state {state} '
+                print(f'!!! trajectory was never in state {state} '
                       f'before state {states[max_index]}')
                 return [0]  # flag for using eq path for initializing
             index = index[-1]
@@ -2196,17 +2260,16 @@ def check_equilibrium_stop_condition(
                 # indict and do not accept beyond "nframes" for overriding
                 if trajectory.nframes and (
                     filename[:10] == trajectory.trajectory_files[0][:10]):
-                    write(f'xxx stopping {trajectory.directory}/{filename} '
+                    print(f'xxx stopping {trajectory.directory}/{filename} '
                           f'because it has been indicted '
-                          f'after {nframes} frames', wrap_text=True)
+                          f'after {nframes} frames')
                     try:
                         # individual frame index
                         i = np.where(trajectory.
                             _PathEnsemble__frame_indices >= nframes)[0][0]
                         # first path to be indicted
                         j = np.where(np.cumsum(trajectory.lengths) >= i)[0][0]
-                        write(f'xxx indicting {len(trajectory) - j} paths',
-                              wrap_text=True)
+                        print(f'xxx indicting {len(trajectory) - j} paths')
                         trajectory.are_accepted[j:] = False
                     except:
                         pass
@@ -2242,10 +2305,10 @@ def update_pathensemble(
     def _report(pathensemble, file=False):
         dt = convert_seconds(time.time() -
             pathensemble.completion_times[-1] if pathensemble.nframes else 0)
-        write(f'*** {pathensemble.directory}{"/" if file else ""}'
+        print(f'*** {pathensemble.directory}{"/" if file else ""}'
               f'{pathensemble.trajectory_files[0][:10] if file else ""}: '
               f'{pathensemble}, last updated '
-              f'{dt} ago', wrap_text=True)
+              f'{dt} ago')
 
     def _check_indicted(trajectory):
         if 'indicted_trajectories.log' in os.listdir(trajectory.directory):
@@ -2267,9 +2330,8 @@ def update_pathensemble(
                     if trajectory.nframes and (
                         filename[:10] == trajectory.trajectory_files[0][:10]):
                         if verbose:
-                            write(f'xxx {trajectory.directory}/{filename} '
-                                  f'has been indicted after {nframes} frames',
-                                  wrap_text=True)
+                            print(f'xxx {trajectory.directory}/{filename} '
+                                  f'has been indicted after {nframes} frames')
                         try:
                             # individual frame index
                             i = np.where(trajectory.
@@ -2277,8 +2339,8 @@ def update_pathensemble(
                             # first path to be indicted
                             j = np.where(np.cumsum(trajectory.lengths) >= i)[0][0]
                             if verbose:
-                                write(f'xxx indicting {len(trajectory) - j} '
-                                      f'paths', wrap_text=True)
+                                print(f'xxx indicting {len(trajectory) - j} '
+                                      f'paths')
                             trajectory.are_accepted[j:] = False
                         except:
                             pass
@@ -2419,23 +2481,23 @@ def run_acceptance_rejection_on_latest_path(chain, network):
     
     # compute acceptance probability; easy job
     if not chain.are_accepted[-1]:
-        write(f'=== acceptance probability: {0:.3f} (anomaly)')
-        write(f'*** rejected')
+        print(f'=== acceptance probability: {0:.3f} (anomaly)')
+        print(f'*** rejected')
         if leading is not None:
             chain.weights[leading] += 1.
         return
     
     if not chain.are_transitions[-1]:
-        write(f'=== acceptance probability: {0:.3f} (not a transition)')
-        write(f'*** rejected')
+        print(f'=== acceptance probability: {0:.3f} (not a transition)')
+        print(f'*** rejected')
         if leading is not None:
             chain.weights[leading] += 1.
         return
     
     # now a real transition
     if leading is None:
-        write(f'=== acceptance probability: {np.inf:.3f} (first transition)')
-        write(f'*** accepted')
+        print(f'=== acceptance probability: {np.inf:.3f} (first transition)')
+        print(f'*** accepted')
         chain.weights[-1] += 1.
         return
     
@@ -2453,25 +2515,25 @@ def run_acceptance_rejection_on_latest_path(chain, network):
     trial_sp_bias = compute_sp_bias(
         trial_values, trial_sp_value, bins, densities)
     acceptance = trial_sp_bias / leading_sp_bias
-    write(f'=== acceptance probability: {acceptance:.3f} (transition)')
+    print(f'=== acceptance probability: {acceptance:.3f} (transition)')
     if np.random.random() < acceptance:
-        write(f'*** accepted')
+        print(f'*** accepted')
         chain.weights[-1] += 1.
     else:
-        write(f'*** rejected')
+        print(f'*** rejected')
         chain.weights[leading] += 1.
 
 
 def get_bins(pathensemble, nbins=10,
              cutoff_min=.5, cutoff_max=20.,
-             initial_path=None, states=False):
+             initial_paths=None, states=False):
     """
     nbins without the additional states.
     Two additional bins when `states = True`.
     """
     
     # special case
-    if not len(pathensemble) and initial_path is None:
+    if not len(pathensemble) and initial_paths is None:
         if states:
             return np.array([-np.inf, +np.inf])
         return np.zeros(0)
@@ -2484,11 +2546,11 @@ def get_bins(pathensemble, nbins=10,
         equilibriumA = pathensemble[:0]
         equilibriumB = pathensemble[:0]
     if not equilibriumA.nframes and not np.sum(pathensemble.are_transitions):
-        equilibriumA = initial_path.crop(
-            frame_indices=initial_path.frame_states =='A')
+        equilibriumA = initial_paths.crop(
+            frame_indices=initial_paths.frame_states =='A')
     if not equilibriumB.nframes and not np.sum(pathensemble.are_transitions):
-        equilibriumB = initial_path.crop(
-            frame_indices=initial_path.frame_states =='B')
+        equilibriumB = initial_paths.crop(
+            frame_indices=initial_paths.frame_states =='B')
     equilibrium = equilibriumA + equilibriumB
     pathensemble = shots + equilibrium
     
@@ -2556,7 +2618,7 @@ def extract_frame(trajectory, position, topology):
             shooting_point = MDATrajectory([mda.Universe(
                 topology, trajectory)], [0], [position])
         except Exception as exception:
-            write(f'!!! {exception}', wrap_text=True)
+            print(f'!!! {exception}')
             sleep(.1)
             raise
         if len(shooting_point):
@@ -2622,12 +2684,12 @@ def add_path_to_chain(path, chain,
         extreme = np.nan
     
     # report: write info
-    write(f'\nObtained {filename}: '
+    print(f'\nObtained {filename}: '
           f'{initial_state}{internal_state}{final_state} '
-          f'of {path_length} frames ({now()})', wrap_text=True)
-    write(f'*** shooting point\'s estimated value: '
+          f'of {path_length} frames ({now()})')
+    print(f'*** shooting point\'s estimated value: '
           f'{shooting_value:.3f}')
-    write(f'*** path\'s extreme value: {extreme:.3f}')
+    print(f'*** path\'s extreme value: {extreme:.3f}')
     
     # is the path legit?
     '''
@@ -2651,12 +2713,12 @@ def add_path_to_chain(path, chain,
         (chain.initial_states[-1] == 'R') or
         (chain.final_states[-1] == 'R') or
         (chain.internal_states[-1] != 'R')):
-        write(f'!!! NOT inserting path into pool')
+        print(f'!!! NOT inserting path into pool')
         chain.weights[-1] = 0.
 
 
 def initialize_shooting_simulation(
-    chain, pool, directory, aimmd_run_params,
+    chain, pool, directory, params,
     shooting_chains=None, equilibrium=PathEnsemblesCollection()):
     
     # report info
@@ -2666,25 +2728,18 @@ def initialize_shooting_simulation(
     old_fname = f'path{i:06g} -> ' if i else ''
     new_fname = f'path{i+1:06g}'
     relpath = os.path.relpath(chain.directory, directory)
-    write(f'\nShooting for chain {relpath}: '
-          f'{old_fname}{new_fname}  ({now()})', wrap_text=True)
+    print(f'\nShooting for chain {relpath}: '
+          f'{old_fname}{new_fname}  ({now()})')
 
     # get params
-    network = aimmd_run_params['network']
-    topology = aimmd_run_params['topology']
-    lorentzian = aimmd_run_params['lorentzian']
-    #selection_pool_size = aimmd_run_params['selection_pool_size']
-    adjust_selection_in_marginal_bins = aimmd_run_params[
-        'adjust_selection_in_marginal_bins']
-    equilibrium_overriding_rate = aimmd_run_params[
-        'equilibrium_overriding_rate']
-    if 'equilibrium_overriding_recovery_rate' in aimmd_run_params:
-        equilibrium_overriding_recovery_rate = aimmd_run_params[
-            'equilibrium_overriding_recovery_rate']
-    else:
-        equilibrium_overriding_recovery_rate = .05
-    randomize_shooting_velocities = aimmd_run_params[
-        'randomize_shooting_velocities']
+    network = params.network
+    topology = params.topology
+    lorentzian = params.lorentzian
+    #selection_pool_size = params.selection_pool_size
+    adjust_selection_in_marginal_bins = params.adjust_selection_in_marginal_bins
+    equilibrium_overriding_rate = params.equilibrium_overriding_rate
+    equilibrium_overriding_recovery_rate = params.equilibrium_overriding_recovery_rate
+    randomize_shooting_velocities = params.randomize_shooting_velocities
     
     # load most updated params, backup in chain's directory
     bins, densities = load_network_and_projections(
@@ -2707,7 +2762,7 @@ def initialize_shooting_simulation(
                                 f'{_directory}/{_topology}',
                                 fname).trajectory[0]])[0])
                     except Exception as e:
-                        write(f'!!! {e}', wrap_text=True)
+                        print(f'!!! {e}')
                         pass
     
     descriptors = []
@@ -2726,50 +2781,49 @@ def initialize_shooting_simulation(
         populations = np.zeros(len(bins) - 1) + .1
     
     # report bins, densities, and populations
-    write(f'    bins                  {array2string(bins, 25)}')
-    write(f'    densities             {array2string(densities, 25)}')
-    write(f'    populations           {array2string(populations, 25)}')
+    print(f'    bins                  {array2string(bins, 25)}')
+    print(f'    densities             {array2string(densities, 25)}')
+    print(f'    populations           {array2string(populations, 25)}')
     
     # lorentzian correction
     A = (bins[:-1] + bins[1:]) / 2
     if lorentzian < np.inf:
         populations *= 1 / (A ** 2 + lorentzian ** 2)
-        write(f'=== Lorentzian correction {array2string(populations, 25)}')
+        print(f'=== Lorentzian correction {array2string(populations, 25)}')
     
     # bias by densities and populations
     correction = 1 / np.concatenate(
         [[np.inf], densities * populations, [np.inf]])
     
     # select shooting point from paths in pool
-    write(f'\nShooting point selection from paths in pool {pool.directory}',
-         wrap_text=True)
+    print(f'\nShooting point selection from paths in pool {pool.directory}')
     for fname in pool.shooting_trajectory_filenames:
         _fname = os.path.relpath(f'{pool.directory}/{fname}', directory)
-        write(f'    {_fname}', wrap_text=True)
+        print(f'    {_fname}')
     
     # update values & display preliminary statistics
     pool.update_values()
     values = pool.values(internal=True)
     states = pool.states(internal=True)
-    write(f'*** current pool shooting interfaces '
+    print(f'*** current pool shooting interfaces '
           f'{array2string(pool.shooting_values, 36)}')
     histograms = [np.histogram(values, bins)[0] for values in values]
     histograms = np.array(histograms)
     histogram = np.sum(histograms, axis=0)
-    write(f'*** {np.sum(histogram)} candidate points in selection pool')
-    write(f'    histogram: {array2string(histogram, 14)}')
+    print(f'*** {np.sum(histogram)} candidate points in selection pool')
+    print(f'    histogram: {array2string(histogram, 14)}')
     for pool_index in range(len(pool)):
         initial_state = pool.initial_states[pool_index]
         internal_state = pool.internal_states[pool_index]
         final_state = pool.final_states[pool_index]
-        write(f'        path {pool_index:02g} '
+        print(f'        path {pool_index:02g} '
               f'({initial_state}{internal_state}{final_state}) : '
               f'{array2string(histograms[pool_index], 22)}')
-    write(f'    coverage : {array2string(np.sum(histograms > 0, axis=0), 14)}')
+    print(f'    coverage : {array2string(np.sum(histograms > 0, axis=0), 14)}')
     
     # merge empty marginal bins
     if np.isinf(bins[0]) and histogram[0] == 0 and histogram[-1] == 0:
-        write(f'\n!!! merging empty marginal bins')
+        print(f'\n!!! merging empty marginal bins')
         begin, end = np.where(histogram)[0][[0, -1]]
         bins = np.concatenate([[bins[0]], bins[begin + 1:end + 1], [bins[-1]]])
         densities = np.concatenate([[np.sum(densities[:begin + 1])],
@@ -2778,24 +2832,24 @@ def initialize_shooting_simulation(
         populations = np.concatenate([[np.sum(populations[:begin + 1])],
                                      populations[begin + 1:end],
                                     [np.sum(populations[end:])]])
-        write(f'    bins                  {array2string(bins, 25)}')
-        write(f'    densities             {array2string(densities, 25)}')
-        write(f'    populations           {array2string(populations, 25)}')
+        print(f'    bins                  {array2string(bins, 25)}')
+        print(f'    densities             {array2string(densities, 25)}')
+        print(f'    populations           {array2string(populations, 25)}')
         correction = np.concatenate(
             [[0.], 1 / (densities * populations), [0.]])
         histograms = [np.histogram(v, bins)[0] for v in values]
         histograms = np.array(histograms)
         histogram = np.sum(histograms, axis=0)
-        write(f'*** {np.sum(histogram)} candidate points in selection pool')
-        write(f'    histogram: {array2string(histogram, 14)}')
+        print(f'*** {np.sum(histogram)} candidate points in selection pool')
+        print(f'    histogram: {array2string(histogram, 14)}')
         for pool_index in range(len(pool)):
             initial_state = pool.initial_states[pool_index]
             internal_state = pool.internal_states[pool_index]
             final_state = pool.final_states[pool_index]
-            write(f'        path {pool_index:02g} '
+            print(f'        path {pool_index:02g} '
                   f'({initial_state}{internal_state}{final_state}) : '
                   f'{array2string(histograms[pool_index], 22)}')
-        write(f'    coverage : '
+        print(f'    coverage : '
               f'{array2string(np.sum(histograms > 0, axis=0), 14)}')
 
     # put it all together
@@ -2816,14 +2870,14 @@ def initialize_shooting_simulation(
     
     # adjust selection
     if adjust_selection_in_marginal_bins:
-        write(f'=== density correction by '
+        print(f'=== density correction by '
               f'{array2string(correction[1:-1], 25)}')
-        write(f'*** bin selection probability: {array2string(histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})}')
-        write(f'\nAdjusting selection in bins')
+        print(f'*** bin selection probability: {array2string(histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})}')
+        print(f'\nAdjusting selection in bins')
         for i in [0, len(bins) - 2]:
             expected = 1 / populations[i] / np.sum(1 / populations)
             rescale = max(1., (histogram[i] / expected))
-            write(f'    bin {i}: expected {expected:.3e}, '
+            print(f'    bin {i}: expected {expected:.3e}, '
                   f'actual {histogram[i]:.3e}, '
                   f'rescale by {rescale:.3e}')
             correction[i + 1] /= rescale
@@ -2856,14 +2910,14 @@ def initialize_shooting_simulation(
         histogram = np.sum(histograms, axis=0)
     
     # report
-    write(f'=== density correction by '
+    print(f'=== density correction by '
               f'{array2string(correction[1:-1], 25)}')
-    write(f'*** bin selection probability: {array2string(histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})}')
+    print(f'*** bin selection probability: {array2string(histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})}')
     for pool_index in range(len(pool)):
         initial_state = pool.initial_states[pool_index]
         internal_state = pool.internal_states[pool_index]
         final_state = pool.final_states[pool_index]
-        write(f'        path {pool_index:02g} '
+        print(f'        path {pool_index:02g} '
               f'({initial_state}{internal_state}{final_state}) : '
                   f'{array2string(histograms[pool_index], 22, formatter={"float_kind":lambda x: "%.3f" % x})}')
     
@@ -2896,13 +2950,13 @@ def initialize_shooting_simulation(
     k = np.digitize(value, bins) - 1
     selection_bias = correction[k + 1]
     _fname = os.path.relpath(fname, directory)
-    write(f'=== selecting shooting point {_fname}, {position} '
-          f'(value: {value:.2f}, bin: {k})', wrap_text=True)
+    print(f'=== selecting shooting point {_fname}, {position} '
+          f'(value: {value:.2f}, bin: {k})')
     if not selection_bias:
         selection_bias = np.inf
-        write(f'    pool position: {index}')
+        print(f'    pool position: {index}')
     else:
-        write(f'    pool position: {index}, selection bias: {selection_bias}')
+        print(f'    pool position: {index}, selection bias: {selection_bias}')
     
     # get equilibrium candidates
     if not equilibrium.nframes:
@@ -2918,20 +2972,18 @@ def initialize_shooting_simulation(
     
     # there are candidates for overriding
     if len(candidates):
-        write(f'\nAttempting overriding from {len(candidates)} '
-              f'candidate equilibrium configurations', wrap_text=True)
+        print(f'\nAttempting overriding from {len(candidates)} '
+              f'candidate equilibrium configurations')
         rate = equilibrium_overriding_rate + 0.
         if (np.digitize(pool.shooting_values[index], bins) - 1) == k and rate:
             if np.random.random() > equilibrium_overriding_recovery_rate:
                 rate = 0.
-                write(f'=== skipped overriding because the SP of path '
+                print(f'=== skipped overriding because the SP of path '
                       f'{index} in pool has the same bin {k} (recovery rate '
-                      f'= {equilibrium_overriding_recovery_rate})',
-                      wrap_text=True)
+                      f'= {equilibrium_overriding_recovery_rate})')
             else:  # on a very rare occasion: still override
-                write(f'=== rescued overriding with a recovery rate '
-                      f'of {equilibrium_overriding_recovery_rate}',
-                      wrap_text=True)
+                print(f'=== rescued overriding with a recovery rate '
+                      f'of {equilibrium_overriding_recovery_rate}')
         
         while np.random.random() < rate:
             rate -= 1.
@@ -2943,47 +2995,46 @@ def initialize_shooting_simulation(
             eq_position = equilibrium.frame_trajectory_positions[i]
             
             h = np.digitize(value, bins) - 1 # which bin?
-            write(f'=== picking {eq_fname}, {eq_position}', wrap_text=True)
-            write(f'    (value {value:.2f}, bin {h})')
+            print(f'=== picking {eq_fname}, {eq_position}')
+            print(f'    (value {value:.2f}, bin {h})')
             if h == k: # success
-                write(f'*** accepted\n')
+                print(f'*** accepted\n')
                 fname = eq_fname
                 position = eq_position
                 selection_bias = 1.
                 break
             else:
-                write(f'*** rejected\n')
+                print(f'*** rejected\n')
         else:
-            write(f'*** no candidates for equilibrium overriding\n')
+            print(f'*** no candidates for equilibrium overriding\n')
     
     # extract
     try:
         shooting_point = extract_frame(fname, position, topology)
     except:
-        write('!!! Attention! Frame extraction failed. Attempting a new one')
+        print('!!! Attention! Frame extraction failed. Attempting a new one')
         return initialize_shooting_simulation(
-            chain, pool, directory, aimmd_run_params,
+            chain, pool, directory, params,
             shooting_chains, equilibrium)
     
     # initialize simulation
     initialize_simulation(
         shooting_point,
+        params,
         f'{chain.directory}/back',
-        f'{chain.directory}/forw',
-        randomize_velocities=randomize_shooting_velocities,
-        **aimmd_run_params)
+        f'{chain.directory}/forw')
     
     # save
     np.save(f'{chain.directory}/shoot_bias.npy', selection_bias)
     np.save(f'{chain.directory}/pool_index.npy', index)
-    write(f'\nShooting initialization completed ({now()})\n')
+    print(f'\nShooting initialization completed ({now()})\n')
 
 ###############################################################################
 #### Analysis #################################################################
 ###############################################################################
 
 def extract_chain(pathensemble, shooting_chain_index,
-                  path_index, initial_path=None):
+                  path_index, initial_paths=None):
     shooting_chain = shooting_chain_index
     index = path_index
     directory = pathensemble.pathensembles[shooting_chain
@@ -3040,8 +3091,8 @@ def extract_chain(pathensemble, shooting_chain_index,
                                     split('.')[0][4:]) - 1
                         tracking.append(offset + index)
                     except:
-                        if initial_path is not None:
-                            tracking.append(-1 - initial_path.
+                        if initial_paths is not None:
+                            tracking.append(-1 - initial_paths.
                                             trajectory_files.index(
                                 lines[j].split('shooting point ')[1].
                                                 split(',')[0]))
@@ -3050,7 +3101,7 @@ def extract_chain(pathensemble, shooting_chain_index,
     
     tracking = np.array(tracking)[::-1]
     if tracking[0] < 0:
-        result = initial_path[-tracking[0] - 1]
+        result = initial_paths[-tracking[0] - 1]
     else:
         result = pathensemble[tracking[0]]
     result += pathensemble[tracking[1:]]
@@ -3300,7 +3351,7 @@ def compute_energies_and_rates(pathensemble,
     bootstrapping_e = []
     bootstrapping_z = []
     
-    for _ in tqdm(range(bootstrapping), position=0, disable=not verbose):
+    for _ in tqdm(range(bootstrapping), disable=not verbose):
         k = np.random.choice(len(pathensemble), len(pathensemble))
         if reweight_while_bootstrapping:
             E = []
@@ -3699,7 +3750,7 @@ def create_equilibrium_tpe():
     trajs = [f'equilibrium/{file}' for file in sorted(os.listdir('equilibrium'))
             if len(file) == 20 and file[:10] == 'transition'
             and file[-4:] == '.npy']
-    for traj in tqdm(trajs[:4000], position=0):
+    for traj in tqdm(trajs[:4000]):
         t = np.load(traj)
         equilibrium._update(
             trajectory_files = equilibrium.trajectory_files + [f'{len(equilibrium)}'],
@@ -3760,7 +3811,7 @@ def compute_average_tps_lenghts(tps, dt=1.):
     TP_length_min = []
     lengths = tps.internal_lengths * dt
     weights = tps.weights
-    for i in tqdm(range(len(tps)), position=0):
+    for i in tqdm(range(len(tps))):
         TP_length.append(
             np.average(lengths[:i + 1], weights=weights[:i + 1]))
         temp = []
