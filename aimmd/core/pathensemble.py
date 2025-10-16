@@ -4,10 +4,13 @@ import numpy as np
 import pickle
 import inspect
 import warnings
+import functools
 import MDAnalysis as mda
-from tqdm import tqdm
 from itertools import chain
 from scipy.special import logit, expit
+
+# quick logging
+print = functools.partial(print, flush=True)
 
 warnings.filterwarnings("ignore", category=UserWarning, module="MDAnalysis")
 
@@ -83,20 +86,24 @@ class MDATrajectory:
                       len(self.universes)),
             np.append(self.frame_trajectory_positions,
                       element.frame_trajectory_positions))
-
+    
     @property
     def filenames(self):
         return [universe.trajectory.filename
                 for universe in self.universes]
-
+    
+    @property
+    def filename(self):
+        return self.filenames[0] if len(self.filenames) else ''
+    
     def close(self):  # TODO check
         for universe in self.universes:
             universe.trajectory.close()
-
+    
     def write(self, filename, frame_indices=None, selection='all',
               invert_velocities=False, joined_shooting_segments=False,
-              reset_time=False):
-        if os.path.exists(filename):
+              reset_time=False, overwrite=False):
+        if os.path.exists(filename) and not overwrite:
             raise ValueError('Cannot write to an existing file.')
         atom_groups = [universe.select_atoms(selection)
                        for universe in self.universes]
@@ -1302,8 +1309,6 @@ class PathEnsemble(AbstractPathEnsemble):
         # populate all attributes
         if self.states_function is not None and states is None:
             if has_param(self.states_function, 'verbose'):
-                if verbose:
-                    print('Computing states')
                 new_frame_states = self.states_function(trajectory,
                     verbose=verbose)
             else:
@@ -1314,8 +1319,6 @@ class PathEnsemble(AbstractPathEnsemble):
             new_frame_states = np.repeat('R', len(trajectory))
         if self.descriptors_function is not None and descriptors is None:
             if has_param(self.descriptors_function, 'verbose'):
-                if verbose:
-                    print('Computing descriptors')
                 new_frame_descriptors = self.descriptors_function(
                     trajectory, verbose=verbose)
             else:

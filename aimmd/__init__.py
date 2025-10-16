@@ -9,19 +9,33 @@ import importlib
 import shutil
 from typing import Dict
 
-__all__ = ['__version__', 'check_dependencies']
+# local imports
+import aimmd.core as core
+import aimmd.sampling as sampling
+import aimmd.analysis as analysis
+import aimmd.core.utils as utils
+from aimmd.core.pathensemble import PathEnsemble, PathEnsemblesCollection, MDATrajectory
+from aimmd.core.params import Params
+from aimmd.sampling.worker import Worker
+from aimmd.sampling.launcher import Launcher
+
+
+__all__ = ['__version__', 'check_dependencies',
+           'core', 'sampling', 'analysis', 'utils',
+           'PathEnsemble', 'PathEnsemblesCollection', 'MDATrajectory',
+           'Params', 'Worker', 'Launcher']
 
 __version__ = '0.1.0'
 
 # required Python dependencies (import name → pip name)
 _REQUIRED_DEPS: Dict[str, str] = {
+    'tqdm': 'tqdm',  # show progress bars
     'numpy': 'numpy',
     'scipy': 'scipy',
+    'torch': 'torch',  # machine learning
+    'mdtraj': 'mdtraj',  # md trajectories analysis
     'MDAnalysis': 'MDAnalysis',
-    'mdtraj': 'mdtraj',
-    'torch': 'torch',
-    'matplotlib': 'matplotlib',
-    'tqdm': 'tqdm',
+    'matplotlib': 'matplotlib'  # plots    
 }
 
 
