@@ -5,25 +5,31 @@ It runs with GROMACS in under five minutes.
 However, there is still the polishing left to do, and compatibility
 on different machines is not guaranteed.
 """
+import pytest
 
-import os
-import sys
-import time
-import aimmd
-import torch
-from aimmd import PathEnsemble
-from aimmd.core.utils import update_pathensemble
-import numpy as np
-import mdtraj as md
-import matplotlib.pyplot as plt
-from tqdm import tqdm
-from scipy.special import logit, expit
+@pytest.mark.slow
+def test_retinal():
 
-np.set_printoptions(threshold=20)  # better visualization
-
-if __name__ == '__main__':
+    import os
+    import sys
+    import time
+    import aimmd
+    import torch
+    from aimmd import PathEnsemble
+    from aimmd.core.utils import update_pathensemble
+    import numpy as np
+    import mdtraj as md
+    import matplotlib.pyplot as plt
+    from tqdm import tqdm
+    from scipy.special import logit, expit
     
-    FOLDER = 'retinal'
+    np.set_printoptions(threshold=20)  # better visualization
+    
+    # run either with pytest from above, or as script in main folder
+    current_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    tests_dir = current_dir if current_dir.endswith('tests') else current_dir + '/tests'
+
+    FOLDER = tests_dir + '/retinal'
     seconds = 12  # of equilibration
     
     # Attention! Gromacs options come from "retinal/params.py"
@@ -372,3 +378,9 @@ if __name__ == '__main__':
     print(f'\nTesting trajectory file-based projections')
     pathensemble.project([0, 1, 2], f=cv, frames=True)
     print('Done!')
+
+
+
+if __name__ == '__main__':
+    test_retinal()
+

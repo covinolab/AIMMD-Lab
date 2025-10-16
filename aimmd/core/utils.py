@@ -307,6 +307,7 @@ def fit(network, pathensemble,
         process_descriptors=lambda x: x,
         save_memory=False,
         nbins=0,
+        cutoff_max=20.,
         state_bins='',
         augment=False,
         thA=0.1,
@@ -371,6 +372,9 @@ def fit(network, pathensemble,
         training set points such that each batch has a uniform population
         across the bins. Plus, regularize the shooting results in the bins.
         `nbins = 9` is usually a good value.
+
+    cutoff_max : float, default=20.
+        The `cutoff_max` parameter in `utils.get_bins`.
     
     state_bins : str, default=''
         Add two additional bins for the states defined in `state_bins`.
@@ -969,7 +973,7 @@ def fit(network, pathensemble,
     # uniformize selection probabilities in bins (if nbins > 0)
     if nbins:
         bins = get_bins(pathensemble, nbins,
-            cutoff_max=20.0, initial_paths=initial_paths, states=True)
+            cutoff_max=cutoff_max, initial_path=initial_path, states=True)
     else:
         bins = np.array([-np.inf, +np.inf])
 

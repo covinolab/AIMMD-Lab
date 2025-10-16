@@ -1,0 +1,1 @@
+This folder contains basic files for continuous integration. Copied from a repository made with [Computational Molecular Science Python Cookiecutter](https://github.com/molssi/cookiecutter-cms) version 1.6.

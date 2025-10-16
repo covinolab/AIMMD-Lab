@@ -1,3 +1,5 @@
+[![pytest](https://github.com/gl95/AIMMD/actions/workflows/pytest.yml/badge.svg)](https://github.com/gl95/AIMMD/actions/workflows/pytest.yml)
+
 # AIMMD
 AI for Molecular Mechanism Discovery
 
@@ -11,6 +13,7 @@ AI-enhanced path sampling simulations, both on a workstation and on HPC clusters
 - `matplotlib`
 - `MDAnalysis`
 - `mdtraj`
+- `psutil`
 - GROMACS
 From the point of view of the requirements, the code is rather light.
 

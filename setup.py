@@ -31,7 +31,9 @@ setup(
         'torch',
         'mdtraj',
         'MDAnalysis',
-        'matplotlib'
+        'matplotlib',
+        'tqdm',
+        'psutil',
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
