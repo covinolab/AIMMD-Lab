@@ -251,6 +251,7 @@ class Launcher:
             file.write(f'\ncase $i in\n')
             
             # equilibrium workers
+            i = 0
             for i in range(self.nA + self.nB):
                 file.write(f'{i})\n')
                 if i < self.nA:
