@@ -196,13 +196,13 @@ def test_toy_1d():
     print(f'From B  {rhoB}')
     
     print('\nInitializing AIMMD: three simulators, one manager, one trainer')
-    launcher = aimmd.Launcher(params, 'run1', 1, 1, 1)
+    launcher = aimmd.Launcher(params, 'run1')
     
     print('Testing slurm job creation')
     launcher.create_job('job.sh')
     
     print('Running AIMMD for 10 steps')
-    launcher.run(nsteps=10, walltime=150)
+    launcher.run(n=1, nA=1, nB=1, nsteps=10, walltime=150)
     
     # how to understand what is failing? would need to run individual workers....
     #from aimmd import Worker
@@ -218,9 +218,9 @@ def test_toy_1d():
             raise RuntimeError('run1/worker0 failed')
     print('All fine')
     
-    print('\nTest appending')
+    print('\nTest appending (also change number of workers)')
     t0 = time.time()
-    launcher.run(walltime=60)
+    launcher.run(n=2, nA=0, nB=0, walltime=60)
     if time.time() - t0 < 60:
         print('TEST FAILED')
     
