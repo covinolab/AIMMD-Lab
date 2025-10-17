@@ -3,7 +3,6 @@
 import os
 import time
 import sys
-import numpy as np
 import psutil
 import signal
 import subprocess
@@ -14,6 +13,7 @@ from aimmd.sampling.simulate import simulate
 from aimmd.core import Params
 from aimmd.core.utils import now
 
+inf = float('inf')
 
 class Worker:
     
@@ -134,19 +134,19 @@ class Worker:
             return simulate(self, *args)
         raise TypeError(f'Task {task} not implented for AIMMD worker')
     
-    def train(self, log_file=None, verbose=False, walltime=np.inf):
+    def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
         os.system(f'rm -f {self.directory}/initial_paths/*')
         self.params.save_initial_paths(f'{self.directory}/initial_paths')
         self.interrupt = False
         return train(self, log_file, verbose, walltime)
     
     def manage(self, n, nA, nB, eA, eB,
-           log_file=None, nsteps=int(1e6), nframes=np.inf, walltime=np.inf):
+           log_file=None, nsteps=inf, nframes=inf, walltime=inf):
         self.interrupt = False
         return manage(self, n, nA, nB, eA, eB,
                        log_file, nsteps, nframes, walltime)
     
-    def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
+    def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
         self.interrupt = False
         return simulate(self, run_file, log_file, noappend, walltime)
 
