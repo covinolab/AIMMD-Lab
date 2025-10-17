@@ -64,7 +64,7 @@ class Launcher:
                                  f'{self.directory}/extendB']):
             if not os.path.exists(folder):
                 os.system(f'mkdir {folder}')
-                print('+++ created {self.directory}')
+                print('+++ created {folder}')
             if i > 1:
                 os.system(f'touch {folder}/indicted_trajectories.log')
         
