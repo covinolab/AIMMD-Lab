@@ -2,7 +2,11 @@ import time
 import numpy as np
 import functools
 import traceback
-from ..core.utils import *
+from ..core.utils import (now,
+                          load_initial_paths,
+                          load_network_and_projections,
+                          update_pathensemble,
+                          get_bins)
 
 # quick logging
 print = functools.partial(print, flush=True)
