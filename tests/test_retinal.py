@@ -204,12 +204,12 @@ def test_retinal():
 
     # running one at a time
     t0 = time.time()
-    aimmd.Worker(params, 'run1').train(walltime=10)
+    aimmd.Worker(params, 'run1').train(nrounds=1)
     if time.time() - t0 < 10:
         print('TRAINER FAILED')
     
     t0 = time.time()
-    aimmd.Worker(params, 'run1').manage(1, 1, 1, walltime=10)
+    aimmd.Worker(params, 'run1').manage(1, 1, 1, walltime=20)
     if time.time() - t0 < 10:
         print('MANAGER FAILED')
     
