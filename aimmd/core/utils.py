@@ -1493,10 +1493,10 @@ def initialize_simulation(frames, params, *fnames):
         frames.write(f'{_fname}.gro', frame_indices=[-1])
         cmd = (f'{grompp} -nobackup -f {gmx_init_mdp} '
                f'-r {_fname}.gro -c {_fname}.gro -o {_fname}.tpr')
-        if exit := execute_command(cmd, walltime=timeout):
+        if exit := execute_command(cmd):
             raise RuntimeError(f'{cmd} failed with exit code {exit}')
         cmd = f'{mdrun} -deffnm {_fname} -nsteps 0 -nobackup'
-        if exit := execute_command(cmd, walltime=timeout):
+        if exit := execute_command(cmd):
             raise RuntimeError(f'{cmd} failed with exit code {exit}')
     
     # just copy the frame
@@ -1553,7 +1553,7 @@ def initialize_simulation(frames, params, *fnames):
             cmd = (f'{grompp} -nobackup -f {gmx_run_mdp} '
                    f'-r {_fname}.gro -c {_fname}.gro -t {_fname}.trr '
                    f'-o {directory}/{fname}.tpr')
-            if exit := execute_command(cmd, walltime=timeout):
+            if exit := execute_command(cmd):
                 raise RuntimeError(f'{cmd} failed with exit code {exit}')
         else:
             # just copy the frame
@@ -2532,7 +2532,7 @@ def add_path_to_chain(path, chain,
         cmd = (f'{eneconv} -f {chain.directory}/back.edr '
                            f' {chain.directory}/forw.edr '
                          f'-o {chain.directory}/{fname}.edr')
-        if exit := execute_command(cmd, walltime=timeout):
+        if exit := execute_command(cmd):
             raise RuntimeError(f'{cmd} failed with exit code {exit}')
     
     # add path to chain
