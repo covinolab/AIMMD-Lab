@@ -207,12 +207,22 @@ class Launcher:
                 if process.is_alive():
                     process.terminate()
     
-    def create_job(self, filename, nsteps=int(1e6), nframes=np.inf):
+    def create_job(self, filename, nsteps=int(1e6), nframes=np.inf, cpus_per_task=1, gpus_per_task=1):
         """
         Returns a slurm script that can be launched by cluster.
         Walltime's default is in slurm header!
+
+        Parameters
+        ----------
+        filename: name of the job script to create
+        nsteps: default inf, maximum number of shooting simulations
+        nframes: default inf, maximum number of simulated frames,
+        cpus_per_task: default 1, number of CPUs to allocate per task, may be overridden by slurm header
+        gpus_per_task: default 1, number of GPUs to allocate per task
         """
-        
+
+        self.cpus_per_task = cpus_per_task
+        self.gpus_per_task = gpus_per_task
         # retrieve run information
         gpu = False
         ntasks_per_node = 1
@@ -224,11 +234,15 @@ class Launcher:
             if 'ntasks-per-node' in fields:
                 ntasks_per_node = int(fields.split('=')[-1])
             if 'cpus-per-task' in fields:
-                cpus_per_task = int(fields.split('=')[-1])
+                self.cpus_per_task = int(fields.split('=')[-1])
         nodes = int(np.ceil((1 + self.n +  # trainer/worker, shooting
                              self.nA + self.nB +  # free A and B
                              self.eA + self.eB)  # extension A and B
                             / ntasks_per_node))
+        
+        # Even if gpu wasn't in slurm header, we need to allocate gpus if requested
+        if gpus_per_task > 0:
+            gpu = True
         
         # write job script
         with open(filename, 'w') as file:
@@ -244,13 +258,11 @@ class Launcher:
             file.write(f'rm -f {self.directory}/*.run\n\n')
             
             # srun initialization
-            file.write(f"srun --cpus-per-task={cpus_per_task} "
+            file.write(f"srun --cpus-per-task={self.cpus_per_task} "
                             f"--cpu-bind=cores bash -c '\n\n")
             file.write(f'  # update task variables\n')
             file.write(f'  export i=$SLURM_PROCID\n')
             file.write(f'  export li=$SLURM_LOCALID\n')
-            if gpu:
-                file.write(f'  export CUDA_VISIBLE_DEVICES=$li\n')
             
             file.write(f'\n  # default names\n')
             file.write(f'  PYTHON="{PYTHON}"\n')
@@ -269,7 +281,7 @@ class Launcher:
                     j = i - self.nA
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
                 file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                           f'"{self.directory}" simulate '
+                           f'"{self.directory}" {i} {self.cpus_per_task} {self.gpus_per_task} simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
@@ -285,7 +297,7 @@ class Launcher:
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (extension {state}{j})\n')
                 file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                           f'"{self.directory}" simulate '
+                           f'"{self.directory}" {i} {self.cpus_per_task} {self.gpus_per_task} simulate '
                            f'worker{i}.run worker{i}.log noappend\n')
                 file.write(f'  ;;\n')
             
@@ -296,7 +308,7 @@ class Launcher:
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (shooting {j})\n')
                 file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                           f'"{self.directory}" simulate '
+                           f'"{self.directory}" {i} {self.cpus_per_task} {self.gpus_per_task} simulate '
                            f'worker{i}.run worker{i}.log &\n')
                 file.write(f'  ;;\n')
             
@@ -304,14 +316,14 @@ class Launcher:
             file.write(f'{i + 1})\n')
             file.write(f'  # trainer\n')
             file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" train '
+                       f'"{self.directory}" {i} {self.cpus_per_task} {self.gpus_per_task}  train '
                        f'trainer.log &\n')
             file.write(f'  trainer_pid=$!\n\n')
 
             # manager
             file.write(f'  # manager\n')
             file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" manage '
+                       f'"{self.directory}" 0 {1} {0} manage ' # manager has no GPU and only 1 CPU
                        f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
                        f'manager.log {nsteps} {nframes} &\n')
             file.write(f'  manager_pid=$!\n\n')

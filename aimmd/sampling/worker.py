@@ -53,8 +53,12 @@ class Worker:
         self.__log_file = None
         self.interrupt = False
         
-        # determine local id
-        self.localid = int(os.getenv("SLURM_LOCALID", f"{localid}"))
+        # determine local id, if not provided
+        # self.localid = int(os.getenv("SLURM_LOCALID", f"{localid}"))
+        # I am disabling this automatic SLURM detection, because it creates issues where
+        # counting doesn't start at zero, and we have doubling of some worker ids.
+        # Instead, enforce that this is provided externally in the run script.
+        self.localid = localid
         
         # CPU binding
         cpus_per_task = int(os.getenv("SLURM_CPUS_PER_TASK", f"{cpus_per_task}"))
@@ -82,7 +86,6 @@ class Worker:
         if gpus_per_task > 0:
             start = self.localid * gpus_per_task
             gpus = ",".join([f"{i%num_gpus_avail}" for i in range(start, start + gpus_per_task)])
-            gpus = os.getenv("CUDA_VISIBLE_DEVICES", gpus if gpus else None)
             if gpus:
                 os.environ["CUDA_VISIBLE_DEVICES"] = gpus
         
@@ -98,7 +101,10 @@ class Worker:
             print(f"[Worker {self.localid}] No GPUs allocated")   
         
         self.cpus = cpus
-        self.gpus = gpus
+        if gpus_per_task > 0:
+            self.gpus = gpus
+        else:
+            self.gpus = None
         self.cpus_per_task = cpus_per_task
         self.gpus_per_task = gpus_per_task
         
@@ -187,4 +193,4 @@ class Worker:
         return simulate(self, run_file, log_file, noappend, walltime)
 
 if __name__ == '__main__':
-    Worker(*sys.argv[1:3]).run(*sys.argv[3:])
+    Worker(*sys.argv[1:6]).run(*sys.argv[6:])
