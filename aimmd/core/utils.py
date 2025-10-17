@@ -983,7 +983,7 @@ def fit(network, pathensemble,
     # uniformize selection probabilities in bins (if nbins > 0)
     if nbins:
         bins = get_bins(pathensemble, nbins,
-            cutoff_max=cutoff_max, initial_path=initial_path, states=True)
+            cutoff_max=cutoff_max, initial_paths=initial_paths, states=True)
     else:
         bins = np.array([-np.inf, +np.inf])
 
@@ -1363,6 +1363,7 @@ def load_network_and_projections(
         device = torch.device('cpu')
     
     # advance only if data are present
+    error_message_shown = False
     while True:
         try:
             state_dict = torch.load(
@@ -1370,10 +1371,17 @@ def load_network_and_projections(
             bins = np.load(f'{directory}/bins.npy')
             densities = np.load(f'{directory}/densities.npy')
             break
-        except:
+        except Exception as e:
+            if os.path.exists(f'{directory}/network.h5') and not error_message_shown:
+                # can't load the network but the file is there
+                # relay error to user
+                print(f"Error loading data: {e}")
+                # avoid spamming
+                error_message_shown = True
+
             if not wait or (worker is not None and worker.interrupt):
                 return [], []
-            sleep(.1)
+            sleep(0.1)
     
     # backup
     if backup_directory is not None:  # at time of shooting init
