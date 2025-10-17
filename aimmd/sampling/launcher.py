@@ -109,7 +109,7 @@ class Launcher:
         total = nA + nB + eA + eB + n
         for i in range(total):
             localid = len(processes)
-            if i < total - self.n:
+            if i < total - n:
                 noappend = True
             else:
                 noappend = False
@@ -267,13 +267,13 @@ class Launcher:
             
             # extension workers
             begin = i + 1
-            for i in range(begin, begin + self.eA + self.eB):
+            for i in range(begin, begin + eA + eB):
                 j = i - begin
-                if j < self.eA:
+                if j < eA:
                     state = 'A'
                 else:
                     state = 'B'
-                    j -= self.eA
+                    j -= eA
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (extension {state}{j})\n')
                 file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
@@ -283,7 +283,7 @@ class Launcher:
             
             # shooting workers
             begin = i + 1
-            for i in range(begin, begin + self.n):
+            for i in range(begin, begin + n):
                 j = i - begin
                 file.write(f'{i})\n')
                 file.write(f'  # worker {i} (shooting {j})\n')
@@ -304,7 +304,7 @@ class Launcher:
             file.write(f'  # manager\n')
             file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
                        f'"{self.directory}" manage '
-                       f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
+                       f'{n} {nA} {nB} {eA} {eB} '
                        f'manager.log {nsteps} {nframes} &\n')
             file.write(f'  manager_pid=$!\n\n')
             
