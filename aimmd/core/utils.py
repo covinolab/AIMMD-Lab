@@ -1,35 +1,18 @@
 import os
-import sys
 import copy
 import time
 import torch
 import numpy as np
-import mdtraj as md
-import pickle
-import psutil
-import shutil
-import select
-import signal
-import asyncio
-import inspect
-import argparse
-import warnings
-import importlib
-import importlib.util
 import functools
-import itertools
-import threading
 import subprocess
 import MDAnalysis as mda
-import matplotlib.pyplot as plt
-import matplotlib.patheffects as pe
 from time import sleep
 from tqdm import tqdm
 from datetime import datetime
-from textwrap import wrap
-from scipy.special import logit, expit
-from mdtraj.formats import TRRTrajectoryFile
-from .pathensemble import *
+from scipy.special import expit
+from .pathensemble import (MDATrajectory,
+                           PathEnsemble,
+                           PathEnsemblesCollection)
 
 # quick logging
 print = functools.partial(print, flush=True)
