@@ -16,6 +16,7 @@ from ..core.utils import (now,
                           scorporate_pathensembles,
                           update_equilibrium_simulations,
                           update_shooting_simulation,
+                          add_path_to_chain,
                           run_acceptance_rejection_on_latest_path)
 from ..core.pathensemble import PathEnsemble, PathEnsemblesCollection
                           
