@@ -76,6 +76,12 @@ class Launcher:
             nsteps=int(1e6), nframes=inf, walltime=inf,
             cpus_per_task=1, gpus_per_task=1):
         """
+        n: number of replicas dedicated to shooting simulations
+           (creates folders if not existing)
+        nA: number of replicas dedicated to free simulations around A
+        nB: number of replicas dedicated to free simulations around B
+        eA: number of replicas dedicated to extending transitions reaching A
+        eA: number of replicas dedicated to extending transitions reaching B
         nsteps: default inf, maximum number of shooting simulations
         nframes: default inf, maximum number of simulated frames,
                  has priority over nsteps
@@ -182,8 +188,14 @@ class Launcher:
     def create_job(self, filename, n, nA, nB, eA=0, eB=0,
                    nsteps=inf, nframes=inf):
         """
-        Returns a slurm script that can be launched by cluster.
+        Returns a slurm script in `filename` that can be launched by cluster.
         Walltime's default is in slurm header!
+        n: number of replicas dedicated to shooting simulations
+           (creates folders if not existing)
+        nA: number of replicas dedicated to free simulations around A
+        nB: number of replicas dedicated to free simulations around B
+        eA: number of replicas dedicated to extending transitions reaching A
+        eA: number of replicas dedicated to extending transitions reaching B
         """
         
         # retrieve run information
