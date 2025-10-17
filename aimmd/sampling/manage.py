@@ -19,7 +19,7 @@ from ..core.utils import (now,
                           run_acceptance_rejection_on_latest_path)
 from ..core.pathensemble import PathEnsemble, PathEnsemblesCollection
                           
-inf = float(inf)
+inf = float('inf')
 
 # quick logging
 print = functools.partial(print, flush=True)
