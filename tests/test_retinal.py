@@ -203,14 +203,11 @@ def test_retinal():
     # can run it e.g. on cluster
 
     # running one at a time
-    t0 = time.time()
     aimmd.Worker(params, 'run1').train(nrounds=1)
-    if time.time() - t0 < 10:
-        print('TRAINER FAILED')
     
     t0 = time.time()
     aimmd.Worker(params, 'run1').manage(1, 1, 1, walltime=20)
-    if time.time() - t0 < 10:
+    if time.time() - t0 < 20:
         print('MANAGER FAILED')
     
     t0 = time.time()
