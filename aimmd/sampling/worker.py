@@ -115,14 +115,15 @@ class Worker:
         self.process = None
         self.log_file = None
         
-        # kill current process
-        if self.is_process:
-            parent_pid = os.getpid()  # get PID
-            os.kill(parent_pid, signal.SIGTERM)  # send termination signal
-            time.sleep(10)
+        # kill current process --- cause of recursion error as send SIGTERM to itself, but
+        # registers a handler that calls this function again
+        #if self.is_process:
+        #    parent_pid = os.getpid()  # get PID
+        #    os.kill(parent_pid, signal.SIGTERM)  # send termination signal
+        #    time.sleep(10) 
         
-        # exit if required or if worker is a child process
-        if exit:
+        # exit if required
+        if exit or self.is_process:
             sys.exit(0)
     
     def run(self, task, *args):
