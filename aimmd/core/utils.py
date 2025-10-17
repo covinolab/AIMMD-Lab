@@ -1,8 +1,10 @@
 import os
+import pty
 import copy
 import time
 import torch
 import numpy as np
+import select
 import functools
 import subprocess
 import MDAnalysis as mda
@@ -13,6 +15,8 @@ from scipy.special import expit
 from .pathensemble import (MDATrajectory,
                            PathEnsemble,
                            PathEnsemblesCollection)
+
+inf = float('inf')
 
 # quick logging
 print = functools.partial(print, flush=True)
@@ -35,13 +39,52 @@ base.ReaderBase.__del__ = _safe_del
 np.set_printoptions(precision=3)
 
 
-def run_with_timeout(cmd, timeout):
-    """KEEP"""
+def execute_command(cmd, stop_condition=lambda : False, walltime=inf):
+    """Execute a shell command under a pseudo-terminal (PTY), showing
+    real-time output and terminating after walltime is reached."""
+
+    # open pseudo-terminal
+    master_fd, slave_fd = pty.openpty()
+    t0 = time.time()
+    
+    # start subprocess attached to the pseudo-terminal
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=os.environ.copy(),
+        close_fds=True
+    )
+    os.close(slave_fd)
+    
+    # capture the output (in real-time if not waiting)
     try:
-        result = subprocess.run(cmd, shell=True, timeout=timeout)
-        return result.returncode
-    except subprocess.TimeoutExpired:
-        return 0
+        with os.fdopen(master_fd) as stdout:
+            while True:
+                
+                # process terminated
+                if (return_code := process.poll()) is not None:
+                    return return_code
+                
+                # stop condition or walltime reached
+                if stop_condition() or time.time() - t0 > walltime:
+                    process.terminate()
+                
+                # print the output
+                if select.select([stdout], [], [], 0.1)[0]:
+                    try:
+                        line = stdout.readline()
+                        print(line, end="")
+                    except OSError:
+                        # PTY closed: treat as EOF
+                        break
+    
+    # catch any final PTY read errors cleanly
+    except OSError:
+        return -1 or process.poll()
 
 
 def array2string(array, initial_spaces, wrap_size=80, formatter=None):
@@ -62,7 +105,6 @@ def convert_seconds(seconds):
 
 
 def now():
-    """KEEP"""
     return str(datetime.now())[11:19]
 
 
@@ -77,7 +119,6 @@ def remove(path, verbose=True):
 
 
 class class_or_instancemethod(classmethod):
-    """KEEP"""
     def __get__(self, instance, type_):
         if instance is None:
             descr_get = super().__get__
@@ -87,7 +128,7 @@ class class_or_instancemethod(classmethod):
 
 
 class PlaceholderNetwork(torch.nn.Module):
-    """KEEP. Just identity. Loaded by params by default."""
+    """Just identity. Loaded by params by default."""
     
     def forward(self, x):
         return x[:, :1]
@@ -130,14 +171,7 @@ def rescale(q, knots, values):
     return q
 
 
-
-
-###############################################################################
-# Handle workers ##############################################################
-###############################################################################
-
 def get_current_simulation(worker_id):
-    """KEEP"""
     if not os.path.exists(worker_id):
         return ''
     with open(worker_id, 'r') as f:
@@ -148,7 +182,6 @@ def get_current_simulation(worker_id):
 
 
 def continue_simulation(worker_id, fname):
-    """KEEP"""
     if get_current_simulation(worker_id) == fname:
         return
     else:  # not simulating the right thing: overriding
@@ -161,7 +194,6 @@ def continue_simulation(worker_id, fname):
 
 
 def stop_simulation(worker_id, fname=None):
-    """KEEP"""
     if fname is not None:
         if get_current_simulation(worker_id) != fname:
             return False # nothing to do here
@@ -192,7 +224,6 @@ def fit(network, pathensemble,
         worker=None):
     
     """
-    KEEP
     Train a neural network to predict the logit committor from AIMMD
     simulation data.
     
@@ -385,8 +416,8 @@ def fit(network, pathensemble,
     shooting_states = pathensemble.shooting_states[keys]
     shooting_values = pathensemble.shooting_values[keys]
     if len(keys):
-        shooting_values[shooting_states == 'A'] = -np.inf
-        shooting_values[shooting_states == 'B'] = +np.inf
+        shooting_values[shooting_states == 'A'] = -inf
+        shooting_values[shooting_states == 'B'] = +inf
     
     if len(initial_states):
         # get indices of A paths (use initial_paths if not present)
@@ -438,20 +469,20 @@ def fit(network, pathensemble,
         BtoB = np.zeros(0, dtype=int)
     
     # determine effective state A boundary
-    thA2 = -np.inf
+    thA2 = -inf
     if thA is not None and len(AtoA):
         thA2 = +np.quantile(+shooting_values[AtoA], thA)
         if np.isnan(thA2):
-            thA2 = -np.inf
+            thA2 = -inf
         # report
         print(f'\n    thA {thA} associated value: {thA2:.3f}')
     
     # determine effective state B boundary
-    thB2 = +np.inf
+    thB2 = +inf
     if thB is not None and len(BtoB):
         thB2 = -np.quantile(-shooting_values[BtoB], thB)
         if np.isnan(thB2):
-            thB2 = +np.inf
+            thB2 = +inf
         # report
         print(f'    thB {thB} associated value: {thB2:.3f}\n')            
 
@@ -501,9 +532,9 @@ def fit(network, pathensemble,
         shot_AtoB_densities = shot_paths_densities[shot_AtoB]
         shot_BtoA_densities = shot_paths_densities[shot_BtoA]
         if len(shot_AtoB_densities):
-            shot_AtoB_densities[shot_AtoB_densities == 0.] = np.inf  # stay safe
+            shot_AtoB_densities[shot_AtoB_densities == 0.] = inf  # stay safe
         if len(shot_BtoA_densities):
-            shot_BtoA_densities[shot_BtoA_densities == 0.] = np.inf  # stay safe
+            shot_BtoA_densities[shot_BtoA_densities == 0.] = inf  # stay safe
         shot_AtoB_weights = 1 / shot_AtoB_densities
         shot_BtoA_weights = 1 / shot_BtoA_densities
         
@@ -845,7 +876,7 @@ def fit(network, pathensemble,
         bins = get_bins(pathensemble, nbins,
             cutoff_max=cutoff_max, initial_path=initial_path, states=True)
     else:
-        bins = np.array([-np.inf, +np.inf])
+        bins = np.array([-inf, +inf])
 
     # avoid frustration due to not both A, B being present in internal bins
     # swipe forward and look for results to B
@@ -1023,8 +1054,8 @@ def fit(network, pathensemble,
     state_dict0 = copy.deepcopy(network.state_dict())  # fixed
     state_dict1 = copy.deepcopy(network.state_dict())  # linked to min_loss1
     state_dict2 = copy.deepcopy(network.state_dict())  # linked to min_loss2
-    min_loss1 = np.inf
-    min_loss2 = np.inf
+    min_loss1 = inf
+    min_loss2 = inf
     min_loss_step1 = 0
     min_loss_step2 = 0
     
@@ -1201,7 +1232,6 @@ def fit(network, pathensemble,
 
 def load_network_and_projections(
     network, directory, backup_directory=None, wait=True, worker=None):
-    """KEEP"""
     try:  # a mockup network has no device
         device = next(network.parameters()).device
     except:
@@ -1234,7 +1264,6 @@ def load_network_and_projections(
 def update_shooting_simulation(
     backward, forward, worker_id,
     params, batch_size=100, verbose=True):
-    """KEEP"""
     
     trajectory_extension = params.trajectory_extension
     max_excursion_length = params.max_excursion_length
@@ -1408,7 +1437,6 @@ def update_shooting_simulation(
 
 def initialize_simulation(frames, params, *fnames):
     """
-    KEEP
     Fnames without extension.
     Part only if frames has length > 1.
     If len(fnames) > 1, one part is forward, the other backword.
@@ -1562,7 +1590,6 @@ def rescale_committor():
 def load_initial_paths(directory, topology, states_function,
                       descriptors_function, values_function,
                       verbose=True):
-    """KEEP"""
     fnames = sorted([fname for fname in os.listdir(directory)
                      if '.xtc' == fname[-4:] or '.trr' == fname[-4:]])
     initial_paths = PathEnsemble()
@@ -1595,7 +1622,6 @@ def update_shooting_chain(
     load_h5=False,  # if load from saved h5 file (or backup)
     add_missing_paths=True):
     """
-    KEEP
     Also returns added_nframes
     """
     added_nframes = 0
@@ -1653,7 +1679,6 @@ def update_selection_pool(
     at_least_one_transition=False,  # in pool
     load_h5=False):
     """
-    KEEP
     Will inherit all pathensemble attributes from chain.
     """
     
@@ -1725,7 +1750,6 @@ def update_equilibrium_trajectory(
     add_missing_frames=True,
     verbose=True):  # in trajectory file
     """
-    KEEP
     Also returns added_nframes
     """
     
@@ -1813,7 +1837,6 @@ def update_equilibrium_simulations(
     save_h5=False,
     simulate=False,
     verbose=False):
-    """KEEP"""
     
     # retrieve params
     topology = params.topology
@@ -1855,7 +1878,7 @@ def update_equilibrium_simulations(
                                     directory='.')
             eq_completed.extend(list(eqB.pathensembles))
 
-    t0 = np.array([-np.inf, -np.inf])  # start of the latest ext. trajectory
+    t0 = np.array([-inf, -inf])  # start of the latest ext. trajectory
     for j, folder in enumerate(['extendA', 'extendB']):
         if not os.path.exists(folder):
             continue
@@ -2171,7 +2194,6 @@ def update_pathensemble(
     equilibriumB_states_map=[''],
     verbose=True):
     """
-    KEEP
     States map e.g. "AB BC": changes A to B and B to C.
     "": do not change anything
     """
@@ -2313,7 +2335,6 @@ def extract_pathensembles(pathensemble, expression):
 
 
 def scorporate_pathensembles(pathensemble):
-    """KEEP"""
     shots = extract_pathensembles(pathensemble, 'shots')
     equilibriumA = extract_pathensembles(pathensemble, 'equilibriumA')
     equilibriumB = extract_pathensembles(pathensemble, 'equilibriumB')
@@ -2321,14 +2342,13 @@ def scorporate_pathensembles(pathensemble):
 
 
 def run_acceptance_rejection_on_latest_path(chain, network):
-    """KEEP"""
-    # in case of TPS
+    """Executed when doing TPS."""
     
     # load params at the time of SP selection
     bins, densities = load_network_and_projections(network, chain.directory)
     
     def compute_sp_bias(values, sp_value, bins, densities):
-        densities = np.append(densities, [np.inf])
+        densities = np.append(densities, [inf])
         values = chain.values(leading, internal=True)[0]
         biases = 1 / densities[np.digitize(values, bins) - 1]
         sp_bias = 1 / densities[np.digitize(sp_value, bins) - 1]
@@ -2360,7 +2380,7 @@ def run_acceptance_rejection_on_latest_path(chain, network):
     
     # now a real transition
     if leading is None:
-        print(f'=== acceptance probability: {np.inf:.3f} (first transition)')
+        print(f'=== acceptance probability: {inf:.3f} (first transition)')
         print(f'*** accepted')
         chain.weights[-1] += 1.
         return
@@ -2399,7 +2419,7 @@ def get_bins(pathensemble, nbins=10,
     # special case
     if not len(pathensemble) and initial_paths is None:
         if states:
-            return np.array([-np.inf, +np.inf])
+            return np.array([-inf, +inf])
         return np.zeros(0)
     
     # extraction
@@ -2432,23 +2452,23 @@ def get_bins(pathensemble, nbins=10,
         if not len(eA):
             raise
     except:
-        eA = np.array([-np.inf])    
+        eA = np.array([-inf])    
     try:
         eB = np.sort(
             equilibrium.min_values(equilibrium.initial_states=='B'))
         if not len(eB):
             raise
     except:
-        eB = np.array([+np.inf])
+        eB = np.array([+inf])
     
     # if not crossing prob. data: just min and max value
-    if eA[0] == -np.inf and pathensemble.nframes:
+    if eA[0] == -inf and pathensemble.nframes:
         try:
             eA = np.array([np.min(pathensemble.frame_values[
                            pathensemble.frame_states == 'R'])])
         except:
             eA = np.array([np.min(pathensemble.frame_values)])
-    if eB[0] == +np.inf and pathensemble.nframes:
+    if eB[0] == +inf and pathensemble.nframes:
         try:
             eB = np.array([np.max(pathensemble.frame_values[
                            pathensemble.frame_states == 'R'])])
@@ -2471,7 +2491,7 @@ def get_bins(pathensemble, nbins=10,
         bins = [(begin + end) / 2]
     
     if states:  # min and max become infinity
-        bins = np.concatenate([[-np.inf], bins, [+np.inf]])
+        bins = np.concatenate([[-inf], bins, [+inf]])
     
     return bins
 
@@ -2495,7 +2515,6 @@ def add_path_to_chain(path, chain,
     states=None, descriptors=None,
     trajectory_extension='.xtc', eneconv=None):
     """
-    KEEP
     TODO do only if path and last path in chain differ
     Otherwise there is a minor chance of path duplication in case
     an error happened right after having called this function.
@@ -2533,12 +2552,12 @@ def add_path_to_chain(path, chain,
     shooting_value = chain.shooting_values[-1]
     if initial_state == 'A':
         if final_state == 'B':
-            extreme = +np.inf
+            extreme = +inf
         else:
             extreme = np.max(chain.values(-1)[0])
     elif initial_state == 'B':
         if final_state == 'A':
-            extreme = -np.inf
+            extreme = -inf
         else:
             extreme = np.min(chain.values(-1)[0])
     elif final_state == 'A':
@@ -2585,7 +2604,6 @@ def add_path_to_chain(path, chain,
 def initialize_shooting_simulation(
     chain, pool, directory, params,
     shooting_chains=None, equilibrium=PathEnsemblesCollection()):
-    """KEEP"""
     # report info
     i = len(chain)
     descriptors_function = chain.descriptors_function
@@ -2652,13 +2670,13 @@ def initialize_shooting_simulation(
     
     # lorentzian correction
     A = (bins[:-1] + bins[1:]) / 2
-    if lorentzian < np.inf:
+    if lorentzian < inf:
         populations *= 1 / (A ** 2 + lorentzian ** 2)
         print(f'=== Lorentzian correction {array2string(populations, 25)}')
     
     # bias by densities and populations
     correction = 1 / np.concatenate(
-        [[np.inf], densities * populations, [np.inf]])
+        [[inf], densities * populations, [inf]])
     
     # select shooting point from paths in pool
     print(f'\nShooting point selection from paths in pool {pool.directory}')
@@ -2818,7 +2836,7 @@ def initialize_shooting_simulation(
     print(f'=== selecting shooting point {_fname}, {position} '
           f'(value: {value:.2f}, bin: {k})')
     if not selection_bias:
-        selection_bias = np.inf
+        selection_bias = inf
         print(f'    pool position: {index}')
     else:
         print(f'    pool position: {index}, selection bias: {selection_bias}')
