@@ -1361,7 +1361,7 @@ def load_network_and_projections(
         device = next(network.parameters()).device
     except:
         device = torch.device('cpu')
-    
+        
     # advance only if data are present
     error_message_shown = False
     while True:

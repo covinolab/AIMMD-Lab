@@ -13,6 +13,7 @@ from aimmd.sampling.manage import manage
 from aimmd.sampling.simulate import simulate
 from aimmd.core import Params
 from aimmd.core.utils import now
+import torch
 
 
 class Worker:
@@ -22,6 +23,23 @@ class Worker:
         """
         Worker process responsible for running independent AIMMD tasks
         (simulations, training, or management) on allocated CPUs/GPUs.
+
+        Parameters
+        ----------
+        params : str or aimmd.core.Params
+            Path to the parameters file or Params object.
+        directory : str, optional
+            Working directory for the worker, by default '.'.
+        localid : int, optional
+            Local ID of the worker (used for resource allocation), by default 0.
+        cpus_per_task : int, optional
+            Number of CPUs allocated per task, by default 1.
+        gpus_per_task : int, optional
+            Number of GPUs allocated per task, by default 0.
+
+        Returns
+        -------
+        None
         """
         
         self.directory = directory
@@ -51,16 +69,33 @@ class Worker:
             print(f"[Warning] Could not set CPU affinity: {exception}")
             cpus = []
         
+        # find available gpus, using torch to avoid extra dependency
+        num_gpus_avail = torch.cuda.device_count()
+        
+        # check if requested resources are available
+        if gpus_per_task > 0 and num_gpus_avail == 0:
+            raise RuntimeError(f"[Worker {self.localid}] No GPUs available but {gpus_per_task} requested")
+        if gpus_per_task > num_gpus_avail:
+            raise RuntimeError(f"[Worker {self.localid}] Only {num_gpus_avail} GPUs available but {gpus_per_task} requested per task.")
+
         # GPU binding
-        start = self.localid * gpus_per_task
-        gpus = ",".join([f"{i}" for i in range(start, start + gpus_per_task)])
-        gpus = os.getenv("CUDA_VISIBLE_DEVICES", gpus if gpus else None)
-        if gpus:
-            os.environ["CUDA_VISIBLE_DEVICES"] = gpus
+        if gpus_per_task > 0:
+            start = self.localid * gpus_per_task
+            gpus = ",".join([f"{i%num_gpus_avail}" for i in range(start, start + gpus_per_task)])
+            gpus = os.getenv("CUDA_VISIBLE_DEVICES", gpus if gpus else None)
+            if gpus:
+                os.environ["CUDA_VISIBLE_DEVICES"] = gpus
+        
+        # notify the user if this worker is oversubscribing a GPU
+        if self.localid > 0 and gpus_per_task > 0 and num_gpus_avail <= (self.localid * gpus_per_task):
+            print(f"[Note] Worker {self.localid} may be oversubscribing GPUs. Available GPUs: {num_gpus_avail}, Worker local ID: {self.localid}, GPUs per task: {gpus_per_task}")
         
         # report resource allocation
         print(f"[Worker {self.localid}] CPU ids: {','.join(map(str, cpus))}")
-        print(f"[Worker {self.localid}] GPU ids: {gpus}")
+        if gpus_per_task > 0:
+            print(f"[Worker {self.localid}] GPU ids: {gpus}")
+        else:
+            print(f"[Worker {self.localid}] No GPUs allocated")   
         
         self.cpus = cpus
         self.gpus = gpus
