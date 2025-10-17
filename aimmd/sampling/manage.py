@@ -19,13 +19,14 @@ from ..core.utils import (now,
                           run_acceptance_rejection_on_latest_path)
 from ..core.pathensemble import PathEnsemble, PathEnsemblesCollection
                           
+inf = float(inf)
 
 # quick logging
 print = functools.partial(print, flush=True)
 
 def manage(self, n, nA, nB, eA=0, eB=0,
-            log_file=None, nsteps=int(1e6),
-            nframes=np.inf, walltime=np.inf):
+            log_file=None, nsteps=inf,
+            nframes=inf, walltime=inf):
     """
     n: number of shooting workers
     """
@@ -155,7 +156,7 @@ def manage(self, n, nA, nB, eA=0, eB=0,
         pathensemble = shooting_chains + equilibriumA + equilibriumB
         
         # initialize step counter
-        step_number = tqdm(total=nsteps if nsteps < 1000000 else np.inf, ncols=70,
+        step_number = tqdm(total=nsteps, ncols=70,
             initial=int(sum([len(chain) for chain in chains])))
         
         # main cycle
