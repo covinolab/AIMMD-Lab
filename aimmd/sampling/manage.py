@@ -44,10 +44,8 @@ def manage(self, n, nA, nB, eA=0, eB=0,
     try:
         self.log_file = log_file
         
-        # get aimmd run parameters
+        # get aimmd run parameters (in order of appearance)
         print(f'\nLoading AIMMD run parameters ({now()})')
-        
-        # extract necessary parameters (in order of appearance)
         directory = self.directory
         topology = self.params.topology
         states_function = self.params.states_function
@@ -67,6 +65,13 @@ def manage(self, n, nA, nB, eA=0, eB=0,
         eneconv = self.params.gmx_eneconv if self.params.engine == 'gromacs' else ''
         trajectory_extension = self.params.trajectory_extension
         save_interval = self.params.save_interval
+        
+        # create necessary shooting folders if they do not exist yet
+        for i in range(n):
+            folder = f'{directory}/shots{i}'
+            if not os.path.exists(folder):
+                os.system(f'mkdir {folder}')
+                print(f'+++ created {folder}')
         
         print(f'\nLoading initial path(s) ({now()})')
         initial_paths = load_initial_paths(f'{directory}/initial_paths', topology,
