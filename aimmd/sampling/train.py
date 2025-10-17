@@ -1,8 +1,10 @@
 import time
+import torch
 import numpy as np
 import functools
 import traceback
 from ..core.utils import (now,
+                          array2string,
                           load_initial_paths,
                           load_network_and_projections,
                           update_pathensemble,
@@ -299,7 +301,7 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
             torch.save(network.state_dict(), f'{directory}/{fname}')
             np.save(f'{directory}/bins.npy', bins)
             np.save(f'{directory}/densities.npy', densities)
-            sleep(1)
+            time.sleep(1)
             
     except SystemExit:
         self.terminate_handler()
