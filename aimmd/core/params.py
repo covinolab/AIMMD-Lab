@@ -5,15 +5,10 @@ AIMMD parameters management / defaults.
 import os
 import sys
 import torch
-import types
 import numpy as np
 import shutil
 import mdtraj as md
-import inspect
-import linecache
-import subprocess
 import MDAnalysis as mda
-from tqdm import tqdm
 from .utils import (class_or_instancemethod, fit,
                     PlaceholderNetwork, run_with_timeout)
 from typing import List, Callable
