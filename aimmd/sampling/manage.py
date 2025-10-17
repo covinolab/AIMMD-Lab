@@ -1,7 +1,9 @@
+import os
 import time
 import numpy as np
 import functools
 import traceback
+from tqdm import tqdm
 from ..core.utils import (now,
                           remove,
                           stop_simulation,
@@ -11,6 +13,7 @@ from ..core.utils import (now,
                           update_shooting_chain,
                           update_selection_pool,
                           update_pathensemble,
+                          scorporate_pathensembles,
                           update_equilibrium_simulations,
                           update_shooting_simulation,
                           run_acceptance_rejection_on_latest_path)
