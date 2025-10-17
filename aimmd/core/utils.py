@@ -49,7 +49,7 @@ def execute_command(cmd, stop_condition=lambda : False, walltime=inf):
     
     # start subprocess attached to the pseudo-terminal
     process = subprocess.Popen(
-        cmd,
+        cmd.split(),
         shell=True,
         stdin=slave_fd,
         stdout=slave_fd,
