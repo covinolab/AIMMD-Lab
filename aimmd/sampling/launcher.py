@@ -10,6 +10,8 @@ from pathlib import Path
 from .worker import Worker
 from ..core.params import Params
 
+inf = float('inf')
+
 # worker path
 PYTHON = sys.executable
 WORKER = os.path.join(os.path.dirname(
@@ -30,7 +32,7 @@ def _run_task(params_file, directory,
 
 class Launcher:
     
-    def __init__(self, params, directory, n, nA, nB, eA=0, eB=0):
+    def __init__(self, params, directory):
         """
         directory: where simulations carried
         params: python file with params or Params
@@ -46,11 +48,6 @@ class Launcher:
             params = Params.load(params)
         self.params = params
         self.directory = directory
-        self.n = n
-        self.nA = nA
-        self.nB = nB
-        self.eA = eA
-        self.eB = eB
         
         # params need a file
         if not params.path.is_file():
@@ -93,8 +90,9 @@ class Launcher:
         os.system(f'rm -f {self.directory}/initial_paths/*')
         self.params.save_initial_paths(f'{self.directory}/initial_paths')
     
-    def run(self, nsteps=int(1e6), nframes=np.inf, walltime=np.inf,
-                 cpus_per_task=1, gpus_per_task=1):
+    def run(self, n, nA, nB, eA=0, eB=0,
+            nsteps=int(1e6), nframes=inf, walltime=inf,
+            cpus_per_task=1, gpus_per_task=1):
         """
         nsteps: default inf, maximum number of shooting simulations
         nframes: default inf, maximum number of simulated frames,
@@ -108,7 +106,7 @@ class Launcher:
         processes = []
         
         # simulators
-        total = self.nA + self.nB + self.eA + self.eB + self.n
+        total = nA + nB + eA + eB + n
         for i in range(total):
             localid = len(processes)
             if i < total - self.n:
@@ -132,7 +130,7 @@ class Launcher:
         processes.append(ctx.Process(target=_run_task, args=(
             self.params.path, self.directory,
             localid, cpus_per_task, gpus_per_task,
-            'manage', self.n, self.nA, self.nB, self.eA, self.eB,
+            'manage', n, nA, nB, eA, eB,
             'manager.log', nsteps, nframes)))
         
         # function to terminate all workers
@@ -217,9 +215,9 @@ class Launcher:
                 ntasks_per_node = int(fields.split('=')[-1])
             if 'cpus-per-task' in fields:
                 cpus_per_task = int(fields.split('=')[-1])
-        nodes = int(np.ceil((1 + self.n +  # trainer/worker, shooting
-                             self.nA + self.nB +  # free A and B
-                             self.eA + self.eB)  # extension A and B
+        nodes = int(np.ceil((1 + n +  # trainer/worker, shooting
+                             nA + nB +  # free A and B
+                             eA + eB)  # extension A and B
                             / ntasks_per_node))
         
         # write job script
@@ -251,15 +249,15 @@ class Launcher:
             file.write(f'\ncase $i in\n')
             
             # equilibrium workers
-            i = 0
-            for i in range(self.nA + self.nB):
+            i = -1
+            for i in range(nA + nB):
                 file.write(f'{i})\n')
-                if i < self.nA:
+                if i < nA:
                     state = 'A'
                     j = i
                 else:
                     state = 'B'
-                    j = i - self.nA
+                    j = i - nA
                 file.write(f'  # worker {i} (equilibrium {state}{j})\n')
                 file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
                            f'"{self.directory}" simulate '
