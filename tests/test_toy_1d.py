@@ -199,7 +199,7 @@ def test_toy_1d():
     launcher = aimmd.Launcher(params, 'run1')
     
     print('Testing slurm job creation')
-    launcher.create_job('job.sh')
+    launcher.create_job('job.sh', n=1, nA=1, nB=1)
     
     print('Running AIMMD for 10 steps')
     launcher.run(n=1, nA=1, nB=1, nsteps=10, walltime=150)
