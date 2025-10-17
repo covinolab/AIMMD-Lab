@@ -1,16 +1,17 @@
 import os
 import pty
 import time
-import numpy as np
 import select
 import functools
 import subprocess
 from ..core.utils import get_current_simulation, now
 
+inf = float('inf')
+
 # quick logging
 print = functools.partial(print, flush=True)
 
-def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
+def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
     """
     Continuously run simulations as directed by the run file.
     noappend: bool, add Gromacs' -noappend flag.
