@@ -58,7 +58,9 @@ class Worker:
         # I am disabling this automatic SLURM detection, because it creates issues where
         # counting doesn't start at zero, and we have doubling of some worker ids.
         # Instead, enforce that this is provided externally in the run script.
-        self.localid = localid
+        self.localid = int(localid)
+        self.cpus_per_task = int(cpus_per_task)
+        self.gpus_per_task = int(gpus_per_task)
         
         # CPU binding
         cpus_per_task = int(os.getenv("SLURM_CPUS_PER_TASK", f"{cpus_per_task}"))
@@ -77,25 +79,25 @@ class Worker:
         num_gpus_avail = torch.cuda.device_count()
         
         # check if requested resources are available
-        if gpus_per_task > 0 and num_gpus_avail == 0:
-            raise RuntimeError(f"[Worker {self.localid}] No GPUs available but {gpus_per_task} requested")
-        if gpus_per_task > num_gpus_avail:
-            raise RuntimeError(f"[Worker {self.localid}] Only {num_gpus_avail} GPUs available but {gpus_per_task} requested per task.")
+        if self.gpus_per_task > 0 and num_gpus_avail == 0:
+            raise RuntimeError(f"[Worker {self.localid}] No GPUs available but {self.gpus_per_task} requested")
+        if self.gpus_per_task > num_gpus_avail:
+            raise RuntimeError(f"[Worker {self.localid}] Only {num_gpus_avail} GPUs available but {self.gpus_per_task} requested per task.")
 
         # GPU binding
-        if gpus_per_task > 0:
-            start = self.localid * gpus_per_task
-            gpus = ",".join([f"{i%num_gpus_avail}" for i in range(start, start + gpus_per_task)])
+        if self.gpus_per_task > 0:
+            start = self.localid * self.gpus_per_task
+            gpus = ",".join([f"{i%num_gpus_avail}" for i in range(start, start + self.gpus_per_task)])
             if gpus:
                 os.environ["CUDA_VISIBLE_DEVICES"] = gpus
         
         # notify the user if this worker is oversubscribing a GPU
-        if self.localid > 0 and gpus_per_task > 0 and num_gpus_avail <= (self.localid * gpus_per_task):
-            print(f"[Note] Worker {self.localid} may be oversubscribing GPUs. Available GPUs: {num_gpus_avail}, Worker local ID: {self.localid}, GPUs per task: {gpus_per_task}")
-        
+        if self.localid > 0 and self.gpus_per_task > 0 and num_gpus_avail <= (self.localid * self.gpus_per_task):
+            print(f"[Note] Worker {self.localid} may be oversubscribing GPUs. Available GPUs: {num_gpus_avail}, Worker local ID: {self.localid}, GPUs per task: {self.gpus_per_task}")
+
         # report resource allocation
         print(f"[Worker {self.localid}] CPU ids: {','.join(map(str, cpus))}")
-        if gpus_per_task > 0:
+        if self.gpus_per_task > 0:
             print(f"[Worker {self.localid}] GPU ids: {gpus}")
         else:
             print(f"[Worker {self.localid}] No GPUs allocated")   
