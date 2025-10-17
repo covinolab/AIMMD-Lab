@@ -167,7 +167,7 @@ def manage(self, n, nA, nB, eA=0, eB=0,
         pathensemble = shooting_chains + equilibriumA + equilibriumB
         
         # initialize step counter
-        step_number = tqdm(total=nsteps, ncols=70,
+        step_number = tqdm(total=nsteps, ncols=70, file=self.original_stdout,
             initial=int(sum([len(chain) for chain in chains])))
         
         # main cycle
