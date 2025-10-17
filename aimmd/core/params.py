@@ -10,7 +10,7 @@ import shutil
 import mdtraj as md
 import MDAnalysis as mda
 from .utils import (class_or_instancemethod, fit,
-                    PlaceholderNetwork, run_with_timeout)
+                    PlaceholderNetwork, execute_command)
 from typing import List, Callable
 from inspect import getsource
 from pathlib import Path, PosixPath
@@ -489,13 +489,13 @@ task together."""
                     cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_init_mdp} '
                            f'-r {self.topology} -c {self.topology} '
                            f'-o .params_check_engine.tpr')
-                    if exit := run_with_timeout(cmd, timeout):
+                    if exit := execute_command(cmd, walltime=timeout):
                         raise RuntimeError(f'{cmd} failed with exit code {exit}')
                     
                     # gromacs grompp: mdrun
                     cmd = (f'{self.gmx_mdrun} -nobackup '
                            f'-deffnm .params_check_engine -nsteps 0')
-                    if exit := run_with_timeout(cmd, timeout):
+                    if exit := execute_command(cmd, walltime=timeout):
                         raise RuntimeError(f'{cmd} failed with exit code {exit}')
                         
                 # gromacs grompp: mdrun
@@ -504,13 +504,13 @@ task together."""
                        f'-o .params_check_engine.tpr') + (
                        f' -t .params_check_engine.trr'
                     if self.randomize_shooting_velocities else '')
-                if exit := run_with_timeout(cmd, timeout):
+                if exit := execute_command(cmd, walltime=timeout):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
                 
                 # gromacs mdrun
                 cmd = (f'{self.gmx_mdrun} -nobackup -deffnm '
                        f'.params_check_engine')
-                if exit := run_with_timeout(cmd, timeout):
+                if exit := execute_command(cmd, walltime=timeout):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
                 
                 # right extension?
@@ -523,7 +523,7 @@ task together."""
                 fname = f'.params_check_engine{self.trajectory_extension}'
                 md.load(self.topology).save(fname)
                 cmd = f'{self.toy_mdrun} -deffnm .params_check_engine'
-                if exit := run_with_timeout(cmd, timeout):
+                if exit := execute_command(cmd, walltime=timeout):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
         
         except Exception as exception:
