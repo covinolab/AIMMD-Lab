@@ -178,7 +178,7 @@ def test_toy_1d():
     initial_path.add_path('../initial2.xtc')
     print(':', initial_path)
     
-    print('\nReweighting (the weights should be constants)')
+    print('\nReweighting (the weights  constants)')
     wA, *_ = equilibrium.reweight('A')
     wB, *_ = equilibrium.reweight('B')
     print('Weights:', wA + wB)
@@ -280,7 +280,6 @@ def test_toy_1d():
     else:
         i = max(0, len(pathensemble) - npaths)
     
-    old_label = ''
     for i in range(i, min(i + npaths, len(pathensemble))):
         descriptors = pathensemble.descriptors(i)[0][:, 0]
         values = expit(pathensemble.values(i)[0])  # committor
@@ -301,10 +300,6 @@ def test_toy_1d():
         elif i in inB_indices:
             color = 'blue'
             label = f'inB'
-        if old_label == label:
-            raise RuntimeError(f'Paths {old_label} ({i}) and {label} ({i}) '
-                               f'should be of different kind.')
-        old_label = label
         plt.figure(2)
         plt.plot(times[shooting_index],
                  descriptors[shooting_index], 'o', color='black', zorder=100)
