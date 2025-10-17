@@ -11,10 +11,12 @@ from ..core.utils import (now,
                           scorporate_pathensembles,
                           get_bins)
 
+inf = float('inf')
+
 # quick logging
 print = functools.partial(print, flush=True)
 
-def train(self, log_file=None, verbose=False, nrounds=np.inf, walltime=np.inf):
+def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
     """nrounds: number of training rounds."""
     
     if verbose == 'False' or verbose == 'false':
