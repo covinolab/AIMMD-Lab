@@ -14,7 +14,8 @@ from ..core.utils import (now,
 # quick logging
 print = functools.partial(print, flush=True)
 
-def train(self, log_file=None, verbose=False, walltime=np.inf):
+def train(self, log_file=None, verbose=False, nrounds=np.inf, walltime=np.inf):
+    """nrounds: number of training rounds."""
     
     if verbose == 'False' or verbose == 'false':
         verbose = False
@@ -60,7 +61,9 @@ def train(self, log_file=None, verbose=False, walltime=np.inf):
         
         # start the main loop
         t0 = time.time()
-        while True:
+        counts = 0
+        while counts < nrounds:
+            counts += 1
             
             # maximum time
             if time.time() - t0 > walltime:
