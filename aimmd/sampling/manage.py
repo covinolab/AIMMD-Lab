@@ -29,7 +29,12 @@ def manage(self, n, nA, nB, eA=0, eB=0,
             log_file=None, nsteps=inf,
             nframes=inf, walltime=inf):
     """
-    n: number of shooting workers
+    n: number of replicas dedicated to shooting simulations
+       (creates folders if not existing)
+    nA: number of replicas dedicated to free simulations around A
+    nB: number of replicas dedicated to free simulations around B
+    eA: number of replicas dedicated to extending transitions reaching A
+    eA: number of replicas dedicated to extending transitions reaching B
     """
     n = int(n)
     nA = int(nA)
