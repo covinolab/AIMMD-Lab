@@ -3,9 +3,9 @@
 import os
 import sys
 import time
-import numpy as np
 import signal
 import multiprocessing
+from math import ceil
 from pathlib import Path
 from .worker import Worker
 from ..core.params import Params
@@ -197,7 +197,8 @@ class Launcher:
                 if process.is_alive():
                     process.terminate()
     
-    def create_job(self, filename, nsteps=int(1e6), nframes=np.inf):
+    def create_job(self, filename, n, nA, nB, eA=0, eB=0,
+                   nsteps=inf, nframes=inf):
         """
         Returns a slurm script that can be launched by cluster.
         Walltime's default is in slurm header!
@@ -215,10 +216,10 @@ class Launcher:
                 ntasks_per_node = int(fields.split('=')[-1])
             if 'cpus-per-task' in fields:
                 cpus_per_task = int(fields.split('=')[-1])
-        nodes = int(np.ceil((1 + n +  # trainer/worker, shooting
-                             nA + nB +  # free A and B
-                             eA + eB)  # extension A and B
-                            / ntasks_per_node))
+        nodes = ceil((1 + n +  # trainer/worker, shooting
+                      nA + nB +  # free A and B
+                      eA + eB)  # extension A and B
+                      / ntasks_per_node)
         
         # write job script
         with open(filename, 'w') as file:
