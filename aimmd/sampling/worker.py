@@ -138,7 +138,7 @@ class Worker:
         os.system(f'rm -f {self.directory}/initial_paths/*')
         self.params.save_initial_paths(f'{self.directory}/initial_paths')
         self.interrupt = False
-        return train(self, log_file, verbose, nrounds, nrounds, walltime)
+        return train(self, log_file, verbose, nrounds, walltime)
     
     def manage(self, n, nA, nB, eA=0, eB=0,
            log_file=None, nsteps=inf, nframes=inf, walltime=inf):
