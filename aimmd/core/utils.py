@@ -46,10 +46,10 @@ def execute_command(cmd, stop_condition=lambda : False, walltime=inf):
     # open pseudo-terminal
     master_fd, slave_fd = pty.openpty()
     t0 = time.time()
-    
+
     # start subprocess attached to the pseudo-terminal
     process = subprocess.Popen(
-        cmd.split(),
+        cmd,
         shell=True,
         stdin=slave_fd,
         stdout=slave_fd,
@@ -59,20 +59,23 @@ def execute_command(cmd, stop_condition=lambda : False, walltime=inf):
         close_fds=True
     )
     os.close(slave_fd)
-    
+
     # capture the output (in real-time if not waiting)
     try:
         with os.fdopen(master_fd) as stdout:
             while True:
-                
+
                 # process terminated
                 if (return_code := process.poll()) is not None:
                     return return_code
-                
+
                 # stop condition or walltime reached
                 if stop_condition() or time.time() - t0 > walltime:
                     process.terminate()
-                
+                    while True:
+                        if process.poll() is not None:
+                            return 0
+
                 # print the output
                 if select.select([stdout], [], [], 0.1)[0]:
                     try:
@@ -81,7 +84,7 @@ def execute_command(cmd, stop_condition=lambda : False, walltime=inf):
                     except OSError:
                         # PTY closed: treat as EOF
                         break
-    
+
     # catch any final PTY read errors cleanly
     except OSError:
         return -1 or process.poll()
