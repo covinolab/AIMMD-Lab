@@ -23,7 +23,7 @@ from ..core.pathensemble import PathEnsemble, PathEnsemblesCollection
 # quick logging
 print = functools.partial(print, flush=True)
 
-def manage(self, n, nA, nB, eA, eB,
+def manage(self, n, nA, nB, eA=0, eB=0,
             log_file=None, nsteps=int(1e6),
             nframes=np.inf, walltime=np.inf):
     """
