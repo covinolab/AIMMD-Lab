@@ -1,9 +1,6 @@
 import os
-import pty
 import time
-import select
 import functools
-import subprocess
 from ..core.utils import get_current_simulation, now
 
 inf = float('inf')
@@ -16,7 +13,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
     Continuously run simulations as directed by the run file.
     noappend: bool, add Gromacs' -noappend flag.
     """
-
+    
     if noappend == 'False' or noappend == 'false':
         noappend = False
     else:
@@ -52,59 +49,23 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
             
             # (re)-start logging
             self.log_file = log_file
-            print(f"Starting simulating {fname} ({now()})...")         
+            print(f"Starting simulating {fname} ({now()})...")
+            
+            # determine stop condition
+            def stop_condition():
+                if get_current_simulation(f'{self.directory}/{run_file}') != fname:
+                    print(f"Target simulation file changed ({now()}).")
+                    return True
+                return self.interrupt
             
             # create command
-            command = self.params.mdrun.split() + [
-                "-deffnm", fname,
-                "-cpo", f"{fname}.cpt",
-                "-cpi", f"{fname}.cpt",
-                "-cpt", ".1"]
-            if noappend:
-                command.append("-noappend")
-                    
-            # open pseudo-terminal to capture real-time stdout
-            master_fd, slave_fd = pty.openpty()
+            cmd = (f'{self.params.mdrun} -deffnm {fname}'
+                   f'-cpo {fname}.cpt -cpi {fname}.cpt -cpt .1'
+                   f'{"-noappend" if noappend else ""}')
             
-            # run command
-            self.process = subprocess.Popen(
-                command,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env=os.environ.copy(),
-                close_fds=True)
-            os.close(slave_fd)
-            
-            try:
-                with os.fdopen(master_fd) as stdout:
-                    while True:
-                        
-                        # maximum time
-                        if time.time() - t0 > walltime:
-                            self.terminate_handler(exit=False)
-                        
-                        # received the signal
-                        if self.interrupt:
-                            break
-                        
-                        if get_current_simulation(
-                            f'{self.directory}/{run_file}') != fname:
-                            print(f"Target simulation file changed ({now()}).")
-                            break
-
-                        if select.select([stdout], [], [], 0.1)[0]:
-                            try:
-                                line = stdout.readline()
-                                print(line, end="")
-                            except OSError:
-                                # PTY closed: treat as EOF
-                                break
-            
-            # catch any final PTY read errors cleanly
-            except OSError:
-                pass
+            # execute command
+            if exit := execute_command(cmd, stop_condition):
+                raise RuntimeError(f'{cmd} failed with exit code {exit}')
     
     except SystemExit:
         self.terminate_handler()
