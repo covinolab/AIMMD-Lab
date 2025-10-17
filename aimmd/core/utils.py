@@ -1491,11 +1491,14 @@ def initialize_simulation(frames, params, *fnames):
             print('=== sampling kinetic energy')
         remove(f'{_fname}.gro', False)
         frames.write(f'{_fname}.gro', frame_indices=[-1])
-        command = (f'{grompp} -nobackup -f {gmx_init_mdp} '
-                  f'-r {_fname}.gro -c {_fname}.gro -o {_fname}.tpr')
-        os.system(command)
-        os.system(f'{mdrun} -deffnm {_fname} -nsteps 0 -nobackup')
-        
+        cmd = (f'{grompp} -nobackup -f {gmx_init_mdp} '
+               f'-r {_fname}.gro -c {_fname}.gro -o {_fname}.tpr')
+        if exit := execute_command(cmd, walltime=timeout):
+            raise RuntimeError(f'{cmd} failed with exit code {exit}')
+        cmd = f'{mdrun} -deffnm {_fname} -nsteps 0 -nobackup'
+        if exit := execute_command(cmd, walltime=timeout):
+            raise RuntimeError(f'{cmd} failed with exit code {exit}')
+    
     # just copy the frame
     else:
         remove(f'{_fname}.trr', False)
@@ -1547,14 +1550,11 @@ def initialize_simulation(frames, params, *fnames):
             with mda.Writer(f'{_fname}.trr', atomgroup.n_atoms) as writer:
                 writer.write(atomgroup)
             
-            command = (f'{grompp} -nobackup -f {gmx_run_mdp} '
-                      f'-r {_fname}.gro -c {_fname}.gro -t {_fname}.trr '
-                      f'-o {directory}/{fname}.tpr')
-            os.system(command)
-            
-            # run initial frame (does it work without??)
-            # os.system(f'{mdrun} -nobackup -deffnm {directory}/{fname} '
-            #          f'-cpo {directory}/{fname}.cpt -nsteps 0')
+            cmd = (f'{grompp} -nobackup -f {gmx_run_mdp} '
+                   f'-r {_fname}.gro -c {_fname}.gro -t {_fname}.trr '
+                   f'-o {directory}/{fname}.tpr')
+            if exit := execute_command(cmd, walltime=timeout):
+                raise RuntimeError(f'{cmd} failed with exit code {exit}')
         else:
             # just copy the frame
             if nframes <= 1:
@@ -2529,9 +2529,11 @@ def add_path_to_chain(path, chain,
     
     # save energy
     if eneconv:
-        os.system(f'{eneconv} -f {chain.directory}/back.edr '
-                              f' {chain.directory}/forw.edr '
-                            f'-o {chain.directory}/{fname}.edr')
+        cmd = (f'{eneconv} -f {chain.directory}/back.edr '
+                           f' {chain.directory}/forw.edr '
+                         f'-o {chain.directory}/{fname}.edr')
+        if exit := execute_command(cmd, walltime=timeout):
+            raise RuntimeError(f'{cmd} failed with exit code {exit}')
     
     # add path to chain
     try:
