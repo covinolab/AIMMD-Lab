@@ -73,7 +73,7 @@ class Launcher:
         self.params.save_initial_paths(f'{self.directory}/initial_paths')
     
     def run(self, n, nA, nB, eA=0, eB=0,
-            nsteps=int(1e6), nframes=inf, walltime=inf,
+            nsteps=inf, nframes=inf, walltime=inf,
             cpus_per_task=1, gpus_per_task=1):
         """
         n: number of replicas dedicated to shooting simulations
