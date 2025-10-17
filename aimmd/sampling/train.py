@@ -6,6 +6,7 @@ from ..core.utils import (now,
                           load_initial_paths,
                           load_network_and_projections,
                           update_pathensemble,
+                          scorporate_pathensembles,
                           get_bins)
 
 # quick logging
