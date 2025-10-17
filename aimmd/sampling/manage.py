@@ -97,6 +97,7 @@ def manage(self, n, nA, nB, eA, eB,
                     pool, chain, selection_pool_size, pool_index,
                     initial_paths, at_least_one_transition_in_pool)
                 remove(f'{chain.directory}/back.xtc')  # call for new simulation
+                remove(f'{chain.directory}/forw.xtc')  # call for new simulation
             
             pool.save(f'{chains[chain_id].directory}/pool.h5', directory='.')
             pools.append(pool)

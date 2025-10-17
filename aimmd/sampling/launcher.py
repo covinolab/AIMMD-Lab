@@ -96,13 +96,21 @@ class Launcher:
     def run(self, nsteps=int(1e6), nframes=np.inf, walltime=np.inf,
                  cpus_per_task=1, gpus_per_task=1):
         """
+        Launch the simulation locally, spawning multiple processes.
+        
+        Parameters
+        ----------
         nsteps: default inf, maximum number of shooting simulations
         nframes: default inf, maximum number of simulated frames,
                  has priority over nsteps
         walltime: default inf, maximum number of simulation time,
                   has priority over nframes and nsteps
-        cpus_per_task
-        gpus_per_task (if present)
+        cpus_per_task: default 1, number of CPUs to allocate per task
+        gpus_per_task: default 1, number of GPUs to allocate per task
+
+        Returns
+        -------
+        None
         """
         
         processes = []
