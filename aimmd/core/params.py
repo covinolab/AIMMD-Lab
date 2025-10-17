@@ -15,7 +15,7 @@ import subprocess
 import MDAnalysis as mda
 from tqdm import tqdm
 from .utils import (class_or_instancemethod, fit,
-                    DummyNetwork, run_with_timeout)
+                    PlaceholderNetwork, run_with_timeout)
 from typing import List, Callable
 from pathlib import Path, PosixPath
 from dataclasses import dataclass, field, fields
@@ -146,9 +146,10 @@ as Gromacs."""
     
     # neural network
     network : torch.nn.Module = field(
-        default=DummyNetwork(),
+        default=PlaceholderNetwork(),
         metadata={'description':
-"""Neural network model (used for logit committor estimates in AIMMD)."""
+"""Neural network model (used for logit committor estimates in AIMMD).
+Placeholder just returns input's first dimension."""
                  })
     
     # shooting point selection options
