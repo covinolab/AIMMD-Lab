@@ -12,6 +12,7 @@ import MDAnalysis as mda
 from .utils import (class_or_instancemethod, fit,
                     PlaceholderNetwork, run_with_timeout)
 from typing import List, Callable
+from inspect import getsource
 from pathlib import Path, PosixPath
 from dataclasses import dataclass, field, fields
 from MDAnalysis.coordinates.memory import MemoryReader
@@ -555,11 +556,7 @@ task together."""
                 if desc := f.metadata.get("description", ""):
                     lines.append(f"\"\"\"{desc}\"\"\"\n")
             else:  # if it's a function, show its content
-                try:
-                    lines.append(value.__source__)
-                except Exception:
-                    lines.append(
-                        f"def {name}\n:\n    # source unavailable\n    pass\n")
+                lines.append(value.__source__)
         
         return "\n".join(lines)
     
@@ -582,7 +579,7 @@ task together."""
                     value.__source__ = getsource(value)
                 except Exception:
                     value.__source__ = (
-                        f"def {name}:\n    # source unavailable\n    pass")
+                        f"def {name}(*args):\n    # source unavailable\n    pass")
             
             # list of strings
             elif expected_type is List[str]:
