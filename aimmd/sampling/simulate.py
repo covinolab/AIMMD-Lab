@@ -61,7 +61,7 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
                 return self.interrupt
             
             # create command
-            cmd = (f'{self.params.mdrun} -deffnm {fname}'
+            cmd = (f'{self.params.mdrun} -deffnm {fname} '
                    f'-cpo {fname}.cpt -cpi {fname}.cpt -cpt .1'
                    f'{"-noappend" if noappend else ""}')
             
