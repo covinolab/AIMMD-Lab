@@ -178,7 +178,7 @@ def manage(self, n, nA, nB, eA, eB,
             
             # extra equilibriumA and equilibriumB
             if len(extra_equilibriumA):
-                #write(f'\nLoading extra free simulations around A ({now()})')
+                #print(f'\nLoading extra free simulations around A ({now()})')
                 equilibriumA += update_pathensemble(directory, topology,
                     states_function, descriptors_function, values_function,
                     add_missing_paths=False, add_missing_frames=False,
@@ -186,7 +186,7 @@ def manage(self, n, nA, nB, eA, eB,
                     equilibriumA_states_map=extra_equilibriumA_states_map,
                     verbose=True)[0]
             if len(extra_equilibriumB):
-                #write(f'\nLoading extra free simulations around B ({now()})')
+                #print(f'\nLoading extra free simulations around B ({now()})')
                 equilibriumB += update_pathensemble(directory, topology,
                     states_function, descriptors_function, values_function,
                     add_missing_paths=False, add_missing_frames=False,
@@ -243,7 +243,7 @@ def manage(self, n, nA, nB, eA, eB,
                         initial_paths, at_least_one_transition_in_pool)
                 
                 # update step number and save
-                print(''); step_number.update(1); write('\n')
+                print(''); step_number.update(1); print('\n')
                 chains[k].save(f'{chains[k].directory}/chain.h5', directory='.')
                 pools[k].save(f'{pools[k].directory}/pool.h5', directory='.')
                 if step_number.n % save_interval == 0:
