@@ -36,11 +36,6 @@ class Launcher:
         """
         directory: where simulations carried
         params: python file with params or Params
-        n: number of replicas dedicated to shooting simulations
-        nA: number of replicas dedicated to free simulations around A
-        nB: number of replicas dedicated to free simulations around B
-        eA: number of replicas dedicated to extending transitions reaching A
-        eA: number of replicas dedicated to extending transitions reaching B
         
         All parameters for the run can be updated before (re)launching a simulation.
         """
@@ -61,30 +56,17 @@ class Launcher:
             params.path = Path(fname).resolve()
         
         # create folder structure (keep existing data)
-        os.system(f'mkdir {self.directory}')
-        os.system(f'mkdir {self.directory}/initial_paths')
-        
-        # folders for shooting simulations
-        for worker_id in range(n):
-            os.system(f'mkdir {self.directory}/shots{worker_id}')
-        
-        # folders for free simulations
-        os.system(f'mkdir {self.directory}/equilibriumA')
-        os.system(f'touch {self.directory}/equilibriumA/'
-                  f'indicted_trajectories.log')
-        os.system(f'mkdir {self.directory}/equilibriumB')
-        os.system(f'touch {self.directory}/equilibriumB/'
-                  f'indicted_trajectories.log')
-        
-        # folders for extension simulations
-        if eA:
-            file.write(f'mkdir {self.directory}/extendA')
-            file.write(f'touch {self.directory}/extendA/'
-                       f'indicted_trajectories.log')
-        if eB:
-            file.write(f'mkdir {self.directory}/extendB')
-            file.write(f'touch {self.directory}/extendB/'
-                       f'indicted_trajectories.log')
+        for i, folder in enumerate([self.directory,
+                                 f'{self.directory}/initial_paths',
+                                 f'{self.directory}/equilibriumA',
+                                 f'{self.directory}/equilibriumB',
+                                 f'{self.directory}/extendA',
+                                 f'{self.directory}/extendB']):
+            if not os.path.exists(folder):
+                os.system(f'mkdir {folder}')
+                print('+++ created {self.directory}')
+            if i > 1:
+                os.system(f'touch {folder}/indicted_trajectories.log')
         
         # save initial paths
         os.system(f'rm -f {self.directory}/initial_paths/*')
