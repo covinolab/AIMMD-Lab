@@ -1,7 +1,9 @@
 import os
 import time
 import functools
-from ..core.utils import get_current_simulation, now
+from ..core.utils import (now,
+                          get_current_simulation,
+                          execute_command)
 
 inf = float('inf')
 
