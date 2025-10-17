@@ -14,6 +14,7 @@ from ..core.utils import (now,
                           update_equilibrium_simulations,
                           update_shooting_simulation,
                           run_acceptance_rejection_on_latest_path)
+from ..core.pathensemble import PathEnsemble, PathEnsemblesCollection
                           
 
 # quick logging
