@@ -61,10 +61,32 @@ class Worker:
         self.localid = int(localid)
         self.cpus_per_task = int(cpus_per_task)
         self.gpus_per_task = int(gpus_per_task)
-        
+
+        # register signal handlers (for all future tasks)
+        signal.signal(signal.SIGTERM, self.terminate_handler)
+        signal.signal(signal.SIGINT, self.terminate_handler)
+    
+    @property
+    def log_file(self):
+        return self.__log_file
+    
+    @log_file.setter
+    def log_file(self, log_file):
+        if log_file == self.__log_file:
+            return
+        if self.original_stdout != sys.stdout:
+            sys.stdout.close()
+        sys.stdout = self.original_stdout
+        sys.stderr = self.original_stderr
+        if log_file:
+            sys.stdout = open(f'{self.directory}/{log_file}', 'a+')
+            sys.stderr = sys.stdout
+        self.__log_file = log_file
+
+    def resources_binding(self):
         # CPU binding
         cpus_per_task = int(os.getenv(
-            "SLURM_CPUS_PER_TASK", f"{cpus_per_task}"))
+            "SLURM_CPUS_PER_TASK", f"{self.cpus_per_task}"))
         os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
         os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
         os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
@@ -100,42 +122,20 @@ class Worker:
                 # for ROCm GPUs, Gromacs will use OpenCL
         
         # notify the user if this worker is oversubscribing a GPU
-        if self.localid > 0 and self.gpus_per_task > 0 and num_gpus_avail <= (self.localid * self.gpus_per_task):
-            print(f"[Note] Worker {self.localid} may be oversubscribing GPUs. Available GPUs: {num_gpus_avail}, Worker local ID: {self.localid}, GPUs per task: {self.gpus_per_task}")
+        if (self.localid > 0 and
+            self.gpus_per_task > 0 and
+            num_gpus_avail <= (self.localid * self.gpus_per_task)):
+            print(f"[Note] Worker {self.localid} may be oversubscribing GPUs. "
+                  f"Available GPUs: {num_gpus_avail}, "
+                  f"Worker local ID: {self.localid}, "
+                  f"GPUs per task: {self.gpus_per_task}")
 
         # report resource allocation
         print(f"[Worker {self.localid}] CPU ids: {','.join(map(str, cpus))}")
         if self.gpus_per_task > 0:
             print(f"[Worker {self.localid}] GPU ids: {gpus}")
         else:
-            print(f"[Worker {self.localid}] No GPUs allocated")   
-        
-        self.cpus = cpus
-        if self.gpus_per_task > 0:
-            self.gpus = gpus
-        else:
-            self.gpus = None
-
-        # register signal handlers (for all future tasks)
-        signal.signal(signal.SIGTERM, self.terminate_handler)
-        signal.signal(signal.SIGINT, self.terminate_handler)
-    
-    @property
-    def log_file(self):
-        return self.__log_file
-    
-    @log_file.setter
-    def log_file(self, log_file):
-        if log_file == self.__log_file:
-            return
-        if self.original_stdout != sys.stdout:
-            sys.stdout.close()
-        sys.stdout = self.original_stdout
-        sys.stderr = self.original_stderr
-        if log_file:
-            sys.stdout = open(f'{self.directory}/{log_file}', 'a+')
-            sys.stderr = sys.stdout
-        self.__log_file = log_file
+            print(f"[Worker {self.localid}] No GPUs allocated")
     
     def terminate_handler(self, signum=None, frame=None):
         """Gracefully terminate the worker and its subprocess."""
