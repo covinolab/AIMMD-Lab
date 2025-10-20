@@ -35,6 +35,9 @@ def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
     else:
         verbose = bool(verbose)
     
+    # bind resources
+    self.bind_resources()
+    
     # initialize output
     pathensemble = None
     
