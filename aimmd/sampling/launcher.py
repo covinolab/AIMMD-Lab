@@ -27,7 +27,7 @@ def _run_task(params_file, directory,
         Worker(params_file, directory,
                localid, cpus_per_task, gpus_per_task).run(task, *args)
     except Exception as exception:
-        print(exception)
+        print(f'[Error] {exception}')
         return 1
     return 0
 
