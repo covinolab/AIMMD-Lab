@@ -11,9 +11,7 @@ from aimmd.core.utils import now, remove
 from aimmd.sampling.train import train
 from aimmd.sampling.manage import manage
 from aimmd.sampling.simulate import simulate
-from aimmd.sampling.resources import (get_available_cpus,
-                                      get_available_gpus,
-                                      bind_resources)
+from aimmd.sampling.resources import bind_resources
 
 inf = float('inf')
 
