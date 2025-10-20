@@ -1156,7 +1156,7 @@ def fit(network, pathensemble,
     # actual loop
     while True:
         
-        if worker is not None and worker.termination_signal not in [None, 1]:
+        if worker is not None and worker.termination_signal:
             return [], [], [], [], []
         
         for param_group in optimizer.param_groups:
@@ -1329,7 +1329,7 @@ def load_network_and_projections(
             densities = np.load(f'{directory}/densities.npy')
             break
         except:
-            if not wait or worker.termination_signal not in [None, 1]:
+            if not wait or worker.termination_signal:
                 return [], []
             sleep(.1)
     
