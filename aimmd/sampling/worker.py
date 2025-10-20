@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import numpy as np
 import psutil
 import signal
 import subprocess
