@@ -356,9 +356,7 @@ class Launcher:
             # slurm header
             file.write(f'#!/bin/bash -x\n')
             file.write(f'#SBATCH --job-name={self.params.name}\n')
-            file.write(f'#SBATCH --nodes={nodes}\n')
-            file.write(f'{self.params.slurm_header}\n')
-            file.write(f'#SBATCH --time={time_info}\n\n')
+            file.write(f'{slurm_header}\n')
             file.write(f"rm -f {self.directory}/.terminate\n\n")
             
             # srun call
