@@ -1,5 +1,3 @@
-#WIP for now it works if class is called in the same location as params' working directory
-
 import os
 import sys
 import time
@@ -11,8 +9,6 @@ from pathlib import Path
 from .worker import Worker
 from ..core.utils import now
 from ..core.params import Params
-from multiprocessing.resource_tracker import \
-    _resource_tracker as resource_tracker
 
 inf = float('inf')
 
@@ -27,10 +23,81 @@ ctx = multiprocessing.get_context('spawn')
 def _run_task(params_file, directory,
               localid, cpus_per_task, gpus_per_task,
               task, *args):
-    worker = Worker(params_file, directory,
-                    localid, cpus_per_task, gpus_per_task)
-    worker.is_process = True   # so to handle termination correctly
-    return worker.run(task, *args)
+    Worker(params_file, directory,
+           localid, cpus_per_task, gpus_per_task).run(task, *args)
+    return 0
+
+
+class Processes:
+    
+    def __init__(self):
+        self.__list = []
+    
+    def __len__(self):
+        return len(self.__list)
+    
+    def __iter__(self):
+        return iter(self.__list)
+    
+    def __getitem__(self, key):
+        return self.__list[key]
+    
+    @property
+    def list(self):
+        return self.__list
+    
+    @property
+    def alive(self):
+        return ~self.closed
+    
+    @property
+    def closed(self):
+        result = np.repeat(False, len(self))
+        for i, process in enumerate(self):
+            if process._closed or not process.is_alive():
+                result[i] = True
+                if not process._closed:
+                    print(f'[Worker {process.pid}] terminated '
+                          f'with exit code {process.exitcode}')
+                    process.join()
+                    process.close()
+        return result
+    
+    def launch(self, *args):
+        process = ctx.Process(target=_run_task, args=args)
+        self.__list.append(process)
+        process.start()
+        print(f'[Worker {process.pid}] args: '
+              f'{" ".join([str(arg) for arg in args])}')
+    
+    def clean(self, termination_timeout=20.):
+        
+        # graceful termination
+        t0 = time.time()
+        terminating = set()
+        while time.time() - t0 < termination_timeout and np.any(self.alive):
+            for i in np.where(self.alive)[0]:
+                if i in terminating:
+                    continue
+                terminating.add(i)
+                try:
+                    os.kill(self[i].pid, signal.SIGINT)
+                except:
+                    pass
+        
+        # forced termination
+        for i in np.where(self.alive)[0]:
+            try:
+                self[i].kill()
+                self[i].join(timeout=1.)
+            except:
+                pass
+        
+        # final report
+        self.closed
+        
+        # pristine state
+        self.__list = []
 
 
 class Launcher:
@@ -48,11 +115,11 @@ class Launcher:
             params = Params.load(params)
         self.params = params
         self.directory = directory
-        self.processes = []
+        self.processes = Processes()  # in "run"
         self.termination_signal = None
         self.termination_timeout = termination_timeout
         
-        # params need a file
+        # params need a written file
         if not params.path.is_file():
             i = 0
             while os.path.exists(
@@ -84,68 +151,76 @@ class Launcher:
         signal.signal(signal.SIGTERM, self.terminate_handler)
         signal.signal(signal.SIGINT, self.terminate_handler)
     
-    # terminate all processes of launcher
-    def terminate_handler(self, signum=None, frame=None):
-        """Gracefully terminate the launcher and its subprocess."""
-        
-        # acknowledge signal
+    def terminate_handler(self, signum=None, frame=None):        
         print(f'\nLauncher received termination signal {signum} ({now()})')
         self.termination_signal = signum
     
-    def terminate_operations(self):        
-        # try graceful termination first
-        t0 = time.time()
-        terminating = np.repeat(False, len(self.processes))
-        terminated = np.repeat(False, len(self.processes))
-        while not np.all(terminated) and (
-            time.time() - t0 < self.termination_timeout):
-            for i, process in enumerate(self.processes):
-                try:
-                    process.join(timeout=0)
-                    if not terminated[i] and process.exitcode is not None:
-                        terminated[i] = True
-                        print(f'[Worker {process.pid}] terminated '
-                              f'with exit code {process.exitcode}')
-                    if not terminating[i]:
-                        os.kill(process.pid, signal.SIGINT)
-                        terminating[i] = True
-                except ProcessLookupError:  # not existing
-                    terminated[i] = True
+    def terminate_operations(self):
+        self.processes.clean()
         
-        # force kill if still alive
-        for i, process in enumerate(self.processes):
-            if terminated[i]:
-                continue
-            try:
-                process.kill()
-                process.join(timeout=1.)
-                if process.exitcode is not None:
-                    print(f'[Worker {process.pid}] forcefully '
-                          f'terminated with exit code {process.exitcode}')
-            except:
-                print(f'Could not inspect status of process {process.pid}')
-        
-        try:
-            resource_tracker.cleanup()
-        except Exception:
-            pass
-        
-        self.processes = []
-        
+        # not keyboard interruption
         if self.termination_signal != 2:
-            self.termination_signal = None
             raise SystemExit(0)
         
-        # reset in any case
+        # keyboard interruption: reset
         self.termination_signal = None
     
-    def launch_process(self, *args):
-        self.processes.append(ctx.Process(
-            target=_run_task, args=args))
-        self.processes[-1].start()
-        print(f'[Worker {self.processes[-1].pid}] args: '
-              f'{" ".join([str(arg) for arg in args])}')
-    
+    def run(self, n, nA, nB, eA=0, eB=0,
+            nsteps=inf, nframes=inf, walltime=inf,
+            cpus_per_task=1, gpus_per_task=1,
+            termination_timeout=20.):
+        """
+        n: number of replicas dedicated to shooting simulations
+           (creates folders if not existing)
+        nA: number of replicas dedicated to free simulations around A
+        nB: number of replicas dedicated to free simulations around B
+        eA: number of replicas dedicated to extending transitions reaching A
+        eA: number of replicas dedicated to extending transitions reaching B
+        nsteps: default inf, maximum number of shooting simulations
+        nframes: default inf, maximum number of simulated frames,
+                 has priority over nsteps
+        walltime: default inf, maximum number of simulation time,
+                  has priority over nframes and nsteps
+        cpus_per_task
+        gpus_per_task (if present)
+        """
+        
+        self.processes.clean()
+        
+        try:
+            # simulators
+            total = nA + nB + eA + eB + n
+            for i in range(total):
+                localid = len(self.processes)
+                if i < total - n:
+                    noappend = True
+                else:
+                    noappend = False
+                self.processes.launch(self.params.path, self.directory,
+                                      localid, cpus_per_task, gpus_per_task,
+                                      'simulate', f'worker{localid}',
+                                      f'worker{localid}.log', noappend)
+            
+            # trainer (sharing the same localid as manager)
+            localid = len(self.processes)
+            self.processes.launch(self.params.path, self.directory,
+                                  localid, cpus_per_task, gpus_per_task,
+                                  'train', 'trainer.log')
+            
+            # manager (sharing the same localid as trainer)
+            self.processes.launch(self.params.path, self.directory,
+                                  localid, cpus_per_task, gpus_per_task,
+                                  'manage', n, nA, nB, eA, eB,
+                                  'manager.log', nsteps, nframes)
+            
+            # wait for completion with walltime
+            t0 = time.time()
+            while time.time() - t0 < walltime and np.all(self.processes.alive):
+                continue
+        finally:
+            self.termination_signal = 2  # KeyboardInterrupt
+            self.terminate_operations()
+
     @property
     def stop_condition(self):
         """Bash script for stop condition in SLURM job"""
@@ -188,66 +263,6 @@ class Launcher:
         # wait for all to exit cleanly
         wait "${{pids[@]}}" 2>/dev/null
     }}'''
-    
-    def run(self, n, nA, nB, eA=0, eB=0,
-            nsteps=inf, nframes=inf, walltime=inf,
-            cpus_per_task=1, gpus_per_task=1,
-            termination_timeout=20.):
-        """
-        n: number of replicas dedicated to shooting simulations
-           (creates folders if not existing)
-        nA: number of replicas dedicated to free simulations around A
-        nB: number of replicas dedicated to free simulations around B
-        eA: number of replicas dedicated to extending transitions reaching A
-        eA: number of replicas dedicated to extending transitions reaching B
-        nsteps: default inf, maximum number of shooting simulations
-        nframes: default inf, maximum number of simulated frames,
-                 has priority over nsteps
-        walltime: default inf, maximum number of simulation time,
-                  has priority over nframes and nsteps
-        cpus_per_task
-        gpus_per_task (if present)
-        """
-        
-        self.processes = []
-        
-        try:
-            # simulators
-            total = nA + nB + eA + eB + n
-            for i in range(total):
-                localid = len(self.processes)
-                if i < total - n:
-                    noappend = True
-                else:
-                    noappend = False
-                self.launch_process(self.params.path, self.directory,
-                                    localid, cpus_per_task, gpus_per_task,
-                                    'simulate', f'worker{localid}',
-                                    f'worker{localid}.log', noappend)
-            
-            # trainer (sharing the same localid as manager)
-            localid = len(self.processes)
-            self.launch_process(self.params.path, self.directory,
-                                localid, cpus_per_task, gpus_per_task,
-                                'train', 'trainer.log')
-            
-            # manager (sharing the same localid as trainer)
-            self.launch_process(self.params.path, self.directory,
-                                localid, cpus_per_task, gpus_per_task,
-                                'manage', n, nA, nB, eA, eB,
-                                'manager.log', nsteps, nframes)
-            
-            # wait for completion with walltime
-            terminate = False
-            t0 = time.time()
-            while time.time() - t0 < walltime and not bool(
-                self.termination_signal):
-                for process in self.processes:
-                    if process.exitcode is not None:
-                        break
-        finally:
-            self.termination_signal = 2  # KeyboardInterrupt
-            self.terminate_operations()
     
     def create_job(self, filename, n, nA, nB, eA=0, eB=0,
                    nsteps=inf, nframes=inf, walltime=24*3600):
@@ -293,9 +308,9 @@ class Launcher:
             file.write(f'#!/bin/bash -x\n')
             file.write(f'#SBATCH --job-name={self.params.name}\n')
             file.write(f'#SBATCH --nodes={nodes}\n')
-            file.write(f'{self.params.slurm_header}')
+            file.write(f'{self.params.slurm_header}\n')
             file.write(f'#SBATCH --time={time_info}\n\n')
-            file.write(f"  rm -f {self.directory}/.terminate\n\n")
+            file.write(f"rm -f {self.directory}/.terminate\n\n")
             
             # srun call
             file.write(f'# srun call\n')
