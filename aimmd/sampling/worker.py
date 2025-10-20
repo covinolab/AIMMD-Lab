@@ -1,16 +1,18 @@
 import os
 import sys
 import time
-import torch
+import numpy as np
 import psutil
 import signal
 import subprocess
 import MDAnalysis as mda
+from aimmd.core import Params
+from aimmd.core.utils import now, remove
 from aimmd.sampling.train import train
 from aimmd.sampling.manage import manage
 from aimmd.sampling.simulate import simulate
-from aimmd.core import Params
-from aimmd.core.utils import now, remove
+from aimmd.sampling.resources import (get_available_cpus,
+                                      get_available_gpus)
 
 inf = float('inf')
 
@@ -88,24 +90,33 @@ class Worker:
         print(f'------------------------')
         print(f'LocalID {self.localid}')
         
+        # find available cpus
+        available_cpus = get_available_cpus()
+        
+        # find available gpus, using  to avoid
+        # extra dependency, on cuda or ROCm
+        num_gpus_avail = get_num_gpus()
+        
         # CPU binding
-        cpus_per_task = int(os.getenv(
-            "SLURM_CPUS_PER_TASK", f"{self.cpus_per_task}"))
         os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
         os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
         os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
-        try:
+        if len(available_cpus) == cpus_per_task:
+            start = None
+            stop = None
+        else:
             start = self.localid * cpus_per_task
-            cpus = list(range(start, start + cpus_per_task))
+            stop = start + cpus_per_task
+        cpus = available_cpus[start:stop]
+        try:
             psutil.Process().cpu_affinity(cpus)
         except Exception as exception:
-            print(f"[Warning] Could not set CPU affinity: {exception}")
+            print(f"[Warning] Could not set CPU affinity "
+                  f"with {cpus}: {exception}")
             cpus = []
+        cpus = ",".join([str(id) for id in cpus])
         
-        # find available gpus, using torch to avoid extra dependency, on cuda or ROCm
-        num_gpus_avail = torch.cuda.device_count()
-        
-        # check if requested resources are available
+        # check if requested GPU resources are available
         if self.gpus_per_task > 0 and num_gpus_avail == 0:
             raise RuntimeError(f"No GPUs available but {self.gpus_per_task} requested")
         if self.gpus_per_task > num_gpus_avail:
@@ -115,24 +126,25 @@ class Worker:
         # GPU binding
         if self.gpus_per_task > 0:
             start = self.localid * self.gpus_per_task
-            gpus = ",".join([f"{i%num_gpus_avail}" for i in range(
-                start, start + self.gpus_per_task)])
-            if gpus:
-                os.environ["CUDA_VISIBLE_DEVICES"] = gpus
-                # for NVIDIA GPUs, and also ROCm picked up by torch
-                os.environ["GPU_DEVICE_ORDINAL"] = gpus
-                # for ROCm GPUs, Gromacs will use OpenCL
-        
-        # notify the user if this worker is oversubscribing a GPU
-        if (self.localid > 0 and
-            self.gpus_per_task > 0 and
-            num_gpus_avail <= (self.localid * self.gpus_per_task)):
-            print(f"[Note] Worker may be oversubscribing GPUs\n"
-                  f"  Available GPUs: {num_gpus_avail}\n"
-                  f"  GPUs per task: {self.gpus_per_task}")
+            stop = start + self.gpus_per_task
+            gpus = np.arange(start, stop) % num_gpus_avail
+            gpus = ",".join([str(id) for id in gpus])
+            os.environ["CUDA_VISIBLE_DEVICES"] = gpus
+            # for NVIDIA GPUs, and also ROCm picked up by torch
+            os.environ["GPU_DEVICE_ORDINAL"] = gpus
+            # for ROCm GPUs, Gromacs will use OpenCL
+            
+            # notify the user if this worker is oversubscribing a GPU
+            if stop > num_gpus_avail:
+                print(f"[Note] Worker may be oversubscribing GPUs\n"
+                      f"  available GPUs: {num_gpus_avail}\n"
+                      f"  GPUs per task: {self.gpus_per_task}")
         
         # report resource allocation
-        print(f"CPU ids: {','.join(map(str, cpus)) if len(cpus) else 'all'}")
+        if cpus:
+            print(f"CPU ids: {cpus}")
+        else:
+            print(f"CPU ids: all")
         if self.gpus_per_task > 0:
             print(f"GPU ids: {gpus}")
         else:
