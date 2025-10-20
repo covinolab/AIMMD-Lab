@@ -715,6 +715,7 @@ share an extra task together."""
             
             # report
             print(f'Writing {folder}/{filename}')
+            os.system(f'mkdir -p {folder}')
             
             # actual save: get n_atoms
             n_atoms = len(path[0].positions)
