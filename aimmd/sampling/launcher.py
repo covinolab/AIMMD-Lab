@@ -70,12 +70,12 @@ class Processes:
         print(f'[Worker {process.pid}] args: '
               f'{" ".join([str(arg) for arg in args])}')
     
-    def clean(self, termination_timeout=20.):
+    def clean(self, timeout=20.):
         
         # graceful termination
         t0 = time.time()
         terminating = set()
-        while time.time() - t0 < termination_timeout and np.any(self.alive):
+        while time.time() - t0 < timeout and np.any(self.alive):
             for i in np.where(self.alive)[0]:
                 if i in terminating:
                     continue
@@ -156,7 +156,7 @@ class Launcher:
         self.termination_signal = signum
     
     def terminate_operations(self):
-        self.processes.clean()
+        self.processes.clean(self.termination_timeout)
         
         # not keyboard interruption
         if self.termination_signal != 2:
