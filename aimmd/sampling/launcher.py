@@ -392,8 +392,9 @@ class Launcher:
             def _case(i, description, noappend=False):
                 file.write(f'\n  {i})  # worker {i} ({description})\n')
                 file.write(f'    "${{PYTHON}}" "${{WORKER}}" "${{PARAMS}}" '
-                           f'{self.directory} {cpus_per_task} {gpus_per_task}'
-                           f' simulate worker{i} worker{i}.log'
+                           f'{self.directory} {i} '
+                           f'{cpus_per_task} {gpus_per_task} '
+                           f'simulate worker{i} worker{i}.log'
                            f'{" noappend" if noappend else ""} &\n')
                 file.write(f'    pid=$!\n')
                 file.write(f'    stop_condition $pid\n')
@@ -433,13 +434,15 @@ class Launcher:
             
             # trainer
             file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" {cpus_per_task} {gpus_per_task} '
+                       f'"{self.directory}" {i + 1} '
+                       f'{cpus_per_task} {gpus_per_task} '
                        f'train trainer.log &\n')
             file.write(f'    pids+=($!)\n')
             
             # manager
             file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" {cpus_per_task} {gpus_per_task} '
+                       f'"{self.directory}" {i + 1} '
+                       f'{cpus_per_task} {gpus_per_task} '
                        f'manage {n} {nA} {nB} {eA} {eB} '
                        f'manager.log {nsteps} {nframes} &\n')
             file.write(f'    pids+=($!)\n')
