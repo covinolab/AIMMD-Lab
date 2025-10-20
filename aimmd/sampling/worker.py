@@ -75,7 +75,7 @@ class Worker:
             print(f"[Warning] Could not set CPU affinity: {exception}")
             cpus = []
         
-        # find available gpus, using torch to avoid extra dependency
+        # find available gpus, using torch to avoid extra dependency, on cuda or ROCm
         num_gpus_avail = torch.cuda.device_count()
         
         # check if requested resources are available
@@ -103,13 +103,11 @@ class Worker:
             print(f"[Worker {self.localid}] No GPUs allocated")   
         
         self.cpus = cpus
-        if gpus_per_task > 0:
+        if self.gpus_per_task > 0:
             self.gpus = gpus
         else:
             self.gpus = None
-        self.cpus_per_task = cpus_per_task
-        self.gpus_per_task = gpus_per_task
-        
+
         # register signal handlers (for all future tasks)
         signal.signal(signal.SIGTERM, self.terminate_handler)
         signal.signal(signal.SIGINT, self.terminate_handler)  # (s, f)
