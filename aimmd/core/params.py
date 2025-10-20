@@ -341,8 +341,8 @@ energy and rates estimates. Passed to `pathensemble.reweight`."""
     # SLURM configuration (for HPC clusters)
     
     slurm_header : str = field(
-        default=('#SBATCH --ntasks-per-node=1\n'
-                 '#SBATCH --cpus-per-task=16\n'
+        default=('#SBATCH --ntasks-per-node=4\n'
+                 '#SBATCH --cpus-per-task=8\n'
                  '#SBATCH --mail-type=FAIL'),
         metadata={'description':
 """Default SLURM configuration. Attention! It must include the
