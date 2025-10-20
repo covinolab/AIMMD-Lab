@@ -50,6 +50,8 @@ def manage(self, n, nA, nB, eA=0, eB=0,
     eA = int(eA)
     eB = int(eB)
     nsteps = float(nsteps)
+    if nsteps < inf:
+        nsteps = int(nsteps)
     nframes = float(nframes)
     walltime = float(walltime)
     
