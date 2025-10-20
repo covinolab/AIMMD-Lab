@@ -87,11 +87,11 @@ class Launcher:
     # terminate all processes of launcher
     def terminate_handler(self, signum=None, frame=None):
         """Gracefully terminate the launcher and its subprocess."""
-
+        
         # acknowledge signal
         print(f'\nLauncher received termination signal {signum} ({now()})')
         self.termination_signal = signum
-
+    
     def terminate_operations(self):        
         # try graceful termination first
         t0 = time.time()
@@ -312,7 +312,7 @@ class Launcher:
             file.write(f'  PYTHON="{PYTHON}"\n')
             file.write(f'  WORKER="{WORKER}"\n')
             file.write(f'  PARAMS="{self.params.path}"\n\n')
-
+            
             # stop condition
             file.write(f'  # setup stop condition\n')
             file.write(f"  START_TIME=$(date +%s)\n")
