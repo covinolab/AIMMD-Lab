@@ -1,5 +1,3 @@
-#WIP for now it works if class is called in the same location as params' working directory
-
 import os
 import time
 import sys
@@ -11,14 +9,15 @@ from aimmd.sampling.train import train
 from aimmd.sampling.manage import manage
 from aimmd.sampling.simulate import simulate
 from aimmd.core import Params
-from aimmd.core.utils import now
+from aimmd.core.utils import now, remove
 
 inf = float('inf')
 
 class Worker:
     
     def __init__(self, params, directory='.',
-                 localid=0, cpus_per_task=1, gpus_per_task=0):
+                 localid=0, cpus_per_task=1, gpus_per_task=0,
+                 termination_timeout=20.):
         """
         Worker process responsible for running independent AIMMD tasks
         (simulations, training, or management) on allocated CPUs/GPUs.
@@ -28,18 +27,21 @@ class Worker:
         if not isinstance(params, Params):
             params = Params.load(params)
         self.params = params
-        self.process = None
-        self.is_process = False
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
+        self.task = 'worker'  # for reporting
+        self.is_process = False   # =belonging to a launcher run execution
+        self.termination_signal = None
+        self.termination_timeout = termination_timeout
         self.__log_file = None
-        self.interrupt = False
+        self.cleanup = []  # files to delete after termination
         
         # determine local id
         self.localid = int(os.getenv("SLURM_LOCALID", f"{localid}"))
         
         # CPU binding
-        cpus_per_task = int(os.getenv("SLURM_CPUS_PER_TASK", f"{cpus_per_task}"))
+        cpus_per_task = int(os.getenv(
+            "SLURM_CPUS_PER_TASK", f"{cpus_per_task}"))
         os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
         os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
         os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
@@ -59,8 +61,8 @@ class Worker:
             os.environ["CUDA_VISIBLE_DEVICES"] = gpus
         
         # report resource allocation
-        print(f"[Worker {self.localid}] CPU ids: {','.join(map(str, cpus))}")
-        print(f"[Worker {self.localid}] GPU ids: {gpus}")
+        print(f"CPU ids: {','.join(map(str, cpus))}")
+        print(f"GPU ids: {gpus}")
         
         self.cpus = cpus
         self.gpus = gpus
@@ -69,7 +71,7 @@ class Worker:
         
         # register signal handlers (for all future tasks)
         signal.signal(signal.SIGTERM, self.terminate_handler)
-        signal.signal(signal.SIGINT, self.terminate_handler)  # (s, f)
+        signal.signal(signal.SIGINT, self.terminate_handler)
     
     @property
     def log_file(self):
@@ -88,67 +90,70 @@ class Worker:
             sys.stderr = sys.stdout
         self.__log_file = log_file
     
-    def terminate_handler(self, signum=None, frame=None, report=True, exit=False):
+    def terminate_handler(self, signum=None, frame=None):
         """Gracefully terminate the worker and its subprocess."""
         
-        self.interrupt = True
+        # acknowledge signal
+        print(f'\n"{self.task}" worker received termination signal '
+              f'{signum} ({now()})')
+        self.termination_signal = signum
+    
+    def terminate_operations(self):
+        # delete what needs to
+        for fname in self.cleanup:
+            remove(fname)
+        self.cleanup = []
         
-        # report
-        if report:
-            if signum:
-                print(f"Received signal {signum}, terminating process ({now()})")
-            else:
-                print(f"Terminating process ({now()})")
-        
-        # end current process
-        if self.process and self.process.poll() is None:
-            try:
-                self.process.terminate()
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                print("Process did not exit in time, killing...")
-                self.process.kill()
-            except Exception as exception:
-                print(f"Exception while killing process: {exception}")
-        
-        # unbind process and log file, close log file
-        self.process = None
+        # close log file if open
         self.log_file = None
         
-        # kill current process
-        if self.is_process:
-            parent_pid = os.getpid()  # get PID
-            os.kill(parent_pid, signal.SIGTERM)  # send termination signal
-            time.sleep(10)
-        
-        # exit if required or if worker is a child process
-        if exit:
+        # exit only if worker is a child process or not keyboardinterrupt
+        if self.is_process or self.termination_signal != 2:
+            self.termination_signal = None
             sys.exit(0)
+        
+        # reset termination signal in any case
+        self.termination_signal = None
+    
     
     def run(self, task, *args):
-        if task == 'train':
-            return train(self, *args)
-        if task == 'manage':
-            return manage(self, *args)
-        if task == 'simulate':
-            return simulate(self, *args)
-        raise TypeError(f'Task {task} not implented for AIMMD worker')
+        
+        # initialize
+        self.termination_signal = None
+        self.task = task
+        
+        try:
+            # task execution
+            if task == 'train':
+                return train(self, *args)
+            if task == 'manage':
+                return manage(self, *args)
+            if task == 'simulate':
+                return simulate(self, *args)
+            
+            # not implemented
+            raise TypeError(f'Task {task} not implented for AIMMD worker')
+        
+        finally:
+            self.terminate_operations()
     
     def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
+        
+        # preprocessing exclusive to this function
         os.system(f'rm -f {self.directory}/initial_paths/*')
         self.params.save_initial_paths(f'{self.directory}/initial_paths')
-        self.interrupt = False
-        return train(self, log_file, verbose, nrounds, walltime)
+        
+        # just call "run"
+        return self.run('train', log_file, verbose, nrounds, walltime)
     
-    def manage(self, n, nA, nB, eA=0, eB=0,
-           log_file=None, nsteps=inf, nframes=inf, walltime=inf):
-        self.interrupt = False
-        return manage(self, n, nA, nB, eA, eB,
-                       log_file, nsteps, nframes, walltime)
+    def manage(self, n, nA, nB, eA=0, eB=0, log_file=None,
+               nsteps=inf, nframes=inf, walltime=inf):
+        return self.run('manage', n, nA, nB, eA, eB,
+                        log_file, nsteps, nframes, walltime)
     
-    def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
-        self.interrupt = False
-        return simulate(self, run_file, log_file, noappend, walltime)
+    def simulate(self, run_file, log_file=None,
+                 noappend=False, walltime=inf):
+        return self.run('simulate', run_file, log_file, noappend, walltime)
 
 if __name__ == '__main__':
     Worker(*sys.argv[1:3]).run(*sys.argv[3:])
