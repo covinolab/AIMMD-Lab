@@ -66,7 +66,7 @@ if __name__ == '__main__':
             topology, f'{folder}/{old_file}', in_memory=True).trajectory
         file = f'{folder}/{fname}.part{int(old_file[-8:-4]) + 1:04d}.xtc'
         backup = ''
-        write(f'Creating new file {file}')
+        print(f'Creating new file {file}')
     
     # retrieve last frame's info
     frame = trajectory[-1]
