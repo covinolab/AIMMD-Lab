@@ -1,16 +1,11 @@
 import os
-import subprocess
+import torch
 
 def get_available_cpus():
     return sorted(list(set(os.sched_getaffinity(0))))
 
 def get_num_gpus():
-    try:
-        return len(subprocess.check_output(
-            ["nvidia-smi", "--list-gpus"]
-        ).decode().strip().split("\n"))
-    except:
-        return 0
+    return torch.cuda.device_count()
 
 def get_available_gpus():
     gpus = os.environ.get("CUDA_VISIBLE_DEVICES")
