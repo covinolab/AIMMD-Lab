@@ -30,7 +30,6 @@ class Worker:
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
         self.task = 'worker'  # for reporting
-        self.is_process = False   # =belonging to a launcher run execution
         self.termination_signal = None
         self.termination_timeout = termination_timeout
         self.__log_file = None
@@ -107,12 +106,7 @@ class Worker:
         # close log file if open
         self.log_file = None
         
-        # exit only if worker is a child process or not keyboardinterrupt
-        if self.is_process or self.termination_signal != 2:
-            self.termination_signal = None
-            sys.exit(0)
-        
-        # reset termination signal in any case
+        # reset termination signal
         self.termination_signal = None
     
     
