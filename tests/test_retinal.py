@@ -199,7 +199,7 @@ def test_retinal():
     launcher = aimmd.Launcher(params, 'run1')
     
     print('Testing slurm job creation')
-    launcher.create_job('job.sh', n=1, nA=1, nB=1)
+    launcher.create_job('job.sh', n=1, nA=1, nB=1, walltime=3600)
     # can run it e.g. on cluster
 
     # running one at a time
