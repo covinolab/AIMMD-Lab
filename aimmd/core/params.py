@@ -341,15 +341,12 @@ energy and rates estimates. Passed to `pathensemble.reweight`."""
     # SLURM configuration (for HPC clusters)
     
     slurm_header : str = field(
-        default=('#SBATCH --ntasks-per-node=4\n'
-                 '#SBATCH --cpus-per-task=8\n'
-                 '#SBATCH --mail-type=FAIL'),
+        default='#SBATCH --mail-type=FAIL',
         metadata={'description':
-"""Default SLURM configuration. Attention! It must include the
-ntasks-per-node opton. Do not include #!/bin/bash, job-name, time,
-or number of nodes (will be determined automatically). Each two-way
-shooting and free simulation worker uses one task. Manager and trainer
-share an extra task together."""
+"""Default SLURM configuration. Attention! Never include #!/bin/bash,
+job-name, time, or number of nodes (will be determined automatically).
+Each two-way shooting and free simulation worker will occupy one task.
+Manager and trainer share an extra task together."""
                  })
     
     # (full) path from which params were loaded
