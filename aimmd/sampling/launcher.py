@@ -392,7 +392,7 @@ class Launcher:
             def _case(i, description, noappend=False):
                 file.write(f'\n  {i})  # worker {i} ({description})\n')
                 file.write(f'    "${{PYTHON}}" "${{WORKER}}" "${{PARAMS}}" '
-                           f'{self.directory} {i} '
+                           f'{self.directory} {i % ntasks_per_node} '
                            f'{cpus_per_task} {gpus_per_task} '
                            f'simulate worker{i} worker{i}.log'
                            f'{" noappend" if noappend else ""} &\n')
@@ -441,7 +441,7 @@ class Launcher:
             
             # manager
             file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" {i + 1} '
+                       f'"{self.directory}" {(i + 1) % ntasks_per_node} '
                        f'{cpus_per_task} {gpus_per_task} '
                        f'manage {n} {nA} {nB} {eA} {eB} '
                        f'manager.log {nsteps} {nframes} &\n')
