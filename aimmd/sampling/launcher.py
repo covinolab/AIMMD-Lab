@@ -167,7 +167,7 @@ class Launcher:
     
     def run(self, n, nA, nB, eA=0, eB=0,
             nsteps=inf, nframes=inf, walltime=inf,
-            cpus_per_task=1, gpus_per_task=1,
+            cpus_per_task=1, gpus_per_task=0,
             termination_timeout=20.):
         """
         Launch the simulation locally, spawning multiple processes.
@@ -274,7 +274,7 @@ class Launcher:
     
     def create_job(self, filename, n, nA, nB, eA=0, eB=0,
                    nsteps=inf, nframes=inf,
-                   cpus_per_task=1, gpus_per_task=1,
+                   cpus_per_task=1, gpus_per_task=0,
                    walltime=24*3600):
         """
         Returns a slurm script in `filename` that can be launched by cluster.
@@ -292,8 +292,9 @@ class Launcher:
         nsteps: default inf, maximum number of shooting simulations
         nframes: default inf, maximum number of simulated frames,
         cpus_per_task: default 1, number of CPUs to allocate per task,
-            may be overridden by slurm header
-        gpus_per_task: default 1, number of GPUs to allocate per task
+            may be overridden by params.slurm_header
+        gpus_per_task: default 1, number of GPUs to allocate per task,
+            may be overridden by params.slurm_header
         walltime: default 24*3600 s (24h) job simulation time
         """
         
