@@ -190,7 +190,7 @@ def manage(self, n, nA, nB, eA=0, eB=0,
     t0 = time.time()
     def stop_condition():
         if time.time() - t0 > walltime or step_number.n >= nsteps:
-            self.termination_signal = 1   # temporary
+            self.termination_signal = 2  # keyobard interrupt
         return bool(self.termination_signal)
     
     # main cycle
@@ -328,17 +328,4 @@ def manage(self, n, nA, nB, eA=0, eB=0,
     step_number.close()
     print(f'\nReached {step_number.n} steps ({now()}), '
           f'{pathensemble.nframes} total frames')
-    
-    # two last training round (sure to have most updated data)
-    if self.termination_signal == 1:
-        print(f'\nLast training round')
-        remove(f'{directory}/network.h5')
-        remove(f'{directory}/bins.npy')
-        remove(f'{directory}/densities.npy')
-        load_network_and_projections(network, directory)
-        print(f'*** completed ({now()})')
-        self.termination_signal = 2
-    
-    # handle dependency
-    step_number.close()
     return pathensemble
