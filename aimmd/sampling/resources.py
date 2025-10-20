@@ -1,5 +1,6 @@
 import os
 import torch
+import numpy as np
 
 def get_available_cpus():
     return sorted(list(set(os.sched_getaffinity(0))))
