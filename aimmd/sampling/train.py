@@ -80,7 +80,6 @@ def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
     # main cycle
     print(f'\nStarting the main cycle ({now()})')
     while True:
-        
         # stop?
         if stop_condition():
             return pathensemble
