@@ -279,7 +279,7 @@ class Launcher:
     def create_job(self, filename, n, nA, nB, eA=0, eB=0,
                    nsteps=inf, nframes=inf,
                    cpus_per_task=1, gpus_per_task=0,
-                   walltime=24*3600):
+                   ntasks_per_node=1, walltime=24*3600):
         """
         Returns a slurm script in `filename` that can be launched by cluster.
         Walltime's default is in slurm header!
@@ -299,6 +299,8 @@ class Launcher:
             may be overridden by params.slurm_header
         gpus_per_task: default 1, number of GPUs to allocate per task,
             may be overridden by params.slurm_header
+        ntasks_per_node: default 1, number of tasks per node
+            may be overridden by params.slurm_header
         walltime: default 24*3600 s (24h) job simulation time
         """
         
@@ -306,7 +308,7 @@ class Launcher:
         slurm_header = self.params.slurm_header + ''
         
         # retrieve run information: ntasks per node
-        default_ntasks_per_node = 1
+        default_ntasks_per_node = ntasks_per_node
         ntasks_per_node = None
         for fields in slurm_header.split():
             if 'ntasks-per-node' in fields:
