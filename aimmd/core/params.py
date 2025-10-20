@@ -346,10 +346,10 @@ energy and rates estimates. Passed to `pathensemble.reweight`."""
                  '#SBATCH --mail-type=FAIL'),
         metadata={'description':
 """Default SLURM configuration. Attention! It must include the
-ntasks-per-node opton. Do not include #!/bin/bash, job-name, or number
-of nodes (will be determined automatically). Each two-way shooting and
-free simulation worker uses one task. Manager and trainer share an extra
-task together."""
+ntasks-per-node opton. Do not include #!/bin/bash, job-name, time,
+or number of nodes (will be determined automatically). Each two-way
+shooting and free simulation worker uses one task. Manager and trainer
+share an extra task together."""
                  })
     
     # (full) path from which params were loaded
@@ -486,17 +486,20 @@ task together."""
                 
                 if self.randomize_shooting_velocities:                    
                     # gromacs grompp: init velocities
-                    cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_init_mdp} '
+                    cmd = (f'{self.gmx_grompp} -nobackup '
+                           f'-f {self.gmx_init_mdp} '
                            f'-r {self.topology} -c {self.topology} '
                            f'-o .params_check_engine.tpr')
                     if exit := execute_command(cmd, walltime=timeout):
-                        raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                        raise RuntimeError(
+                            f'{cmd} failed with exit code {exit}')
                     
                     # gromacs grompp: mdrun
                     cmd = (f'{self.gmx_mdrun} -nobackup '
                            f'-deffnm .params_check_engine -nsteps 0')
                     if exit := execute_command(cmd, walltime=timeout):
-                        raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                        raise RuntimeError(
+                            f'{cmd} failed with exit code {exit}')
                         
                 # gromacs grompp: mdrun
                 cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_run_mdp} '
@@ -505,18 +508,21 @@ task together."""
                        f' -t .params_check_engine.trr'
                     if self.randomize_shooting_velocities else '')
                 if exit := execute_command(cmd, walltime=timeout):
-                    raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                    raise RuntimeError(
+                        f'{cmd} failed with exit code {exit}')
                 
                 # gromacs mdrun
                 cmd = (f'{self.gmx_mdrun} -nobackup -deffnm '
                        f'.params_check_engine')
                 if exit := execute_command(cmd, walltime=timeout):
-                    raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                    raise RuntimeError(
+                        f'{cmd} failed with exit code {exit}')
                 
                 # right extension?
                 fname = f'.params_check_engine{self.trajectory_extension}'
                 if not os.path.exists(fname):
-                    raise IOError(f'{self.trajectory_extension} file not generated')
+                    raise IOError(
+                        f'{self.trajectory_extension} file not generated')
             
             # toy mdrun
             if self.engine == 'toy':
@@ -567,7 +573,8 @@ task together."""
         hints = {f.name: f.type for f in fields(self)}
         
         # check
-        if name in hints and name not in ['initial_paths', 'engine', 'network']:
+        if name in hints and name not in [
+            'initial_paths', 'engine', 'network']:
             expected_type = hints[name]
             
             # function
@@ -578,8 +585,8 @@ task together."""
                 try:  # assign source
                     value.__source__ = getsource(value)
                 except Exception:
-                    value.__source__ = (
-                        f"def {name}(*args):\n    # source unavailable\n    pass")
+                    value.__source__ = (f"def {name}(*args):\n"
+                                        f"# source unavailable\n    pass")
             
             # list of strings
             elif expected_type is List[str]:
@@ -613,8 +620,9 @@ task together."""
         # special check: network
         if name == 'network':
             if not isinstance(value, torch.nn.Module):
-                raise TypeError(f'{name} must be an instance of torch.nn.Module, '
-                                f'got {type(value)}')
+                raise TypeError(
+                    f'{name} must be an instance of torch.nn.Module, '
+                    f'got {type(value)}')
         
         # special check: path
         if name == 'path':
@@ -635,9 +643,9 @@ task together."""
     @class_or_instancemethod
     def load(self_or_cls, filename='params.py'):
         """
-        Load parameters and functions from a Python file and update Params instance.
-        Ensures that all helpers/constants are visible to the functions and
-        network methods without creating a module.
+        Load parameters and functions from a Python file and update Params
+        instance. Ensures that all helpers/constants are visible to the
+        functions and network methods without creating a module.
         """
         path = Path(filename).resolve()
         if not path.exists():
@@ -651,7 +659,7 @@ task together."""
             source = path.read_text()
             exec_namespace = {}
             exec(compile(source, str(path), 'exec'), exec_namespace)
-
+            
             # extract fields
             kwargs = {}
             for name in exec_namespace:
@@ -720,5 +728,6 @@ task together."""
                     universe.trajectory.ts.positions = frame.positions
                     if hasattr(frame, 'velocities'):
                         universe.trajectory.ts.velocities = frame._velocities
-                    universe.trajectory.ts.triclinic_dimensions = frame.triclinic_dimensions
+                    universe.trajectory.ts.triclinic_dimensions = \
+                        frame.triclinic_dimensions
                     writer.write(universe)
