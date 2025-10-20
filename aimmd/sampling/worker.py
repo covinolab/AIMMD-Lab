@@ -84,6 +84,10 @@ class Worker:
         self.__log_file = log_file
 
     def bind_resources(self):
+        print(f'Worker\'s resources info')
+        print(f'------------------------')
+        print(f'LocalID {self.localid}')
+        
         # CPU binding
         cpus_per_task = int(os.getenv(
             "SLURM_CPUS_PER_TASK", f"{self.cpus_per_task}"))
@@ -103,12 +107,10 @@ class Worker:
         
         # check if requested resources are available
         if self.gpus_per_task > 0 and num_gpus_avail == 0:
-            raise RuntimeError(f"[LocalID {self.localid}] "
-                f"No GPUs available but {self.gpus_per_task} requested")
+            raise RuntimeError(f"No GPUs available but {self.gpus_per_task} requested")
         if self.gpus_per_task > num_gpus_avail:
-            raise RuntimeError(f"[LocalID {self.localid}] "
-                f"Only {num_gpus_avail} GPUs available but "
-                f"{self.gpus_per_task} requested per task.")
+            raise RuntimeError(f"Only {num_gpus_avail} GPUs available but "
+                               f"{self.gpus_per_task} requested per task.")
 
         # GPU binding
         if self.gpus_per_task > 0:
@@ -125,17 +127,17 @@ class Worker:
         if (self.localid > 0 and
             self.gpus_per_task > 0 and
             num_gpus_avail <= (self.localid * self.gpus_per_task)):
-            print(f"[LocalID {self.localid}] Note: "
-                  f"worker may be oversubscribing GPUs\n"
+            print(f"[Note] Worker may be oversubscribing GPUs\n"
                   f"  Available GPUs: {num_gpus_avail}\n"
                   f"  GPUs per task: {self.gpus_per_task}")
         
         # report resource allocation
-        print(f"[LocalID {self.localid}] CPU ids: {','.join(map(str, cpus))}")
+        print(f"CPU ids: {','.join(map(str, cpus)) if len(cpus) else 'all'}")
         if self.gpus_per_task > 0:
-            print(f"[LocalID {self.localid}] GPU ids: {gpus}")
+            print(f"GPU ids: {gpus}")
         else:
-            print(f"[LocalID {self.localid}] No GPUs allocated")
+            print(f"No GPUs allocated")
+        print(f'------------------------\n')
     
     def terminate_handler(self, signum=None, frame=None):
         """Gracefully terminate the worker and its subprocess."""
