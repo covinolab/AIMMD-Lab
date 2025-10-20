@@ -5,18 +5,14 @@ AIMMD parameters management / defaults.
 import os
 import sys
 import torch
-import types
 import numpy as np
 import shutil
 import mdtraj as md
-import inspect
-import linecache
-import subprocess
 import MDAnalysis as mda
-from tqdm import tqdm
 from .utils import (class_or_instancemethod, fit,
-                    DummyNetwork, run_with_timeout)
+                    PlaceholderNetwork, execute_command)
 from typing import List, Callable
+from inspect import getsource
 from pathlib import Path, PosixPath
 from dataclasses import dataclass, field, fields
 from MDAnalysis.coordinates.memory import MemoryReader
@@ -146,9 +142,10 @@ as Gromacs."""
     
     # neural network
     network : torch.nn.Module = field(
-        default=DummyNetwork(),
+        default=PlaceholderNetwork(),
         metadata={'description':
-"""Neural network model (used for logit committor estimates in AIMMD)."""
+"""Neural network model (used for logit committor estimates in AIMMD).
+Placeholder just returns input's first dimension."""
                  })
     
     # shooting point selection options
@@ -344,15 +341,15 @@ energy and rates estimates. Passed to `pathensemble.reweight`."""
     # SLURM configuration (for HPC clusters)
     
     slurm_header : str = field(
-        default=('#SBATCH --ntasks-per-node=1\n'
-                 '#SBATCH --cpus-per-task=16\n'
+        default=('#SBATCH --ntasks-per-node=4\n'
+                 '#SBATCH --cpus-per-task=8\n'
                  '#SBATCH --mail-type=FAIL'),
         metadata={'description':
 """Default SLURM configuration. Attention! It must include the
-ntasks-per-node opton. Do not include #!/bin/bash, job-name, or number
-of nodes (will be determined automatically). Each two-way shooting and
-free simulation worker uses one task. Manager and trainer share an extra
-task together."""
+ntasks-per-node opton. Do not include #!/bin/bash, job-name, time,
+or number of nodes (will be determined automatically). Each two-way
+shooting and free simulation worker uses one task. Manager and trainer
+share an extra task together."""
                  })
     
     # (full) path from which params were loaded
@@ -489,17 +486,20 @@ task together."""
                 
                 if self.randomize_shooting_velocities:                    
                     # gromacs grompp: init velocities
-                    cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_init_mdp} '
+                    cmd = (f'{self.gmx_grompp} -nobackup '
+                           f'-f {self.gmx_init_mdp} '
                            f'-r {self.topology} -c {self.topology} '
                            f'-o .params_check_engine.tpr')
-                    if exit := run_with_timeout(cmd, timeout):
-                        raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                    if exit := execute_command(cmd, walltime=timeout):
+                        raise RuntimeError(
+                            f'{cmd} failed with exit code {exit}')
                     
                     # gromacs grompp: mdrun
                     cmd = (f'{self.gmx_mdrun} -nobackup '
                            f'-deffnm .params_check_engine -nsteps 0')
-                    if exit := run_with_timeout(cmd, timeout):
-                        raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                    if exit := execute_command(cmd, walltime=timeout):
+                        raise RuntimeError(
+                            f'{cmd} failed with exit code {exit}')
                         
                 # gromacs grompp: mdrun
                 cmd = (f'{self.gmx_grompp} -nobackup -f {self.gmx_run_mdp} '
@@ -507,26 +507,29 @@ task together."""
                        f'-o .params_check_engine.tpr') + (
                        f' -t .params_check_engine.trr'
                     if self.randomize_shooting_velocities else '')
-                if exit := run_with_timeout(cmd, timeout):
-                    raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                if exit := execute_command(cmd, walltime=timeout):
+                    raise RuntimeError(
+                        f'{cmd} failed with exit code {exit}')
                 
                 # gromacs mdrun
                 cmd = (f'{self.gmx_mdrun} -nobackup -deffnm '
                        f'.params_check_engine')
-                if exit := run_with_timeout(cmd, timeout):
-                    raise RuntimeError(f'{cmd} failed with exit code {exit}')
+                if exit := execute_command(cmd, walltime=timeout):
+                    raise RuntimeError(
+                        f'{cmd} failed with exit code {exit}')
                 
                 # right extension?
                 fname = f'.params_check_engine{self.trajectory_extension}'
                 if not os.path.exists(fname):
-                    raise IOError(f'{self.trajectory_extension} file not generated')
+                    raise IOError(
+                        f'{self.trajectory_extension} file not generated')
             
             # toy mdrun
             if self.engine == 'toy':
                 fname = f'.params_check_engine{self.trajectory_extension}'
                 md.load(self.topology).save(fname)
                 cmd = f'{self.toy_mdrun} -deffnm .params_check_engine'
-                if exit := run_with_timeout(cmd, timeout):
+                if exit := execute_command(cmd, walltime=timeout):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
         
         except Exception as exception:
@@ -559,11 +562,7 @@ task together."""
                 if desc := f.metadata.get("description", ""):
                     lines.append(f"\"\"\"{desc}\"\"\"\n")
             else:  # if it's a function, show its content
-                try:
-                    lines.append(value.__source__)
-                except Exception:
-                    lines.append(
-                        f"def {name}\n:\n    # source unavailable\n    pass\n")
+                lines.append(value.__source__)
         
         return "\n".join(lines)
     
@@ -574,7 +573,8 @@ task together."""
         hints = {f.name: f.type for f in fields(self)}
         
         # check
-        if name in hints and name not in ['initial_paths', 'engine', 'network']:
+        if name in hints and name not in [
+            'initial_paths', 'engine', 'network']:
             expected_type = hints[name]
             
             # function
@@ -585,8 +585,8 @@ task together."""
                 try:  # assign source
                     value.__source__ = getsource(value)
                 except Exception:
-                    value.__source__ = (
-                        f"def {name}:\n    # source unavailable\n    pass")
+                    value.__source__ = (f"def {name}(*args):\n"
+                                        f"# source unavailable\n    pass")
             
             # list of strings
             elif expected_type is List[str]:
@@ -620,8 +620,9 @@ task together."""
         # special check: network
         if name == 'network':
             if not isinstance(value, torch.nn.Module):
-                raise TypeError(f'{name} must be an instance of torch.nn.Module, '
-                                f'got {type(value)}')
+                raise TypeError(
+                    f'{name} must be an instance of torch.nn.Module, '
+                    f'got {type(value)}')
         
         # special check: path
         if name == 'path':
@@ -642,9 +643,9 @@ task together."""
     @class_or_instancemethod
     def load(self_or_cls, filename='params.py'):
         """
-        Load parameters and functions from a Python file and update Params instance.
-        Ensures that all helpers/constants are visible to the functions and
-        network methods without creating a module.
+        Load parameters and functions from a Python file and update Params
+        instance. Ensures that all helpers/constants are visible to the
+        functions and network methods without creating a module.
         """
         path = Path(filename).resolve()
         if not path.exists():
@@ -658,7 +659,7 @@ task together."""
             source = path.read_text()
             exec_namespace = {}
             exec(compile(source, str(path), 'exec'), exec_namespace)
-
+            
             # extract fields
             kwargs = {}
             for name in exec_namespace:
@@ -714,6 +715,7 @@ task together."""
             
             # report
             print(f'Writing {folder}/{filename}')
+            os.system(f'mkdir -p {folder}')
             
             # actual save: get n_atoms
             n_atoms = len(path[0].positions)
@@ -727,5 +729,6 @@ task together."""
                     universe.trajectory.ts.positions = frame.positions
                     if hasattr(frame, 'velocities'):
                         universe.trajectory.ts.velocities = frame._velocities
-                    universe.trajectory.ts.triclinic_dimensions = frame.triclinic_dimensions
+                    universe.trajectory.ts.triclinic_dimensions = \
+                        frame.triclinic_dimensions
                     writer.write(universe)

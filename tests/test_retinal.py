@@ -196,21 +196,18 @@ def test_retinal():
     print(f'From B  {rhoB}')
     
     print('\nInitializing AIMMD: three simulators, one manager, one trainer')
-    launcher = aimmd.Launcher(params, 'run1', 1, 1, 1)
+    launcher = aimmd.Launcher(params, 'run1')
     
     print('Testing slurm job creation')
-    launcher.create_job('job.sh')
+    launcher.create_job('job.sh', n=1, nA=1, nB=1, walltime=3600)
     # can run it e.g. on cluster
 
     # running one at a time
-    t0 = time.time()
-    aimmd.Worker(params, 'run1').train(walltime=10)
-    if time.time() - t0 < 10:
-        print('TRAINER FAILED')
+    aimmd.Worker(params, 'run1').train(nrounds=1)
     
     t0 = time.time()
-    aimmd.Worker(params, 'run1').manage(1, 1, 1, 0, 0, walltime=10)
-    if time.time() - t0 < 10:
+    aimmd.Worker(params, 'run1').manage(1, 1, 1, walltime=20)
+    if time.time() - t0 < 20:
         print('MANAGER FAILED')
     
     t0 = time.time()
@@ -224,8 +221,7 @@ def test_retinal():
         print('FREE B FAILED')
 
     # worker, trainer, and shooting together
-    launcher = aimmd.Launcher(params, 'run1', 1, 0, 0)
-    launcher.run(nsteps=10, walltime=120)
+    launcher.run(n=1, nA=0, nB=0, nsteps=10, walltime=120)
     
     print('\nChecking if workers simulated...')
     file = f'run1/equilibriumA/traj000001.part0001{trajectory_extension}'
@@ -234,9 +230,8 @@ def test_retinal():
     print('All fine')
 
     print('\nTest appending free A')
-    launcher = aimmd.Launcher(params, 'run1', 0, 1, 0)
     t0 = time.time()
-    launcher.run(walltime=30)
+    launcher.run(n=0, nA=1, nB=0, walltime=30)
     if time.time() - t0 < 30:
         print('FREE A & MANAGER & TRAINER FAILED')
     
