@@ -83,7 +83,7 @@ class Worker:
             sys.stderr = sys.stdout
         self.__log_file = log_file
 
-    def resources_binding(self):
+    def bind_resources(self):
         # CPU binding
         cpus_per_task = int(os.getenv(
             "SLURM_CPUS_PER_TASK", f"{self.cpus_per_task}"))
