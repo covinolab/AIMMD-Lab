@@ -2,6 +2,7 @@ import os
 import time
 import functools
 from ..core.utils import (now,
+                          remove,
                           get_current_simulation,
                           execute_command)
 
@@ -16,68 +17,72 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
     noappend: bool, add Gromacs' -noappend flag.
     """
     
+    # report
+    self.log_file = log_file
+    print(f"Starting worker: simulate ({now()})")
+    if not log_file:
+        print(f"Press Control+C to interrupt.")
+    
+    # cleanup when ending
+    self.cleanup = [f'{self.directory}/{run_file}.run',
+                    f'{self.directory}/{run_file}.ready']
+    
+    # control through files
+    os.system(f'rm -f {self.directory}/{run_file}.run')
+    os.system(f'touch {self.directory}/{run_file}.ready')
+    
+    # process arguments
     if noappend == 'False' or noappend == 'false':
         noappend = False
     else:
         noappend = bool(noappend)
     walltime = float(walltime)
     
-    try:
-        self.log_file = log_file
-        print(f"Starting simulation loop ({now()})...")
-        if not log_file:
-            print(f"Press Control+C to interrupt.")
+    # define stop condition
+    t0 = time.time()
+    fname = ''
+    def stop_condition():
+        nonlocal fname
         
-        # run continuously
-        t0 = time.time()
-        while True:
-            
-            # maximum time
-            if time.time() - t0 > walltime:
-                self.terminate_handler(exit=False)
-            
-            # received the signal
-            if self.interrupt:
-                break
-            
-            # interrupt everything currently running
-            self.terminate_handler(report=False, exit=False)
-            self.interrupt = False  # ...but continue simulating
-            
-            # what to simulate
-            fname = get_current_simulation(f'{self.directory}/{run_file}')
-            if not fname:
-                continue  # no job assigned yet
-            
-            # (re)-start logging
-            self.log_file = log_file
-            print(f"Starting simulating {fname} ({now()})...")
-            
-            # determine stop condition
-            def stop_condition():
-                if get_current_simulation(f'{self.directory}/{run_file}') != fname:
-                    print(f"Target simulation file changed ({now()}).")
-                    return True
-                return self.interrupt
-            
-            # create command
-            cmd = (f'{self.params.mdrun} -deffnm {fname} '
-                   f'-cpo {fname}.cpt -cpi {fname}.cpt -cpt .1'
-                   f'{"-noappend" if noappend else ""}')
-            
-            # execute command
-            if exit := execute_command(cmd, stop_condition):
-                raise RuntimeError(f'{cmd} failed with exit code {exit}')
+        # maximum time
+        if time.time() - t0 > walltime:
+            self.termination_signal = 2  # sigint
+            return True
+        
+        # new simulation
+        if get_current_simulation(f'{self.directory}/{run_file}') != fname:
+            print(f"Target simulation file changed ({now()}).")
+            return True
+        
+        # do you have to interrupt?
+        return bool(self.termination_signal)
     
-    except SystemExit:
-        self.terminate_handler()
-    
-    except KeyboardInterrupt:
-        self.terminate_handler(exit=False)
-    
-    except Exception as exception:
-        print(f'Exception: {exception}')
-        self.terminate_handler()
-    
-    finally:
-        self.terminate_handler(exit=False)
+    # main cycle
+    while True:
+        
+        # received the signal
+        if bool(self.termination_signal):
+            break
+        
+        # what to simulate
+        fname = get_current_simulation(f'{self.directory}/{run_file}')
+        if not fname:
+            continue  # no job assigned yet
+        
+        # worker is not ready anymore
+        remove(f'{self.directory}/{run_file}.ready')
+        
+        # create command
+        cmd = (f'{self.params.mdrun} -deffnm {fname} '
+               f'-cpo {fname}.cpt -cpi {fname}.cpt -cpt .1 '
+               f'{"-noappend" if noappend else ""}')
+        
+        # execute command
+        print(f"Starting simulating {fname} ({now()})...")
+        if exit := execute_command(cmd, stop_condition,
+            termination_timeout=self.termination_timeout):
+            os.system(f'touch {self.directory}/{run_file}.ready')
+            raise RuntimeError(f'{cmd} failed with exit code {exit}')
+        
+        # worker is ready again
+        os.system(f'touch {self.directory}/{run_file}.ready')
