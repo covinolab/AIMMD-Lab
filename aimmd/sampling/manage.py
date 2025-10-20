@@ -55,6 +55,9 @@ def manage(self, n, nA, nB, eA=0, eB=0,
     nframes = float(nframes)
     walltime = float(walltime)
     
+    # bind resources
+    self.bind_resources()
+    
     # initialize output
     pathensemble = None
     
