@@ -79,4 +79,3 @@ def bind_resources(localid, cpus_per_task=1, gpus_per_task=0):
     else:
         print(f"No GPUs allocated")
     print(f'-----------------------\n')
-
