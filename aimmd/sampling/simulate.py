@@ -38,6 +38,9 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
         noappend = bool(noappend)
     walltime = float(walltime)
     
+    # bind resources
+    self.bind_resources()
+    
     # define stop condition
     t0 = time.time()
     fname = ''
