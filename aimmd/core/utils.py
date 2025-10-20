@@ -3,9 +3,12 @@ import pty
 import copy
 import time
 import torch
+import psutil
 import numpy as np
 import select
+import signal
 import functools
+import traceback
 import subprocess
 import MDAnalysis as mda
 from time import sleep
@@ -30,7 +33,8 @@ def _safe_del(self):
     try:
         _old_del(self)
     except AttributeError:
-        # Suppress AttributeError caused by missing _xdr attribute during __del__
+        # Suppress AttributeError
+        # caused by missing _xdr attribute during __del__
         pass
 
 base.ReaderBase.__del__ = _safe_del
@@ -39,55 +43,108 @@ base.ReaderBase.__del__ = _safe_del
 np.set_printoptions(precision=3)
 
 
-def execute_command(cmd, stop_condition=lambda : False, walltime=inf):
-    """Execute a shell command under a pseudo-terminal (PTY), showing
-    real-time output and terminating after walltime is reached."""
+def terminate(process, timeout=20.):
+    """Terminate group linked to process"""
+    
+    def _wait():
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            try:
+                if os.killpg(process.pid, 0):
+                    continue
+            except:
+                pass
+            if process.poll() is not None:
+                return
+            time.sleep(.1)
+    
+    # try terminating whole group
+    try:
+        os.killpg(process.pid, signal.SIGINT)
+        _wait()
+    except:
+        pass
+    
+    # last resort
+    process.kill()
+    _wait()
 
-    # open pseudo-terminal
-    master_fd, slave_fd = pty.openpty()
+
+def execute_command(cmd, stop_condition=lambda : False,
+                    walltime=inf, termination_timeout=20.):
+    
+    # time and environment
     t0 = time.time()
-
-    # start subprocess attached to the pseudo-terminal
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    
+    # start subprocess
     process = subprocess.Popen(
         cmd,
         shell=True,
-        stdin=slave_fd,
-        stdout=slave_fd,
+        stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        env=os.environ.copy(),
-        close_fds=True
-    )
-    os.close(slave_fd)
-
-    # capture the output (in real-time if not waiting)
+        bufsize=1,
+        universal_newlines=True,
+        env=env,
+        preexec_fn=os.setsid)
+    print(f'Executing "{cmd}" ({now()})')
+    
+    # make stdout non-blocking
+    file_descriptor = process.stdout.fileno()
+    
+    # print the output in real time
+    def _print_output(whole_text=False):
+        try:
+            if select.select([file_descriptor], [], [], 0.1)[0]:
+                print(process.stdout.readline() if not whole_text else
+                      process.stdout.read(), end="", flush=True)
+        except (OSError, ValueError):
+            pass
+    
+    # graceful termination
+    def _terminate_process_and_print_remaining_output():
+        terminate(process, termination_timeout)
+        _print_output(whole_text=True)
+        
+        # always close stdout safely
+        try:
+            if process.stdout and not process.stdout.closed:
+                process.stdout.close()
+        except Exception:
+            pass
+    
+    # let it run
     try:
-        with os.fdopen(master_fd) as stdout:
-            while True:
-
-                # process terminated
-                if (return_code := process.poll()) is not None:
-                    return return_code
-
-                # stop condition or walltime reached
-                if stop_condition() or time.time() - t0 > walltime:
-                    process.terminate()
-                    while True:
-                        if process.poll() is not None:
-                            return 0
-
-                # print the output
-                if select.select([stdout], [], [], 0.1)[0]:
-                    try:
-                        line = stdout.readline()
-                        print(line, end="")
-                    except OSError:
-                        # PTY closed: treat as EOF
-                        break
-
-    # catch any final PTY read errors cleanly
-    except OSError:
-        return -1 or process.poll()
+        while True:
+            
+            # print the output in real time
+            _print_output()
+            
+            # process terminated
+            if (exit_code := process.poll()) is not None:
+                return exit_code
+            
+            # stop condition or walltime reached
+            if stop_condition() or time.time() - t0 > walltime:
+                print(f'[StopCondition] Terminating "{cmd}" ({now()})')
+                _terminate_process_and_print_remaining_output()
+                return 0
+    
+    # keyboard
+    except KeyboardInterrupt:
+        print(f'[KeyboardInterrupt] Terminating "{cmd}" ({now()})')
+        _terminate_process_and_print_remaining_output()
+        return 0
+    
+    except Exception as exception:
+        print(f'[{exception}] Terminating "{cmd}" ({now()})')
+        _terminate_process_and_print_remaining_output()
+        return 1
+    
+    # ensure cleanup
+    finally:
+        _terminate_process_and_print_remaining_output()
 
 
 def array2string(array, initial_spaces, wrap_size=80, formatter=None):
@@ -174,34 +231,57 @@ def rescale(q, knots, values):
     return q
 
 
-def get_current_simulation(worker_id):
-    if not os.path.exists(worker_id):
-        return ''
-    with open(worker_id, 'r') as f:
+def get_current_simulation(worker_id, retries=10, delay=0.1):
+    """Safely read the current simulation name from worker_id file.
+    Retries a few times if the file is temporarily busy or locked.
+    """
+    for _ in range(retries):
         try:
-            return f.read().split()[0]
-        except:
-            return ''
+            if not os.path.exists(f'{worker_id}.run'): 
+                return ''
+            
+            with open(f'{worker_id}.run', 'r') as f:
+                content = f.read().strip()
+                return content.split()[0] if content else ''
+        except (OSError, IOError):
+            # likely "resource temporarily unavailable" or similar
+            time.sleep(delay)
+    
+    # fallback if still failing
+    return ''
 
 
-def continue_simulation(worker_id, fname):
-    if get_current_simulation(worker_id) == fname:
+def continue_simulation(worker_id, fname, retries=10, delay=.1):
+    if get_current_simulation(worker_id, retries, delay) == fname:
         return
-    else:  # not simulating the right thing: overriding
-        remove(worker_id, False)
-        sleep(.5)  # wait worker to realize that
-    with open(f'{worker_id}.temp', 'w') as file:
-        file.write(fname)
-    os.rename(f'{worker_id}.temp', worker_id)
-    print(f'>>> starting simulating {fname} ({now()})')
+    for _ in range(retries):
+        try:
+            with open(f'{worker_id}.run', 'w') as file:
+                file.write(fname)
+            print(f'>>> starting simulating {fname} ({now()})')
+            return
+        except (OSError, IOError):
+            # likely "resource temporarily unavailable" or similar
+            time.sleep(delay)
+            continue_simulation(worker_id, fname, retries, delay)
 
 
-def stop_simulation(worker_id, fname=None):
+def stop_simulation(worker_id, fname=None, message='', timeout=20.):
+    """Only if fname."""
+    def _wait():
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if os.path.exists(f'{worker_id}.ready'):
+                return
+    
     if fname is not None:
         if get_current_simulation(worker_id) != fname:
-            return False # nothing to do here
-    remove(worker_id, False)
-    sleep(.5)  # wait worker to realize that
+            return False  # nothing to do here
+    
+    remove(f'{worker_id}.run', False)
+    if message:
+        print(message)
+    _wait()
     return True
 
 
@@ -276,7 +356,7 @@ def fit(network, pathensemble,
         training set points such that each batch has a uniform population
         across the bins. Plus, regularize the shooting results in the bins.
         `nbins = 9` is usually a good value.
-
+    
     cutoff_max : float, default=20.
         The `cutoff_max` parameter in `utils.get_bins`.
     
@@ -310,7 +390,7 @@ def fit(network, pathensemble,
         `thB > 0`, the function uses the `(1 - thB)` percentile as the cutoff.
         Paths with higher shooting values are considered as if coming from
         state B for the additional shooting results.
-
+    
     lr : float, default=1e-3
         Learning rate. Will use an ADAM optimizer.
     
@@ -322,7 +402,7 @@ def fit(network, pathensemble,
     loss_smoothening_weight : float, default=0.0
         Weight of an additional term to the loss, corresponding to the
         network's gradient with respect to the input regularization factor.
-
+    
     loss_regularization_weight : float, default=0.0
         Weight of an additional term to the loss, corresponding to the L1
         regularization factor.
@@ -377,7 +457,7 @@ def fit(network, pathensemble,
         if not len(l):
             return np.concatenate([l], **kwargs)
         return np.concatenate(l, **kwargs)
-
+    
     if nbins or thA is not None or thB is not None:  # needed in these cases
         print(f'Updating the pathensemble values ({now()})')
         pathensemble.update_values(only_reactive=True)  # with previous model
@@ -488,7 +568,7 @@ def fit(network, pathensemble,
             thB2 = +inf
         # report
         print(f'    thB {thB} associated value: {thB2:.3f}\n')            
-
+    
     if len(initial_states):
         # get indices of equilibrium fromA paths
         # (starting at the effective boundary of state A)
@@ -504,7 +584,7 @@ def fit(network, pathensemble,
     else:
         free_A = np.zeros(0, dtype=int)
         free_B = np.zeros(0, dtype=int)
-
+    
     # which AtoA paths are free? (within keys representation)
     # which AtoA paths are shot? (within keys representation)
     if len(AtoA):
@@ -1076,7 +1156,7 @@ def fit(network, pathensemble,
     # actual loop
     while True:
         
-        if worker is not None and worker.interrupt:
+        if worker is not None and bool(worker.termination_signal):
             return [], [], [], [], []
         
         for param_group in optimizer.param_groups:
@@ -1249,7 +1329,8 @@ def load_network_and_projections(
             densities = np.load(f'{directory}/densities.npy')
             break
         except:
-            if not wait or (worker is not None and worker.interrupt):
+            if not wait or (worker is not None and 
+                            bool(worker.termination_signal)):
                 return [], []
             sleep(.1)
     
@@ -1291,7 +1372,7 @@ def update_shooting_simulation(
         added_frames = 1  # flag
     else:
         added_frames = 0
-    report = False
+    
     while not n_frames_back and added_frames:
         if grompp:
             try:
@@ -1311,7 +1392,7 @@ def update_shooting_simulation(
             except:
                 cpt_present = False
             if not tpr_present or (cpt_present and not trj_present):
-                print(f'!!! {backward.directory}/back missing; resetting!')
+                print(f'!!! {backward.directory}/back inconsistent; reseting!')
                 backward.reset() # reset to pristine state
                 added_frames = 0
                 stop_simulation(worker_id, f'{backward.directory}/back')
@@ -1324,32 +1405,31 @@ def update_shooting_simulation(
                 start=backward.nframes,
                 stop=backward.nframes + batch_size)[0]
         except:
-            print(f'!!! error updating {backward.directory}/back; resetting!')
+            print(f'!!! error updating {backward.directory}/back; reseting!')
             backward.reset() # reset to pristine state
             added_frames = 0
-            stop_simulation(worker_id, f'{backward.directory}/back')
+            stop_simulation(worker_id)
             remove(f'{backward.directory}/back.cpt')
             continue_simulation(worker_id, f'{backward.directory}/back')
         
         if added_frames:
-            report = True
+            print(f'... {backward.directory}/'
+                  f'back{trajectory_extension} '
+                  f'hit {backward.nframes} frames ({now()})')
         
         # stop, report only if it was running
         states = _stop_condition(backward)
         n_frames_back = len(states)
         if n_frames_back:
-            if stop_simulation(worker_id, f'{backward.directory}/back'):
-                print(f'xxx stopping {backward.directory}/'
-                      f'back{trajectory_extension} in state {states[-1]} '
-                      f'after {n_frames_back} frames ({now()})')
+            stop_simulation(
+                worker_id, f'{backward.directory}/back',
+                message=(f'xxx stopping {backward.directory}/'
+                         f'back{trajectory_extension} in state {states[-1]} '
+                         f'after {n_frames_back} frames ({now()})'))
             break
-
+        
         # continue simulation
         continue_simulation(worker_id, f'{backward.directory}/back')
-    if report:
-        print(f'... {backward.directory}/'
-              f'back{trajectory_extension} '
-              f'hit {backward.nframes} frames ({now()})')
     
     # forward part
     # add last simulated frames in batches,
@@ -1360,7 +1440,6 @@ def update_shooting_simulation(
         added_frames = 1  # flag
     else:
         added_frames = 0
-    report = False
     while not n_frames_forw and added_frames:
         if grompp:
             try:
@@ -1380,10 +1459,10 @@ def update_shooting_simulation(
             except:
                 cpt_present = False
             if not tpr_present or (cpt_present and not trj_present):
-                print(f'!!! {forward.directory}/forw missing; resetting!')
+                print(f'!!! {forward.directory}/forw inconsistent; reseting!')
                 forward.reset() # reset to pristine state
                 added_frames = 0
-                stop_simulation(worker_id, f'{forward.directory}/forw')
+                stop_simulation(worker_id)
                 remove(f'{forward.directory}/forw.cpt')
                 remove(f'{forward.directory}/forw{trajectory_extension}')
                 return [], [], []
@@ -1392,7 +1471,7 @@ def update_shooting_simulation(
                 start=forward.nframes,
                 stop=forward.nframes + batch_size)[0]
         except:
-            print(f'!!! error updating {forward.directory}/forw; resetting!')
+            print(f'!!! error updating {forward.directory}/forw; reseting!')
             forward.reset() # reset to pristine state
             added_frames = 0
             stop_simulation(worker_id, f'{forward.directory}/forw')
@@ -1400,21 +1479,19 @@ def update_shooting_simulation(
             continue_simulation(worker_id, f'{forward.directory}/forw')
         
         if added_frames:
-            report = True
+            print(f'... {forward.directory}/'
+                  f'forw{trajectory_extension} '
+                  f'hit {forward.nframes} frames ({now()})')
         
         # stop, report only if it was running
         states = _stop_condition(forward, n_frames_forw)
         n_frames_forw = len(states)
         if n_frames_forw:
-            if report:
-                print(f'... {forward.directory}/'
-                      f'forw{trajectory_extension} '
-                      f'hit {forward.nframes} frames ({now()})')
-            
-            if stop_simulation(worker_id, f'{forward.directory}/forw'):
-                print(f'xxx stopping {forward.directory}/'
-                      f'forw{trajectory_extension} in state {states[-1]} '
-                      f'after {n_frames_forw} frames ({now()})')
+            stop_simulation(
+                worker_id, f'{forward.directory}/forw',
+                message=(f'xxx stopping {forward.directory}/'
+                         f'forw{trajectory_extension} in state {states[-1]} '
+                         f'after {n_frames_forw} frames ({now()})'))
             
             # compose and return full path
             frames_back = range(n_frames_back - 1, 0, -1)
@@ -1431,10 +1508,7 @@ def update_shooting_simulation(
         # continue simulation
         elif get_current_simulation(worker_id) != f'{backward.directory}/back':
             continue_simulation(worker_id, f'{forward.directory}/forw')
-    if report:
-        print(f'... {forward.directory}/'
-              f'forw{trajectory_extension} '
-              f'hit {forward.nframes} frames ({now()})')
+    
     return [], [], []  # no path: empty
 
 
@@ -1507,7 +1581,7 @@ def initialize_simulation(frames, params, *fnames):
         remove(f'{_fname}.trr', False)
         frames.write(f'{_fname}.trr', frame_indices=[-1],
                      invert_velocities=invert_velocities)
-
+    
     # get results in the universe
     universe = mda.Universe(topology, f'{_fname}.trr')
     universe.transfer_to_memory()
@@ -1529,14 +1603,14 @@ def initialize_simulation(frames, params, *fnames):
         atomgroup = universe.atoms
         frame = universe.trajectory[-1]
         remove(f'{_fname}.trr', False)
-
+        
         if grompp:
             kinetic_factor0 = np.sum(frame._velocities ** 2)
             rescaling = min(10., (kinetic_factor / kinetic_factor0) ** .5)
             print(f'*** shooting point kinetic factor: {kinetic_factor0:.3e}')
             print(f'=== rescaling velocities by {rescaling:.3f}')
             frame._velocities *= rescaling
-            
+    
     # iterate through files
     invert_velocities = False
     for fname, directory in zip(fnames, directories):
@@ -1563,7 +1637,8 @@ def initialize_simulation(frames, params, *fnames):
             if nframes <= 1:
                 filename = f'{directory}/{fname}{trajectory_extension}'
             else:
-                filename = f'{directory}/{fname}.part0001{trajectory_extension}'
+                filename = (f'{directory}/'
+                            f'{fname}.part0001{trajectory_extension}')
             with mda.Writer(filename, atomgroup.n_atoms) as writer:
                 writer.write(atomgroup)
         
@@ -1695,7 +1770,9 @@ def update_selection_pool(
     def update_initial_path_directory(initial_paths):
         _initial_paths = initial_paths.copy()
         _initial_paths.directory = pool.directory
-        _initial_paths.topology = os.path.relpath(f'{initial_paths.directory}/{initial_paths.topology}', pool.directory)
+        _initial_paths.topology = os.path.relpath(
+            f'{initial_paths.directory}/{initial_paths.topology}', 
+            pool.directory)
         _initial_paths._PathEnsemble__trajectory_files = [os.path.relpath(
             f'{initial_paths.directory}/{file}', pool.directory)
             for file in _initial_paths.trajectory_files]
@@ -1802,7 +1879,7 @@ def update_equilibrium_trajectory(
             part += 1
     
     trajectory.split()
-
+    
     # report
     if report:
         last_states = ''
@@ -1861,9 +1938,10 @@ def update_equilibrium_simulations(
                 for trajectory, added_nframes in zip(eqA.pathensembles, nf):
                     if not added_nframes:
                         continue
-                    trajectory.save(f'{trajectory.directory}/'
-                                    f'{trajectory.trajectory_files[0][:10]}.h5',
-                                    directory='.')
+                    trajectory.save(
+                        f'{trajectory.directory}/'
+                        f'{trajectory.trajectory_files[0][:10]}.h5',
+                        directory='.')
             eq_completed.extend(list(eqA.pathensembles))
         
         if not nB:
@@ -1876,11 +1954,12 @@ def update_equilibrium_simulations(
                 for trajectory, added_nframes in zip(eqB.pathensembles, nf):
                     if not added_nframes:
                         continue
-                    trajectory.save(f'{trajectory.directory}/'
-                                    f'{trajectory.trajectory_files[0][:10]}.h5',
-                                    directory='.')
+                    trajectory.save(
+                        f'{trajectory.directory}/'
+                        f'{trajectory.trajectory_files[0][:10]}.h5',
+                        directory='.')
             eq_completed.extend(list(eqB.pathensembles))
-
+    
     t0 = np.array([-inf, -inf])  # start of the latest ext. trajectory
     for j, folder in enumerate(['extendA', 'extendB']):
         if not os.path.exists(folder):
@@ -1900,7 +1979,7 @@ def update_equilibrium_simulations(
     
     # iterate through all the workers and identify the states
     for h in range(nA + nB + eA + eB):
-        worker_id = f'{directory}/worker{h}.run'
+        worker_id = f'{directory}/worker{h}'
         
         # populate eq_current and get state info
         if h < nA + nB:
@@ -2034,13 +2113,14 @@ def update_equilibrium_simulations(
             
             # trajectory is completed (len(init_frames) > 0): go to the next
             if len(init_frames):
-                stop_simulation(f'{directory}/worker{h}.run')
+                stop_simulation(f'{directory}/worker{h}')
                 print(f'=== {trajectory.directory}/'
                       f'{trajectory.trajectory_files[0][:10]} completed')
                 if save_h5:
-                    trajectory.save(f'{trajectory.directory}/'
-                                    f'{trajectory.trajectory_files[0][:10]}.h5',
-                                    directory='.')
+                    trajectory.save(
+                        f'{trajectory.directory}/'
+                        f'{trajectory.trajectory_files[0][:10]}.h5',
+                        directory='.')
                 if not extend:
                     eq_completed.append(trajectory)
                 trajectory = PathEnsemble()
@@ -2210,7 +2290,7 @@ def update_pathensemble(
               f'{pathensemble.trajectory_files[0][:10] if file else ""}: '
               f'{pathensemble}, last updated '
               f'{dt} ago')
-
+    
     def _check_indicted(trajectory):
         if 'indicted_trajectories.log' in os.listdir(trajectory.directory):
             with open(f'{trajectory.directory}/'
@@ -2238,14 +2318,15 @@ def update_pathensemble(
                             i = np.where(trajectory.
                                 _PathEnsemble__frame_indices >= nframes)[0][0]
                             # first path to be indicted
-                            j = np.where(np.cumsum(trajectory.lengths) >= i)[0][0]
+                            j = np.where(np.cumsum(
+                                trajectory.lengths) >= i)[0][0]
                             if verbose:
                                 print(f'xxx indicting {len(trajectory) - j} '
                                       f'paths')
                             trajectory.are_accepted[j:] = False
                         except:
                             pass
-
+    
     def _load_equilibrium(directory, filename):
         trajectory = PathEnsemble()
         trajectory.directory = directory
@@ -2427,7 +2508,8 @@ def get_bins(pathensemble, nbins=10,
     
     # extraction
     try:
-        shots, equilibriumA, equilibriumB = scorporate_pathensembles(pathensemble)
+        shots, equilibriumA, equilibriumB = scorporate_pathensembles(
+            pathensemble)
     except:
         shots = pathensemble
         equilibriumA = pathensemble[:0]
@@ -2487,7 +2569,7 @@ def get_bins(pathensemble, nbins=10,
         begin = eA[-1]
     if eB[-1] < end:
         end = eB[-1]
-
+    
     if begin < end:
         bins = np.linspace(begin, end, nbins + 1)
     else:
@@ -2618,15 +2700,17 @@ def initialize_shooting_simulation(
     relpath = os.path.relpath(chain.directory, directory)
     print(f'\nShooting for chain {relpath}: '
           f'{old_fname}{new_fname}  ({now()})')
-
+    
     # get params
     network = params.network
     topology = params.topology
     lorentzian = params.lorentzian
     #selection_pool_size = params.selection_pool_size
-    adjust_selection_in_marginal_bins = params.adjust_selection_in_marginal_bins
+    adjust_selection_in_marginal_bins = \
+        params.adjust_selection_in_marginal_bins
     equilibrium_overriding_rate = params.equilibrium_overriding_rate
-    equilibrium_overriding_recovery_rate = params.equilibrium_overriding_recovery_rate
+    equilibrium_overriding_recovery_rate = \
+        params.equilibrium_overriding_recovery_rate
     randomize_shooting_velocities = params.randomize_shooting_velocities
     
     # load most updated params, backup in chain's directory
@@ -2739,7 +2823,7 @@ def initialize_shooting_simulation(
                   f'{array2string(histograms[pool_index], 22)}')
         print(f'    coverage : '
               f'{array2string(np.sum(histograms > 0, axis=0), 14)}')
-
+    
     # put it all together
     weights = []
     histograms = []
@@ -2760,7 +2844,9 @@ def initialize_shooting_simulation(
     if adjust_selection_in_marginal_bins:
         print(f'=== density correction by '
               f'{array2string(correction[1:-1], 25)}')
-        print(f'*** bin selection probability: {array2string(histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})}')
+        text = array2string(
+            histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})
+        print(f'*** bin selection probability: {text}')
         print(f'\nAdjusting selection in bins')
         for i in [0, len(bins) - 2]:
             expected = 1 / populations[i] / np.sum(1 / populations)
@@ -2778,7 +2864,7 @@ def initialize_shooting_simulation(
         correction = 1 / correction
         #correction *= (np.ones(len(bins) - 1) * 10) ** (
         #    -np.sum(histograms > 0, axis=0) *
-        #    round(100 / selection_pool_size))  # safe with floating point error
+        #    round(100 / selection_pool_size))  # safe with fl. point error
         correction *= 1 / populations
         correction = np.concatenate([[0.], correction, [0.]])
         """
@@ -2800,14 +2886,19 @@ def initialize_shooting_simulation(
     # report
     print(f'=== density correction by '
               f'{array2string(correction[1:-1], 25)}')
-    print(f'*** bin selection probability: {array2string(histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})}')
+    text = array2string(
+        histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})
+    print(f'*** bin selection probability: {text}')
     for pool_index in range(len(pool)):
         initial_state = pool.initial_states[pool_index]
         internal_state = pool.internal_states[pool_index]
         final_state = pool.final_states[pool_index]
+        text = array2string(
+            histograms[pool_index], 22,
+            formatter={"float_kind":lambda x: "%.3f" % x})
         print(f'        path {pool_index:02g} '
               f'({initial_state}{internal_state}{final_state}) : '
-                  f'{array2string(histograms[pool_index], 22, formatter={"float_kind":lambda x: "%.3f" % x})}')
+                  f'{text}')
     
     values = np.concatenate(values)
     states = np.concatenate(states)
