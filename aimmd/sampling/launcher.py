@@ -334,7 +334,7 @@ class Launcher:
             gpus_per_task = default_gpus_per_task
             if gpus_per_task:
                 slurm_header += \
-                    f'\n#SBATCH --gres:gpu={gpus_per_tasks * ntasks_per_node}'
+                    f'\n#SBATCH --gres:gpu={gpus_per_task * ntasks_per_node}'
         
         # number of nodes
         nodes = ceil((1 + n +  # trainer/worker, shooting
