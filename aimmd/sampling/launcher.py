@@ -171,9 +171,20 @@ class Launcher:
         finally:
             self.termination_signal = 2  # KeyboardInterrupt
             self.terminate_operations()
-
+    
     @property
-    def stop_condition(self):
+    def job_cleanup(self):
+        """Bash script for cleanup when scanceling SLURM job"""
+        return f'''# custom operation on scancel: full cleanup
+function cleanup {{
+    echo "Job is being canceled, doing cleanup"
+    touch {self.directory}/.terminate
+    sleep {int(self.termination_timeout)}
+}}
+trap cleanup SIGTERM'''
+    
+    @property
+    def job_stop_condition(self):
         """Bash script for stop condition in SLURM job"""
         return f'''stop_condition() {{
         local pids=("$@")
@@ -304,6 +315,7 @@ class Launcher:
             file.write(f'#SBATCH --job-name={self.params.name}\n')
             file.write(f'{slurm_header}\n')
             file.write(f"rm -f {self.directory}/.terminate\n\n")
+            file.write(f"{self.job_cleanup}\n\n")
             
             # srun call
             file.write(f'# srun call\n')
@@ -321,7 +333,7 @@ class Launcher:
             file.write(f'  # setup stop condition\n')
             file.write(f"  START_TIME=$(date +%s)\n")
             file.write(f"  WALLTIME={walltime}\n\n")
-            file.write(f"  {self.stop_condition}\n\n")
+            file.write(f"  {self.job_stop_condition}\n\n")
             
             # cases
             file.write(f'  # srun rank by rank\n')
