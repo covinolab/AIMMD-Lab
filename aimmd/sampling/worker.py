@@ -52,7 +52,7 @@ class Worker:
         self.original_stderr = sys.stderr
         self.task = 'worker'  # for reporting
         self.termination_signal = None
-        self.termination_timeout = termination_timeout
+        self.termination_timeout = float(termination_timeout)
         self.__log_file = None
         self.cleanup = []  # files to delete after termination
         
