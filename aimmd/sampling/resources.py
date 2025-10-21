@@ -33,9 +33,11 @@ def bind_resources(localid, cpus_per_task=1, gpus_per_task=0):
     os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
     os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
     if len(available_cpus) == cpus_per_task:
+        # this happens when running srun on HPC clusters
         start = None
         stop = None
     else:
+        # this happens when running on a node/workstation
         start = localid * cpus_per_task
         stop = start + cpus_per_task
     cpus = available_cpus[start:stop]
