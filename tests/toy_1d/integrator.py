@@ -83,6 +83,7 @@ if __name__ == '__main__':
     # graceful exit operation
     def exit(*args):
         global backup
+        print()
         try:
             writer.close()
             print('Writer closed successfully.')
@@ -126,7 +127,7 @@ if __name__ == '__main__':
             _write(positions, time)
             
             # report
-            print('Reached time', time)
+            print(f'Reached time {time}\r', end='')
     
     except KeyboardInterrupt:
         exit(signal.SIGINT)
