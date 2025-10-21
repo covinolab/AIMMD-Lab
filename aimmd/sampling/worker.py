@@ -16,7 +16,7 @@ inf = float('inf')
 class Worker:
     
     def __init__(self, params, directory='.',
-                 localid=0, cpus_per_task=None, gpus_per_task=0,
+                 localid=0, cpus_per_task=None, gpus_per_task=None,
                  termination_timeout=20.):
         """
         Worker process responsible for running independent AIMMD tasks
@@ -36,7 +36,7 @@ class Worker:
             If 0: explicitly bind CPUs available.
             If None: just report CPUs available when running.
         gpus_per_task : int, optional
-            Number of GPUs allocated per task, by default 0.
+            Number of GPUs allocated per task, by default None.
             If None: take all resources availalbe.
 
         Returns
