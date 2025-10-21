@@ -79,7 +79,8 @@ class Worker:
         sys.stdout = self.original_stdout
         sys.stderr = self.original_stderr
         if log_file:
-            sys.stdout = open(f'{self.directory}/{log_file}', 'a+')
+            sys.stdout = open(
+                f'{self.directory}/{log_file}', 'a+', buffering=1)
             sys.stderr = sys.stdout
         self.__log_file = log_file
     
