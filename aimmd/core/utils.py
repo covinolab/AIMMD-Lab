@@ -1,74 +1,30 @@
 import os
-import sys
+import pty
 import copy
 import time
 import torch
-import numpy as np
-import mdtraj as md
-import pickle
 import psutil
-import shutil
+import numpy as np
 import select
 import signal
-import asyncio
-import inspect
-import argparse
-import warnings
-import importlib
-import importlib.util
 import functools
-import itertools
-import threading
+import traceback
 import subprocess
 import MDAnalysis as mda
-import matplotlib.pyplot as plt
-import matplotlib.patheffects as pe
 from time import sleep
 from tqdm import tqdm
 from datetime import datetime
-from textwrap import wrap
-from scipy.special import logit, expit
-from mdtraj.formats import TRRTrajectoryFile
-from .pathensemble import *
+from scipy.special import expit
+from .pathensemble import (MDATrajectory,
+                           PathEnsemble,
+                           PathEnsemblesCollection)
+
+inf = float('inf')
 
 # quick logging
 print = functools.partial(print, flush=True)
 
-###############################################################################
-# Base utils ##################################################################
-###############################################################################
-
-def run_with_timeout(cmd, timeout):
-    try:
-        result = subprocess.run(cmd, shell=True, timeout=timeout)
-        return result.returncode
-    except subprocess.TimeoutExpired:
-        return 0
-
-def has_param(func, param_name):
-    signature = inspect.signature(func)
-    return param_name in signature.parameters
-
-def update_results(filename, key=[], result=[]):
-    try:
-        with open(filename, 'rb') as file:
-            dictionary = pickle.load(file)
-    except:
-        dictionary = {}
-    
-    save = False
-    for k, r in zip(key, result):
-        dictionary[k] = r
-        save = True
-    
-    if save:
-        with open(filename, 'wb') as file:
-            pickle.dump(dictionary, file)
-    
-    return dictionary
-
-
-# Suppress only UserWarnings in MDAnalysis
+# suppress only UserWarnings in MDAnalysis
 import MDAnalysis.coordinates.base as base
 
 _old_del = base.ReaderBase.__del__
@@ -77,14 +33,118 @@ def _safe_del(self):
     try:
         _old_del(self)
     except AttributeError:
-        # Suppress AttributeError caused by missing _xdr attribute during __del__
+        # Suppress AttributeError
+        # caused by missing _xdr attribute during __del__
         pass
 
 base.ReaderBase.__del__ = _safe_del
 
-
-# More compact array visualization
+# more compact array visualization
 np.set_printoptions(precision=3)
+
+
+def terminate(process, timeout=20.):
+    """Terminate group linked to process"""
+    
+    def _wait():
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            try:
+                if os.killpg(process.pid, 0):
+                    continue
+            except:
+                pass
+            if process.poll() is not None:
+                return
+            time.sleep(.1)
+    
+    # try terminating whole group
+    try:
+        os.killpg(process.pid, signal.SIGINT)
+        _wait()
+    except:
+        pass
+    
+    # last resort
+    process.kill()
+    _wait()
+
+
+def execute_command(cmd, stop_condition=lambda : False,
+                    walltime=inf, termination_timeout=20.):
+    
+    # time and environment
+    t0 = time.time()
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    
+    # start subprocess
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        universal_newlines=True,
+        env=env,
+        preexec_fn=os.setsid)
+    print(f'Executing "{cmd}" ({now()})')
+    
+    # make stdout non-blocking
+    file_descriptor = process.stdout.fileno()
+    
+    # print the output in real time
+    def _print_output(whole_text=False):
+        try:
+            if select.select([file_descriptor], [], [], 0.1)[0]:
+                print(process.stdout.readline() if not whole_text else
+                      process.stdout.read(), end="", flush=True)
+        except (OSError, ValueError):
+            pass
+    
+    # graceful termination
+    def _terminate_process_and_print_remaining_output():
+        terminate(process, termination_timeout)
+        _print_output(whole_text=True)
+        
+        # always close stdout safely
+        try:
+            if process.stdout and not process.stdout.closed:
+                process.stdout.close()
+        except Exception:
+            pass
+    
+    # let it run
+    try:
+        while True:
+            
+            # print the output in real time
+            _print_output()
+            
+            # process terminated
+            if (exit_code := process.poll()) is not None:
+                return exit_code
+            
+            # stop condition or walltime reached
+            if stop_condition() or time.time() - t0 > walltime:
+                print(f'[StopCondition] Terminating "{cmd}" ({now()})')
+                _terminate_process_and_print_remaining_output()
+                return 0
+    
+    # keyboard
+    except KeyboardInterrupt:
+        print(f'[KeyboardInterrupt] Terminating "{cmd}" ({now()})')
+        _terminate_process_and_print_remaining_output()
+        return 0
+    
+    except Exception as exception:
+        print(f'[{exception}] Terminating "{cmd}" ({now()})')
+        _terminate_process_and_print_remaining_output()
+        return 1
+    
+    # ensure cleanup
+    finally:
+        _terminate_process_and_print_remaining_output()
 
 
 def array2string(array, initial_spaces, wrap_size=80, formatter=None):
@@ -108,32 +168,14 @@ def now():
     return str(datetime.now())[11:19]
 
 
-def write(text, *paths, wrap_text=False):
-    if wrap_text:
-        text = "\n".join(wrap(text, 80,
-            break_long_words=False, replace_whitespace=False))
-    text = text.replace('"',"'")
-    for path in paths:
-        if path is not None:
-            os.system(f'''echo "{text}" >> {path}''')
-    if not len(paths):
-        print(text)
-
-
 def remove(path, verbose=True):
-    while os.path.exists(path):
-        try:
-            os.remove(path)
-        except:
-            continue
+    """Remove file and report."""
+    try:
+        os.remove(path)
         if verbose:
             print(f'--- removed {path}')
-
-
-def initialize_plot():
-    figure, ax = plt.subplots(1, 1, figsize=(3, 2.5))
-    plt.subplots_adjust(left=0.18, bottom=0.18, right=0.99, top=0.8)
-    return figure, ax
+    except FileNotFoundError:
+        pass
 
 
 class class_or_instancemethod(classmethod):
@@ -144,97 +186,22 @@ class class_or_instancemethod(classmethod):
             descr_get = self.__func__.__get__
         return descr_get(instance, type_)
 
-class DummyNetwork(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        # no parameters, empty network
+
+class PlaceholderNetwork(torch.nn.Module):
+    """Just identity. Loaded by params by default."""
     
     def forward(self, x):
-        # just returns the input unchanged
-        return x
+        return x[:, :1]
     
     def state_dict(self, *args, **kwargs):
-        # override to return empty dict
         return {}
     
     def load_state_dict(self, state_dict, strict=True):
-        # accept any input but do nothing
         pass
 
-###############################################################################
-# Math ########################################################################
-###############################################################################
-
-def solve_committor_by_relaxation(
-        X, Y, Fx, Fy, A, B, P0, progress=[5, 4, 2, 1]):
-    """
-    Compute committor in 2D with relaxation method (Brownian dynamics).
-
-    Parameters
-    ----------
-    X: x-coordinates on a 2D grid
-    Y: y-coordinates on a 2D grid
-    Fx: force's x component on a 2D grid
-    Fy: force's y component on a 2D grid
-    A: points in A on a 2D grid
-    B: points in B on a 2D grid
-    P0: initial guess for committor on a 2D grid
-    progress: iteratively increase the resolution based on the vector's values
-
-    Returns
-    -------
-    P0: committor estimate
-    """
-    for split in tqdm(progress):
-        X1 = X[::split, ::split]
-        Y1 = Y[::split, ::split]
-        P1 = P0[::split, ::split]
-        Fx1 = Fx[::split, ::split]
-        Fy1 = Fy[::split, ::split]
-        A1 = A[::split, ::split]
-        B1 = B[::split, ::split]
-        dFx = np.diff(X1, axis=1)[1:-1, :-1] * Fx1[1:-1, 1:-1]
-        dFy = np.diff(Y1, axis=0)[:-1, 1:-1] * Fy1[1:-1, 1:-1]
-        dFx[dFx > +1.] = +1.
-        dFx[dFx < -1.] = -1.
-        dFy[dFy > +1.] = +1.
-        dFy[dFy < -1.] = -1.
-        r = np.max(np.abs(
-            (((P1[2:, 1:-1] + P1[:-2, 1:-1] - 2 * P1[1:-1, 1:-1]) +
-              (P1[1:-1, 2:] + P1[1:-1, :-2] - 2 * P1[1:-1, 1:-1])) +
-             (dFx * (P1[2:, 1:-1] - P1[:-2, 1:-1]) +
-              dFy * (P1[1:-1, 2:] - P1[1:-1, :-2])) / 2)
-        ))
-        while True:
-            r1 = 0 + r
-            for i in range(100):
-                P1[1:-1, 1:-1] = (2 * (P1[2:, 1:-1] + P1[:-2, 1:-1] +
-                                       P1[1:-1, 2:] + P1[1:-1, :-2]) +
-                               (dFy * (P1[2:, 1:-1] - P1[:-2, 1:-1]) +
-                                dFx * (P1[1:-1, 2:] - P1[1:-1, :-2]))) / 8
-                P1[:, 0] = P1[:, 1]
-                P1[:, -1] = P1[:, -2]
-                P1[0, :] = P1[1, :]
-                P1[-1, :] = P1[-2, :]
-                P1[P1 < 0] = 0
-                P1[P1 > 1] = 1
-                P1[A1] = 0
-                P1[B1] = 1
-            r = np.max(np.abs(((
-                 (P1[2:, 1:-1] + P1[:-2, 1:-1] - 2 * P1[1:-1, 1:-1]) +
-                 (P1[1:-1, 2:] + P1[1:-1, :-2] - 2 * P1[1:-1, 1:-1])) +
-                 (dFx * (P1[2:, 1:-1] - P1[:-2, 1:-1]) +
-                  dFy * (P1[1:-1, 2:] - P1[1:-1, :-2])) / 2)))
-            if np.abs(r - r1) < 1e-16:
-                break
-        if split > 1:
-            P0 = np.array([interpolate(x, y, P1, X1, Y1)
-                           for x, y in zip(X.ravel(), Y.ravel())]).reshape(X.shape)
-        else:
-            P0 = P1.copy()
-    return P0
 
 def rescale(q, knots, values):
+    """TODO rescale as separate function."""
     I = len(knots)
     try:
         indices = np.digitize(q, knots)
@@ -263,43 +230,60 @@ def rescale(q, knots, values):
         q[indices == i] = a * (q[indices == i] - x0) + b
     return q
 
-###############################################################################
-# Handle workers ##############################################################
-###############################################################################
 
-def get_current_simulation(worker_id):
-    if not os.path.exists(worker_id):
-        return ''
-    with open(worker_id, 'r') as f:
+def get_current_simulation(worker_id, retries=10, delay=0.1):
+    """Safely read the current simulation name from worker_id file.
+    Retries a few times if the file is temporarily busy or locked.
+    """
+    for _ in range(retries):
         try:
-            return f.read().split()[0]
-        except:
-            return ''
+            if not os.path.exists(f'{worker_id}.run'): 
+                return ''
+            
+            with open(f'{worker_id}.run', 'r') as f:
+                content = f.read().strip()
+                return content.split()[0] if content else ''
+        except (OSError, IOError):
+            # likely "resource temporarily unavailable" or similar
+            time.sleep(delay)
+    
+    # fallback if still failing
+    return ''
 
 
-def continue_simulation(worker_id, fname):
-    if get_current_simulation(worker_id) == fname:
+def continue_simulation(worker_id, fname, retries=10, delay=.1):
+    if get_current_simulation(worker_id, retries, delay) == fname:
         return
-    else:  # not simulating the right thing: overriding
-        remove(worker_id, False)
-        sleep(.5)  # wait worker to realize that
-    with open(f'{worker_id}.temp', 'w') as file:
-        file.write(fname)
-    os.rename(f'{worker_id}.temp', worker_id)
-    print(f'>>> starting simulating {fname} ({now()})')
+    for _ in range(retries):
+        try:
+            with open(f'{worker_id}.run', 'w') as file:
+                file.write(fname)
+            print(f'>>> starting simulating {fname} ({now()})')
+            return
+        except (OSError, IOError):
+            # likely "resource temporarily unavailable" or similar
+            time.sleep(delay)
+            continue_simulation(worker_id, fname, retries, delay)
 
 
-def stop_simulation(worker_id, fname=None):
+def stop_simulation(worker_id, fname=None, message='', timeout=20.):
+    """Only if fname."""
+    def _wait():
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if os.path.exists(f'{worker_id}.ready'):
+                return
+    
     if fname is not None:
         if get_current_simulation(worker_id) != fname:
-            return False # nothing to do here
-    remove(worker_id, False)
-    sleep(.5)  # wait worker to realize that
+            return False  # nothing to do here
+    
+    remove(f'{worker_id}.run', False)
+    if message:
+        print(message)
+    _wait()
     return True
 
-###############################################################################
-# Logit committor fit #########################################################
-###############################################################################
 
 def fit(network, pathensemble,
         keys=None,
@@ -319,6 +303,7 @@ def fit(network, pathensemble,
         epochs=500,
         batch_size=4096,
         stop=50.,
+        graphs=False,
         verbose=False,
         worker=None):
     
@@ -372,7 +357,7 @@ def fit(network, pathensemble,
         training set points such that each batch has a uniform population
         across the bins. Plus, regularize the shooting results in the bins.
         `nbins = 9` is usually a good value.
-
+    
     cutoff_max : float, default=20.
         The `cutoff_max` parameter in `utils.get_bins`.
     
@@ -406,7 +391,7 @@ def fit(network, pathensemble,
         `thB > 0`, the function uses the `(1 - thB)` percentile as the cutoff.
         Paths with higher shooting values are considered as if coming from
         state B for the additional shooting results.
-
+    
     lr : float, default=1e-3
         Learning rate. Will use an ADAM optimizer.
     
@@ -418,7 +403,7 @@ def fit(network, pathensemble,
     loss_smoothening_weight : float, default=0.0
         Weight of an additional term to the loss, corresponding to the
         network's gradient with respect to the input regularization factor.
-
+    
     loss_regularization_weight : float, default=0.0
         Weight of an additional term to the loss, corresponding to the L1
         regularization factor.
@@ -433,6 +418,10 @@ def fit(network, pathensemble,
         Size of each training batch. Since the batch is drawn with selection
         selection probabilities, its size will always be `batch_size`, even
         with very small training sets.
+
+    graphs : bool, default=False
+        If True, the descriptors are graphs, stored in the mlcolvar DataDict
+        format. If False, they are numpy arrays.
     
     verbose : bool, default=False
         If True, be loud and noise. Among other things, show a progress bar
@@ -464,6 +453,11 @@ def fit(network, pathensemble,
     TODO: include free/shot A-R and B-R paths.
     """
     
+    if graphs:
+        # only need to import this torch_geometric Batch if graphs
+        # are used as descriptors. Otherwise, avoid the dependency.
+        from torch_geometric.data import Batch
+
     if not augment:
         thA = None
         thB = None
@@ -473,7 +467,7 @@ def fit(network, pathensemble,
         if not len(l):
             return np.concatenate([l], **kwargs)
         return np.concatenate(l, **kwargs)
-
+    
     if nbins or thA is not None or thB is not None:  # needed in these cases
         print(f'Updating the pathensemble values ({now()})')
         pathensemble.update_values(only_reactive=True)  # with previous model
@@ -515,8 +509,8 @@ def fit(network, pathensemble,
     shooting_states = pathensemble.shooting_states[keys]
     shooting_values = pathensemble.shooting_values[keys]
     if len(keys):
-        shooting_values[shooting_states == 'A'] = -np.inf
-        shooting_values[shooting_states == 'B'] = +np.inf
+        shooting_values[shooting_states == 'A'] = -inf
+        shooting_values[shooting_states == 'B'] = +inf
     
     if len(initial_states):
         # get indices of A paths (use initial_paths if not present)
@@ -568,23 +562,23 @@ def fit(network, pathensemble,
         BtoB = np.zeros(0, dtype=int)
     
     # determine effective state A boundary
-    thA2 = -np.inf
+    thA2 = -inf
     if thA is not None and len(AtoA):
         thA2 = +np.quantile(+shooting_values[AtoA], thA)
         if np.isnan(thA2):
-            thA2 = -np.inf
+            thA2 = -inf
         # report
         print(f'\n    thA {thA} associated value: {thA2:.3f}')
     
     # determine effective state B boundary
-    thB2 = +np.inf
+    thB2 = +inf
     if thB is not None and len(BtoB):
         thB2 = -np.quantile(-shooting_values[BtoB], thB)
         if np.isnan(thB2):
-            thB2 = +np.inf
+            thB2 = +inf
         # report
         print(f'    thB {thB} associated value: {thB2:.3f}\n')            
-
+    
     if len(initial_states):
         # get indices of equilibrium fromA paths
         # (starting at the effective boundary of state A)
@@ -600,7 +594,7 @@ def fit(network, pathensemble,
     else:
         free_A = np.zeros(0, dtype=int)
         free_B = np.zeros(0, dtype=int)
-
+    
     # which AtoA paths are free? (within keys representation)
     # which AtoA paths are shot? (within keys representation)
     if len(AtoA):
@@ -631,9 +625,9 @@ def fit(network, pathensemble,
         shot_AtoB_densities = shot_paths_densities[shot_AtoB]
         shot_BtoA_densities = shot_paths_densities[shot_BtoA]
         if len(shot_AtoB_densities):
-            shot_AtoB_densities[shot_AtoB_densities == 0.] = np.inf  # stay safe
+            shot_AtoB_densities[shot_AtoB_densities == 0.] = inf  # stay safe
         if len(shot_BtoA_densities):
-            shot_BtoA_densities[shot_BtoA_densities == 0.] = np.inf  # stay safe
+            shot_BtoA_densities[shot_BtoA_densities == 0.] = inf  # stay safe
         shot_AtoB_weights = 1 / shot_AtoB_densities
         shot_BtoA_weights = 1 / shot_BtoA_densities
         
@@ -973,9 +967,9 @@ def fit(network, pathensemble,
     # uniformize selection probabilities in bins (if nbins > 0)
     if nbins:
         bins = get_bins(pathensemble, nbins,
-            cutoff_max=cutoff_max, initial_path=initial_path, states=True)
+            cutoff_max=cutoff_max, initial_paths=initial_paths, states=True)
     else:
-        bins = np.array([-np.inf, +np.inf])
+        bins = np.array([-inf, +inf])
 
     # avoid frustration due to not both A, B being present in internal bins
     # swipe forward and look for results to B
@@ -1153,8 +1147,8 @@ def fit(network, pathensemble,
     state_dict0 = copy.deepcopy(network.state_dict())  # fixed
     state_dict1 = copy.deepcopy(network.state_dict())  # linked to min_loss1
     state_dict2 = copy.deepcopy(network.state_dict())  # linked to min_loss2
-    min_loss1 = np.inf
-    min_loss2 = np.inf
+    min_loss1 = inf
+    min_loss2 = inf
     min_loss_step1 = 0
     min_loss_step2 = 0
     
@@ -1165,29 +1159,39 @@ def fit(network, pathensemble,
     scales = []
     # D = []
     # R = []
-    i = 0
-    if verbose:
-        counter = tqdm(range(epochs))
     
     # actual loop
+    print(f'Starting the training cycle ({now()})')
+    counter = tqdm(total=epochs, disable=not verbose)
     while True:
         
-        if worker is not None and worker.interrupt:
+        if worker is not None and bool(worker.termination_signal):
             return [], [], [], [], []
         
         for param_group in optimizer.param_groups:
             # slowly increase lr
-            param_group['lr'] = lr * min(1, (i + 1) / (epochs / 20))
+            param_group['lr'] = lr * min(1, (counter.n + 1) / (epochs / 20))
         
         # sample batch
         indices = np.random.choice(len(selection_probabilities),
                                    batch_size, p=selection_probabilities)
-        if save_memory:  # separately to save memory
-            d = process_descriptors(descriptors[indices])
+        
+        if not graphs:
+            if save_memory:  # separately to save memory
+                d = process_descriptors(descriptors[indices])
+            else:
+                d = descriptors[indices]
+            d = torch.tensor(d, dtype=dtype, device=device)
+            d.requires_grad = True
         else:
-            d = descriptors[indices]
-        d = torch.tensor(d, dtype=dtype, device=device)
-        d.requires_grad = True
+            # when using graphs, we need to process the the DataDict objects
+            # instead of arrays
+            if save_memory:  # separately to save memory
+                d = process_descriptors([descriptors['data_list'][i] for i in indices])
+            else:
+                d = [descriptors['data_list'][i] for i in indices]
+            d = Batch.from_data_list(d).to(device).to_dict()
+               
         r = torch.tensor(results[indices], dtype=dtype, device=device)
         
         # define loss function
@@ -1250,15 +1254,18 @@ def fit(network, pathensemble,
         q = network(d).detach()
         scales.append(max(float(torch.max(q)), -float(torch.min(q))))
         Range = float(torch.min(q)), float(torch.max(q))
-        
+
+        # update counter
         if verbose:
             counter.update(1)
+        else:
+            counter.n += 1
         
         # handle termination: too high scales
         if scales[-1] >= stop or np.isnan(scales[-1]):
             print(f'!!! stopping early since scale '
                   f'{scales[-1]:.3f} > {stop:.3f}')
-            if (i + 1) < 1.25 * epochs:
+            if counter.n < 1.25 * epochs:
                 print(f'    restoring lowest loss\' ({min_loss1:.3e}) '
                       f'weights, step {min_loss_step1 + 1}')
                 network.load_state_dict(state_dict1)
@@ -1271,43 +1278,41 @@ def fit(network, pathensemble,
         # save model if goood
         if losses[-1] <= min_loss1:
             min_loss1 = losses[-1]
-            min_loss_step1 = i
+            min_loss_step1 = counter.n - 1
             state_dict1 = copy.deepcopy(network.state_dict())
         
         # new min loss after reaching target epochs
-        if (i + 1) >= epochs and losses[-1] <= min_loss2:
+        if counter.n >= epochs and losses[-1] <= min_loss2:
             min_loss2 = losses[-1]
-            min_loss_step2 = i
+            min_loss_step2 = counter.n - 1
             state_dict2 = copy.deepcopy(network.state_dict())
         
         # handle termination: lowest loss
-        if (i + 1) >= epochs and losses[-1] <= min_loss1:
+        if counter.n >= epochs and losses[-1] <= min_loss1:
             break
         
         # new target after 1.25 * epochs
-        if (i + 1) >= 1.25 * epochs and losses[-1] <= min_loss2:
+        if counter.n >= 1.25 * epochs and losses[-1] <= min_loss2:
             break
         
         # at most 1.5 * epochs
-        if (i + 1) >= 1.5 * epochs:
+        if counter.n >= 1.5 * epochs:
             print(f'    restoring lowest loss\' ({min_loss2:.3e}) '
                   f'weights, step {min_loss_step2 + 1}')
             network.load_state_dict(state_dict2)
             break
         
-        i += 1
-        
         # D.append(d)
         # R.append(r)
         
         # report
-        if verbose and i % (epochs // 20) == 0:
-            print(f'    loss {losses[-1]:.3e}, '
+        if verbose and counter.n % (epochs // 20) == 0:
+            print(f'\n    loss {losses[-1]:.3e}, '
                   f'scale {scales[-1]:.3f}, '
                   f'range ({Range[0]:.3f}, {Range[1]:.3f})')
     
-    if verbose:
-        counter.close()
+    # close counter
+    counter.close()
     
     # error handling: result not as expected
     if Range[0] > 0 or Range[1] < 0 or scales[-1] < 1:
@@ -1322,26 +1327,22 @@ def fit(network, pathensemble,
     
     # report and return
     print(f'\nTraining took {time.time()-t0:.1f}s')
-    print(f'    {i + 1} epochs')
+    print(f'    {counter.n} epochs')
     print(f'    last loss {losses[-1]:.3e}')
     print(f'    last scale {scales[-1]:.3f}')
     print(f'    last range ({Range[0]:.3f}, {Range[1]:.3f})')
     return losses, scales, values, selection_probabilities, results#, D, R
 
 
-###############################################################################
-# AIMMD run utils #############################################################
-###############################################################################
-
 def load_network_and_projections(
     network, directory, backup_directory=None, wait=True, worker=None):
-    
     try:  # a mockup network has no device
         device = next(network.parameters()).device
     except:
         device = torch.device('cpu')
-    
+        
     # advance only if data are present
+    error_message_shown = False
     while True:
         try:
             state_dict = torch.load(
@@ -1349,10 +1350,19 @@ def load_network_and_projections(
             bins = np.load(f'{directory}/bins.npy')
             densities = np.load(f'{directory}/densities.npy')
             break
-        except:
-            if not wait or (worker is not None and worker.interrupt):
+        except Exception as e:
+            if (os.path.exists(f'{directory}/network.h5') and
+                not error_message_shown):
+                # can't load the network but the file is there
+                # relay error to user
+                print(f"Error loading data: {e}")
+                # avoid spamming
+                error_message_shown = True
+
+            if not wait or (worker is not None and
+                            bool(worker.termination_signal)):
                 return [], []
-            sleep(.1)
+            sleep(0.1)
     
     # backup
     if backup_directory is not None:  # at time of shooting init
@@ -1392,7 +1402,7 @@ def update_shooting_simulation(
         added_frames = 1  # flag
     else:
         added_frames = 0
-    report = False
+    
     while not n_frames_back and added_frames:
         if grompp:
             try:
@@ -1412,7 +1422,7 @@ def update_shooting_simulation(
             except:
                 cpt_present = False
             if not tpr_present or (cpt_present and not trj_present):
-                print(f'!!! {backward.directory}/back missing; resetting!')
+                print(f'!!! {backward.directory}/back inconsistent; reseting!')
                 backward.reset() # reset to pristine state
                 added_frames = 0
                 stop_simulation(worker_id, f'{backward.directory}/back')
@@ -1425,32 +1435,31 @@ def update_shooting_simulation(
                 start=backward.nframes,
                 stop=backward.nframes + batch_size)[0]
         except:
-            print(f'!!! error updating {backward.directory}/back; resetting!')
+            print(f'!!! error updating {backward.directory}/back; reseting!')
             backward.reset() # reset to pristine state
             added_frames = 0
-            stop_simulation(worker_id, f'{backward.directory}/back')
+            stop_simulation(worker_id)
             remove(f'{backward.directory}/back.cpt')
             continue_simulation(worker_id, f'{backward.directory}/back')
         
         if added_frames:
-            report = True
+            print(f'... {backward.directory}/'
+                  f'back{trajectory_extension} '
+                  f'hit {backward.nframes} frames ({now()})')
         
         # stop, report only if it was running
         states = _stop_condition(backward)
         n_frames_back = len(states)
         if n_frames_back:
-            if stop_simulation(worker_id, f'{backward.directory}/back'):
-                print(f'xxx stopping {backward.directory}/'
-                      f'back{trajectory_extension} in state {states[-1]} '
-                      f'after {n_frames_back} frames ({now()})')
+            stop_simulation(
+                worker_id, f'{backward.directory}/back',
+                message=(f'xxx stopping {backward.directory}/'
+                         f'back{trajectory_extension} in state {states[-1]} '
+                         f'after {n_frames_back} frames ({now()})'))
             break
-
+        
         # continue simulation
         continue_simulation(worker_id, f'{backward.directory}/back')
-    if report:
-        print(f'... {backward.directory}/'
-              f'back{trajectory_extension} '
-              f'hit {backward.nframes} frames ({now()})')
     
     # forward part
     # add last simulated frames in batches,
@@ -1461,7 +1470,6 @@ def update_shooting_simulation(
         added_frames = 1  # flag
     else:
         added_frames = 0
-    report = False
     while not n_frames_forw and added_frames:
         if grompp:
             try:
@@ -1481,10 +1489,10 @@ def update_shooting_simulation(
             except:
                 cpt_present = False
             if not tpr_present or (cpt_present and not trj_present):
-                print(f'!!! {forward.directory}/forw missing; resetting!')
+                print(f'!!! {forward.directory}/forw inconsistent; reseting!')
                 forward.reset() # reset to pristine state
                 added_frames = 0
-                stop_simulation(worker_id, f'{forward.directory}/forw')
+                stop_simulation(worker_id)
                 remove(f'{forward.directory}/forw.cpt')
                 remove(f'{forward.directory}/forw{trajectory_extension}')
                 return [], [], []
@@ -1493,7 +1501,7 @@ def update_shooting_simulation(
                 start=forward.nframes,
                 stop=forward.nframes + batch_size)[0]
         except:
-            print(f'!!! error updating {forward.directory}/forw; resetting!')
+            print(f'!!! error updating {forward.directory}/forw; reseting!')
             forward.reset() # reset to pristine state
             added_frames = 0
             stop_simulation(worker_id, f'{forward.directory}/forw')
@@ -1501,21 +1509,19 @@ def update_shooting_simulation(
             continue_simulation(worker_id, f'{forward.directory}/forw')
         
         if added_frames:
-            report = True
+            print(f'... {forward.directory}/'
+                  f'forw{trajectory_extension} '
+                  f'hit {forward.nframes} frames ({now()})')
         
         # stop, report only if it was running
         states = _stop_condition(forward, n_frames_forw)
         n_frames_forw = len(states)
         if n_frames_forw:
-            if report:
-                print(f'... {forward.directory}/'
-                      f'forw{trajectory_extension} '
-                      f'hit {forward.nframes} frames ({now()})')
-            
-            if stop_simulation(worker_id, f'{forward.directory}/forw'):
-                print(f'xxx stopping {forward.directory}/'
-                      f'forw{trajectory_extension} in state {states[-1]} '
-                      f'after {n_frames_forw} frames ({now()})')
+            stop_simulation(
+                worker_id, f'{forward.directory}/forw',
+                message=(f'xxx stopping {forward.directory}/'
+                         f'forw{trajectory_extension} in state {states[-1]} '
+                         f'after {n_frames_forw} frames ({now()})'))
             
             # compose and return full path
             frames_back = range(n_frames_back - 1, 0, -1)
@@ -1532,15 +1538,9 @@ def update_shooting_simulation(
         # continue simulation
         elif get_current_simulation(worker_id) != f'{backward.directory}/back':
             continue_simulation(worker_id, f'{forward.directory}/forw')
-    if report:
-        print(f'... {forward.directory}/'
-              f'forw{trajectory_extension} '
-              f'hit {forward.nframes} frames ({now()})')
+    
     return [], [], []  # no path: empty
 
-###############################################################################
-# Manager utils ###############################################################
-###############################################################################
 
 def initialize_simulation(frames, params, *fnames):
     """
@@ -1598,17 +1598,20 @@ def initialize_simulation(frames, params, *fnames):
             print('=== sampling kinetic energy')
         remove(f'{_fname}.gro', False)
         frames.write(f'{_fname}.gro', frame_indices=[-1])
-        command = (f'{grompp} -nobackup -f {gmx_init_mdp} '
-                  f'-r {_fname}.gro -c {_fname}.gro -o {_fname}.tpr')
-        os.system(command)
-        os.system(f'{mdrun} -deffnm {_fname} -nsteps 0 -nobackup')
-        
+        cmd = (f'{grompp} -nobackup -f {gmx_init_mdp} '
+               f'-r {_fname}.gro -c {_fname}.gro -o {_fname}.tpr')
+        if exit := execute_command(cmd):
+            raise RuntimeError(f'{cmd} failed with exit code {exit}')
+        cmd = f'{mdrun} -deffnm {_fname} -nsteps 0 -nobackup'
+        if exit := execute_command(cmd):
+            raise RuntimeError(f'{cmd} failed with exit code {exit}')
+    
     # just copy the frame
     else:
         remove(f'{_fname}.trr', False)
         frames.write(f'{_fname}.trr', frame_indices=[-1],
                      invert_velocities=invert_velocities)
-
+    
     # get results in the universe
     universe = mda.Universe(topology, f'{_fname}.trr')
     universe.transfer_to_memory()
@@ -1630,14 +1633,14 @@ def initialize_simulation(frames, params, *fnames):
         atomgroup = universe.atoms
         frame = universe.trajectory[-1]
         remove(f'{_fname}.trr', False)
-
+        
         if grompp:
             kinetic_factor0 = np.sum(frame._velocities ** 2)
             rescaling = min(10., (kinetic_factor / kinetic_factor0) ** .5)
             print(f'*** shooting point kinetic factor: {kinetic_factor0:.3e}')
             print(f'=== rescaling velocities by {rescaling:.3f}')
             frame._velocities *= rescaling
-            
+    
     # iterate through files
     invert_velocities = False
     for fname, directory in zip(fnames, directories):
@@ -1654,20 +1657,18 @@ def initialize_simulation(frames, params, *fnames):
             with mda.Writer(f'{_fname}.trr', atomgroup.n_atoms) as writer:
                 writer.write(atomgroup)
             
-            command = (f'{grompp} -nobackup -f {gmx_run_mdp} '
-                      f'-r {_fname}.gro -c {_fname}.gro -t {_fname}.trr '
-                      f'-o {directory}/{fname}.tpr')
-            os.system(command)
-            
-            # run initial frame (does it work without??)
-            # os.system(f'{mdrun} -nobackup -deffnm {directory}/{fname} '
-            #          f'-cpo {directory}/{fname}.cpt -nsteps 0')
+            cmd = (f'{grompp} -nobackup -f {gmx_run_mdp} '
+                   f'-r {_fname}.gro -c {_fname}.gro -t {_fname}.trr '
+                   f'-o {directory}/{fname}.tpr')
+            if exit := execute_command(cmd):
+                raise RuntimeError(f'{cmd} failed with exit code {exit}')
         else:
             # just copy the frame
             if nframes <= 1:
                 filename = f'{directory}/{fname}{trajectory_extension}'
             else:
-                filename = f'{directory}/{fname}.part0001{trajectory_extension}'
+                filename = (f'{directory}/'
+                            f'{fname}.part0001{trajectory_extension}')
             with mda.Writer(filename, atomgroup.n_atoms) as writer:
                 writer.write(atomgroup)
         
@@ -1687,6 +1688,11 @@ def initialize_simulation(frames, params, *fnames):
                         frame._velocities *= -1
                     frame.time = -dt * (nframes - 1 - i)
                     writer.write(atomgroup)
+
+
+def rescale_committor():
+    pass
+    """ADD"""
 
 
 def load_initial_paths(directory, topology, states_function,
@@ -1794,7 +1800,9 @@ def update_selection_pool(
     def update_initial_path_directory(initial_paths):
         _initial_paths = initial_paths.copy()
         _initial_paths.directory = pool.directory
-        _initial_paths.topology = os.path.relpath(f'{initial_paths.directory}/{initial_paths.topology}', pool.directory)
+        _initial_paths.topology = os.path.relpath(
+            f'{initial_paths.directory}/{initial_paths.topology}', 
+            pool.directory)
         _initial_paths._PathEnsemble__trajectory_files = [os.path.relpath(
             f'{initial_paths.directory}/{file}', pool.directory)
             for file in _initial_paths.trajectory_files]
@@ -1901,7 +1909,7 @@ def update_equilibrium_trajectory(
             part += 1
     
     trajectory.split()
-
+    
     # report
     if report:
         last_states = ''
@@ -1960,9 +1968,10 @@ def update_equilibrium_simulations(
                 for trajectory, added_nframes in zip(eqA.pathensembles, nf):
                     if not added_nframes:
                         continue
-                    trajectory.save(f'{trajectory.directory}/'
-                                    f'{trajectory.trajectory_files[0][:10]}.h5',
-                                    directory='.')
+                    trajectory.save(
+                        f'{trajectory.directory}/'
+                        f'{trajectory.trajectory_files[0][:10]}.h5',
+                        directory='.')
             eq_completed.extend(list(eqA.pathensembles))
         
         if not nB:
@@ -1975,12 +1984,13 @@ def update_equilibrium_simulations(
                 for trajectory, added_nframes in zip(eqB.pathensembles, nf):
                     if not added_nframes:
                         continue
-                    trajectory.save(f'{trajectory.directory}/'
-                                    f'{trajectory.trajectory_files[0][:10]}.h5',
-                                    directory='.')
+                    trajectory.save(
+                        f'{trajectory.directory}/'
+                        f'{trajectory.trajectory_files[0][:10]}.h5',
+                        directory='.')
             eq_completed.extend(list(eqB.pathensembles))
-
-    t0 = np.array([-np.inf, -np.inf])  # start of the latest ext. trajectory
+    
+    t0 = np.array([-inf, -inf])  # start of the latest ext. trajectory
     for j, folder in enumerate(['extendA', 'extendB']):
         if not os.path.exists(folder):
             continue
@@ -1999,7 +2009,7 @@ def update_equilibrium_simulations(
     
     # iterate through all the workers and identify the states
     for h in range(nA + nB + eA + eB):
-        worker_id = f'{directory}/worker{h}.run'
+        worker_id = f'{directory}/worker{h}'
         
         # populate eq_current and get state info
         if h < nA + nB:
@@ -2133,13 +2143,14 @@ def update_equilibrium_simulations(
             
             # trajectory is completed (len(init_frames) > 0): go to the next
             if len(init_frames):
-                stop_simulation(f'{directory}/worker{h}.run')
+                stop_simulation(f'{directory}/worker{h}')
                 print(f'=== {trajectory.directory}/'
                       f'{trajectory.trajectory_files[0][:10]} completed')
                 if save_h5:
-                    trajectory.save(f'{trajectory.directory}/'
-                                    f'{trajectory.trajectory_files[0][:10]}.h5',
-                                    directory='.')
+                    trajectory.save(
+                        f'{trajectory.directory}/'
+                        f'{trajectory.trajectory_files[0][:10]}.h5',
+                        directory='.')
                 if not extend:
                     eq_completed.append(trajectory)
                 trajectory = PathEnsemble()
@@ -2309,7 +2320,7 @@ def update_pathensemble(
               f'{pathensemble.trajectory_files[0][:10] if file else ""}: '
               f'{pathensemble}, last updated '
               f'{dt} ago')
-
+    
     def _check_indicted(trajectory):
         if 'indicted_trajectories.log' in os.listdir(trajectory.directory):
             with open(f'{trajectory.directory}/'
@@ -2337,14 +2348,15 @@ def update_pathensemble(
                             i = np.where(trajectory.
                                 _PathEnsemble__frame_indices >= nframes)[0][0]
                             # first path to be indicted
-                            j = np.where(np.cumsum(trajectory.lengths) >= i)[0][0]
+                            j = np.where(np.cumsum(
+                                trajectory.lengths) >= i)[0][0]
                             if verbose:
                                 print(f'xxx indicting {len(trajectory) - j} '
                                       f'paths')
                             trajectory.are_accepted[j:] = False
                         except:
                             pass
-
+    
     def _load_equilibrium(directory, filename):
         trajectory = PathEnsemble()
         trajectory.directory = directory
@@ -2443,28 +2455,14 @@ def scorporate_pathensembles(pathensemble):
     return shots, equilibriumA, equilibriumB
 
 
-def equilibrium_trajectory_names(equilibrium):
-    if type(equilibrium) is PathEnsemblesCollection:
-        trajectory_names = [
-            trajectory.directory + '/' +
-            '.'.join(trajectory.trajectory_files[0].split('.')[:-2])
-            for trajectory in equilibrium.pathensembles]
-    else:
-        trajectory_names = ['.'.join(equilibrium.split('.')[:-2])]
-    return [
-        trajectory_name if trajectory_name[:2] != './'
-        else trajectory_name[2:] for trajectory_name
-        in trajectory_names]
-
-
 def run_acceptance_rejection_on_latest_path(chain, network):
-    # in case of TPS
+    """Executed when doing TPS."""
     
     # load params at the time of SP selection
     bins, densities = load_network_and_projections(network, chain.directory)
     
     def compute_sp_bias(values, sp_value, bins, densities):
-        densities = np.append(densities, [np.inf])
+        densities = np.append(densities, [inf])
         values = chain.values(leading, internal=True)[0]
         biases = 1 / densities[np.digitize(values, bins) - 1]
         sp_bias = 1 / densities[np.digitize(sp_value, bins) - 1]
@@ -2496,7 +2494,7 @@ def run_acceptance_rejection_on_latest_path(chain, network):
     
     # now a real transition
     if leading is None:
-        print(f'=== acceptance probability: {np.inf:.3f} (first transition)')
+        print(f'=== acceptance probability: {inf:.3f} (first transition)')
         print(f'*** accepted')
         chain.weights[-1] += 1.
         return
@@ -2535,12 +2533,13 @@ def get_bins(pathensemble, nbins=10,
     # special case
     if not len(pathensemble) and initial_paths is None:
         if states:
-            return np.array([-np.inf, +np.inf])
+            return np.array([-inf, +inf])
         return np.zeros(0)
     
     # extraction
     try:
-        shots, equilibriumA, equilibriumB = scorporate_pathensembles(pathensemble)
+        shots, equilibriumA, equilibriumB = scorporate_pathensembles(
+            pathensemble)
     except:
         shots = pathensemble
         equilibriumA = pathensemble[:0]
@@ -2568,23 +2567,23 @@ def get_bins(pathensemble, nbins=10,
         if not len(eA):
             raise
     except:
-        eA = np.array([-np.inf])    
+        eA = np.array([-inf])    
     try:
         eB = np.sort(
             equilibrium.min_values(equilibrium.initial_states=='B'))
         if not len(eB):
             raise
     except:
-        eB = np.array([+np.inf])
+        eB = np.array([+inf])
     
     # if not crossing prob. data: just min and max value
-    if eA[0] == -np.inf and pathensemble.nframes:
+    if eA[0] == -inf and pathensemble.nframes:
         try:
             eA = np.array([np.min(pathensemble.frame_values[
                            pathensemble.frame_states == 'R'])])
         except:
             eA = np.array([np.min(pathensemble.frame_values)])
-    if eB[0] == +np.inf and pathensemble.nframes:
+    if eB[0] == +inf and pathensemble.nframes:
         try:
             eB = np.array([np.max(pathensemble.frame_values[
                            pathensemble.frame_states == 'R'])])
@@ -2600,14 +2599,14 @@ def get_bins(pathensemble, nbins=10,
         begin = eA[-1]
     if eB[-1] < end:
         end = eB[-1]
-
+    
     if begin < end:
         bins = np.linspace(begin, end, nbins + 1)
     else:
         bins = [(begin + end) / 2]
     
     if states:  # min and max become infinity
-        bins = np.concatenate([[-np.inf], bins, [+np.inf]])
+        bins = np.concatenate([[-inf], bins, [+inf]])
     
     return bins
 
@@ -2645,9 +2644,11 @@ def add_path_to_chain(path, chain,
     
     # save energy
     if eneconv:
-        os.system(f'{eneconv} -f {chain.directory}/back.edr '
-                              f' {chain.directory}/forw.edr '
-                            f'-o {chain.directory}/{fname}.edr')
+        cmd = (f'{eneconv} -f {chain.directory}/back.edr '
+                           f' {chain.directory}/forw.edr '
+                         f'-o {chain.directory}/{fname}.edr')
+        if exit := execute_command(cmd):
+            raise RuntimeError(f'{cmd} failed with exit code {exit}')
     
     # add path to chain
     try:
@@ -2668,12 +2669,12 @@ def add_path_to_chain(path, chain,
     shooting_value = chain.shooting_values[-1]
     if initial_state == 'A':
         if final_state == 'B':
-            extreme = +np.inf
+            extreme = +inf
         else:
             extreme = np.max(chain.values(-1)[0])
     elif initial_state == 'B':
         if final_state == 'A':
-            extreme = -np.inf
+            extreme = -inf
         else:
             extreme = np.min(chain.values(-1)[0])
     elif final_state == 'A':
@@ -2720,7 +2721,6 @@ def add_path_to_chain(path, chain,
 def initialize_shooting_simulation(
     chain, pool, directory, params,
     shooting_chains=None, equilibrium=PathEnsemblesCollection()):
-    
     # report info
     i = len(chain)
     descriptors_function = chain.descriptors_function
@@ -2730,15 +2730,17 @@ def initialize_shooting_simulation(
     relpath = os.path.relpath(chain.directory, directory)
     print(f'\nShooting for chain {relpath}: '
           f'{old_fname}{new_fname}  ({now()})')
-
+    
     # get params
     network = params.network
     topology = params.topology
     lorentzian = params.lorentzian
     #selection_pool_size = params.selection_pool_size
-    adjust_selection_in_marginal_bins = params.adjust_selection_in_marginal_bins
+    adjust_selection_in_marginal_bins = \
+        params.adjust_selection_in_marginal_bins
     equilibrium_overriding_rate = params.equilibrium_overriding_rate
-    equilibrium_overriding_recovery_rate = params.equilibrium_overriding_recovery_rate
+    equilibrium_overriding_recovery_rate = \
+        params.equilibrium_overriding_recovery_rate
     randomize_shooting_velocities = params.randomize_shooting_velocities
     
     # load most updated params, backup in chain's directory
@@ -2787,13 +2789,13 @@ def initialize_shooting_simulation(
     
     # lorentzian correction
     A = (bins[:-1] + bins[1:]) / 2
-    if lorentzian < np.inf:
+    if lorentzian < inf:
         populations *= 1 / (A ** 2 + lorentzian ** 2)
         print(f'=== Lorentzian correction {array2string(populations, 25)}')
     
     # bias by densities and populations
     correction = 1 / np.concatenate(
-        [[np.inf], densities * populations, [np.inf]])
+        [[inf], densities * populations, [inf]])
     
     # select shooting point from paths in pool
     print(f'\nShooting point selection from paths in pool {pool.directory}')
@@ -2851,7 +2853,7 @@ def initialize_shooting_simulation(
                   f'{array2string(histograms[pool_index], 22)}')
         print(f'    coverage : '
               f'{array2string(np.sum(histograms > 0, axis=0), 14)}')
-
+    
     # put it all together
     weights = []
     histograms = []
@@ -2872,7 +2874,9 @@ def initialize_shooting_simulation(
     if adjust_selection_in_marginal_bins:
         print(f'=== density correction by '
               f'{array2string(correction[1:-1], 25)}')
-        print(f'*** bin selection probability: {array2string(histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})}')
+        text = array2string(
+            histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})
+        print(f'*** bin selection probability: {text}')
         print(f'\nAdjusting selection in bins')
         for i in [0, len(bins) - 2]:
             expected = 1 / populations[i] / np.sum(1 / populations)
@@ -2890,7 +2894,7 @@ def initialize_shooting_simulation(
         correction = 1 / correction
         #correction *= (np.ones(len(bins) - 1) * 10) ** (
         #    -np.sum(histograms > 0, axis=0) *
-        #    round(100 / selection_pool_size))  # safe with floating point error
+        #    round(100 / selection_pool_size))  # safe with fl. point error
         correction *= 1 / populations
         correction = np.concatenate([[0.], correction, [0.]])
         """
@@ -2912,14 +2916,19 @@ def initialize_shooting_simulation(
     # report
     print(f'=== density correction by '
               f'{array2string(correction[1:-1], 25)}')
-    print(f'*** bin selection probability: {array2string(histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})}')
+    text = array2string(
+        histogram, 30, formatter={"float_kind":lambda x: "%.3f" % x})
+    print(f'*** bin selection probability: {text}')
     for pool_index in range(len(pool)):
         initial_state = pool.initial_states[pool_index]
         internal_state = pool.internal_states[pool_index]
         final_state = pool.final_states[pool_index]
+        text = array2string(
+            histograms[pool_index], 22,
+            formatter={"float_kind":lambda x: "%.3f" % x})
         print(f'        path {pool_index:02g} '
               f'({initial_state}{internal_state}{final_state}) : '
-                  f'{array2string(histograms[pool_index], 22, formatter={"float_kind":lambda x: "%.3f" % x})}')
+                  f'{text}')
     
     values = np.concatenate(values)
     states = np.concatenate(states)
@@ -2953,7 +2962,7 @@ def initialize_shooting_simulation(
     print(f'=== selecting shooting point {_fname}, {position} '
           f'(value: {value:.2f}, bin: {k})')
     if not selection_bias:
-        selection_bias = np.inf
+        selection_bias = inf
         print(f'    pool position: {index}')
     else:
         print(f'    pool position: {index}, selection bias: {selection_bias}')
@@ -3028,799 +3037,3 @@ def initialize_shooting_simulation(
     np.save(f'{chain.directory}/shoot_bias.npy', selection_bias)
     np.save(f'{chain.directory}/pool_index.npy', index)
     print(f'\nShooting initialization completed ({now()})\n')
-
-###############################################################################
-#### Analysis #################################################################
-###############################################################################
-
-def extract_chain(pathensemble, shooting_chain_index,
-                  path_index, initial_paths=None):
-    shooting_chain = shooting_chain_index
-    index = path_index
-    directory = pathensemble.pathensembles[shooting_chain
-        ].directory.split('/shots')[0]
-    index = np.arange(len(pathensemble.pathensembles[shooting_chain]))[index]
-    offset = int(np.sum([len(p) for p in pathensemble.
-                     pathensembles[:shooting_chain]]))
-    tracking = [offset + index]
-    index0 = tracking[0]
-    
-    with open(f'{directory}/manager.log', 'r') as f:
-        lines = [line for line in f]
-    
-    terminate = False
-    for i in range(len(lines) - 1, -1 ,-1):
-        if (f'Shooting for chain shots{shooting_chain}: '
-            f'path{index:06g} -> path{index + 1:06g}') in lines[i]:
-            j = i
-            while 'Shooting initialization completed' not in lines[j]:
-                j += 1
-            while True:
-                if '*** accepted' in lines[j]:
-                    while 'traj' not in lines[j]:
-                        j -= 1
-                    l = lines[j]
-                    file = l.split('equilibrium')[1][2:].split(',')[0]
-                    folder = f'equilibrium{l.split("equilibrium")[1][0]}'
-                    position = int(l.split('equilibrium')[1][2:].
-                                   split(',')[1].split()[0])
-                    this_offset = 0
-                    for trajectory in pathensemble.pathensembles:
-                        if folder not in trajectory.directory:
-                            this_offset += len(trajectory)
-                            continue
-                        if file not in trajectory.trajectory_files:
-                            this_offset += len(trajectory)
-                            continue
-                        file_index = trajectory.trajectory_files.index(file)
-                        k = np.where((trajectory.frame_trajectory_indices
-                                  == file_index) * (trajectory.
-                                                    frame_trajectory_positions
-                                  == position))[0]
-                        tracking.append(this_offset +
-                            np.where(trajectory.
-                                     initial_frame_indices < k)[0][-1])
-                        terminate = True
-                        break
-                    break
-                if terminate:
-                    break
-                if 'selecting' in lines[j]:
-                    try:
-                        index = int(lines[j].split('/')[-1].split(',')[0].
-                                    split('.')[0][4:]) - 1
-                        tracking.append(offset + index)
-                    except:
-                        if initial_paths is not None:
-                            tracking.append(-1 - initial_paths.
-                                            trajectory_files.index(
-                                lines[j].split('shooting point ')[1].
-                                                split(',')[0]))
-                    break
-                j -= 1
-    
-    tracking = np.array(tracking)[::-1]
-    if tracking[0] < 0:
-        result = initial_paths[-tracking[0] - 1]
-    else:
-        result = pathensemble[tracking[0]]
-    result += pathensemble[tracking[1:]]
-    return result.merge()
-
-def visualize_chain(result, _2d=False, boundaries=None):
-    if _2d:
-        xmin, ymin = np.min(result.frame_descriptors, axis=0)
-        xmax, ymax = np.max(result.frame_descriptors, axis=0)
-        old = None
-        old_fname = None
-        old_s = None
-        for p,s,f in zip(result.descriptors(),
-                         result.shooting_descriptors,
-                         result.initial_trajectory_filenames):
-            if old is None:
-                old = p
-                old_fname = f
-                old_s = s
-                continue
-            plt.figure()
-            plt.title(f'{old_fname} ->\n{f}    ')
-            plt.plot(*old.T, label='old')
-            plt.plot(*old_s.T, 'o', color='blue')
-            plt.plot(*p.T, label='new')
-            plt.plot(*s.T, 'o', color='red')
-            plt.legend()
-            old = p
-            old_fname = f
-            old_s = s
-            if boundaries is not None:
-                plt.xlim(boundaries[0],boundaries[2])
-                plt.ylim(boundaries[1],boundaries[3])
-            plt.gca().set_aspect('equal')
-            plt.grid()
-        return
-    old = None
-    old_fname = None
-    old_i = None
-    old_s = None
-    for p,i,s,f in zip(result.values(),
-                    result.shooting_indices,
-                     result.shooting_values,
-                     result.initial_trajectory_filenames):
-        if old is None:
-            old = p
-            old_fname = f
-            old_i = i
-            old_s = s
-            continue
-        plt.figure()
-        plt.title(f'{old_fname} ->\n{f}    ')
-        plt.plot(old, label='old')
-        plt.plot(old_i, old_s, 'o', color='blue')
-        plt.plot(p, label='new')
-        plt.plot(i, s, 'o', color='red')
-        plt.legend()
-        if boundaries is not None:
-            plt.ylim(boundaries[0], boundaries[1])
-        old = p
-        old_s = s
-        old_i = i
-        old_fname = f
-        plt.grid()    
-
-
-def update_results(filename, key=[], result=[]):
-    try:
-        with open(filename, 'rb') as file:
-            dictionary = pickle.load(file)
-    except:
-        dictionary = {}
-    
-    save = False
-    for k, r in zip(key, result):
-        dictionary[k] = r
-        save = True
-    
-    if save:
-        with open(filename, 'wb') as file:
-            pickle.dump(dictionary, file)
-    
-    return dictionary
-
-def crop_pathensemble(pathensemble, step_number):
-    """
-    At the time of step_number
-    """
-    shots, equilibriumA, equilibriumB = scorporate_pathensembles(pathensemble)
-    if step_number is None:
-        keepers = None
-        t1 = np.inf
-    else:
-        completion_times = shots.completion_times
-        keepers = np.argsort(completion_times)[:step_number]
-        t1 = completion_times[keepers][-1]
-    shots = shots[keepers]
-    equilibriumA = equilibriumA.crop(tmax=t1)
-    equilibriumB = equilibriumB.crop(tmax=t1)
-    return shots + equilibriumA + equilibriumB
-
-
-def initialize_reference_pathensemble(
-    states_function, descriptors_function,
-    directory='.', topology='run.gro', xy_traj='xy.xtc',
-    weights=None):
-    reference_pe = PathEnsemble(directory, topology,
-        states_function, descriptors_function)
-    reference_pe.append(xy_traj, verbose=True)
-    frame_indices =  np.zeros(reference_pe.nframes * 3, dtype=int)
-    frame_indices[1::3] = np.arange(reference_pe.nframes)
-    reference_pe.frame_states[0] = 'Z'
-    reference_pe._PathEnsemble__frame_indices = frame_indices
-    reference_pe._PathEnsemble__lengths = np.ones(
-        reference_pe.nframes, dtype=int) * 3
-    reference_pe._PathEnsemble__shooting_indices = np.zeros(
-        reference_pe.nframes, dtype=int)
-    if weights:
-        reference_pe._PathEnsemble__weights = nd.load(weights).ravel()
-    else:
-        reference_pe._PathEnsemble__weights = np.ones(reference_pe.nframes)
-    reference_pe._PathEnsemble__are_accepted = np.ones(
-        reference_pe.nframes, dtype=bool)  
-    return reference_pe
-
-
-def estimate_transition_rates_from_equilibrium(equilibrium, dt=1.):
-    kAB0 = []
-    kBA0 = []
-    kAB0_max = []
-    kBA0_max = []
-    kAB0_min = []
-    kBA0_min = []
-    TP_lengths = []
-    TP_lengths_max = []
-    TP_lengths_min = []
-    times0 = []
-    total_tAB = []
-    total_tBA = []
-    current_lengths = np.zeros(0)
-
-    transitions = equilibrium[equilibrium.are_transitions]
-    shooting_trajectory_indices = equilibrium.shooting_trajectory_indices
-    tr_shooting_trajectory_indices = transitions.shooting_trajectory_indices    
-    
-    trajectory_indices = []
-    for trajectory_index in shooting_trajectory_indices:
-        if trajectory_index not in trajectory_indices:
-            trajectory_indices.append(trajectory_index)
-
-    initial_times = equilibrium.initial_times
-    final_times = equilibrium.final_times
-    if len(trajectory_indices) == len(transitions):
-        pathensemble = [transitions]
-        final_times = [transitions.final_times[-1]]
-    else:
-        pathensemble = [
-            transitions[tr_shooting_trajectory_indices == trajectory_index]
-            for trajectory_index in trajectory_indices]
-        final_times = [final_times[
-            shooting_trajectory_indices == trajectory_index][-1] -
-            initial_times[
-            shooting_trajectory_indices == trajectory_index][0]
-            for trajectory_index in trajectory_indices]
-    
-    for equilibrium, base in zip(pathensemble, padcumsum(final_times)):
-        t = []
-        ti = equilibrium.frame_times[0] * dt
-        t0 = equilibrium.final_times * dt - ti
-        lengths = equilibrium.internal_lengths * dt
-        if len(times0):
-            times0 += list(t0 + base * dt)
-        else:
-            times0 = list(t0)
-        start_from_A = equilibrium.final_states[0] == 'A'
-        for i in range(len(t0)):
-            current_lengths = np.append(current_lengths, [lengths[i]])
-            t.append(t0[i])
-            if start_from_A:
-                tAB = np.diff(t)[0::2]  # BA information
-                tBA = np.diff(t)[1::2]  # AB information
-            else:
-                tAB = np.diff(t)[1::2]  # BA information
-                tBA = np.diff(t)[0::2]  # AB information
-            current_tAB = np.append(total_tAB, tAB)
-            current_tBA = np.append(total_tBA, tBA)
-            if len(current_tAB):
-                kAB = 1 / np.mean(current_tAB)
-                temp = []
-                for bootstrapping_event in range(1000):
-                    k = np.random.choice(len(current_tAB), len(current_tAB))
-                    temp.append(1 / np.mean(current_tAB[k]))
-                kAB_max = np.quantile(temp, .975)
-                kAB_min = np.quantile(temp, .025)
-            else:
-                kAB = np.nan
-                kAB_max = np.nan
-                kAB_min = np.nan
-            if len(current_tBA):
-                kBA = 1 / np.mean(current_tBA)
-                temp = []
-                for bootstrapping_event in range(1000):
-                    k = np.random.choice(len(current_tBA), len(current_tBA))
-                    temp.append(1 / np.mean(current_tBA[k]))
-                kBA_max = np.quantile(temp, .975)
-                kBA_min = np.quantile(temp, .025)
-            else:
-                kBA = np.nan
-                kBA_max = np.nan
-                kBA_min = np.nan
-            temp = []
-            for bootstrapping_event in range(1000):
-                k = np.random.choice(len(current_lengths), len(current_lengths))
-                temp.append(np.mean(current_lengths[k]))
-            TP_lengths.append(np.mean(current_lengths))
-            TP_lengths_max.append(np.quantile(temp, .975))
-            TP_lengths_min.append(np.quantile(temp, .025))
-            kAB0.append(kAB)
-            kBA0.append(kBA)
-            kAB0_max.append(kAB_max)
-            kBA0_max.append(kBA_max)
-            kAB0_min.append(kAB_min)
-            kBA0_min.append(kBA_min)
-        total_tAB = current_tAB
-        total_tBA = current_tBA
-        
-    return (np.array(kAB0), np.array(kBA0),
-            np.array(kAB0_max), np.array(kBA0_max),
-            np.array(kAB0_min), np.array(kBA0_min),
-            np.array(TP_lengths),
-            np.array(TP_lengths_max), np.array(TP_lengths_min),
-            np.array(times0))
-
-
-def compute_energies_and_rates(pathensemble,
-                               bins=[-np.inf, +np.inf],
-                               bootstrapping=0,
-                               reweight_while_bootstrapping=False,
-                               states='AB',
-                               reweight_parameters={},
-                               f=None,
-                               frames=False,
-                               verbose=False):
-    # boostrap
-    bootstrapping_results = []
-    bootstrapping_k = []
-    bootstrapping_e = []
-    bootstrapping_z = []
-    
-    for _ in tqdm(range(bootstrapping), disable=not verbose):
-        k = np.random.choice(len(pathensemble), len(pathensemble))
-        if reweight_while_bootstrapping:
-            E = []
-            Z = []
-            K = []
-            total_weights = pathensemble.weights * 0.
-            for state in states:
-                w, t1, t2, t3, z, m, e, s, t4 = pathensemble.reweight(
-                    state=state,key=k,**reweight_parameters)
-                E.append(e)
-                Z.append(z)
-                old_weights = pathensemble.weights
-                weights = pathensemble.weights * 0.
-                for i, kk in enumerate(k):
-                    weights[kk] += w[i]
-                total_weights += weights
-                pathensemble.weights = weights
-                K.append(1 / pathensemble.project()[0])
-                pathensemble.weights = old_weights
-            pathensemble.weights = total_weights
-            bootstrapping_results.append(
-                pathensemble.project(bins=bins, f=f, frames=frames))
-            pathensemble.weights = old_weights
-            bootstrapping_k.append(K)
-            bootstrapping_e.append(E)
-            bootstrapping_z.append(Z)
-        else:
-            bootstrapping_k.append([np.nan])
-            bootstrapping_e.append([np.nan])
-            bootstrapping_z.append([np.nan])
-            bootstrapping_results.append(pathensemble.project(
-                key=k, bins=bins, f=f, frames=frames))
-        bootstrapping_results[-1] /= np.sum(bootstrapping_results[-1])
-    bootstrapping_results = np.array(bootstrapping_results)
-    bootstrapping_k = np.array(bootstrapping_k)
-    bootstrapping_e = np.array(bootstrapping_e, dtype=object)
-    bootstrapping_z = np.array(bootstrapping_z, dtype=object)
-    
-    result = pathensemble.project(bins=bins, f=f, frames=frames)
-    result /= np.sum(result)
-    return (result, bootstrapping_results,
-            bootstrapping_k,
-            bootstrapping_e,
-            bootstrapping_z)
-
-
-def plot_2d_energy(X, Y, F, levels,
-                   X2=None, Y2=None, P=None,
-                   rc_levels=None,
-                   rc_labels=True,
-                   cmap='magma', clabel='[kT]',
-                   rotate_clabel=True,
-                   xA=None, yA=None,
-                   xB=None, yB=None,
-                   rA=None, rB=None,
-                   wrmse=0.):
-    figure, ax = plt.subplots(1, 1, figsize=(3, 2.5))
-    if X2 is not None:
-        drop = len(X) // (len(X2) * 2)
-    else:
-        drop = 0
-    print(drop)
-    
-    X = X[drop:len(X)-drop,
-                   drop:len(X[0])-drop]
-    Y = Y[drop:len(Y)-drop,
-                   drop:len(Y[0])-drop]
-    F = F[drop:len(F)-drop,
-                   drop:len(F[0])-drop]
-    plt.contourf(X, Y, F, levels=levels, cmap=cmap, zorder=40)
-    ax.set_aspect(abs((X[-1, -1] - X[0, 0]) / (Y[-1, -1] - Y[0, 0])))
-    plt.subplots_adjust(left=0.16, bottom=0.1, right=0.8, top=1.04)
-    
-    if rotate_clabel:
-        c = plt.colorbar(fraction=0.0452)
-        plt.text(X[0,0] + (X[-1,-1] - X[0,0]) * (
-            1.25 + .05 * (levels[-1] >= 10.)),
-                 Y[0,0] + (Y[-1,-1] - Y[0,0]) * .94, clabel)
-    else:
-        plt.colorbar(fraction=0.0452,label=clabel)
-    
-    if xA is not None and yA is not None:
-        plt.text(xA, yA, 'A',
-                 ha='center',
-                 va='center',
-                 fontsize=20,
-                 color='black',
-                 path_effects=[pe.withStroke(linewidth=3, foreground="w")],
-                 fontweight=750,
-                 zorder=60)
-    if yA is not None and yB is not None:
-        plt.text(xB, yB, 'B',
-                 ha='center',
-                 va='center',
-                 fontsize=20,
-                 color='black',
-                 path_effects=[pe.withStroke(linewidth=3, foreground="w")],
-                 fontweight=750,
-                 zorder=60)
-    
-    if P is not None:
-        if X2 is None:
-            X2 = X
-            Y2 = Y
-            P = P[drop:len(X)-drop,
-                  drop:len(X[0])-drop]
-        if len(rc_levels) > 8:
-            plt.contour(X2,Y2,P,zorder=50,
-                        colors='#cccccc', alpha=.84, linewidths=1.36,
-                         levels=rc_levels[::2])
-            c = plt.contour(X2,Y2,P,zorder=50,
-                          colors='#cccccc', alpha=.84, linewidths=1.36,
-                         levels=rc_levels[1::2])
-        else:
-            c = plt.contour(X2,Y2,P,zorder=50,
-                          colors='#cccccc', alpha=.84, linewidths=1.36,
-                         levels=rc_levels)
-        if rc_labels:
-            f=plt.clabel(c, colors='black')
-            plt.setp(f, path_effects=[pe.withStroke(linewidth=3, foreground="w")])
-        
-    return figure, ax
-
-
-def plot_1d_energy_profile(pathensemble,
-                           reference,
-                           nbins=100,
-                           vmin=-np.inf,
-                           vmax=+np.inf,
-                           bootstrapping=0,
-                           pathensemble_bootstrapping=500,
-                           reference_bootstrapping=50,
-                           reweight_while_bootstrapping=True,
-                           states='AB',
-                           reweight_parameters={},
-                           offset=np.nan,
-                           max_error=1.,
-                           verbose=False,
-                           base_color=plt.get_cmap('Dark2')(0),
-                           SP_selection_bins=None):
-    
-    vmin = np.max([-30, vmin, np.min(np.concatenate(reference.values(reference.weights > 0)))])
-    vmax = np.min([+30, vmax, np.max(np.concatenate(reference.values(reference.weights > 0)))])
-    bins = np.linspace(vmin, vmax, nbins + 1)
-    values = (bins[:-1] + bins[1:]) / 2
-    
-    # reference
-    result, bootstrapping_results, *_ = (
-        compute_energies_and_rates(
-            reference, bins,
-            bootstrapping=reference_bootstrapping,
-            reweight_while_bootstrapping=False,
-            verbose=verbose))
-    
-    F0 = -np.log(result)
-    if reference_bootstrapping:
-        F0_bootstrapping = -np.log(bootstrapping_results)
-        F0_min = F0 - np.std(F0_bootstrapping, axis=0)
-        F0_min = np.quantile(F0_bootstrapping, 0.025, axis=0)
-        F0_max = F0 + np.std(F0_bootstrapping, axis=0)
-        F0_max = np.quantile(F0_bootstrapping, 0.975, axis=0)
-    else:
-        F0_min = F0
-        F0_max = F0
-
-    # pe estimate
-    result, bootstrapping_results, *_ = (
-        compute_energies_and_rates(
-            pathensemble, bins,
-            bootstrapping=pathensemble_bootstrapping,
-            reweight_while_bootstrapping=reweight_while_bootstrapping,
-            states=states,
-            reweight_parameters=reweight_parameters,
-            verbose=verbose))
-    
-    F = -np.log(result)
-    if pathensemble_bootstrapping:
-        F_bootstrapping = -np.log(bootstrapping_results)
-        F_min = F - np.std(F_bootstrapping, axis=0)
-        F_min = np.quantile(F_bootstrapping, 0.025, axis=0)
-        F_max = F + np.std(F_bootstrapping, axis=0)
-        F_max = np.quantile(F_bootstrapping, 0.975, axis=0)
-        k = ~np.isnan(F_max)
-    else:
-        F_min = F
-        F_max = F
-        k = ~np.isinf(F)
-    
-    values = values[k]
-    F = F[k]
-    F0 = F0[k]
-    F_min = F_min[k]
-    F0_min = F0_min[k]
-    F0_max = F0_max[k]
-    F_max = F_max[k]
-        
-    if not np.isnan(offset):
-        center = np.argmin(np.abs(values-offset))
-        F -= F0[center]
-        F_min -= F0[center]
-        F_max -= F0[center]
-        F0_min -= F0[center]
-        F0_max -= F0[center]
-        F0 -= F0[center]
-    
-    # plot
-    figure, (ax1, ax2) = plt.subplots(2,1,
-                                      figsize=(4,2.7),
-                                      sharex=True,
-                                      gridspec_kw={'height_ratios': [3, 1]})
-    color = base_color
-
-    # uncertanties
-    if np.sum(np.abs(F0_max - F0_min)):
-        ax1.fill_between(values, F0_min, F0_max, color='black', alpha=.25)
-        ax2.fill_between(values, F0_min-F0, F0_max-F0, color='black', alpha=.25)
-    if np.sum(np.abs(F_max - F_min)):
-        ax1.fill_between(values, F_min, F_max, color=color2, alpha=.4)
-        ax2.fill_between(values, F_min-F0, F_max-F0, color=color2, alpha=.4)
-    
-    # estimates
-    ax1.plot(values, F, '.', color=color, markersize=2.5)
-    ax1.plot(values, F, '-', color=color, lw=2.5)
-    ax1.plot(values, F0, ':', color='black')
-
-    # errors
-    ax2.plot(values, F - F0, '.', color=color, markersize=2.5)
-    ax2.plot(values, F - F0, color=color, lw=2.5)
-    ax2.plot(values, values * 0, ':', color='black')
-    
-    # fix axis
-    ax1.grid()
-    ax2.grid()
-    ax2.set_xlabel('Reaction coordinate $\lambda$')
-    ax1.set_ylabel('Free energy [$k_BT$]')
-    ax2.set_ylabel('Est$-$true')
-    if max_error >= 1.5:
-        ax2.set_yticks([-1, 0., 1], ['$-$1','0','+1'])
-    elif max_error >= .75:
-        ax2.set_yticks([-.5, 0., .5], ['$-$0.5','0.0','+0.5'])
-    elif max_error >= .25:
-        ax2.set_yticks([-.2, 0., .2], ['$-$0.2','0.0','+0.2'])
-    ax2.set_ylim(-max_error, max_error)
-    plt.minorticks_off()
-    plt.subplots_adjust(left=.2102,
-                        bottom=.1958,
-                        right=.9148,
-                        top=.9373,
-                        hspace=0)
-    
-    if SP_selection_bins is not None:
-        H = np.histogram(pathensemble.shooting_values[
-            pathensemble.are_shot],
-            SP_selection_bins)[0].astype(float)
-        ylim = ax1.get_ylim()
-        H /= np.max(H)
-        H *= .4 * (ylim[1] - ylim[0])
-        H += ylim[0] + (ylim[1] - ylim[0]) * .067
-        A = np.repeat(SP_selection_bins, 2)
-        H = np.repeat(H, 2)
-        K = np.zeros(len(A))
-        K[0] = ylim[0] + (ylim[1] - ylim[0]) * .067
-        K[-1] = ylim[0] + (ylim[1] - ylim[0]) * .067
-        K[1:-1] = H
-        ax1.fill_between(
-            A, A * 0 + ylim[0] + (ylim[1] - ylim[0]) * .067,
-            K, color='black',
-            alpha=.2, zorder=-10)
-        ax1.set_ylim(ylim)
-        
-    return figure, (ax1, ax2)
-
-
-
-def project_on_grid(pathensemble, X, Y, f=lambda x:x, frames=False):
-    Z = pathensemble.project([X[0, :], Y[:, 0]], f=f, frames=frames)
-    Z /= np.sum(Z)
-    return Z
-
-
-def plot_2d_committor_estimate_vs_reference(grid_X, grid_Y, grid_V,
-                                            grid_committor_estimate,
-                                            grid_committor_relaxation,
-                                            lambdaA,
-                                            lambdaB,
-                                            xA, yA, xB, yB, radius,
-                                            potential_energy_levels,
-                                            grid_committor_levels,
-                                            exact_levels=None,
-                                            error_threshold=.125,
-                                            logit=False,
-                                            rescale_error=True):
-    figure = plt.figure(figsize=(4/1.12, 3/1.08))
-    if logit is False:
-        error = (expit(grid_committor_estimate) - 
-                 expit(grid_committor_relaxation))
-    else:
-        error = grid_committor_estimate - grid_committor_relaxation
-    
-    if rescale_error:
-        error /= (grid_committor_relaxation *
-                  (1 - grid_committor_relaxation) * 4) ** .5
-    error[np.isinf(error)] = np.nan
-    error[error >= +error_threshold] = + error_threshold - 1e-9
-    error[error <= -error_threshold] = - error_threshold + 1e-9
-    error[grid_V > potential_energy_levels[-1]] = np.nan    
-    # contours
-    plt.gca().set_aspect('equal')
-    plt.contourf(grid_X,
-                 grid_Y,
-                 error,
-                 levels=np.linspace(-error_threshold, error_threshold, 11),
-                 cmap='RdYlGn')
-    plt.colorbar(fraction=0.0452)
-
-    if logit:
-        plt.text(grid_X[-1,-1] * 1.33, grid_Y[-1,-1] * 1.05,
-                 '$\lambda-\\mathrm{logit}(p_B)$', ha='right')
-    else:
-        plt.text(grid_X[-1,-1] * 1.33, grid_Y[-1,-1] * 1.05,
-                 '$\\mathrm{expit}(\lambda)-p_B$', ha='right')
-    
-    plt.contour(grid_X,
-                grid_Y,
-                grid_V,
-                levels=potential_energy_levels,
-                colors='#a0a0a0',
-                linewidths=1,
-                alpha=.64)
-    
-    # validity region
-    grid_validity_region = grid_X * 0.
-    grid_validity_region[grid_committor_estimate < lambdaA] = 1.
-    grid_validity_region[grid_committor_estimate > lambdaB] = 1.
-    plt.contourf(grid_X,
-                 grid_Y,
-                 grid_validity_region,
-                 levels=[.5, 1],
-                 colors='black',
-                 alpha=0.25)
-    
-    # states
-    circleA = plt.Circle((xA, yA),
-                         radius,
-                         ec='black',
-                         fc=(1,1,1,1),
-                         zorder=20)
-    circleB = plt.Circle((xB, yB),
-                         radius,
-                         ec='black',
-                         fc=(1,1,1,1),
-                         zorder=20)
-    plt.text(xA, yA, 'A',
-             ha='center',
-             va='center',
-             fontsize=20,
-             color='black',
-             fontweight=750,
-             zorder=22)
-    plt.text(xB, yB, 'B',
-             ha='center',
-             va='center',
-             fontsize=20,
-             color='black',
-             fontweight=750,
-             zorder=22)
-    ax = plt.gca()
-    ax.add_patch(circleA)
-    ax.add_patch(circleB)
-
-    if exact_levels is None:
-        exact_levels = grid_committor_levels
-    plt.contour(grid_X, grid_Y, grid_committor_relaxation, zorder=-10,
-                 colors='#cccccc', levels=exact_levels)
-    plt.contour(grid_X, grid_Y, grid_committor_estimate, zorder=-10,
-                 colors='#333333', levels=grid_committor_levels)
-    
-    plt.xlim(grid_X[0,0],grid_X[-1,-1])
-    plt.ylim(grid_Y[0,0],grid_Y[-1,-1])
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-    ax.set_aspect(abs((xlim[-1]-xlim[0])/(ylim[-1]-ylim[0])))
-    figure.subplots_adjust(
-        left=.12,
-        bottom=.15,
-        right=.8,
-        top=.92,
-        hspace=0)
-    figure.set_size_inches(4/1.12, 3/1.08)
-    return figure, ax
-
-
-def create_equilibrium_tpe():
-    # TODO much easier if saved as xtc files. Keep like this for now.
-    equilibrium = tps[:0]
-    trajs = [f'equilibrium/{file}' for file in sorted(os.listdir('equilibrium'))
-            if len(file) == 20 and file[:10] == 'transition'
-            and file[-4:] == '.npy']
-    for traj in tqdm(trajs[:4000]):
-        t = np.load(traj)
-        equilibrium._update(
-            trajectory_files = equilibrium.trajectory_files + [f'{len(equilibrium)}'],
-            frame_trajectory_indices = np.append(
-                equilibrium.frame_trajectory_indices,
-                np.repeat(len(equilibrium), len(t))),
-            frame_trajectory_positions = np.append(
-                equilibrium.frame_trajectory_positions,
-                np.arange(len(t))),
-            frame_times = np.append(
-                equilibrium.frame_times,
-                np.arange(len(t))),
-            frame_simulation_times = np.append(
-                equilibrium.frame_simulation_times,
-                np.arange(len(t))),
-            frame_states = np.append(
-                equilibrium.frame_states,
-                ['A'] + ['R'] * (len(t) - 2) + ['B']),
-            frame_descriptors = np.append(
-                equilibrium.frame_descriptors,
-                t, axis=0) if equilibrium.nframes else t,
-            frame_values = np.append(
-                equilibrium.frame_values,
-                np.zeros(len(t))),
-            frame_indices = np.append(
-                equilibrium._PathEnsemble__frame_indices,
-                np.arange(len(t)) + equilibrium.nframes),
-            lengths = np.append(equilibrium.lengths, [len(t)]),
-            weights = np.append(equilibrium.weights, [1.]),
-            shooting_indices = np.append(equilibrium.shooting_indices, [0]),
-            are_accepted = np.append(equilibrium.are_accepted, [True]))
-        equilibrium.save('equilibrium/pe.h5')
-
-
-def initialize_results(n=4000):
-    return {'step_numbers': np.zeros(n, dtype=int) + np.nan,
-            'kAB': np.zeros(n) + np.nan,
-            'kBA': np.zeros(n) + np.nan,
-            'kAB_max': np.zeros(n) + np.nan,
-            'kAB_min': np.zeros(n) + np.nan,
-            'kBA_max': np.zeros(n) + np.nan,
-            'kBA_min': np.zeros(n) + np.nan,
-            'times': np.zeros(n) + np.nan,
-            'timesA': np.zeros(n) + np.nan,
-            'timesB': np.zeros(n) + np.nan,
-            'timesS': np.zeros(n) + np.nan,
-            'timesT': np.zeros(n) + np.nan,
-            'TP_number': np.zeros(n, dtype=int) + np.nan,
-            'TP_length': np.zeros(n) + np.nan,
-            'TP_length_min': np.zeros(n) + np.nan,
-            'TP_length_max': np.zeros(n) + np.nan,
-            'channel_differences': np.zeros(n) + np.nan}
-
-
-def compute_average_tps_lenghts(tps, dt=1.):
-    TP_length = []
-    TP_length_max = []
-    TP_length_min = []
-    lengths = tps.internal_lengths * dt
-    weights = tps.weights
-    for i in tqdm(range(len(tps))):
-        TP_length.append(
-            np.average(lengths[:i + 1], weights=weights[:i + 1]))
-        temp = []
-        for bootstrapping_event in range(1000):
-            k = np.random.choice(i + 1, i + 1)
-            temp.append(np.average(lengths[k], weights=weights[k]))
-        TP_length_max.append(np.quantile(temp, .975))
-        TP_length_min.append(np.quantile(temp, .025))
-    return (np.array(TP_length),
-            np.array(TP_length_max),
-            np.array(TP_length_min))
-
