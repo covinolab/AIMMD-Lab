@@ -123,6 +123,7 @@ class Launcher:
             if 0: equally distribute available resources among workers
             if None: each worker takes them all
         gpus_per_task: default 0, number of GPUs to allocate per task
+            if None: each worker takes them all
 
         Returns
         -------
