@@ -23,11 +23,11 @@ ctx = multiprocessing.get_context('spawn')
 
 def _run_task(params_file, directory,
               localid, cpus_per_task, gpus_per_task,
-              task, *args):
+              termination_timeout, task, *args):
     try:
         Worker(params_file, directory,
-               localid, cpus_per_task, gpus_per_task
-              ).run(task, *args)
+               localid, cpus_per_task, gpus_per_task,
+               termination_timeout).run(task, *args)
     except Exception as exception:
         print(f'[Error] {exception}')
         return 1
@@ -150,6 +150,7 @@ class Launcher:
                     noappend = False
                 self.processes.launch(self.params.path, self.directory,
                                       localid, cpus_per_task, gpus_per_task,
+                                      max(0., self.termination_timeout - 1.),
                                       'simulate', f'worker{localid}',
                                       f'worker{localid}.log', noappend)
             
@@ -157,11 +158,13 @@ class Launcher:
             localid = len(self.processes)
             self.processes.launch(self.params.path, self.directory,
                                   localid, cpus_per_task, gpus_per_task,
+                                  max(0., self.termination_timeout - 1.),
                                   'train', 'trainer.log')
             
             # manager (sharing the same localid as trainer)
             self.processes.launch(self.params.path, self.directory,
                                   localid, cpus_per_task, gpus_per_task,
+                                  max(0., self.termination_timeout - 1.),
                                   'manage', n, nA, nB, eA, eB,
                                   'manager.log', nsteps, nframes)
             
