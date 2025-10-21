@@ -4,7 +4,10 @@ import numpy as np
 import psutil
 
 def get_available_cpus():
-    return sorted(list(set(os.sched_getaffinity(0))))
+    try:
+        return sorted(list(set(os.sched_getaffinity(0))))
+    except:
+        return []
 
 def get_num_gpus():
     return torch.cuda.device_count()
