@@ -48,16 +48,17 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
     cpus_per_task = len(cpus)
     
     # CPU binding
-    os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
-    os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
-    os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
-    try:
-        psutil.Process().cpu_affinity(cpus)
-    except Exception as exception:
-        print(f"[Warning] Could not set CPU affinity "
-              f"with {cpus}: {exception}")
-        cpus = []
-    cpus = ",".join([str(id) for id in cpus])
+    if cpus_per_task > 0:
+        try:
+            psutil.Process().cpu_affinity(cpus)
+            os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
+            os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
+            os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
+            cpus = ",".join([str(id) for id in cpus])
+        except Exception as exception:
+            print(f"[Warning] Could not set CPU affinity "
+                  f"with {cpus}: {exception}")
+            cpus = []
     
     # check if requested GPU resources are available
     if gpus_per_task > 0 and num_gpus_avail == 0:
