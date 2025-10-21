@@ -33,7 +33,7 @@ def get_available_gpus():
         return sorted([int(id) for id in gpus.split(",") if id != ""])
 
 
-def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
+def bind_resources(localid, cpus_per_task=None, gpus_per_task=None):
     """
     cpus_per_task: None: just report
                    0: explicitly bind all cpus available
