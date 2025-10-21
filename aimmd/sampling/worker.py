@@ -31,7 +31,8 @@ class Worker:
         localid : int, optional
             Local ID of the worker (used for resource allocation), by default 0.
         cpus_per_task : int, optional
-            Number of CPUs allocated per task, by default None (=take all).
+            Number of CPUs allocated per task, by default None.
+            If None or 0: take all resources available.
         gpus_per_task : int, optional
             Number of GPUs allocated per task, by default 0.
 
@@ -58,7 +59,7 @@ class Worker:
         # counting doesn't start at zero, and we have doubling of some worker ids.
         # Instead, enforce that this is provided externally in the run script.
         self.localid = int(localid)
-        self.cpus_per_task = int(cpus_per_task)
+        self.cpus_per_task = int(cpus_per_task) if cpus_per_task else 0
         self.gpus_per_task = int(gpus_per_task)
 
         # register signal handlers (for all future tasks)
