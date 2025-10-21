@@ -1159,9 +1159,10 @@ def fit(network, pathensemble,
     scales = []
     # D = []
     # R = []
-    counter = tqdm(total=epochs, disable=not verbose)
     
     # actual loop
+    print(f'Starting the training cycle ({now()})')
+    counter = tqdm(total=epochs, disable=not verbose)
     while True:
         
         if worker is not None and bool(worker.termination_signal):
