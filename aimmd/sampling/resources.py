@@ -16,7 +16,9 @@ def get_available_gpus():
     else:
         return sorted([int(id) for id in gpus.split(",") if id != ""])
 
-def bind_resources(localid, cpus_per_task=1, gpus_per_task=0):
+def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
+    """cpus_per_task: None or 0 means take all available"""
+    
     print(f'Worker\'s resources info')
     print(f'-----------------------')
     print(f'LocalID {localid}')
@@ -29,7 +31,7 @@ def bind_resources(localid, cpus_per_task=1, gpus_per_task=0):
     num_gpus_avail = get_num_gpus()
     
     # determine the actual cpus allocated for the task
-    if len(available_cpus) <= cpus_per_task:
+    if not cpus_per_task or len(available_cpus) <= cpus_per_task:
         # this happens when running srun on HPC clusters
         # or when requiring "all" cpus to be used        
         start = None
