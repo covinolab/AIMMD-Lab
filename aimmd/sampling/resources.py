@@ -35,8 +35,9 @@ def get_available_gpus():
 
 def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
     """
-    cpus_per_task: None or 0 means take all available
-    gpus_per_task: None means take all available
+    cpus_per_task: None: just report
+                   0: explicitly bind all cpus available
+    gpus_per_task: None: just report
     """
     
     print(f'Worker\'s resources info')
@@ -50,23 +51,25 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
     # extra dependency, on cuda or ROCm
     available_gpus = get_available_gpus()
     num_gpus_avail = len(available_gpus)
-    
-    # determine the actual cpus allocated for the task
-    if not cpus_per_task or len(available_cpus) <= cpus_per_task:
-        # this happens when running srun on HPC clusters
-        # or when requiring "all" cpus to be used        
-        start = None
-        stop = None
-    else:
-        # this happens when running on a node/workstation
-        # with a few cpus per task
-        start = localid * cpus_per_task
-        stop = start + cpus_per_task
-    cpus = available_cpus[start:stop]
-    
+
     # CPU binding
-    if cpus_per_task is not None and cpus_per_task > 0:
-        cpus_per_task = len(cpus)
+    if cpus_per_task is not None:
+        
+        # determine the actual cpus allocated for the task
+        if not cpus_per_task or len(available_cpus) <= cpus_per_task:
+            # this happens when running srun on HPC clusters
+            # or when requiring "all" cpus to be used        
+            start = None
+            stop = None
+        else:
+            # this happens when running on a node/workstation
+            # with a few cpus per task
+            start = localid * cpus_per_task
+            stop = start + cpus_per_task
+        cpus = available_cpus[start:stop]
+        cpus_per_tasks = len(cpus)
+        
+        # actual binding
         os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
         os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
         os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
@@ -78,6 +81,8 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
             print(f"[Warning] Could not set CPU affinity "
                   f"with {cpus}: {exception}")
             cpus = "all"
+    else:
+        cpus = ",".join([str(id) for id in available_cpus])
     
     # GPU binding
     if gpus_per_task is not None:
