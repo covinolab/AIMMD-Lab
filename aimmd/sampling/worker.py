@@ -35,6 +35,7 @@ class Worker:
             If None or 0: take all resources available.
         gpus_per_task : int, optional
             Number of GPUs allocated per task, by default 0.
+            If None: take all resources availalbe.
 
         Returns
         -------
