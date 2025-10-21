@@ -1159,7 +1159,6 @@ def fit(network, pathensemble,
     scales = []
     # D = []
     # R = []
-    i = 0
     counter = tqdm(total=epochs, disable=not verbose)
     
     # actual loop
@@ -1170,7 +1169,7 @@ def fit(network, pathensemble,
         
         for param_group in optimizer.param_groups:
             # slowly increase lr
-            param_group['lr'] = lr * min(1, (i + 1) / (epochs / 20))
+            param_group['lr'] = lr * min(1, (counter.n + 1) / (epochs / 20))
         
         # sample batch
         indices = np.random.choice(len(selection_probabilities),
@@ -1255,14 +1254,11 @@ def fit(network, pathensemble,
         scales.append(max(float(torch.max(q)), -float(torch.min(q))))
         Range = float(torch.min(q)), float(torch.max(q))
         
-        # update counter
-        counter.update(1)
-        
         # handle termination: too high scales
         if scales[-1] >= stop or np.isnan(scales[-1]):
             print(f'!!! stopping early since scale '
                   f'{scales[-1]:.3f} > {stop:.3f}')
-            if (i + 1) < 1.25 * epochs:
+            if (counter.n + 1) < 1.25 * epochs:
                 print(f'    restoring lowest loss\' ({min_loss1:.3e}) '
                       f'weights, step {min_loss_step1 + 1}')
                 network.load_state_dict(state_dict1)
@@ -1275,37 +1271,36 @@ def fit(network, pathensemble,
         # save model if goood
         if losses[-1] <= min_loss1:
             min_loss1 = losses[-1]
-            min_loss_step1 = i
+            min_loss_step1 = counter.n + 0
             state_dict1 = copy.deepcopy(network.state_dict())
         
         # new min loss after reaching target epochs
-        if (i + 1) >= epochs and losses[-1] <= min_loss2:
+        if (counter.n + 1) >= epochs and losses[-1] <= min_loss2:
             min_loss2 = losses[-1]
-            min_loss_step2 = i
+            min_loss_step2 = counter.n + 0
             state_dict2 = copy.deepcopy(network.state_dict())
         
         # handle termination: lowest loss
-        if (i + 1) >= epochs and losses[-1] <= min_loss1:
+        if (counter.n + 1) >= epochs and losses[-1] <= min_loss1:
             break
         
         # new target after 1.25 * epochs
-        if (i + 1) >= 1.25 * epochs and losses[-1] <= min_loss2:
+        if (counter.n + 1) >= 1.25 * epochs and losses[-1] <= min_loss2:
             break
         
         # at most 1.5 * epochs
-        if (i + 1) >= 1.5 * epochs:
+        if (counter.n + 1) >= 1.5 * epochs:
             print(f'    restoring lowest loss\' ({min_loss2:.3e}) '
                   f'weights, step {min_loss_step2 + 1}')
             network.load_state_dict(state_dict2)
             break
         
-        i += 1
-        
         # D.append(d)
         # R.append(r)
         
         # report
-        if verbose and i % (epochs // 20) == 0:
+        counter.update(1)
+        if verbose and counter.n % (epochs // 20) == 0:
             print(f'    loss {losses[-1]:.3e}, '
                   f'scale {scales[-1]:.3f}, '
                   f'range ({Range[0]:.3f}, {Range[1]:.3f})')
@@ -1326,7 +1321,7 @@ def fit(network, pathensemble,
     
     # report and return
     print(f'\nTraining took {time.time()-t0:.1f}s')
-    print(f'    {i + 1} epochs')
+    print(f'    {counter.n} epochs')
     print(f'    last loss {losses[-1]:.3e}')
     print(f'    last scale {scales[-1]:.3f}')
     print(f'    last range ({Range[0]:.3f}, {Range[1]:.3f})')
