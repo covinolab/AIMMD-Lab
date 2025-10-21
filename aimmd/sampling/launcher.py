@@ -173,17 +173,6 @@ class Launcher:
             self.terminate_operations()
     
     @property
-    def job_cleanup(self):
-        """Bash script for cleanup when scanceling SLURM job"""
-        return f'''# custom operation on scancel: full cleanup
-function cleanup {{
-    echo "Job is being canceled, doing cleanup"
-    touch {self.directory}/.terminate
-    sleep {int(self.termination_timeout)}
-}}
-trap cleanup SIGTERM'''
-    
-    @property
     def job_stop_condition(self):
         """Bash script for stop condition in SLURM job"""
         return f'''stop_condition() {{
@@ -315,7 +304,6 @@ trap cleanup SIGTERM'''
             file.write(f'#SBATCH --job-name={self.params.name}\n')
             file.write(f'{slurm_header}\n')
             file.write(f"rm -f {self.directory}/.terminate\n\n")
-            file.write(f"{self.job_cleanup}\n\n")
             
             # srun call
             file.write(f'# srun call\n')
