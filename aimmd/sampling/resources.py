@@ -70,17 +70,17 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
     
     # GPU binding
     if gpus_per_task is not None:
-        
-        # check if requested GPU resources are available
-        if gpus_per_task == 0 and num_gpus_avail == 0:
-            raise RuntimeError(
-                f"No GPUs available but {gpus_per_task} requested")
-        if gpus_per_task > num_gpus_avail:
-            raise RuntimeError(f"Only {num_gpus_avail} GPUs available but "
-                               f"{gpus_per_task} requested per task.")
-        
-        # determine the actual gpus allocated for the task
         if gpus_per_task > 0:
+            
+            # check if requested GPU resources are available
+            if num_gpus_avail == 0:
+                raise RuntimeError(
+                    f"No GPUs available but {gpus_per_task} requested")
+            if gpus_per_task > num_gpus_avail:
+                raise RuntimeError(f"Only {num_gpus_avail} GPUs available but "
+                                   f"{gpus_per_task} requested per task.")
+            
+            # determine the actual gpus allocated for the task
             start = localid * gpus_per_task
             stop = start + gpus_per_task
             gpus = np.arange(start, stop) % num_gpus_avail
