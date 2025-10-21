@@ -33,6 +33,8 @@ class Worker:
         cpus_per_task : int, optional
             Number of CPUs allocated per task, by default None.
             If None or 0: take all resources available.
+            If 0: explicitly bind CPUs available.
+            If None: just report CPUs available when running.
         gpus_per_task : int, optional
             Number of GPUs allocated per task, by default 0.
             If None: take all resources availalbe.
