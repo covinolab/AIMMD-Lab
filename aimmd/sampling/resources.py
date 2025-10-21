@@ -3,6 +3,10 @@ import torch
 import numpy as np
 import psutil
 
+# call just once, for compatibility issues
+# when spawning multiple processes
+torch.set_num_interop_threads(1)
+
 def get_available_cpus():
     try:
         return sorted(list(set(os.sched_getaffinity(0))))
@@ -56,7 +60,6 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
         os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
         # you must be explicit with torch
         torch.set_num_threads(cpus_per_task)
-        torch.set_num_interop_threads(1)
         try:
             psutil.Process().cpu_affinity(cpus)
             cpus = ",".join([str(id) for id in cpus])
