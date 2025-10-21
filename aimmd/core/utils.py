@@ -1302,7 +1302,6 @@ def fit(network, pathensemble,
         # R.append(r)
         
         # report
-        counter.update(1)
         if verbose and counter.n % (epochs // 20) == 0:
             print(f'\n    loss {losses[-1]:.3e}, '
                   f'scale {scales[-1]:.3f}, '
