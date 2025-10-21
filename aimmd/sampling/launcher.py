@@ -7,6 +7,7 @@ import multiprocessing
 from math import ceil
 from pathlib import Path
 from .worker import Worker
+from .resources import get_available_cpus
 from ..core.utils import now
 from ..core.params import Params
 
@@ -30,78 +31,6 @@ def _run_task(params_file, directory,
         print(f'[Error] {exception}')
         return 1
     return 0
-
-
-class Processes:
-    
-    def __init__(self):
-        self.__list = []
-    
-    def __len__(self):
-        return len(self.__list)
-    
-    def __iter__(self):
-        return iter(self.__list)
-    
-    def __getitem__(self, key):
-        return self.__list[key]
-    
-    @property
-    def list(self):
-        return self.__list
-    
-    @property
-    def alive(self):
-        return ~self.closed
-    
-    @property
-    def closed(self):
-        result = np.repeat(False, len(self))
-        for i, process in enumerate(self):
-            if process._closed or not process.is_alive():
-                result[i] = True
-                if not process._closed:
-                    print(f'[Worker {process.pid}] terminated '
-                          f'with exit code {process.exitcode}')
-                    process.join()
-                    process.close()
-        return result
-    
-    def launch(self, *args):
-        process = ctx.Process(target=_run_task, args=args)
-        self.__list.append(process)
-        process.start()
-        print(f'[Worker {process.pid}] args: '
-              f'{" ".join([str(arg) for arg in args])}')
-    
-    def clean(self, timeout=20.):
-        
-        # graceful termination
-        t0 = time.time()
-        terminating = set()
-        while time.time() - t0 < timeout and np.any(self.alive):
-            for i in np.where(self.alive)[0]:
-                if i in terminating:
-                    continue
-                terminating.add(i)
-                try:
-                    os.kill(self[i].pid, signal.SIGINT)
-                except:
-                    pass
-        
-        # forced termination
-        for i in np.where(self.alive)[0]:
-            try:
-                self[i].kill()
-                self[i].join(timeout=1.)
-            except:
-                pass
-        
-        # final report
-        self.closed
-        
-        # pristine state
-        self.__list = []
 
 
 class Launcher:
@@ -190,7 +119,7 @@ class Launcher:
         walltime: default inf, maximum number of simulation time,
                   has priority over nframes and nsteps
         cpus_per_task: default None, number of CPUs to allocate per task
-            if None or 0: use all resources of node/workstation for each worker
+            if None or 0: equally distribute available resources among workers
         gpus_per_task: default 1, number of GPUs to allocate per task
 
         Returns
@@ -200,10 +129,17 @@ class Launcher:
         
         self.processes.clean()
         
+        # total number of processes: simulators and workers
+        num_processes = nA + nB + eA + eB + n + 1
+        
+        # determine number of CPUs per task
+        if not cpus_per_task:
+            num_cpus_avail = len(get_available_cpus())
+            cpus_per_task = max(1, round(num_cpus_avail // num_processes))
+        
         try:
             # simulators
-            total = nA + nB + eA + eB + n
-            for i in range(total):
+            for i in range(num_processes - 1):
                 localid = len(self.processes)
                 if i < total - n:
                     noappend = True
@@ -230,6 +166,8 @@ class Launcher:
             t0 = time.time()
             while time.time() - t0 < walltime and np.all(self.processes.alive):
                 continue
+        
+        # safe termination
         finally:
             self.termination_signal = 2  # KeyboardInterrupt
             self.terminate_operations()
@@ -457,3 +395,77 @@ class Launcher:
             file.write(f'    echo "[Worker $i] No task assigned."\n')
             file.write(f'    ;;\n')
             file.write(f'  esac\n\'\n')
+
+
+class Processes:
+    """Used by `Launcher` to manage the processes spawned by the
+    `Launcher.run` method."""
+    
+    def __init__(self):
+        self.__list = []
+    
+    def __len__(self):
+        return len(self.__list)
+    
+    def __iter__(self):
+        return iter(self.__list)
+    
+    def __getitem__(self, key):
+        return self.__list[key]
+    
+    @property
+    def list(self):
+        return self.__list
+    
+    @property
+    def alive(self):
+        return ~self.closed
+    
+    @property
+    def closed(self):
+        result = np.repeat(False, len(self))
+        for i, process in enumerate(self):
+            if process._closed or not process.is_alive():
+                result[i] = True
+                if not process._closed:
+                    print(f'[Worker {process.pid}] terminated '
+                          f'with exit code {process.exitcode}')
+                    process.join()
+                    process.close()
+        return result
+    
+    def launch(self, *args):
+        process = ctx.Process(target=_run_task, args=args)
+        self.__list.append(process)
+        process.start()
+        print(f'[Worker {process.pid}] args: '
+              f'{" ".join([str(arg) for arg in args])}')
+    
+    def clean(self, timeout=20.):
+        
+        # graceful termination
+        t0 = time.time()
+        terminating = set()
+        while time.time() - t0 < timeout and np.any(self.alive):
+            for i in np.where(self.alive)[0]:
+                if i in terminating:
+                    continue
+                terminating.add(i)
+                try:
+                    os.kill(self[i].pid, signal.SIGINT)
+                except:
+                    pass
+        
+        # forced termination
+        for i in np.where(self.alive)[0]:
+            try:
+                self[i].kill()
+                self[i].join(timeout=1.)
+            except:
+                pass
+        
+        # final report
+        self.closed
+        
+        # pristine state
+        self.__list = []
