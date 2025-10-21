@@ -26,7 +26,8 @@ def _run_task(params_file, directory,
               task, *args):
     try:
         Worker(params_file, directory,
-               localid, cpus_per_task, gpus_per_task).run(task, *args)
+               localid, cpus_per_task, gpus_per_task
+              ).run(task, *args)
     except Exception as exception:
         print(f'[Error] {exception}')
         return 1
@@ -302,7 +303,7 @@ class Launcher:
             # slurm header
             file.write(f'#!/bin/bash -x\n')
             file.write(f'#SBATCH --job-name={self.params.name}\n')
-            file.write(f'{slurm_header}\n')
+            file.write(f'{slurm_header}\n\n')
             file.write(f"rm -f {self.directory}/.terminate\n\n")
             
             # srun call
@@ -330,7 +331,6 @@ class Launcher:
                 file.write(f'\n  {i})  # worker {i} ({description})\n')
                 file.write(f'    "${{PYTHON}}" "${{WORKER}}" "${{PARAMS}}" '
                            f'{self.directory} {i % ntasks_per_node} '
-                           f'{cpus_per_task} {gpus_per_task} '
                            f'simulate worker{i} worker{i}.log'
                            f'{" noappend" if noappend else ""} &\n')
                 file.write(f'    pid=$!\n')
@@ -372,14 +372,12 @@ class Launcher:
             # trainer
             file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
                        f'"{self.directory}" {i + 1} '
-                       f'{cpus_per_task} {gpus_per_task} '
                        f'train trainer.log &\n')
             file.write(f'    pids+=($!)\n')
             
             # manager
             file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
                        f'"{self.directory}" {(i + 1) % ntasks_per_node} '
-                       f'{cpus_per_task} {gpus_per_task} '
                        f'manage {n} {nA} {nB} {eA} {eB} '
                        f'manager.log {nsteps} {nframes} &\n')
             file.write(f'    pids+=($!)\n')
