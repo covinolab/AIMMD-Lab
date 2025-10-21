@@ -140,6 +140,9 @@ class Launcher:
             num_cpus_avail = len(get_available_cpus())
             cpus_per_task = max(1, round(num_cpus_avail // num_processes))
         
+        # workers' termination timeout
+        termination_timeout = max(0, self.termination_timeout - 1.)
+        
         try:
             # simulators
             for i in range(num_processes - 1):
@@ -150,7 +153,7 @@ class Launcher:
                     noappend = False
                 self.processes.launch(self.params.path, self.directory,
                                       localid, cpus_per_task, gpus_per_task,
-                                      max(0., self.termination_timeout - 1.),
+                                      termination_timeout,
                                       'simulate', f'worker{localid}',
                                       f'worker{localid}.log', noappend)
             
@@ -158,13 +161,13 @@ class Launcher:
             localid = len(self.processes)
             self.processes.launch(self.params.path, self.directory,
                                   localid, cpus_per_task, gpus_per_task,
-                                  max(0., self.termination_timeout - 1.),
+                                  termination_timeout,
                                   'train', 'trainer.log')
             
             # manager (sharing the same localid as trainer)
             self.processes.launch(self.params.path, self.directory,
                                   localid, cpus_per_task, gpus_per_task,
-                                  max(0., self.termination_timeout - 1.),
+                                  termination_timeout,
                                   'manage', n, nA, nB, eA, eB,
                                   'manager.log', nsteps, nframes)
             
@@ -302,6 +305,9 @@ class Launcher:
         seconds = walltime - hours * 3600 - minutes * 60
         slurm_header += f'\n#SBATCH --time={hours:02g}:{minutes:02g}:{seconds:02g}'
         
+        # workers' termination timeout
+        termination_timeout = max(0, self.termination_timeout - 1.)
+        
         # write job script
         with open(filename, 'w') as file:
             
@@ -334,7 +340,7 @@ class Launcher:
             def _case(i, description, noappend=False):
                 file.write(f'\n  {i})  # worker {i} ({description})\n')
                 file.write(f'    "${{PYTHON}}" "${{WORKER}}" "${{PARAMS}}" '
-                           f'{self.directory} {i % ntasks_per_node} '
+                           f'{self.directory} {termination_timeout} '
                            f'simulate worker{i} worker{i}.log'
                            f'{" noappend" if noappend else ""} &\n')
                 file.write(f'    pid=$!\n')
@@ -375,13 +381,13 @@ class Launcher:
             
             # trainer
             file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" {i + 1} '
+                       f'"{self.directory}" {termination_timeout} '
                        f'train trainer.log &\n')
             file.write(f'    pids+=($!)\n')
             
             # manager
             file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" {(i + 1) % ntasks_per_node} '
+                       f'"{self.directory}" {termination_timeout} '
                        f'manage {n} {nA} {nB} {eA} {eB} '
                        f'manager.log {nsteps} {nframes} &\n')
             file.write(f'    pids+=($!)\n')
