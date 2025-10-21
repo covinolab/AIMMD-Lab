@@ -1253,12 +1253,15 @@ def fit(network, pathensemble,
         q = network(d).detach()
         scales.append(max(float(torch.max(q)), -float(torch.min(q))))
         Range = float(torch.min(q)), float(torch.max(q))
+
+        # update counter
+        counter.update(1)
         
         # handle termination: too high scales
         if scales[-1] >= stop or np.isnan(scales[-1]):
             print(f'!!! stopping early since scale '
                   f'{scales[-1]:.3f} > {stop:.3f}')
-            if (counter.n + 1) < 1.25 * epochs:
+            if counter.n < 1.25 * epochs:
                 print(f'    restoring lowest loss\' ({min_loss1:.3e}) '
                       f'weights, step {min_loss_step1 + 1}')
                 network.load_state_dict(state_dict1)
@@ -1271,25 +1274,25 @@ def fit(network, pathensemble,
         # save model if goood
         if losses[-1] <= min_loss1:
             min_loss1 = losses[-1]
-            min_loss_step1 = counter.n + 0
+            min_loss_step1 = counter.n - 1
             state_dict1 = copy.deepcopy(network.state_dict())
         
         # new min loss after reaching target epochs
-        if (counter.n + 1) >= epochs and losses[-1] <= min_loss2:
+        if counter.n >= epochs and losses[-1] <= min_loss2:
             min_loss2 = losses[-1]
-            min_loss_step2 = counter.n + 0
+            min_loss_step2 = counter.n - 1
             state_dict2 = copy.deepcopy(network.state_dict())
         
         # handle termination: lowest loss
-        if (counter.n + 1) >= epochs and losses[-1] <= min_loss1:
+        if counter.n >= epochs and losses[-1] <= min_loss1:
             break
         
         # new target after 1.25 * epochs
-        if (counter.n + 1) >= 1.25 * epochs and losses[-1] <= min_loss2:
+        if counter.n >= 1.25 * epochs and losses[-1] <= min_loss2:
             break
         
         # at most 1.5 * epochs
-        if (counter.n + 1) >= 1.5 * epochs:
+        if counter.n >= 1.5 * epochs:
             print(f'    restoring lowest loss\' ({min_loss2:.3e}) '
                   f'weights, step {min_loss_step2 + 1}')
             network.load_state_dict(state_dict2)
