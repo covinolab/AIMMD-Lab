@@ -141,7 +141,7 @@ class Launcher:
             # simulators
             for i in range(num_processes - 1):
                 localid = len(self.processes)
-                if i < total - n:
+                if i < num_processes - 1 - n:
                     noappend = True
                 else:
                     noappend = False
