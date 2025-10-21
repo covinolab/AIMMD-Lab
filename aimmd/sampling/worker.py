@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import psutil
 import signal
 import subprocess
 import MDAnalysis as mda
