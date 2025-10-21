@@ -1160,8 +1160,7 @@ def fit(network, pathensemble,
     # D = []
     # R = []
     i = 0
-    if verbose:
-        counter = tqdm(range(epochs))
+    counter = tqdm(total=epochs, disable=not verbose)
     
     # actual loop
     while True:
@@ -1256,8 +1255,8 @@ def fit(network, pathensemble,
         scales.append(max(float(torch.max(q)), -float(torch.min(q))))
         Range = float(torch.min(q)), float(torch.max(q))
         
-        if verbose:
-            counter.update(1)
+        # update counter
+        counter.update(1)
         
         # handle termination: too high scales
         if scales[-1] >= stop or np.isnan(scales[-1]):
@@ -1311,8 +1310,8 @@ def fit(network, pathensemble,
                   f'scale {scales[-1]:.3f}, '
                   f'range ({Range[0]:.3f}, {Range[1]:.3f})')
     
-    if verbose:
-        counter.close()
+    # close counter
+    counter.close()
     
     # error handling: result not as expected
     if Range[0] > 0 or Range[1] < 0 or scales[-1] < 1:
