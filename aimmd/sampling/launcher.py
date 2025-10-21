@@ -314,8 +314,7 @@ class Launcher:
             # srun call
             file.write(f'# srun call\n')
             file.write(f"srun --cpus-per-task={cpus_per_task} "
-                            f"--cpu-bind=cores bash -c '\n")
-            file.write(f'  export i=$SLURM_PROCID\n\n')
+                            f"--cpu-bind=cores bash -c '\n\n")
             
             # default names
             file.write(f'  # default names\n')
@@ -331,7 +330,7 @@ class Launcher:
             
             # cases
             file.write(f'  # srun rank by rank\n')
-            file.write(f'  case $i in\n')
+            file.write(f'  case $SLURM_PROCID in\n')
             def _case(i, description, noappend=False):
                 file.write(f'\n  {i})  # worker {i} ({description})\n')
                 file.write(f'    "${{PYTHON}}" "${{WORKER}}" "${{PARAMS}}" '
