@@ -7,7 +7,7 @@ def get_available_cpus():
     try:
         return sorted(list(set(os.sched_getaffinity(0))))
     except:
-        return []
+        return list(range(psutil.cpu_count(logical=False)))
 
 def get_num_gpus():
     return torch.cuda.device_count()
@@ -49,11 +49,16 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
     
     # CPU binding
     if cpus_per_task > 0:
+        cpus_per_task = int(os.getenv(
+            "SLURM_CPUS_PER_TASK", f"{cpus_per_task}"))
+        os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
+        os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
+        os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
+        # you must be explicit with torch
+        torch.set_num_threads(cpus_per_task)
+        torch.set_num_interop_threads(1)
         try:
             psutil.Process().cpu_affinity(cpus)
-            os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
-            os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
-            os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
             cpus = ",".join([str(id) for id in cpus])
         except Exception as exception:
             print(f"[Warning] Could not set CPU affinity "
