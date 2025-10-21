@@ -202,7 +202,7 @@ def test_toy_1d():
     launcher.create_job('job.sh', n=1, nA=1, nB=1, walltime=3600)
     
     print('Running AIMMD for 10 steps')
-    launcher.run(n=1, nA=1, nB=1, nsteps=10, walltime=240)
+    launcher.run(n=1, nA=1, nB=1, nsteps=10, walltime=120)
     
     # how to understand what is failing? would need to run individual workers....
     #from aimmd import Worker
