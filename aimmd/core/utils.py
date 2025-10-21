@@ -1256,7 +1256,10 @@ def fit(network, pathensemble,
         Range = float(torch.min(q)), float(torch.max(q))
 
         # update counter
-        counter.update(1)
+        if verbose:
+            counter.update(1)
+        else:
+            counter.n += 1
         
         # handle termination: too high scales
         if scales[-1] >= stop or np.isnan(scales[-1]):
