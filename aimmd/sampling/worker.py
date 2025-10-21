@@ -60,8 +60,8 @@ class Worker:
         # counting doesn't start at zero, and we have doubling of some worker ids.
         # Instead, enforce that this is provided externally in the run script.
         self.localid = int(localid)
-        self.cpus_per_task = int(cpus_per_task) if cpus_per_task else 0
-        self.gpus_per_task = int(gpus_per_task)
+        self.cpus_per_task = cpus_per_task
+        self.gpus_per_task = gpus_per_task
 
         # register signal handlers (for all future tasks)
         signal.signal(signal.SIGTERM, self.terminate_handler)
@@ -149,4 +149,4 @@ class Worker:
         return self.run('simulate', run_file, log_file, noappend, walltime)
 
 if __name__ == '__main__':
-    Worker(*sys.argv[1:6]).run(*sys.argv[6:])
+    Worker(*sys.argv[1:4]).run(*sys.argv[4:])
