@@ -2,6 +2,7 @@ import os
 import torch
 import numpy as np
 import psutil
+import warnings
 
 # call just once, for compatibility issues
 # when spawning multiple processes
@@ -13,8 +14,16 @@ def get_available_cpus():
     except:
         return list(range(psutil.cpu_count(logical=False)))
 
+
 def get_num_gpus():
-    return torch.cuda.device_count()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # ignore *all* warnings in this block
+        try:
+            return torch.cuda.device_count()
+        except Exception as exception:
+            print(f'[Exception]: {exception}')
+            return 0
+
 
 def get_available_gpus():
     gpus = os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -22,6 +31,7 @@ def get_available_gpus():
         return list(range(get_num_gpus()))
     else:
         return sorted([int(id) for id in gpus.split(",") if id != ""])
+
 
 def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
     """
@@ -38,7 +48,8 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
     
     # find available gpus, using torch to avoid
     # extra dependency, on cuda or ROCm
-    num_gpus_avail = get_num_gpus()
+    available_gpus = get_available_gpus()
+    num_gpus_avail = len(available_gpus)
     
     # determine the actual cpus allocated for the task
     if not cpus_per_task or len(available_cpus) <= cpus_per_task:
@@ -77,13 +88,14 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
                 raise RuntimeError(
                     f"No GPUs available but {gpus_per_task} requested")
             if gpus_per_task > num_gpus_avail:
-                raise RuntimeError(f"Only {num_gpus_avail} GPUs available but "
-                                   f"{gpus_per_task} requested per task.")
+                raise RuntimeError(
+                    f"Only {num_gpus_avail} GPUs available but "
+                    f"{gpus_per_task} requested per task.")
             
             # determine the actual gpus allocated for the task
             start = localid * gpus_per_task
             stop = start + gpus_per_task
-            gpus = np.arange(start, stop) % num_gpus_avail
+            gpus = np.array(available_gpus[start:stop]) % num_gpus_avail
             gpus = ",".join([str(id) for id in gpus])
             
             # notify the user if this worker is oversubscribing a GPU
@@ -100,7 +112,7 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
         else:
             gpus = "none"
     else:
-        gpus = ",".join([str(id) for id in range(num_gpus_avail)])
+        gpus = ",".join([str(id) for id in available_gpus])
     
     # report resource allocation
     print(f'CPU ids: {cpus}')
