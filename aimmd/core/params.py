@@ -666,6 +666,7 @@ Manager and trainer share an extra task together."""
         
         cwd = os.getcwd()
         os.chdir(path.parent)
+        sys.path.insert(0, '')  # allows to see modules in path.parent
         
         try:
             # execute the file
@@ -699,6 +700,7 @@ Manager and trainer share an extra task together."""
         
         finally:
             os.chdir(cwd)
+            sys.path.pop(0)
     
     def crop_initial_paths(self):
         """Leave only the transition parts in `params.inital_paths`, to
