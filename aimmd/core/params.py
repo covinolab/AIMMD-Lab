@@ -616,10 +616,10 @@ Manager and trainer share an extra task together."""
         
         # special check: network
         if name == 'network':
-            if not isinstance(value, torch.nn.Module):
-                raise TypeError(
-                    f'{name} must be an instance of torch.nn.Module, '
-                    f'got {type(value)}')
+            for attribute in ['forward', 'state_dict', 'load_state_dict']:
+                if not hasattr(value, attribute) or not callable(
+                    getattr(value, attribute)):
+                    raise TypeError(f'{name} must have method "{attribute}"')
         
         # special check: path
         if name == 'path':
