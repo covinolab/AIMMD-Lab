@@ -101,7 +101,7 @@ class Launcher:
     
     def run(self, n, nA, nB, eA=0, eB=0,
             nsteps=inf, nframes=inf, walltime=inf,
-            cpus_per_task=None, gpus_per_task=0,
+            cpus_per_task=0, gpus_per_task=0,
             termination_timeout=20.):
         """
         Launch the simulation locally, spawning multiple processes.
@@ -119,9 +119,10 @@ class Launcher:
                  has priority over nsteps
         walltime: default inf, maximum number of simulation time,
                   has priority over nframes and nsteps
-        cpus_per_task: default None, number of CPUs to allocate per task
-            if None or 0: equally distribute available resources among workers
-        gpus_per_task: default 1, number of GPUs to allocate per task
+        cpus_per_task: default 0, number of CPUs to allocate per task
+            if 0: equally distribute available resources among workers
+            if None: each worker takes them all
+        gpus_per_task: default 0, number of GPUs to allocate per task
 
         Returns
         -------
@@ -134,7 +135,7 @@ class Launcher:
         num_processes = nA + nB + eA + eB + n + 1
         
         # determine number of CPUs per task
-        if not cpus_per_task:
+        if cpus_per_task == 0:
             num_cpus_avail = len(get_available_cpus())
             cpus_per_task = max(1, round(num_cpus_avail // num_processes))
         
