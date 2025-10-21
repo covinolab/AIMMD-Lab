@@ -312,7 +312,7 @@ class Launcher:
             file.write(f'  export i=$SLURM_PROCID\n\n')
             
             # default names
-            file.write(f'\n  # default names\n')
+            file.write(f'  # default names\n')
             file.write(f'  PYTHON="{PYTHON}"\n')
             file.write(f'  WORKER="{WORKER}"\n')
             file.write(f'  PARAMS="{self.params.path}"\n\n')
