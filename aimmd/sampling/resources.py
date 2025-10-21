@@ -66,7 +66,7 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
         except Exception as exception:
             print(f"[Warning] Could not set CPU affinity "
                   f"with {cpus}: {exception}")
-            cpus = []
+            cpus = "all"
     
     # GPU binding
     if gpus_per_task is not None:
@@ -98,9 +98,11 @@ def bind_resources(localid, cpus_per_task=None, gpus_per_task=0):
             os.environ["GPU_DEVICE_ORDINAL"] = gpus
             # for ROCm GPUs, Gromacs will use OpenCL
         else:
-            gpus = []
+            gpus = "none"
+    else:
+        gpus = ",".join([str(id) for id in range(num_gpus_avail)])
     
     # report resource allocation
-    print(f'CPU ids: {cpus if cpus else "all"}')
-    print(f'GPU ids: {gpus if gpus else "none"}')
+    print(f'CPU ids: {cpus}')
+    print(f'GPU ids: {gpus}')
     print(f'-----------------------\n')
