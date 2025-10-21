@@ -28,19 +28,24 @@ def bind_resources(localid, cpus_per_task=1, gpus_per_task=0):
     # extra dependency, on cuda or ROCm
     num_gpus_avail = get_num_gpus()
     
-    # CPU binding
-    os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
-    os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
-    os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
-    if len(available_cpus) == cpus_per_task:
+    # determine the actual cpus allocated for the task
+    if len(available_cpus) <= cpus_per_task:
         # this happens when running srun on HPC clusters
+        # or when requiring "all" cpus to be used        
         start = None
         stop = None
     else:
         # this happens when running on a node/workstation
+        # with a few cpus per task
         start = localid * cpus_per_task
         stop = start + cpus_per_task
     cpus = available_cpus[start:stop]
+    cpus_per_task = len(cpus)
+    
+    # CPU binding
+    os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
+    os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
+    os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
     try:
         psutil.Process().cpu_affinity(cpus)
     except Exception as exception:
@@ -55,23 +60,25 @@ def bind_resources(localid, cpus_per_task=1, gpus_per_task=0):
     if gpus_per_task > num_gpus_avail:
         raise RuntimeError(f"Only {num_gpus_avail} GPUs available but "
                            f"{gpus_per_task} requested per task.")
-
-    # GPU binding
+    
+    # determine the actual gpus allocated for the task
     if gpus_per_task > 0:
         start = localid * gpus_per_task
         stop = start + gpus_per_task
         gpus = np.arange(start, stop) % num_gpus_avail
         gpus = ",".join([str(id) for id in gpus])
-        os.environ["CUDA_VISIBLE_DEVICES"] = gpus
-        # for NVIDIA GPUs, and also ROCm picked up by torch
-        os.environ["GPU_DEVICE_ORDINAL"] = gpus
-        # for ROCm GPUs, Gromacs will use OpenCL
         
         # notify the user if this worker is oversubscribing a GPU
         if stop > num_gpus_avail:
             print(f"[Note] Worker may be oversubscribing GPUs\n"
                   f"  available GPUs: {num_gpus_avail}\n"
                   f"  GPUs per task: {gpus_per_task}")
+        
+        # GPU binding
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpus
+        # for NVIDIA GPUs, and also ROCm picked up by torch
+        os.environ["GPU_DEVICE_ORDINAL"] = gpus
+        # for ROCm GPUs, Gromacs will use OpenCL
     
     # report resource allocation
     if cpus:
