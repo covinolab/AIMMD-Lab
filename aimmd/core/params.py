@@ -554,11 +554,27 @@ Manager and trainer share an extra task together."""
         for f in fields(self):
             name = f.name
             value = getattr(self, name)
-            if not callable(value):
-                lines.append(f'{name} = {repr(value)}')
+            
+            if not callable(value) or name == 'network':
+                if name == 'network':
+                    network_class = value.__class__
+                    if network_class.__module__ != '__main__':
+                        lines.append(f'import {network_class.__module__}.'
+                                     f'{network_class.__name__}')
+                        lines.append(f'{name} = {network_class.__module__}.'
+                                     f'{network_class.__name__}()')
+                    else:
+                        lines.append(f'{name} = {network_class.__name__}()')
+                elif name == 'initial_paths':
+                    lines.append(f'{name} = ['
+                        f'{", ".join([path.filename for path in value])}]')
+                elif name == 'path':
+                    lines.append(f'{name} = {value}')
+                else:
+                    lines.append(f'{name} = {repr(value)}')
                 if desc := f.metadata.get("description", ""):
                     lines.append(f"\"\"\"{desc}\"\"\"\n")
-            else:  # if it's a function, show its content
+            else:  # if it's a function, just show its content
                 lines.append(value.__source__)
         
         return "\n".join(lines)
