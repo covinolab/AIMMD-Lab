@@ -309,9 +309,6 @@ class Launcher:
             file.write(f'# srun call\n')
             file.write(f"srun --cpus-per-task={cpus_per_task} "
                             f"--cpu-bind=cores bash -c '\n\n")
-            file.write(f'  # update task variables\n')
-            file.write(f'  export i=$SLURM_PROCID\n')
-            file.write(f'  export li=$SLURM_LOCALID\n')
             
             # default names
             file.write(f'\n  # default names\n')
