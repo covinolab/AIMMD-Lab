@@ -151,4 +151,4 @@ class Worker:
         return self.run('simulate', run_file, log_file, noappend, walltime)
 
 if __name__ == '__main__':
-    Worker(*sys.argv[1:4]).run(*sys.argv[4:])
+    Worker(*sys.argv[1:3], 0, None, None, sys.argv[3]).run(*sys.argv[4:])
