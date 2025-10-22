@@ -2,10 +2,13 @@ import sys
 import torch
 import numpy as np
 import mdtraj as md
+import warnings
 import aimmd.core.utils
 from tqdm import tqdm
 
-mdtraj_frame = md.load('run.gro')
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore")
+    mdtraj_frame = md.load('run.gro')
 trajectory_extension = '.trr'
 initial_paths = ['initial.trr']
 gmx_grompp = 'gmx grompp -maxwarn 4'
