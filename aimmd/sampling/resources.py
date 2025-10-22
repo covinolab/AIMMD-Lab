@@ -112,9 +112,9 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
         
         # notify the user if this worker is oversubscribing resources
         if stop > num_resources_available:
-            print(f"[Note] Worker may be oversubscribing {resources_name}s\n"
-                  f"  available {resources_name}s: {num_resources_available}"
-                  f"\n  {resources_name}s per task: {resources_per_task}")
+            print(f"[Note] Worker may be oversubscribing {resources_name}s"
+                  f" (available: {num_resources_available}, "
+                  f" required: {resources_per_task} per task)")
         
         return [resources_available[i % num_resources_available]
                 for i in range(start, stop)]
@@ -146,7 +146,7 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
         else:  # even if there are GPUs, you asked for none
             gpus = ""
         
-        # GPU binding
+        # actual binding
         os.environ["CUDA_VISIBLE_DEVICES"] = gpus
         # for NVIDIA GPUs, and also ROCm picked up by torch
         os.environ["GPU_DEVICE_ORDINAL"] = gpus
