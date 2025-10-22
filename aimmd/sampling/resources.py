@@ -141,7 +141,7 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
     # GPU binding
     if gpus_per_task != 'skip' and gpus_per_task:
         gpus = _determine_resources(gpus_per_task, gpus_available, 'GPU')
-        gpus = ",".join([str(id) for id in gpus_available])
+        gpus = ",".join([str(id) for id in gpus])
         
         # GPU binding
         os.environ["CUDA_VISIBLE_DEVICES"] = gpus
