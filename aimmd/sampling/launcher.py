@@ -221,7 +221,8 @@ class Launcher:
         # determine number of GPUs per task
         if gpus_per_task == 'share':
             num_gpus_avail = get_num_gpus()
-            gpus_per_task = max(1, round(num_gpus_avail // num_processes))
+            gpus_per_task = max(int(num_gpus_avail > 0),
+                                round(num_gpus_avail // num_processes))
         
         # workers' termination timeout
         termination_timeout = max(0, self.termination_timeout - 1.)
