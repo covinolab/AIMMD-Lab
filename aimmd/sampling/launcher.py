@@ -568,7 +568,7 @@ class LaunchersCollection(Launcher):
     
     def run(self, n, nA, nB, eA=0, eB=0,
             nsteps=inf, nframes=inf, walltime=inf,
-            cpus_per_task=0, gpus_per_task=0):
+            cpus_per_task='share', gpus_per_task='share'):
         """
         Launch the simulation locally, spawning multiple processes.
         
