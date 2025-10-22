@@ -17,13 +17,13 @@ import aimmd.core.utils as utils
 from aimmd.core.pathensemble import PathEnsemble, PathEnsemblesCollection, MDATrajectory
 from aimmd.core.params import Params
 from aimmd.sampling.worker import Worker
-from aimmd.sampling.launcher import Launcher
+from aimmd.sampling.launcher import Launcher, LaunchersCollection
 
 
 __all__ = ['__version__', 'check_dependencies',
            'core', 'sampling', 'analysis', 'utils',
            'PathEnsemble', 'PathEnsemblesCollection', 'MDATrajectory',
-           'Params', 'Worker', 'Launcher']
+           'Params', 'Worker', 'Launcher', 'LaunchersCollection']
 
 __version__ = '0.1.0'
 
