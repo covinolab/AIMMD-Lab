@@ -7,7 +7,7 @@ import multiprocessing
 from math import ceil
 from pathlib import Path
 from .worker import Worker
-from .resources import get_available_cpus
+from .resources import get_num_cpus, get_num_gpus
 from ..core.utils import now
 from ..core.params import Params
 
@@ -140,7 +140,7 @@ class Launcher:
         
         # determine number of CPUs per task
         if cpus_per_task == 'share':
-            num_cpus_avail = len(get_available_cpus())
+            num_cpus_avail = get_num_cpus()
             cpus_per_task = max(1, round(num_cpus_avail // num_processes))
         
         # determine number of GPUs per task
