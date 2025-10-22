@@ -138,7 +138,7 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
                   f"with {cpus}: {exception}")
             cpus = "all"
     else:
-        cpus = ",".join([str(id) for id in available_cpus])
+        cpus = ",".join([str(id) for id in cpus_available])
     
     # GPU binding
     if gpus_per_task != 'skip' and gpus_per_task:
@@ -151,7 +151,7 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
         os.environ["GPU_DEVICE_ORDINAL"] = gpus
         # for ROCm GPUs, Gromacs will use OpenCL
     else:
-        gpus = ",".join([str(id) for id in available_gpus])
+        gpus = ",".join([str(id) for id in gpus_available])
     
     if not gpus:
         gpus = "none"
