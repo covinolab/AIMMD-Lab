@@ -220,13 +220,13 @@ class Launcher:
         # determine number of CPUs per task
         if cpus_per_task == 'share':
             num_cpus_avail = get_num_cpus()
-            cpus_per_task = max(1, round(num_cpus_avail // num_processes))
+            cpus_per_task = max(1, num_cpus_avail // num_processes)
         
         # determine number of GPUs per task
         if gpus_per_task == 'share':
             num_gpus_avail = get_num_gpus()
             gpus_per_task = max(int(num_gpus_avail > 0),
-                                round(num_gpus_avail // num_processes))
+                                num_gpus_avail // num_processes)
         
         # workers' termination timeout
         termination_timeout = max(0, self.termination_timeout - 1.)
@@ -568,8 +568,7 @@ class LaunchersCollection(Launcher):
     
     def run(self, n, nA, nB, eA=0, eB=0,
             nsteps=inf, nframes=inf, walltime=inf,
-            cpus_per_task=0, gpus_per_task=0,
-            termination_timeout=20.):
+            cpus_per_task=0, gpus_per_task=0):
         """
         Launch the simulation locally, spawning multiple processes.
         
@@ -628,13 +627,13 @@ class LaunchersCollection(Launcher):
         # determine number of CPUs per task
         if cpus_per_task == 'share':
             num_cpus_avail = get_num_cpus()
-            cpus_per_task = max(1, round(num_cpus_avail // num_processes))
+            cpus_per_task = max(1, num_cpus_avail // num_processes)
         
         # determine number of GPUs per task
         if gpus_per_task == 'share':
             num_gpus_avail = get_num_gpus()
             gpus_per_task = max(int(num_gpus_avail > 0),
-                                round(num_gpus_avail // num_processes))
+                                num_gpus_avail // num_processes)
         
         # workers' termination timeout
         termination_timeout = max(0, self.termination_timeout - 1.)
