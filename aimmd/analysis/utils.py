@@ -1,7 +1,839 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from utils import *
+from ..core.utils import *
+
+
+def initialize_plot():
+    figure, ax = plt.subplots(1, 1, figsize=(3, 2.5))
+    plt.subplots_adjust(left=0.18, bottom=0.18, right=0.99, top=0.8)
+    return figure, ax
+
+
+def solve_committor_by_relaxation(
+        X, Y, Fx, Fy, A, B, P0, progress=[5, 4, 2, 1]):
+    """
+    Compute committor in 2D with relaxation method (Brownian dynamics).
+
+    Parameters
+    ----------
+    X: x-coordinates on a 2D grid
+    Y: y-coordinates on a 2D grid
+    Fx: force's x component on a 2D grid
+    Fy: force's y component on a 2D grid
+    A: points in A on a 2D grid
+    B: points in B on a 2D grid
+    P0: initial guess for committor on a 2D grid
+    progress: iteratively increase the resolution based on the vector's values
+
+    Returns
+    -------
+    P0: committor estimate
+    """
+    for split in tqdm(progress):
+        X1 = X[::split, ::split]
+        Y1 = Y[::split, ::split]
+        P1 = P0[::split, ::split]
+        Fx1 = Fx[::split, ::split]
+        Fy1 = Fy[::split, ::split]
+        A1 = A[::split, ::split]
+        B1 = B[::split, ::split]
+        dFx = np.diff(X1, axis=1)[1:-1, :-1] * Fx1[1:-1, 1:-1]
+        dFy = np.diff(Y1, axis=0)[:-1, 1:-1] * Fy1[1:-1, 1:-1]
+        dFx[dFx > +1.] = +1.
+        dFx[dFx < -1.] = -1.
+        dFy[dFy > +1.] = +1.
+        dFy[dFy < -1.] = -1.
+        r = np.max(np.abs(
+            (((P1[2:, 1:-1] + P1[:-2, 1:-1] - 2 * P1[1:-1, 1:-1]) +
+              (P1[1:-1, 2:] + P1[1:-1, :-2] - 2 * P1[1:-1, 1:-1])) +
+             (dFx * (P1[2:, 1:-1] - P1[:-2, 1:-1]) +
+              dFy * (P1[1:-1, 2:] - P1[1:-1, :-2])) / 2)
+        ))
+        while True:
+            r1 = 0 + r
+            for i in range(100):
+                P1[1:-1, 1:-1] = (2 * (P1[2:, 1:-1] + P1[:-2, 1:-1] +
+                                       P1[1:-1, 2:] + P1[1:-1, :-2]) +
+                               (dFy * (P1[2:, 1:-1] - P1[:-2, 1:-1]) +
+                                dFx * (P1[1:-1, 2:] - P1[1:-1, :-2]))) / 8
+                P1[:, 0] = P1[:, 1]
+                P1[:, -1] = P1[:, -2]
+                P1[0, :] = P1[1, :]
+                P1[-1, :] = P1[-2, :]
+                P1[P1 < 0] = 0
+                P1[P1 > 1] = 1
+                P1[A1] = 0
+                P1[B1] = 1
+            r = np.max(np.abs(((
+                 (P1[2:, 1:-1] + P1[:-2, 1:-1] - 2 * P1[1:-1, 1:-1]) +
+                 (P1[1:-1, 2:] + P1[1:-1, :-2] - 2 * P1[1:-1, 1:-1])) +
+                 (dFx * (P1[2:, 1:-1] - P1[:-2, 1:-1]) +
+                  dFy * (P1[1:-1, 2:] - P1[1:-1, :-2])) / 2)))
+            if np.abs(r - r1) < 1e-16:
+                break
+        if split > 1:
+            P0 = np.array([interpolate(x, y, P1, X1, Y1)
+                           for x, y in zip(X.ravel(), Y.ravel())]).reshape(X.shape)
+        else:
+            P0 = P1.copy()
+    return P0
+
+
+def extract_chain(pathensemble, shooting_chain_index,
+                  path_index, initial_paths=None):
+    shooting_chain = shooting_chain_index
+    index = path_index
+    directory = pathensemble.pathensembles[shooting_chain
+        ].directory.split('/shots')[0]
+    index = np.arange(len(pathensemble.pathensembles[shooting_chain]))[index]
+    offset = int(np.sum([len(p) for p in pathensemble.
+                     pathensembles[:shooting_chain]]))
+    tracking = [offset + index]
+    index0 = tracking[0]
+    
+    with open(f'{directory}/manager.log', 'r') as f:
+        lines = [line for line in f]
+    
+    terminate = False
+    for i in range(len(lines) - 1, -1 ,-1):
+        if (f'Shooting for chain shots{shooting_chain}: '
+            f'path{index:06g} -> path{index + 1:06g}') in lines[i]:
+            j = i
+            while 'Shooting initialization completed' not in lines[j]:
+                j += 1
+            while True:
+                if '*** accepted' in lines[j]:
+                    while 'traj' not in lines[j]:
+                        j -= 1
+                    l = lines[j]
+                    file = l.split('equilibrium')[1][2:].split(',')[0]
+                    folder = f'equilibrium{l.split("equilibrium")[1][0]}'
+                    position = int(l.split('equilibrium')[1][2:].
+                                   split(',')[1].split()[0])
+                    this_offset = 0
+                    for trajectory in pathensemble.pathensembles:
+                        if folder not in trajectory.directory:
+                            this_offset += len(trajectory)
+                            continue
+                        if file not in trajectory.trajectory_files:
+                            this_offset += len(trajectory)
+                            continue
+                        file_index = trajectory.trajectory_files.index(file)
+                        k = np.where((trajectory.frame_trajectory_indices
+                                  == file_index) * (trajectory.
+                                                    frame_trajectory_positions
+                                  == position))[0]
+                        tracking.append(this_offset +
+                            np.where(trajectory.
+                                     initial_frame_indices < k)[0][-1])
+                        terminate = True
+                        break
+                    break
+                if terminate:
+                    break
+                if 'selecting' in lines[j]:
+                    try:
+                        index = int(lines[j].split('/')[-1].split(',')[0].
+                                    split('.')[0][4:]) - 1
+                        tracking.append(offset + index)
+                    except:
+                        if initial_paths is not None:
+                            tracking.append(-1 - initial_paths.
+                                            trajectory_files.index(
+                                lines[j].split('shooting point ')[1].
+                                                split(',')[0]))
+                    break
+                j -= 1
+    
+    tracking = np.array(tracking)[::-1]
+    if tracking[0] < 0:
+        result = initial_paths[-tracking[0] - 1]
+    else:
+        result = pathensemble[tracking[0]]
+    result += pathensemble[tracking[1:]]
+    return result.merge()
+
+def visualize_chain(result, _2d=False, boundaries=None):
+    if _2d:
+        xmin, ymin = np.min(result.frame_descriptors, axis=0)
+        xmax, ymax = np.max(result.frame_descriptors, axis=0)
+        old = None
+        old_fname = None
+        old_s = None
+        for p,s,f in zip(result.descriptors(),
+                         result.shooting_descriptors,
+                         result.initial_trajectory_filenames):
+            if old is None:
+                old = p
+                old_fname = f
+                old_s = s
+                continue
+            plt.figure()
+            plt.title(f'{old_fname} ->\n{f}    ')
+            plt.plot(*old.T, label='old')
+            plt.plot(*old_s.T, 'o', color='blue')
+            plt.plot(*p.T, label='new')
+            plt.plot(*s.T, 'o', color='red')
+            plt.legend()
+            old = p
+            old_fname = f
+            old_s = s
+            if boundaries is not None:
+                plt.xlim(boundaries[0],boundaries[2])
+                plt.ylim(boundaries[1],boundaries[3])
+            plt.gca().set_aspect('equal')
+            plt.grid()
+        return
+    old = None
+    old_fname = None
+    old_i = None
+    old_s = None
+    for p,i,s,f in zip(result.values(),
+                    result.shooting_indices,
+                     result.shooting_values,
+                     result.initial_trajectory_filenames):
+        if old is None:
+            old = p
+            old_fname = f
+            old_i = i
+            old_s = s
+            continue
+        plt.figure()
+        plt.title(f'{old_fname} ->\n{f}    ')
+        plt.plot(old, label='old')
+        plt.plot(old_i, old_s, 'o', color='blue')
+        plt.plot(p, label='new')
+        plt.plot(i, s, 'o', color='red')
+        plt.legend()
+        if boundaries is not None:
+            plt.ylim(boundaries[0], boundaries[1])
+        old = p
+        old_s = s
+        old_i = i
+        old_fname = f
+        plt.grid()
+
+
+
+def crop_pathensemble(pathensemble, step_number):
+    """
+    At the time of step_number
+    """
+    shots, equilibriumA, equilibriumB = scorporate_pathensembles(pathensemble)
+    if step_number is None:
+        keepers = None
+        t1 = np.inf
+    else:
+        completion_times = shots.completion_times
+        keepers = np.argsort(completion_times)[:step_number]
+        t1 = completion_times[keepers][-1]
+    shots = shots[keepers]
+    equilibriumA = equilibriumA.crop(tmax=t1)
+    equilibriumB = equilibriumB.crop(tmax=t1)
+    return shots + equilibriumA + equilibriumB
+
+
+def initialize_reference_pathensemble(
+    states_function, descriptors_function,
+    directory='.', topology='run.gro', xy_traj='xy.xtc',
+    weights=None):
+    reference_pe = PathEnsemble(directory, topology,
+        states_function, descriptors_function)
+    reference_pe.append(xy_traj, verbose=True)
+    frame_indices =  np.zeros(reference_pe.nframes * 3, dtype=int)
+    frame_indices[1::3] = np.arange(reference_pe.nframes)
+    reference_pe.frame_states[0] = 'Z'
+    reference_pe._PathEnsemble__frame_indices = frame_indices
+    reference_pe._PathEnsemble__lengths = np.ones(
+        reference_pe.nframes, dtype=int) * 3
+    reference_pe._PathEnsemble__shooting_indices = np.zeros(
+        reference_pe.nframes, dtype=int)
+    if weights:
+        reference_pe._PathEnsemble__weights = nd.load(weights).ravel()
+    else:
+        reference_pe._PathEnsemble__weights = np.ones(reference_pe.nframes)
+    reference_pe._PathEnsemble__are_accepted = np.ones(
+        reference_pe.nframes, dtype=bool)  
+    return reference_pe
+
+
+def estimate_transition_rates_from_equilibrium(equilibrium, dt=1.):
+    kAB0 = []
+    kBA0 = []
+    kAB0_max = []
+    kBA0_max = []
+    kAB0_min = []
+    kBA0_min = []
+    TP_lengths = []
+    TP_lengths_max = []
+    TP_lengths_min = []
+    times0 = []
+    total_tAB = []
+    total_tBA = []
+    current_lengths = np.zeros(0)
+
+    transitions = equilibrium[equilibrium.are_transitions]
+    shooting_trajectory_indices = equilibrium.shooting_trajectory_indices
+    tr_shooting_trajectory_indices = transitions.shooting_trajectory_indices    
+    
+    trajectory_indices = []
+    for trajectory_index in shooting_trajectory_indices:
+        if trajectory_index not in trajectory_indices:
+            trajectory_indices.append(trajectory_index)
+
+    initial_times = equilibrium.initial_times
+    final_times = equilibrium.final_times
+    if len(trajectory_indices) == len(transitions):
+        pathensemble = [transitions]
+        final_times = [transitions.final_times[-1]]
+    else:
+        pathensemble = [
+            transitions[tr_shooting_trajectory_indices == trajectory_index]
+            for trajectory_index in trajectory_indices]
+        final_times = [final_times[
+            shooting_trajectory_indices == trajectory_index][-1] -
+            initial_times[
+            shooting_trajectory_indices == trajectory_index][0]
+            for trajectory_index in trajectory_indices]
+    
+    for equilibrium, base in zip(pathensemble, padcumsum(final_times)):
+        t = []
+        ti = equilibrium.frame_times[0] * dt
+        t0 = equilibrium.final_times * dt - ti
+        lengths = equilibrium.internal_lengths * dt
+        if len(times0):
+            times0 += list(t0 + base * dt)
+        else:
+            times0 = list(t0)
+        start_from_A = equilibrium.final_states[0] == 'A'
+        for i in range(len(t0)):
+            current_lengths = np.append(current_lengths, [lengths[i]])
+            t.append(t0[i])
+            if start_from_A:
+                tAB = np.diff(t)[0::2]  # BA information
+                tBA = np.diff(t)[1::2]  # AB information
+            else:
+                tAB = np.diff(t)[1::2]  # BA information
+                tBA = np.diff(t)[0::2]  # AB information
+            current_tAB = np.append(total_tAB, tAB)
+            current_tBA = np.append(total_tBA, tBA)
+            if len(current_tAB):
+                kAB = 1 / np.mean(current_tAB)
+                temp = []
+                for bootstrapping_event in range(1000):
+                    k = np.random.choice(len(current_tAB), len(current_tAB))
+                    temp.append(1 / np.mean(current_tAB[k]))
+                kAB_max = np.quantile(temp, .975)
+                kAB_min = np.quantile(temp, .025)
+            else:
+                kAB = np.nan
+                kAB_max = np.nan
+                kAB_min = np.nan
+            if len(current_tBA):
+                kBA = 1 / np.mean(current_tBA)
+                temp = []
+                for bootstrapping_event in range(1000):
+                    k = np.random.choice(len(current_tBA), len(current_tBA))
+                    temp.append(1 / np.mean(current_tBA[k]))
+                kBA_max = np.quantile(temp, .975)
+                kBA_min = np.quantile(temp, .025)
+            else:
+                kBA = np.nan
+                kBA_max = np.nan
+                kBA_min = np.nan
+            temp = []
+            for bootstrapping_event in range(1000):
+                k = np.random.choice(len(current_lengths), len(current_lengths))
+                temp.append(np.mean(current_lengths[k]))
+            TP_lengths.append(np.mean(current_lengths))
+            TP_lengths_max.append(np.quantile(temp, .975))
+            TP_lengths_min.append(np.quantile(temp, .025))
+            kAB0.append(kAB)
+            kBA0.append(kBA)
+            kAB0_max.append(kAB_max)
+            kBA0_max.append(kBA_max)
+            kAB0_min.append(kAB_min)
+            kBA0_min.append(kBA_min)
+        total_tAB = current_tAB
+        total_tBA = current_tBA
+        
+    return (np.array(kAB0), np.array(kBA0),
+            np.array(kAB0_max), np.array(kBA0_max),
+            np.array(kAB0_min), np.array(kBA0_min),
+            np.array(TP_lengths),
+            np.array(TP_lengths_max), np.array(TP_lengths_min),
+            np.array(times0))
+
+
+def compute_energies_and_rates(pathensemble,
+                               bins=[-np.inf, +np.inf],
+                               bootstrapping=0,
+                               reweight_while_bootstrapping=False,
+                               states='AB',
+                               reweight_parameters={},
+                               f=None,
+                               frames=False,
+                               verbose=False):
+    # boostrap
+    bootstrapping_results = []
+    bootstrapping_k = []
+    bootstrapping_e = []
+    bootstrapping_z = []
+    
+    for _ in tqdm(range(bootstrapping), disable=not verbose):
+        k = np.random.choice(len(pathensemble), len(pathensemble))
+        if reweight_while_bootstrapping:
+            E = []
+            Z = []
+            K = []
+            total_weights = pathensemble.weights * 0.
+            for state in states:
+                w, t1, t2, t3, z, m, e, s, t4 = pathensemble.reweight(
+                    state=state,key=k,**reweight_parameters)
+                E.append(e)
+                Z.append(z)
+                old_weights = pathensemble.weights
+                weights = pathensemble.weights * 0.
+                for i, kk in enumerate(k):
+                    weights[kk] += w[i]
+                total_weights += weights
+                pathensemble.weights = weights
+                K.append(1 / pathensemble.project()[0])
+                pathensemble.weights = old_weights
+            pathensemble.weights = total_weights
+            bootstrapping_results.append(
+                pathensemble.project(bins=bins, f=f, frames=frames))
+            pathensemble.weights = old_weights
+            bootstrapping_k.append(K)
+            bootstrapping_e.append(E)
+            bootstrapping_z.append(Z)
+        else:
+            bootstrapping_k.append([np.nan])
+            bootstrapping_e.append([np.nan])
+            bootstrapping_z.append([np.nan])
+            bootstrapping_results.append(pathensemble.project(
+                key=k, bins=bins, f=f, frames=frames))
+        bootstrapping_results[-1] /= np.sum(bootstrapping_results[-1])
+    bootstrapping_results = np.array(bootstrapping_results)
+    bootstrapping_k = np.array(bootstrapping_k)
+    bootstrapping_e = np.array(bootstrapping_e, dtype=object)
+    bootstrapping_z = np.array(bootstrapping_z, dtype=object)
+    
+    result = pathensemble.project(bins=bins, f=f, frames=frames)
+    result /= np.sum(result)
+    return (result, bootstrapping_results,
+            bootstrapping_k,
+            bootstrapping_e,
+            bootstrapping_z)
+
+
+def plot_2d_energy(X, Y, F, levels,
+                   X2=None, Y2=None, P=None,
+                   rc_levels=None,
+                   rc_labels=True,
+                   cmap='magma', clabel='[kT]',
+                   rotate_clabel=True,
+                   xA=None, yA=None,
+                   xB=None, yB=None,
+                   rA=None, rB=None,
+                   wrmse=0.):
+    figure, ax = plt.subplots(1, 1, figsize=(3, 2.5))
+    if X2 is not None:
+        drop = len(X) // (len(X2) * 2)
+    else:
+        drop = 0
+    print(drop)
+    
+    X = X[drop:len(X)-drop,
+                   drop:len(X[0])-drop]
+    Y = Y[drop:len(Y)-drop,
+                   drop:len(Y[0])-drop]
+    F = F[drop:len(F)-drop,
+                   drop:len(F[0])-drop]
+    plt.contourf(X, Y, F, levels=levels, cmap=cmap, zorder=40)
+    ax.set_aspect(abs((X[-1, -1] - X[0, 0]) / (Y[-1, -1] - Y[0, 0])))
+    plt.subplots_adjust(left=0.16, bottom=0.1, right=0.8, top=1.04)
+    
+    if rotate_clabel:
+        c = plt.colorbar(fraction=0.0452)
+        plt.text(X[0,0] + (X[-1,-1] - X[0,0]) * (
+            1.25 + .05 * (levels[-1] >= 10.)),
+                 Y[0,0] + (Y[-1,-1] - Y[0,0]) * .94, clabel)
+    else:
+        plt.colorbar(fraction=0.0452,label=clabel)
+    
+    if xA is not None and yA is not None:
+        plt.text(xA, yA, 'A',
+                 ha='center',
+                 va='center',
+                 fontsize=20,
+                 color='black',
+                 path_effects=[pe.withStroke(linewidth=3, foreground="w")],
+                 fontweight=750,
+                 zorder=60)
+    if yA is not None and yB is not None:
+        plt.text(xB, yB, 'B',
+                 ha='center',
+                 va='center',
+                 fontsize=20,
+                 color='black',
+                 path_effects=[pe.withStroke(linewidth=3, foreground="w")],
+                 fontweight=750,
+                 zorder=60)
+    
+    if P is not None:
+        if X2 is None:
+            X2 = X
+            Y2 = Y
+            P = P[drop:len(X)-drop,
+                  drop:len(X[0])-drop]
+        if len(rc_levels) > 8:
+            plt.contour(X2,Y2,P,zorder=50,
+                        colors='#cccccc', alpha=.84, linewidths=1.36,
+                         levels=rc_levels[::2])
+            c = plt.contour(X2,Y2,P,zorder=50,
+                          colors='#cccccc', alpha=.84, linewidths=1.36,
+                         levels=rc_levels[1::2])
+        else:
+            c = plt.contour(X2,Y2,P,zorder=50,
+                          colors='#cccccc', alpha=.84, linewidths=1.36,
+                         levels=rc_levels)
+        if rc_labels:
+            f=plt.clabel(c, colors='black')
+            plt.setp(f, path_effects=[pe.withStroke(linewidth=3, foreground="w")])
+        
+    return figure, ax
+
+
+def plot_1d_energy_profile(pathensemble,
+                           reference,
+                           nbins=100,
+                           vmin=-np.inf,
+                           vmax=+np.inf,
+                           bootstrapping=0,
+                           pathensemble_bootstrapping=500,
+                           reference_bootstrapping=50,
+                           reweight_while_bootstrapping=True,
+                           states='AB',
+                           reweight_parameters={},
+                           offset=np.nan,
+                           max_error=1.,
+                           verbose=False,
+                           base_color=plt.get_cmap('Dark2')(0),
+                           SP_selection_bins=None):
+    
+    vmin = np.max([-30, vmin, np.min(np.concatenate(reference.values(reference.weights > 0)))])
+    vmax = np.min([+30, vmax, np.max(np.concatenate(reference.values(reference.weights > 0)))])
+    bins = np.linspace(vmin, vmax, nbins + 1)
+    values = (bins[:-1] + bins[1:]) / 2
+    
+    # reference
+    result, bootstrapping_results, *_ = (
+        compute_energies_and_rates(
+            reference, bins,
+            bootstrapping=reference_bootstrapping,
+            reweight_while_bootstrapping=False,
+            verbose=verbose))
+    
+    F0 = -np.log(result)
+    if reference_bootstrapping:
+        F0_bootstrapping = -np.log(bootstrapping_results)
+        F0_min = F0 - np.std(F0_bootstrapping, axis=0)
+        F0_min = np.quantile(F0_bootstrapping, 0.025, axis=0)
+        F0_max = F0 + np.std(F0_bootstrapping, axis=0)
+        F0_max = np.quantile(F0_bootstrapping, 0.975, axis=0)
+    else:
+        F0_min = F0
+        F0_max = F0
+
+    # pe estimate
+    result, bootstrapping_results, *_ = (
+        compute_energies_and_rates(
+            pathensemble, bins,
+            bootstrapping=pathensemble_bootstrapping,
+            reweight_while_bootstrapping=reweight_while_bootstrapping,
+            states=states,
+            reweight_parameters=reweight_parameters,
+            verbose=verbose))
+    
+    F = -np.log(result)
+    if pathensemble_bootstrapping:
+        F_bootstrapping = -np.log(bootstrapping_results)
+        F_min = F - np.std(F_bootstrapping, axis=0)
+        F_min = np.quantile(F_bootstrapping, 0.025, axis=0)
+        F_max = F + np.std(F_bootstrapping, axis=0)
+        F_max = np.quantile(F_bootstrapping, 0.975, axis=0)
+        k = ~np.isnan(F_max)
+    else:
+        F_min = F
+        F_max = F
+        k = ~np.isinf(F)
+    
+    values = values[k]
+    F = F[k]
+    F0 = F0[k]
+    F_min = F_min[k]
+    F0_min = F0_min[k]
+    F0_max = F0_max[k]
+    F_max = F_max[k]
+        
+    if not np.isnan(offset):
+        center = np.argmin(np.abs(values-offset))
+        F -= F0[center]
+        F_min -= F0[center]
+        F_max -= F0[center]
+        F0_min -= F0[center]
+        F0_max -= F0[center]
+        F0 -= F0[center]
+    
+    # plot
+    figure, (ax1, ax2) = plt.subplots(2,1,
+                                      figsize=(4,2.7),
+                                      sharex=True,
+                                      gridspec_kw={'height_ratios': [3, 1]})
+    color = base_color
+
+    # uncertanties
+    if np.sum(np.abs(F0_max - F0_min)):
+        ax1.fill_between(values, F0_min, F0_max, color='black', alpha=.25)
+        ax2.fill_between(values, F0_min-F0, F0_max-F0, color='black', alpha=.25)
+    if np.sum(np.abs(F_max - F_min)):
+        ax1.fill_between(values, F_min, F_max, color=color2, alpha=.4)
+        ax2.fill_between(values, F_min-F0, F_max-F0, color=color2, alpha=.4)
+    
+    # estimates
+    ax1.plot(values, F, '.', color=color, markersize=2.5)
+    ax1.plot(values, F, '-', color=color, lw=2.5)
+    ax1.plot(values, F0, ':', color='black')
+
+    # errors
+    ax2.plot(values, F - F0, '.', color=color, markersize=2.5)
+    ax2.plot(values, F - F0, color=color, lw=2.5)
+    ax2.plot(values, values * 0, ':', color='black')
+    
+    # fix axis
+    ax1.grid()
+    ax2.grid()
+    ax2.set_xlabel('Reaction coordinate $\lambda$')
+    ax1.set_ylabel('Free energy [$k_BT$]')
+    ax2.set_ylabel('Est$-$true')
+    if max_error >= 1.5:
+        ax2.set_yticks([-1, 0., 1], ['$-$1','0','+1'])
+    elif max_error >= .75:
+        ax2.set_yticks([-.5, 0., .5], ['$-$0.5','0.0','+0.5'])
+    elif max_error >= .25:
+        ax2.set_yticks([-.2, 0., .2], ['$-$0.2','0.0','+0.2'])
+    ax2.set_ylim(-max_error, max_error)
+    plt.minorticks_off()
+    plt.subplots_adjust(left=.2102,
+                        bottom=.1958,
+                        right=.9148,
+                        top=.9373,
+                        hspace=0)
+    
+    if SP_selection_bins is not None:
+        H = np.histogram(pathensemble.shooting_values[
+            pathensemble.are_shot],
+            SP_selection_bins)[0].astype(float)
+        ylim = ax1.get_ylim()
+        H /= np.max(H)
+        H *= .4 * (ylim[1] - ylim[0])
+        H += ylim[0] + (ylim[1] - ylim[0]) * .067
+        A = np.repeat(SP_selection_bins, 2)
+        H = np.repeat(H, 2)
+        K = np.zeros(len(A))
+        K[0] = ylim[0] + (ylim[1] - ylim[0]) * .067
+        K[-1] = ylim[0] + (ylim[1] - ylim[0]) * .067
+        K[1:-1] = H
+        ax1.fill_between(
+            A, A * 0 + ylim[0] + (ylim[1] - ylim[0]) * .067,
+            K, color='black',
+            alpha=.2, zorder=-10)
+        ax1.set_ylim(ylim)
+        
+    return figure, (ax1, ax2)
+
+
+
+def project_on_grid(pathensemble, X, Y, f=lambda x:x, frames=False):
+    Z = pathensemble.project([X[0, :], Y[:, 0]], f=f, frames=frames)
+    Z /= np.sum(Z)
+    return Z
+
+
+def plot_2d_committor_estimate_vs_reference(grid_X, grid_Y, grid_V,
+                                            grid_committor_estimate,
+                                            grid_committor_relaxation,
+                                            lambdaA,
+                                            lambdaB,
+                                            xA, yA, xB, yB, radius,
+                                            potential_energy_levels,
+                                            grid_committor_levels,
+                                            exact_levels=None,
+                                            error_threshold=.125,
+                                            logit=False,
+                                            rescale_error=True):
+    figure = plt.figure(figsize=(4/1.12, 3/1.08))
+    if logit is False:
+        error = (expit(grid_committor_estimate) - 
+                 expit(grid_committor_relaxation))
+    else:
+        error = grid_committor_estimate - grid_committor_relaxation
+    
+    if rescale_error:
+        error /= (grid_committor_relaxation *
+                  (1 - grid_committor_relaxation) * 4) ** .5
+    error[np.isinf(error)] = np.nan
+    error[error >= +error_threshold] = + error_threshold - 1e-9
+    error[error <= -error_threshold] = - error_threshold + 1e-9
+    error[grid_V > potential_energy_levels[-1]] = np.nan    
+    # contours
+    plt.gca().set_aspect('equal')
+    plt.contourf(grid_X,
+                 grid_Y,
+                 error,
+                 levels=np.linspace(-error_threshold, error_threshold, 11),
+                 cmap='RdYlGn')
+    plt.colorbar(fraction=0.0452)
+
+    if logit:
+        plt.text(grid_X[-1,-1] * 1.33, grid_Y[-1,-1] * 1.05,
+                 '$\lambda-\\mathrm{logit}(p_B)$', ha='right')
+    else:
+        plt.text(grid_X[-1,-1] * 1.33, grid_Y[-1,-1] * 1.05,
+                 '$\\mathrm{expit}(\lambda)-p_B$', ha='right')
+    
+    plt.contour(grid_X,
+                grid_Y,
+                grid_V,
+                levels=potential_energy_levels,
+                colors='#a0a0a0',
+                linewidths=1,
+                alpha=.64)
+    
+    # validity region
+    grid_validity_region = grid_X * 0.
+    grid_validity_region[grid_committor_estimate < lambdaA] = 1.
+    grid_validity_region[grid_committor_estimate > lambdaB] = 1.
+    plt.contourf(grid_X,
+                 grid_Y,
+                 grid_validity_region,
+                 levels=[.5, 1],
+                 colors='black',
+                 alpha=0.25)
+    
+    # states
+    circleA = plt.Circle((xA, yA),
+                         radius,
+                         ec='black',
+                         fc=(1,1,1,1),
+                         zorder=20)
+    circleB = plt.Circle((xB, yB),
+                         radius,
+                         ec='black',
+                         fc=(1,1,1,1),
+                         zorder=20)
+    plt.text(xA, yA, 'A',
+             ha='center',
+             va='center',
+             fontsize=20,
+             color='black',
+             fontweight=750,
+             zorder=22)
+    plt.text(xB, yB, 'B',
+             ha='center',
+             va='center',
+             fontsize=20,
+             color='black',
+             fontweight=750,
+             zorder=22)
+    ax = plt.gca()
+    ax.add_patch(circleA)
+    ax.add_patch(circleB)
+
+    if exact_levels is None:
+        exact_levels = grid_committor_levels
+    plt.contour(grid_X, grid_Y, grid_committor_relaxation, zorder=-10,
+                 colors='#cccccc', levels=exact_levels)
+    plt.contour(grid_X, grid_Y, grid_committor_estimate, zorder=-10,
+                 colors='#333333', levels=grid_committor_levels)
+    
+    plt.xlim(grid_X[0,0],grid_X[-1,-1])
+    plt.ylim(grid_Y[0,0],grid_Y[-1,-1])
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    ax.set_aspect(abs((xlim[-1]-xlim[0])/(ylim[-1]-ylim[0])))
+    figure.subplots_adjust(
+        left=.12,
+        bottom=.15,
+        right=.8,
+        top=.92,
+        hspace=0)
+    figure.set_size_inches(4/1.12, 3/1.08)
+    return figure, ax
+
+
+def create_equilibrium_tpe():
+    # TODO much easier if saved as xtc files. Keep like this for now.
+    equilibrium = tps[:0]
+    trajs = [f'equilibrium/{file}' for file in sorted(os.listdir('equilibrium'))
+            if len(file) == 20 and file[:10] == 'transition'
+            and file[-4:] == '.npy']
+    for traj in tqdm(trajs[:4000]):
+        t = np.load(traj)
+        equilibrium._update(
+            trajectory_files = equilibrium.trajectory_files + [f'{len(equilibrium)}'],
+            frame_trajectory_indices = np.append(
+                equilibrium.frame_trajectory_indices,
+                np.repeat(len(equilibrium), len(t))),
+            frame_trajectory_positions = np.append(
+                equilibrium.frame_trajectory_positions,
+                np.arange(len(t))),
+            frame_times = np.append(
+                equilibrium.frame_times,
+                np.arange(len(t))),
+            frame_simulation_times = np.append(
+                equilibrium.frame_simulation_times,
+                np.arange(len(t))),
+            frame_states = np.append(
+                equilibrium.frame_states,
+                ['A'] + ['R'] * (len(t) - 2) + ['B']),
+            frame_descriptors = np.append(
+                equilibrium.frame_descriptors,
+                t, axis=0) if equilibrium.nframes else t,
+            frame_values = np.append(
+                equilibrium.frame_values,
+                np.zeros(len(t))),
+            frame_indices = np.append(
+                equilibrium._PathEnsemble__frame_indices,
+                np.arange(len(t)) + equilibrium.nframes),
+            lengths = np.append(equilibrium.lengths, [len(t)]),
+            weights = np.append(equilibrium.weights, [1.]),
+            shooting_indices = np.append(equilibrium.shooting_indices, [0]),
+            are_accepted = np.append(equilibrium.are_accepted, [True]))
+        equilibrium.save('equilibrium/pe.h5')
+
+
+def compute_average_tps_lenghts(tps, dt=1.):
+    TP_length = []
+    TP_length_max = []
+    TP_length_min = []
+    lengths = tps.internal_lengths * dt
+    weights = tps.weights
+    for i in tqdm(range(len(tps))):
+        TP_length.append(
+            np.average(lengths[:i + 1], weights=weights[:i + 1]))
+        temp = []
+        for bootstrapping_event in range(1000):
+            k = np.random.choice(i + 1, i + 1)
+            temp.append(np.average(lengths[k], weights=weights[k]))
+        TP_length_max.append(np.quantile(temp, .975))
+        TP_length_min.append(np.quantile(temp, .025))
+    return (np.array(TP_length),
+            np.array(TP_length_max),
+            np.array(TP_length_min))
+
 
 def rsync_from_juwels(
     *runs,
@@ -854,7 +1686,7 @@ def network_feature_importance(
             return np.concatenate(results)
         else:
             return np.zeros(0)
-
+    
     if random_state:
         np.random.seed(random_state)        
     y = evaluate(network, descriptors)
@@ -863,7 +1695,6 @@ def network_feature_importance(
     importances = np.zeros(len(keys))
     n = len(descriptors)
     
-
     for i, k in tqdm(enumerate(keys), total=len(keys), position=0):
         diffs = []
         for _ in range(n_repeats):

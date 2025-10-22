@@ -1,14 +1,17 @@
-#WIP for now it works if class is called in the same location as params' working directory
-
 import os
 import sys
 import time
 import numpy as np
 import signal
 import multiprocessing
+from math import ceil
 from pathlib import Path
 from .worker import Worker
+from .resources import get_available_cpus
+from ..core.utils import now
 from ..core.params import Params
+
+inf = float('inf')
 
 # worker path
 PYTHON = sys.executable
@@ -19,40 +22,38 @@ WORKER = os.path.join(os.path.dirname(
 ctx = multiprocessing.get_context('spawn')
 
 def _run_task(params_file, directory,
-             localid, cpus_per_task, gpus_per_task,
-             task, *args):
-    worker = Worker(params_file, directory,
-                    localid, cpus_per_task, gpus_per_task)
-    if task != 'simulate':
-        worker.is_process = True  # so to handle termination correctly
-    return worker.run(task, *args)
+              localid, cpus_per_task, gpus_per_task,
+              termination_timeout, task, *args):
+    try:
+        Worker(params_file, directory,
+               localid, cpus_per_task, gpus_per_task,
+               termination_timeout).run(task, *args)
+    except Exception as exception:
+        print(f'[Error] {exception}')
+        return 1
+    return 0
 
 
 class Launcher:
     
-    def __init__(self, params, directory, n, nA, nB, eA=0, eB=0):
+    def __init__(self, params, directory,
+                 termination_timeout=20.):
         """
         directory: where simulations carried
         params: python file with params or Params
-        n: number of replicas dedicated to shooting simulations
-        nA: number of replicas dedicated to free simulations around A
-        nB: number of replicas dedicated to free simulations around B
-        eA: number of replicas dedicated to extending transitions reaching A
-        eA: number of replicas dedicated to extending transitions reaching B
         
-        All parameters for the run can be updated before (re)launching a simulation.
+        All parameters for the run can be updated before (re)launching
+        a simulation.
         """
         if not isinstance(params, Params):
             params = Params.load(params)
         self.params = params
         self.directory = directory
-        self.n = n
-        self.nA = nA
-        self.nB = nB
-        self.eA = eA
-        self.eB = eB
+        self.processes = Processes()  # in "run"
+        self.termination_signal = None
+        self.termination_timeout = termination_timeout
         
-        # params need a file
+        # params need a written file
         if not params.path.is_file():
             i = 0
             while os.path.exists(
@@ -64,185 +65,248 @@ class Launcher:
             params.path = Path(fname).resolve()
         
         # create folder structure (keep existing data)
-        os.system(f'mkdir {self.directory}')
-        os.system(f'mkdir {self.directory}/initial_paths')
-        
-        # folders for shooting simulations
-        for worker_id in range(n):
-            os.system(f'mkdir {self.directory}/shots{worker_id}')
-        
-        # folders for free simulations
-        os.system(f'mkdir {self.directory}/equilibriumA')
-        os.system(f'touch {self.directory}/equilibriumA/'
-                  f'indicted_trajectories.log')
-        os.system(f'mkdir {self.directory}/equilibriumB')
-        os.system(f'touch {self.directory}/equilibriumB/'
-                  f'indicted_trajectories.log')
-        
-        # folders for extension simulations
-        if eA:
-            file.write(f'mkdir {self.directory}/extendA')
-            file.write(f'touch {self.directory}/extendA/'
-                       f'indicted_trajectories.log')
-        if eB:
-            file.write(f'mkdir {self.directory}/extendB')
-            file.write(f'touch {self.directory}/extendB/'
-                       f'indicted_trajectories.log')
+        for i, folder in enumerate([self.directory,
+                                 f'{self.directory}/initial_paths',
+                                 f'{self.directory}/equilibriumA',
+                                 f'{self.directory}/equilibriumB',
+                                 f'{self.directory}/extendA',
+                                 f'{self.directory}/extendB']):
+            if not os.path.exists(folder):
+                os.system(f'mkdir {folder}')
+                print(f'+++ created {folder}')
+            if i > 1:
+                os.system(f'touch {folder}/indicted_trajectories.log')
         
         # save initial paths
         os.system(f'rm -f {self.directory}/initial_paths/*')
         self.params.save_initial_paths(f'{self.directory}/initial_paths')
+        
+        # register signal handlers (for all future tasks)
+        signal.signal(signal.SIGTERM, self.terminate_handler)
+        signal.signal(signal.SIGINT, self.terminate_handler)
     
-    def run(self, nsteps=int(1e6), nframes=np.inf, walltime=np.inf,
-                 cpus_per_task=1, gpus_per_task=1):
+    def terminate_handler(self, signum=None, frame=None):        
+        print(f'\nLauncher received termination signal {signum} ({now()})')
+        self.termination_signal = signum
+    
+    def terminate_operations(self):
+        self.processes.clean(self.termination_timeout)
+        
+        # not keyboard interruption
+        if self.termination_signal != 2:
+            raise SystemExit(0)
+        
+        # keyboard interruption: reset
+        self.termination_signal = None
+    
+    def run(self, n, nA, nB, eA=0, eB=0,
+            nsteps=inf, nframes=inf, walltime=inf,
+            cpus_per_task=0, gpus_per_task=0,
+            termination_timeout=20.):
         """
         Launch the simulation locally, spawning multiple processes.
         
         Parameters
         ----------
+        n: number of replicas dedicated to shooting simulations
+           (creates folders if not existing)
+        nA: number of replicas dedicated to free simulations around A
+        nB: number of replicas dedicated to free simulations around B
+        eA: number of replicas dedicated to extending transitions reaching A
+        eA: number of replicas dedicated to extending transitions reaching B
         nsteps: default inf, maximum number of shooting simulations
         nframes: default inf, maximum number of simulated frames,
                  has priority over nsteps
         walltime: default inf, maximum number of simulation time,
                   has priority over nframes and nsteps
-        cpus_per_task: default 1, number of CPUs to allocate per task
-        gpus_per_task: default 1, number of GPUs to allocate per task
+        cpus_per_task: default 0, number of CPUs to allocate per task
+            if 0: equally distribute available resources among workers
+            if None: each worker takes them all
+        gpus_per_task: default 0, number of GPUs to allocate per task
+            if None: each worker takes them all
 
         Returns
         -------
         None
         """
         
-        processes = []
+        self.processes.clean()
         
-        # simulators
-        total = self.nA + self.nB + self.eA + self.eB + self.n
-        for i in range(total):
-            localid = len(processes)
-            if i < total - self.n:
-                noappend = True
-            else:
-                noappend = False
-            processes.append(ctx.Process(target=_run_task, args=(
-                self.params.path, self.directory,
-                localid, cpus_per_task, gpus_per_task,
-                'simulate', f'worker{localid}.run', f'worker{localid}.log',
-                noappend)))
+        # total number of processes: simulators and workers
+        num_processes = nA + nB + eA + eB + n + 1
         
-        # trainer (sharing the same localid as manager)
-        localid = len(processes)
-        processes.append(ctx.Process(target=_run_task, args=(
-            self.params.path, self.directory,
-            localid, cpus_per_task, gpus_per_task,
-            'train', 'trainer.log')))
+        # determine number of CPUs per task
+        if cpus_per_task == 0:
+            num_cpus_avail = len(get_available_cpus())
+            cpus_per_task = max(1, round(num_cpus_avail // num_processes))
         
-        # manager (sharing the same localid as trainer)
-        processes.append(ctx.Process(target=_run_task, args=(
-            self.params.path, self.directory,
-            localid, cpus_per_task, gpus_per_task,
-            'manage', self.n, self.nA, self.nB, self.eA, self.eB,
-            'manager.log', nsteps, nframes)))
-        
-        # function to terminate all workers
-        def terminate_all(signum=None, frame=None, timeout=5, exit=True):
-            for process in processes:
-                if process.is_alive():
-                    process.terminate()  # sends SIGTERM
-            
-            # wait
-            t0 = time.time()
-            while time.time() - t0 < timeout:
-                completed = True
-                for process in processes:
-                    if process.is_alive():
-                        completed = False
-                if completed:
-                    break
-            
-            # force termination
-            if not completed:
-                for process in processes:
-                    if process.is_alive():
-                        process.kill()
-            
-            if exit:
-                sys.exit(0)
-        
-        # register signal handlers in the main process
-        signal.signal(signal.SIGINT, terminate_all)
-        signal.signal(signal.SIGTERM, terminate_all)
-        
-        # start all processes
-        for process in processes:
-            process.start()
-        
-        # wait for completion with wall-time
-        t0 = time.time()
+        # workers' termination timeout
+        termination_timeout = max(0, self.termination_timeout - 1.)
         
         try:
-            while True:
-                all_done = True
-                for process in processes:
-                    if process.exitcode:
-                        # one process terminated
-                        print(f"Worker {process.pid} terminated "
-                              f"(exitcode={process.exitcode}), terminating all")
-                        terminate_all(exit=False)
-                    if process.is_alive():
-                        all_done = False
-                
-                if all_done:
-                    break
-                
-                # check wall time
-                if time.time() - t0 > walltime:
-                    print(f"Wall time {walltime} exceeded, terminating all")
-                    terminate_all(exit=False)
-                
-                time.sleep(1)
+            # simulators
+            for i in range(num_processes - 1):
+                localid = len(self.processes)
+                if i < num_processes - 1 - n:
+                    noappend = True
+                else:
+                    noappend = False
+                self.processes.launch(self.params.path, self.directory,
+                                      localid, cpus_per_task, gpus_per_task,
+                                      termination_timeout,
+                                      'simulate', f'worker{localid}',
+                                      f'worker{localid}.log', noappend)
+            
+            # trainer (sharing the same localid as manager)
+            localid = len(self.processes)
+            self.processes.launch(self.params.path, self.directory,
+                                  localid, cpus_per_task, gpus_per_task,
+                                  termination_timeout,
+                                  'train', 'trainer.log')
+            
+            # manager (sharing the same localid as trainer)
+            self.processes.launch(self.params.path, self.directory,
+                                  localid, cpus_per_task, gpus_per_task,
+                                  termination_timeout,
+                                  'manage', n, nA, nB, eA, eB,
+                                  'manager.log', nsteps, nframes)
+            
+            # wait for completion with walltime
+            t0 = time.time()
+            while time.time() - t0 < walltime and np.all(self.processes.alive):
+                continue
         
+        # safe termination
         finally:
-            # ensure all processes are cleaned up
-            for process in processes:
-                if process.is_alive():
-                    process.terminate()
+            self.termination_signal = 2  # KeyboardInterrupt
+            self.terminate_operations()
     
-    def create_job(self, filename, nsteps=int(1e6), nframes=np.inf, cpus_per_task=1, gpus_per_task=1):
+    @property
+    def job_stop_condition(self):
+        """Bash script for stop condition in SLURM job"""
+        return f'''stop_condition() {{
+        local pids=("$@")
+        
+        while true; do
+            # exit if .terminate file exists
+            if [[ -f "{self.directory}/.terminate" ]]; then
+                break
+            fi
+            
+            # exit if any PID in the list has terminated
+            for pid in "${{pids[@]}}"; do
+                if ! kill -0 "$pid" 2>/dev/null; then
+                    break 2  # break both loops
+                fi
+            done
+            
+            # exit if exceeded (WALLTIME - {int(self.termination_timeout)}) s)
+            current_time=$(date +%s)
+            elapsed=$((current_time - START_TIME))
+            if (( elapsed > WALLTIME - {int(self.termination_timeout)} )); then
+                break
+            fi
+            
+            sleep 1
+        done
+        
+        # create terminate (if not existing already)
+        touch "{self.directory}/.terminate"
+        
+        # send termination signal to all PIDs
+        for pid in "${{pids[@]}}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null
+            fi
+        done
+        
+        # wait for all to exit cleanly
+        wait "${{pids[@]}}" 2>/dev/null
+    }}'''
+    
+    def create_job(self, filename, n, nA, nB, eA=0, eB=0,
+                   nsteps=inf, nframes=inf,
+                   cpus_per_task=1, gpus_per_task=0,
+                   ntasks_per_node=1, walltime=24*3600):
         """
-        Returns a slurm script that can be launched by cluster.
+        Returns a slurm script in `filename` that can be launched by cluster.
         Walltime's default is in slurm header!
-
+        
         Parameters
         ----------
         filename: name of the job script to create
+        n: number of replicas dedicated to shooting simulations
+           (creates folders if not existing)
+        nA: number of replicas dedicated to free simulations around A
+        nB: number of replicas dedicated to free simulations around B
+        eA: number of replicas dedicated to extending transitions reaching A
+        eB: number of replicas dedicated to extending transitions reaching B
         nsteps: default inf, maximum number of shooting simulations
         nframes: default inf, maximum number of simulated frames,
-        cpus_per_task: default 1, number of CPUs to allocate per task, may be overridden by slurm header
-        gpus_per_task: default 1, number of GPUs to allocate per task
+        cpus_per_task: default 1, number of CPUs to allocate per task,
+            may be overridden by params.slurm_header
+        gpus_per_task: default 1, number of GPUs to allocate per task,
+            may be overridden by params.slurm_header
+        ntasks_per_node: default 1, number of tasks per node
+            may be overridden by params.slurm_header
+        walltime: default 24*3600 s (24h) job simulation time
         """
-
-        self.cpus_per_task = cpus_per_task
-        self.gpus_per_task = gpus_per_task
-        # retrieve run information
-        gpu = False
-        ntasks_per_node = 1
-        for fields in self.params.slurm_header.split():
-            if ('gpu' in fields and
-                '=0' not in fields and
-                ':0' not in fields):
-                gpu = True
+        
+        # retrieve run information: slurm header
+        slurm_header = self.params.slurm_header + ''
+        
+        # retrieve run information: ntasks per node
+        default_ntasks_per_node = ntasks_per_node
+        ntasks_per_node = None
+        for fields in slurm_header.split():
             if 'ntasks-per-node' in fields:
                 ntasks_per_node = int(fields.split('=')[-1])
-            if 'cpus-per-task' in fields:
-                self.cpus_per_task = int(fields.split('=')[-1])
-        nodes = int(np.ceil((1 + self.n +  # trainer/worker, shooting
-                             self.nA + self.nB +  # free A and B
-                             self.eA + self.eB)  # extension A and B
-                            / ntasks_per_node))
+        if not ntasks_per_node:
+            ntasks_per_node = default_ntasks_per_node
+            slurm_header += \
+                f'\n#SBATCH --ntasks-per-node={ntasks_per_node}'
         
-        # Even if gpu wasn't in slurm header, we need to allocate gpus if requested
-        if gpus_per_task > 0:
-            gpu = True
+        # retrieve run information: cpus per task
+        default_cpus_per_task = cpus_per_task
+        cpus_per_task = None
+        for fields in slurm_header.split():
+            if 'cpus-per-task' in fields:
+                cpus_per_task = int(fields.split('=')[-1])
+        if not cpus_per_task:
+            cpus_per_task = default_cpus_per_task
+            slurm_header += \
+                f'\n#SBATCH --cpus-per-task={cpus_per_task}'
+        
+        # retrieve run information: gpus per task
+        default_gpus_per_task = gpus_per_task
+        gpus_per_task = None
+        for fields in slurm_header.split():
+            if 'gres=gpu:' in fields:
+                gpus_per_task = int(fields.split(':')[-1]) // ntasks_per_node
+            if 'gpus-per-task' in fields:
+                gpus_per_task = int(fields.split('=')[-1])
+        if not gpus_per_task:
+            gpus_per_task = default_gpus_per_task
+            if gpus_per_task:
+                slurm_header += \
+                    f'\n#SBATCH --gres=gpu:{gpus_per_task * ntasks_per_node}'
+        
+        # number of nodes
+        nodes = ceil((1 + n +  # trainer/worker, shooting
+                      nA + nB +  # free A and B
+                      eA + eB)  # extension A and B
+                      / ntasks_per_node)
+        slurm_header += f'\n#SBATCH --nodes={nodes}'
+        
+        # time information
+        walltime = int(walltime)
+        hours = walltime // 3600
+        minutes = (walltime - hours * 3600) // 60
+        seconds = walltime - hours * 3600 - minutes * 60
+        slurm_header += f'\n#SBATCH --time={hours:02g}:{minutes:02g}:{seconds:02g}'
+        
+        # workers' termination timeout
+        termination_timeout = max(0, self.termination_timeout - 1.)
         
         # write job script
         with open(filename, 'w') as file:
@@ -250,93 +314,164 @@ class Launcher:
             # slurm header
             file.write(f'#!/bin/bash -x\n')
             file.write(f'#SBATCH --job-name={self.params.name}\n')
-            file.write(f'#SBATCH --nodes={nodes}\n')
-            file.write(f'{self.params.slurm_header}\n\n')
+            file.write(f'{slurm_header}\n\n')
+            file.write(f"rm -f {self.directory}/.terminate\n\n")
             
-            # remove completed information and which to run
-            file.write(f'rm -f {self.directory}/completed.flag\n')
-            file.write(f'rm -f {self.directory}/*.run\n\n')
-            
-            # srun initialization
-            file.write(f"srun --cpus-per-task={self.cpus_per_task} "
+            # srun call
+            file.write(f'# srun call\n')
+            file.write(f"srun --cpus-per-task={cpus_per_task} "
                             f"--cpu-bind=cores bash -c '\n\n")
-            file.write(f'  # update task variables\n')
-            file.write(f'  export i=$SLURM_PROCID\n')
-            file.write(f'  export li=$SLURM_LOCALID\n')
             
-            file.write(f'\n  # default names\n')
+            # default names
+            file.write(f'  # default names\n')
             file.write(f'  PYTHON="{PYTHON}"\n')
             file.write(f'  WORKER="{WORKER}"\n')
-            file.write(f'  PARAMS="{self.params.path}"\n')
-            file.write(f'\ncase $i in\n')
+            file.write(f'  PARAMS="{self.params.path}"\n\n')
+            
+            # stop condition
+            file.write(f'  # setup stop condition\n')
+            file.write(f"  START_TIME=$(date +%s)\n")
+            file.write(f"  WALLTIME={walltime}\n\n")
+            file.write(f"  {self.job_stop_condition}\n\n")
+            
+            # cases
+            file.write(f'  # srun rank by rank\n')
+            file.write(f'  case $SLURM_PROCID in\n')
+            def _case(i, description, noappend=False):
+                file.write(f'\n  {i})  # worker {i} ({description})\n')
+                file.write(f'    "${{PYTHON}}" "${{WORKER}}" "${{PARAMS}}" '
+                           f'{self.directory} {termination_timeout} '
+                           f'simulate worker{i} worker{i}.log'
+                           f'{" noappend" if noappend else ""} &\n')
+                file.write(f'    pid=$!\n')
+                file.write(f'    stop_condition $pid\n')
+                file.write(f'  ;;\n')
             
             # equilibrium workers
-            for i in range(self.nA + self.nB):
-                file.write(f'{i})\n')
-                if i < self.nA:
+            i = -1
+            for i in range(nA + nB):
+                if i < nA:
                     state = 'A'
                     j = i
                 else:
                     state = 'B'
-                    j = i - self.nA
-                file.write(f'  # worker {i} (equilibrium {state}{j})\n')
-                file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                           f'"{self.directory}" {i} {self.cpus_per_task} {self.gpus_per_task} simulate '
-                           f'worker{i}.run worker{i}.log noappend\n')
-                file.write(f'  ;;\n')
+                    j = i - nA
+                _case(i, f'equilibrium {state}{j}', True)
             
             # extension workers
             begin = i + 1
-            for i in range(begin, begin + self.eA + self.eB):
+            for i in range(begin, begin + eA + eB):
                 j = i - begin
-                if j < self.eA:
+                if j < eA:
                     state = 'A'
                 else:
                     state = 'B'
-                    j -= self.eA
-                file.write(f'{i})\n')
-                file.write(f'  # worker {i} (extension {state}{j})\n')
-                file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                           f'"{self.directory}" {i} {self.cpus_per_task} {self.gpus_per_task} simulate '
-                           f'worker{i}.run worker{i}.log noappend\n')
-                file.write(f'  ;;\n')
+                    j -= eA
+                _case(i, f'extension {state}{j}', True)
             
             # shooting workers
             begin = i + 1
-            for i in range(begin, begin + self.n):
+            for i in range(begin, begin + n):
                 j = i - begin
-                file.write(f'{i})\n')
-                file.write(f'  # worker {i} (shooting {j})\n')
-                file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                           f'"{self.directory}" {i} {self.cpus_per_task} {self.gpus_per_task} simulate '
-                           f'worker{i}.run worker{i}.log &\n')
-                file.write(f'  ;;\n')
+                _case(i, f'shooting {j}', False)
+            
+            # last rank
+            file.write(f'\n  {i + 1})  # trainer and manager\n')
+            file.write(f'    pids=()\n')
             
             # trainer
-            file.write(f'{i + 1})\n')
-            file.write(f'  # trainer\n')
-            file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" {i} {self.cpus_per_task} {self.gpus_per_task}  train '
-                       f'trainer.log &\n')
-            file.write(f'  trainer_pid=$!\n\n')
-
-            # manager
-            file.write(f'  # manager\n')
-            file.write('  "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" 0 {1} {0} manage ' # manager has no GPU and only 1 CPU
-                       f'{self.n} {self.nA} {self.nB} {self.eA} {self.eB} '
-                       f'manager.log {nsteps} {nframes} &\n')
-            file.write(f'  manager_pid=$!\n\n')
+            file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
+                       f'"{self.directory}" {termination_timeout} '
+                       f'train trainer.log &\n')
+            file.write(f'    pids+=($!)\n')
             
-            # handle task termination
-            file.write(f'  # handle task termination\n')
-            file.write(f'  while kill -0 $trainer_pid 2>/dev/null'
-                       f' || kill -0 $manager_pid 2>/dev/null; do\n')
-            file.write(f'    wait -n\n')
-            file.write(f'    rm -f {self.directory}/*.run\n')
-            file.write( '    scancel ${SLURM_JOB_ID}\n')
-            file.write(f'  done\n  ;;\n')
+            # manager
+            file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
+                       f'"{self.directory}" {termination_timeout} '
+                       f'manage {n} {nA} {nB} {eA} {eB} '
+                       f'manager.log {nsteps} {nframes} &\n')
+            file.write(f'    pids+=($!)\n')
+            
+            # monitor
+            file.write(f'    stop_condition "${{pids[@]}}"\n')
+            file.write(f'    ;;\n')
+            
+            # end cases with possible idle processes...
+            file.write(f'\n  *)\n')
+            file.write(f'    echo "[Worker $i] No task assigned."\n')
+            file.write(f'    ;;\n')
+            file.write(f'  esac\n\'\n')
 
-            # end
-            file.write(f'*)\n  echo "[Worker $i] No task assigned."\n  ;;\n')
-            file.write(f'esac\n\'\n')
+
+class Processes:
+    """Used by `Launcher` to manage the processes spawned by the
+    `Launcher.run` method."""
+    
+    def __init__(self):
+        self.__list = []
+    
+    def __len__(self):
+        return len(self.__list)
+    
+    def __iter__(self):
+        return iter(self.__list)
+    
+    def __getitem__(self, key):
+        return self.__list[key]
+    
+    @property
+    def list(self):
+        return self.__list
+    
+    @property
+    def alive(self):
+        return ~self.closed
+    
+    @property
+    def closed(self):
+        result = np.repeat(False, len(self))
+        for i, process in enumerate(self):
+            if process._closed or not process.is_alive():
+                result[i] = True
+                if not process._closed:
+                    print(f'[Worker {process.pid}] terminated '
+                          f'with exit code {process.exitcode}')
+                    process.join()
+                    process.close()
+        return result
+    
+    def launch(self, *args):
+        process = ctx.Process(target=_run_task, args=args)
+        self.__list.append(process)
+        process.start()
+        print(f'[Worker {process.pid}] args: '
+              f'{" ".join([str(arg) for arg in args])}')
+    
+    def clean(self, timeout=20.):
+        
+        # graceful termination
+        t0 = time.time()
+        terminating = set()
+        while time.time() - t0 < timeout and np.any(self.alive):
+            for i in np.where(self.alive)[0]:
+                if i in terminating:
+                    continue
+                terminating.add(i)
+                try:
+                    os.kill(self[i].pid, signal.SIGINT)
+                except:
+                    pass
+        
+        # forced termination
+        for i in np.where(self.alive)[0]:
+            try:
+                self[i].kill()
+                self[i].join(timeout=1.)
+            except:
+                pass
+        
+        # final report
+        self.closed
+        
+        # pristine state
+        self.__list = []

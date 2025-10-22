@@ -91,7 +91,6 @@ def values_function(descriptors):
     if not len(descriptors):
         return np.zeros(0)
     
-    global network
     device = next(network.parameters()).device
     dtype = next(network.parameters()).dtype
     network.eval()

@@ -1,25 +1,23 @@
-#WIP for now it works if class is called in the same location as params' working directory
-
 import os
-import time
 import sys
-import numpy as np
-import psutil
+import time
 import signal
 import subprocess
 import MDAnalysis as mda
+from aimmd.core import Params
+from aimmd.core.utils import now, remove
 from aimmd.sampling.train import train
 from aimmd.sampling.manage import manage
 from aimmd.sampling.simulate import simulate
-from aimmd.core import Params
-from aimmd.core.utils import now
-import torch
+from aimmd.sampling.resources import bind_resources
 
+inf = float('inf')
 
 class Worker:
     
     def __init__(self, params, directory='.',
-                 localid=0, cpus_per_task=1, gpus_per_task=0):
+                 localid=0, cpus_per_task=None, gpus_per_task=None,
+                 termination_timeout=20.):
         """
         Worker process responsible for running independent AIMMD tasks
         (simulations, training, or management) on allocated CPUs/GPUs.
@@ -33,9 +31,13 @@ class Worker:
         localid : int, optional
             Local ID of the worker (used for resource allocation), by default 0.
         cpus_per_task : int, optional
-            Number of CPUs allocated per task, by default 1.
+            Number of CPUs allocated per task, by default None.
+            If None or 0: take all resources available.
+            If 0: explicitly bind CPUs available.
+            If None: just report CPUs available when running.
         gpus_per_task : int, optional
-            Number of GPUs allocated per task, by default 0.
+            Number of GPUs allocated per task, by default None.
+            If None: take all resources availalbe.
 
         Returns
         -------
@@ -46,12 +48,13 @@ class Worker:
         if not isinstance(params, Params):
             params = Params.load(params)
         self.params = params
-        self.process = None
-        self.is_process = False
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
+        self.task = 'worker'  # for reporting
+        self.termination_signal = None
+        self.termination_timeout = float(termination_timeout)
         self.__log_file = None
-        self.interrupt = False
+        self.cleanup = []  # files to delete after termination
         
         # determine local id, if not provided
         # self.localid = int(os.getenv("SLURM_LOCALID", f"{localid}"))
@@ -59,59 +62,12 @@ class Worker:
         # counting doesn't start at zero, and we have doubling of some worker ids.
         # Instead, enforce that this is provided externally in the run script.
         self.localid = int(localid)
-        self.cpus_per_task = int(cpus_per_task)
-        self.gpus_per_task = int(gpus_per_task)
-        
-        # CPU binding
-        cpus_per_task = int(os.getenv("SLURM_CPUS_PER_TASK", f"{cpus_per_task}"))
-        os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
-        os.environ["MKL_NUM_THREADS"] = str(cpus_per_task)
-        os.environ["OPENBLAS_NUM_THREADS"] = str(cpus_per_task)
-        try:
-            start = self.localid * cpus_per_task
-            cpus = list(range(start, start + cpus_per_task))
-            psutil.Process().cpu_affinity(cpus)
-        except Exception as exception:
-            print(f"[Warning] Could not set CPU affinity: {exception}")
-            cpus = []
-        
-        # find available gpus, using torch to avoid extra dependency, on cuda or ROCm
-        num_gpus_avail = torch.cuda.device_count()
-        
-        # check if requested resources are available
-        if self.gpus_per_task > 0 and num_gpus_avail == 0:
-            raise RuntimeError(f"[Worker {self.localid}] No GPUs available but {self.gpus_per_task} requested")
-        if self.gpus_per_task > num_gpus_avail:
-            raise RuntimeError(f"[Worker {self.localid}] Only {num_gpus_avail} GPUs available but {self.gpus_per_task} requested per task.")
-
-        # GPU binding
-        if self.gpus_per_task > 0:
-            start = self.localid * self.gpus_per_task
-            gpus = ",".join([f"{i%num_gpus_avail}" for i in range(start, start + self.gpus_per_task)])
-            if gpus:
-                os.environ["CUDA_VISIBLE_DEVICES"] = gpus # for NVIDIA GPUs
-                os.environ["GPU_DEVICE_ORDINAL"] = gpus  # for ROCm GPUs, Gromacs will use OpenCL
-        
-        # notify the user if this worker is oversubscribing a GPU
-        if self.localid > 0 and self.gpus_per_task > 0 and num_gpus_avail <= (self.localid * self.gpus_per_task):
-            print(f"[Note] Worker {self.localid} may be oversubscribing GPUs. Available GPUs: {num_gpus_avail}, Worker local ID: {self.localid}, GPUs per task: {self.gpus_per_task}")
-
-        # report resource allocation
-        print(f"[Worker {self.localid}] CPU ids: {','.join(map(str, cpus))}")
-        if self.gpus_per_task > 0:
-            print(f"[Worker {self.localid}] GPU ids: {gpus}")
-        else:
-            print(f"[Worker {self.localid}] No GPUs allocated")   
-        
-        self.cpus = cpus
-        if self.gpus_per_task > 0:
-            self.gpus = gpus
-        else:
-            self.gpus = None
+        self.cpus_per_task = cpus_per_task
+        self.gpus_per_task = gpus_per_task
 
         # register signal handlers (for all future tasks)
         signal.signal(signal.SIGTERM, self.terminate_handler)
-        signal.signal(signal.SIGINT, self.terminate_handler)  # (s, f)
+        signal.signal(signal.SIGINT, self.terminate_handler)
     
     @property
     def log_file(self):
@@ -126,72 +82,73 @@ class Worker:
         sys.stdout = self.original_stdout
         sys.stderr = self.original_stderr
         if log_file:
-            sys.stdout = open(f'{self.directory}/{log_file}', 'a+')
+            sys.stdout = open(
+                f'{self.directory}/{log_file}', 'a+', buffering=1)
             sys.stderr = sys.stdout
         self.__log_file = log_file
     
-    def terminate_handler(self, signum=None, frame=None, report=True, exit=False):
+    def bind_resources(self):
+        return bind_resources(self.localid,
+                              self.cpus_per_task,
+                              self.gpus_per_task)
+    
+    def terminate_handler(self, signum=None, frame=None):
         """Gracefully terminate the worker and its subprocess."""
         
-        self.interrupt = True
+        # acknowledge signal
+        print(f'\n"{self.task}" worker received termination signal '
+              f'{signum} ({now()})')
+        self.termination_signal = signum
+    
+    def terminate_operations(self):
+        # delete what needs to
+        while len(self.cleanup):
+            remove(self.cleanup.pop())
         
-        # report
-        if report:
-            if signum:
-                print(f"Received signal {signum}, terminating process ({now()})")
-            else:
-                print(f"Terminating process ({now()})")
-        
-        # end current process
-        if self.process and self.process.poll() is None:
-            try:
-                self.process.terminate()
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                print("Process did not exit in time, killing...")
-                self.process.kill()
-            except Exception as exception:
-                print(f"Exception while killing process: {exception}")
-        
-        # unbind process and log file, close log file
-        self.process = None
+        # close log file if open
         self.log_file = None
         
-        # kill current process --- cause of recursion error as send SIGTERM to itself, but
-        # registers a handler that calls this function again
-        #if self.is_process:
-        #    parent_pid = os.getpid()  # get PID
-        #    os.kill(parent_pid, signal.SIGTERM)  # send termination signal
-        #    time.sleep(10) 
-        
-        # exit if required
-        if exit or self.is_process:
-            sys.exit(0)
+        # reset termination signal
+        self.termination_signal = None
     
     def run(self, task, *args):
-        if task == 'train':
-            return train(self, *args)
-        if task == 'manage':
-            return manage(self, *args)
-        if task == 'simulate':
-            return simulate(self, *args)
-        raise TypeError(f'Task {task} not implented for AIMMD worker')
+        
+        # initialize
+        self.termination_signal = None
+        self.task = task
+        
+        try:
+            # task execution
+            if task == 'train':
+                return train(self, *args)
+            if task == 'manage':
+                return manage(self, *args)
+            if task == 'simulate':
+                return simulate(self, *args)
+            
+            # not implemented
+            raise TypeError(f'Task {task} not implented for AIMMD worker')
+        
+        finally:
+            self.terminate_operations()
     
-    def train(self, log_file=None, verbose=False, walltime=np.inf):
+    def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
+        
+        # preprocessing exclusive to this function
         os.system(f'rm -f {self.directory}/initial_paths/*')
         self.params.save_initial_paths(f'{self.directory}/initial_paths')
-        self.interrupt = False
-        return train(self, log_file, verbose, walltime)
+        
+        # just call "run"
+        return self.run('train', log_file, verbose, nrounds, walltime)
     
-    def manage(self, n, nA, nB, eA, eB,
-           log_file=None, nsteps=int(1e6), nframes=np.inf, walltime=np.inf):
-        self.interrupt = False
-        return manage(self, n, nA, nB, eA, eB,
-                       log_file, nsteps, nframes, walltime)
+    def manage(self, n, nA, nB, eA=0, eB=0, log_file=None,
+               nsteps=inf, nframes=inf, walltime=inf):
+        return self.run('manage', n, nA, nB, eA, eB,
+                        log_file, nsteps, nframes, walltime)
     
-    def simulate(self, run_file, log_file=None, noappend=False, walltime=np.inf):
-        self.interrupt = False
-        return simulate(self, run_file, log_file, noappend, walltime)
+    def simulate(self, run_file, log_file=None,
+                 noappend=False, walltime=inf):
+        return self.run('simulate', run_file, log_file, noappend, walltime)
 
 if __name__ == '__main__':
-    Worker(*sys.argv[1:6]).run(*sys.argv[6:])
+    Worker(*sys.argv[1:3], 0, None, None, sys.argv[3]).run(*sys.argv[4:])
