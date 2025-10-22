@@ -111,8 +111,8 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
             stop = start + resources_per_task
         
         # notify the user if this worker is oversubscribing resources
-        if stop and stop > num_resources_available:
-            print(f"[Note] Worker may be oversubscribing {resources_name}\n"
+        if stop > num_resources_available:
+            print(f"[Note] Worker may be oversubscribing {resources_name}s\n"
                   f"  available {resources_name}s: {num_resources_available}"
                   f"\n  {resources_name}s per task: {resources_per_task}")
         
