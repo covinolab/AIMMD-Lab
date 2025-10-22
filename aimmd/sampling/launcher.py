@@ -57,7 +57,7 @@ class Launcher:
         if not params.path.is_file():
             i = 0
             while os.path.exists(
-              fname := f'{params.path}/params{str(i) if i else ""}.py'):
+                fname := f'{params.path}/params{str(i) if i else ""}.py'):
                 i += 1
             with open(fname, 'w') as file:
                 file.write(f'{params}')  # already good
@@ -101,7 +101,7 @@ class Launcher:
     
     def run(self, n, nA, nB, eA=0, eB=0,
             nsteps=inf, nframes=inf, walltime=inf,
-            cpus_per_task=0, gpus_per_task=0,
+            cpus_per_task='share', gpus_per_task='share',
             termination_timeout=20.):
         """
         Launch the simulation locally, spawning multiple processes.
@@ -119,11 +119,14 @@ class Launcher:
                  has priority over nsteps
         walltime: default inf, maximum number of simulation time,
                   has priority over nframes and nsteps
-        cpus_per_task: default 0, number of CPUs to allocate per task
-            if 0: equally distribute available resources among workers
-            if None: each worker takes them all
-        gpus_per_task: default 0, number of GPUs to allocate per task
-            if None: each worker takes them all
+        cpus_per_task: str or int, defaut 'share'
+            Number of CPUs to allocate per task
+            if 'share': equally distribute available resources among workers
+            if 'all': each worker takes them all
+        gpus_per_task: str or int, default 'share'
+            Number of GPUs to allocate per task
+            if 'share': equally distribute available resources among workers
+            if 'all': each worker takes them all
 
         Returns
         -------
@@ -136,9 +139,14 @@ class Launcher:
         num_processes = nA + nB + eA + eB + n + 1
         
         # determine number of CPUs per task
-        if cpus_per_task == 0:
+        if cpus_per_task == 'share':
             num_cpus_avail = len(get_available_cpus())
             cpus_per_task = max(1, round(num_cpus_avail // num_processes))
+        
+        # determine number of GPUs per task
+        if gpus_per_task == 'share':
+            num_gpus_avail = get_num_gpus()
+            gpus_per_task = max(1, round(num_gpus_avail // num_processes))
         
         # workers' termination timeout
         termination_timeout = max(0, self.termination_timeout - 1.)
@@ -227,7 +235,8 @@ class Launcher:
     def create_job(self, filename, n, nA, nB, eA=0, eB=0,
                    nsteps=inf, nframes=inf,
                    cpus_per_task=1, gpus_per_task=0,
-                   ntasks_per_node=1, walltime=24*3600):
+                   ntasks_per_node=1, skip_binding=False,
+                   walltime=24*3600):
         """
         Returns a slurm script in `filename` that can be launched by cluster.
         Walltime's default is in slurm header!
@@ -242,11 +251,17 @@ class Launcher:
         eA: number of replicas dedicated to extending transitions reaching A
         eB: number of replicas dedicated to extending transitions reaching B
         nsteps: default inf, maximum number of shooting simulations
-        nframes: default inf, maximum number of simulated frames,
-        cpus_per_task: default 1, number of CPUs to allocate per task,
-            may be overridden by params.slurm_header
-        gpus_per_task: default 1, number of GPUs to allocate per task,
-            may be overridden by params.slurm_header
+        nframes: default inf, maximum number of simulated frames
+        cpus_per_task: int, defaut 1
+            Number of CPUs to allocate per task
+            if --cpus-per-task is present in params.slurm_header, the
+            corresponding value overrides this input argument
+        gpus_per_task: int, default 0
+            Number of GPUs to allocate per task
+            if --gpus-per-task or --gres=gpu is present in params.slurm_header,
+            the corresponding value overrides this input argument
+        skip_binding: bool, default False
+            If True, do not explicitly bind resources ('skip' option)
         ntasks_per_node: default 1, number of tasks per node
             may be overridden by params.slurm_header
         walltime: default 24*3600 s (24h) job simulation time
@@ -304,6 +319,11 @@ class Launcher:
         minutes = (walltime - hours * 3600) // 60
         seconds = walltime - hours * 3600 - minutes * 60
         slurm_header += f'\n#SBATCH --time={hours:02g}:{minutes:02g}:{seconds:02g}'
+
+        # workers' cpus_per_task and gpus_per_task
+        if skip_binding:
+            cpus_per_task = 'skip'
+            gpus_per_task = 'skip'
         
         # workers' termination timeout
         termination_timeout = max(0, self.termination_timeout - 1.)
