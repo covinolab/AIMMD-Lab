@@ -16,12 +16,12 @@ inf = float('inf')
 class Worker:
     
     def __init__(self, params, directory='.',
-                 localid=0, cpus_per_task=None, gpus_per_task=None,
+                 localid=0, cpus_per_task='skip', gpus_per_task='skip',
                  termination_timeout=20.):
         """
         Worker process responsible for running independent AIMMD tasks
         (simulations, training, or management) on allocated CPUs/GPUs.
-
+        
         Parameters
         ----------
         params : str or aimmd.core.Params
@@ -30,15 +30,17 @@ class Worker:
             Working directory for the worker, by default '.'.
         localid : int, optional
             Local ID of the worker (used for resource allocation), by default 0.
-        cpus_per_task : int, optional
-            Number of CPUs allocated per task, by default None.
-            If None or 0: take all resources available.
-            If 0: explicitly bind CPUs available.
-            If None: just report CPUs available when running.
-        gpus_per_task : int, optional
-            Number of GPUs allocated per task, by default None.
-            If None: take all resources availalbe.
-
+        cpus_per_task: str or int, defaut 'skip'
+            Number of CPUs to allocate per task
+            if 'share': equally distribute available resources among workers
+            if 'all': each worker takes them all (explicitly bind resources)
+            if 'skip': just report available resources, do not explicitly bind
+        gpus_per_task: str or int, default 'skip'
+            Number of GPUs to allocate per task
+            if 'share': equally distribute available resources among workers
+            if 'all': each worker takes them all (explicitly bind resources)
+            if 'skip': just report available resources, do not explicitly bind
+        
         Returns
         -------
         None
@@ -64,14 +66,8 @@ class Worker:
         self.localid = int(localid)
         
         # determine CPUs and GPUs per task
-        if cpus_per_task in ['None', 'none', '', None]:
-            self.cpus_per_task = None
-        else:
-            self.cpus_per_task = int(cpus_per_task)
-        if gpus_per_task in ['None', 'none', '', None]:
-            self.gpus_per_task = None
-        else:
-            self.gpus_per_task = int(gpus_per_task)
+        self.cpus_per_task = cpus_per_task
+        self.gpus_per_task = gpus_per_task
         
         # register signal handlers (for all future tasks)
         signal.signal(signal.SIGTERM, self.terminate_handler)
