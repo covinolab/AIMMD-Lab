@@ -1204,7 +1204,7 @@ def fit(network, pathensemble,
             d_val = torch.tensor(d_val, dtype=dtype, device=device)
             d_val.requires_grad = True
         else:
-            # when using graphs, we need to process the the DataDict objects
+            # when using graphs, we need to process the DataDict objects
             # instead of arrays
             if save_memory:  # separately to save memory
                 d_val_list = process_descriptors([descriptors['data_list'][i] for i in validation_indices])
