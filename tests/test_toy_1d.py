@@ -34,7 +34,7 @@ def test_toy_1d():
     
     print('Cleaning directories')
     os.system('rm -rf equilibrium; mkdir equilibrium')
-    os.system('rm -rf run1')
+    os.system('rm -rf run1 run2')
     
     print('\nImporting integrator and functions')
     sys.path.append('./')
@@ -218,10 +218,16 @@ def test_toy_1d():
             raise RuntimeError('run1/worker0 failed')
     print('All fine')
     
-    print('\nTest appending (also change number of workers)')
+    print('\nTest LaunchersCollection / appending / change number of workers')
+    launcher2 = aimmd.Launcher(params, 'run2')
+    launchers = aimmd.LaunchersCollection(launcher, launcher2)
+    # testing collective slurm job creation
+    launchers.create_job('job.sh', n=[2,1], nA=1, nB=[0,1], walltime=3600)
+    
+    # running two launchers at the same time
     t0 = time.time()
-    launcher.run(n=2, nA=0, nB=0, walltime=60)
-    if time.time() - t0 < 60:
+    launchers.run(n=[2,1], nA=1, nB=[0,1], walltime=120)
+    if time.time() - t0 < 120:
         print('TEST FAILED')
     
     print('\nChecking if workers simulated...')
@@ -230,6 +236,11 @@ def test_toy_1d():
         file = 'run1/equilibriumA/traj000001.part0003.xtc'
         if not os.path.exists(file) or os.path.getsize(file) <= 68:
             raise RuntimeError('run1/worker0 failed')
+    file = 'run2/equilibriumA/traj000001.part0001.xtc'
+    if not os.path.exists(file) or os.path.getsize(file) <= 68:
+        file = 'run2/equilibriumA/traj000001.part0002.xtc'
+        if not os.path.exists(file) or os.path.getsize(file) <= 68:
+            raise RuntimeError('run2/worker0 failed')
     print('All fine')
     
     print('\nLoading AIMMD path ensemble')
