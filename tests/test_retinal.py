@@ -40,7 +40,7 @@ def test_retinal():
     
     print('Cleaning directories')
     os.system('rm -rf equilibrium; mkdir equilibrium')
-    os.system('rm -rf run1')
+    os.system('rm -rf run1 run2')
     
     print('\nImporting parameters')
     from params import cv
@@ -211,17 +211,17 @@ def test_retinal():
         print('MANAGER FAILED')
     
     t0 = time.time()
-    aimmd.Worker(params, 'run1').simulate('worker0.run', noappend=True, walltime=10)
+    aimmd.Worker(params, 'run1').simulate('worker0', noappend=True, walltime=10)
     if time.time() - t0 < 10:
         print('FREE A FAILED')
 
     t0 = time.time()
-    aimmd.Worker(params, 'run1').simulate('worker1.run', noappend=True, walltime=10)
+    aimmd.Worker(params, 'run1').simulate('worker1', noappend=True, walltime=10)
     if time.time() - t0 < 10:
         print('FREE B FAILED')
 
     # worker, trainer, and shooting together
-    launcher.run(n=1, nA=0, nB=0, nsteps=10, walltime=120)
+    launcher.run(n=1, nA=1, nB=1, nsteps=10, walltime=120)
     
     print('\nChecking if workers simulated...')
     file = f'run1/equilibriumA/traj000001.part0001{trajectory_extension}'
@@ -229,11 +229,17 @@ def test_retinal():
         raise RuntimeError('run1/worker0 failed')
     print('All fine')
 
-    print('\nTest appending free A')
+    print('\nTest LaunchersCollection and appending free A')
+    launcher2 = aimmd.Launcher(params, 'run2')
+    os.system('cp run1/network.h5 run2')  # skip first training cycle
+    os.system('cp run1/densities.npy run2')
+    os.system('cp run1/bins.npy run2')
+    launchers = aimmd.LaunchersCollection(launcher, launcher2)
+    launchers.create_job('job.sh', n=[0,1], nA=1, nB=0, walltime=3600)
     t0 = time.time()
-    launcher.run(n=0, nA=1, nB=0, walltime=30)
+    launchers.run(n=[0,1], nA=1, nB=0, walltime=30)
     if time.time() - t0 < 30:
-        print('FREE A & MANAGER & TRAINER FAILED')
+        print('LauncersCollection RUN FAILED')
     
     print('\nChecking if workers simulated...')
     file = f'run1/equilibriumA/traj000001.part0002{trajectory_extension}'
@@ -378,4 +384,3 @@ def test_retinal():
 
 if __name__ == '__main__':
     test_retinal()
-
