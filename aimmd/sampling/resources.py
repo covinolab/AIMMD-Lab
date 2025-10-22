@@ -116,7 +116,7 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
                   f"  available {resources_name}s: {num_resources_available}"
                   f"\n  {resources_name}s per task: {resources_per_task}")
         
-        return [resources_available[i % num_resources_avaialble]
+        return [resources_available[i % num_resources_available]
                 for i in range(start, stop)]
     
     # CPU binding
