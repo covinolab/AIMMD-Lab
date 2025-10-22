@@ -319,6 +319,10 @@ def fit(network, pathensemble,
         epochs=500,
         batch_size=4096,
         stop=50.,
+        train_validation_early_stopping=False,
+        early_stopping_patience=10,
+        early_stopping_min_samples=1000,
+        early_stopping_split=0.1,
         graphs=False,
         verbose=False,
         worker=None):
@@ -434,6 +438,24 @@ def fit(network, pathensemble,
         Size of each training batch. Since the batch is drawn with selection
         selection probabilities, its size will always be `batch_size`, even
         with very small training sets.
+
+    stop : float, default=50.0
+        Stop when the scale of the logit committor reaches this value.
+        
+    train_validation_early_stopping : bool, default=False
+        If True, split the training set into a training and validation set,
+        and use early stopping based on the validation loss.
+    
+    early_stopping_patience : int, default=10
+        Number of epochs with no improvement on the validation loss. After this
+        number of epochs, stop the training. Reset to best validation epoch 
+        at the end.
+
+    early_stopping_min_samples : int, default=1000
+        Minimum number of samples in the training set to enable early stopping.
+
+    early_stopping_split : float, default=0.1
+        Fraction of the training set to use as validation set for early stopping.
 
     graphs : bool, default=False
         If True, the descriptors are graphs, stored in the mlcolvar DataDict
@@ -1167,6 +1189,47 @@ def fit(network, pathensemble,
     min_loss2 = np.inf
     min_loss_step1 = 0
     min_loss_step2 = 0
+
+    # Early stopping setup
+
+    # disable early stopping, if threshold of training set size is not met
+    if len(selection_probabilities) < early_stopping_min_samples:
+        train_validation_early_stopping = False
+        print(f"\nDisabling early stopping since < {early_stopping_min_samples} samples.")
+
+    if train_validation_early_stopping:
+        state_dict_early_stopping = copy.deepcopy(network.state_dict())  # early stopping
+        no_improvement_steps = 0
+        min_validation_loss = np.inf
+        validation_losses = []
+        validation_set_size = int(len(selection_probabilities) * early_stopping_split)
+        print(f"\nUsing early stopping with {validation_set_size} samples for validation set.")
+        validation_indices = np.random.choice(
+            len(selection_probabilities),
+            size=validation_set_size,
+            replace=False)
+        # set selection probabilities of validation set to zero in training set
+        selection_probabilities[validation_indices] = 0.
+        selection_probabilities /= np.sum(selection_probabilities)
+
+        if not graphs:
+            if save_memory:  # separately to save memory
+                d_val = process_descriptors(descriptors[validation_indices])
+            else:
+                d_val = descriptors[validation_indices]
+            d_val = torch.tensor(d_val, dtype=dtype, device=device)
+            d_val.requires_grad = True
+        else:
+            # when using graphs, we need to process the the DataDict objects
+            # instead of arrays
+            if save_memory:  # separately to save memory
+                d_val_list = process_descriptors([descriptors['data_list'][i] for i in validation_indices])
+            else:
+                d_val_list = [descriptors['data_list'][i] for i in validation_indices]
+            d_val = Batch.from_data_list(d_val_list).to(device).to_dict()
+
+        r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
+
     
     print(f'Reseting the network parameters ({now()})\n')
     network.reset_parameters()
@@ -1212,11 +1275,8 @@ def fit(network, pathensemble,
         r = torch.tensor(results[indices], dtype=dtype, device=device)
         
         # define loss function
-        def closure():
-            
-            optimizer.zero_grad()
-            q = network(d)
-            
+        # Note: refactored this to allow for computation of validation loss
+        def loss_function(q, r):
             if loss_bayesian_factor:
                 
                 qA = - (torch.log(1 + torch.exp(-q[:, 0])) +
@@ -1231,11 +1291,11 @@ def fit(network, pathensemble,
                 
                 loss = torch.sum(q2 ** 2 *
                     (r[:, 0] * toA_contribution +
-                     r[:, 1] * toB_contribution))
+                    r[:, 1] * toB_contribution))
                 
                 # normalize
                 loss /= torch.sum(q2 ** 2 * (r[:, 0] + r[:, 1]) *
-                                  loss_bayesian_factor ** 2)
+                                loss_bayesian_factor ** 2)
                 loss -= 1.0
             
             # standard binomial loss
@@ -1245,7 +1305,8 @@ def fit(network, pathensemble,
                 toA_contrib = r[:, 0] * torch.log(1. + exp_pos_q)
                 toB_contrib = r[:, 1] * torch.log(1. + exp_neg_q)
                 loss = torch.sum((toA_contrib + toB_contrib) / torch.sum(r))
-            
+                print("Evaluated loss:", loss.item())
+
             # Compute the smoothness penalty
             if loss_smoothening_weight:
                 q_grad = torch.autograd.grad(
@@ -1259,6 +1320,12 @@ def fit(network, pathensemble,
                 
                 # Combine original loss with L1 regularization term
                 loss += loss_regularization_weight * l1_norm
+            return loss
+
+        def closure():
+            optimizer.zero_grad()
+            q = network(d)
+            loss = loss_function(q, r)
             loss.backward()
             return loss
         
@@ -1321,6 +1388,38 @@ def fit(network, pathensemble,
         # D.append(d)
         # R.append(r)
         
+        # handle early stopping with validation set
+        if train_validation_early_stopping:
+            # compute validation loss
+
+            network.eval()
+            with torch.no_grad():
+                pred_val = network(d_val)
+                val_loss = loss_function(pred_val, r_val)
+                val_loss = float(val_loss.detach())
+                validation_losses.append(val_loss)
+            network.train()
+
+            # early stopping logic. Only start when Range is acceptable
+            if (Range[0] <= 0 and Range[1] >= 0 and scales[-1] >= 1):
+                if val_loss < min_validation_loss:
+                    min_validation_loss = val_loss
+                    no_improvement_steps = 0
+                    state_dict_early_stopping = copy.deepcopy(network.state_dict())
+                else:
+                    no_improvement_steps += 1
+                    if verbose:
+                        print(f'    Early stopping report, epoch {i}: no improvement for '
+                        f'{no_improvement_steps} steps, loss {loss:.3e} validation loss {val_loss:.3e} '
+                        f'(min val loss: {min_validation_loss:.3e})')
+                    if no_improvement_steps >= early_stopping_patience:
+                        print(f'    Early stopping triggered after {no_improvement_steps} steps without improvement, '
+                            f'restoring best model from early stopping '
+                            f'(val loss: {min_validation_loss:.3e})')
+                        network.load_state_dict(state_dict_early_stopping)
+                        # exit training loop
+                        break
+
         # report
         if verbose and i % (epochs // 20) == 0:
             print(f'    loss {losses[-1]:.3e}, '
@@ -1329,7 +1428,7 @@ def fit(network, pathensemble,
     
     if verbose:
         counter.close()
-    
+
     # error handling: result not as expected
     if Range[0] > 0 or Range[1] < 0 or scales[-1] < 1:
         print(f'!!! bad range ({Range[0]:.3f}, {Range[1]:.3f}), '

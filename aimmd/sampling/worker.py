@@ -89,7 +89,7 @@ class Worker:
             start = self.localid * self.gpus_per_task
             gpus = ",".join([f"{i%num_gpus_avail}" for i in range(start, start + self.gpus_per_task)])
             if gpus:
-                os.environ["CUDA_VISIBLE_DEVICES"] = gpus # for NVIDIA GPUs, and also ROCm picked up by torch
+                os.environ["CUDA_VISIBLE_DEVICES"] = gpus # for NVIDIA GPUs
                 os.environ["GPU_DEVICE_ORDINAL"] = gpus  # for ROCm GPUs, Gromacs will use OpenCL
         
         # notify the user if this worker is oversubscribing a GPU
