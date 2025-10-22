@@ -1288,7 +1288,6 @@ def fit(network, pathensemble,
                 toA_contrib = r[:, 0] * torch.log(1. + exp_pos_q)
                 toB_contrib = r[:, 1] * torch.log(1. + exp_neg_q)
                 loss = torch.sum((toA_contrib + toB_contrib) / torch.sum(r))
-                print("Evaluated loss:", loss.item())
 
             # Compute the smoothness penalty
             if loss_smoothening_weight:
@@ -1410,15 +1409,9 @@ def fit(network, pathensemble,
                   f'scale {scales[-1]:.3f}, '
                   f'range ({Range[0]:.3f}, {Range[1]:.3f})')
     
-<<<<<<< HEAD
-    if verbose:
-        counter.close()
-
-=======
     # close counter
     counter.close()
     
->>>>>>> main
     # error handling: result not as expected
     if Range[0] > 0 or Range[1] < 0 or scales[-1] < 1:
         print(f'!!! bad range ({Range[0]:.3f}, {Range[1]:.3f}), '
