@@ -211,12 +211,12 @@ def test_retinal():
         print('MANAGER FAILED')
     
     t0 = time.time()
-    aimmd.Worker(params, 'run1').simulate('worker0.run', noappend=True, walltime=10)
+    aimmd.Worker(params, 'run1').simulate('worker0', noappend=True, walltime=10)
     if time.time() - t0 < 10:
         print('FREE A FAILED')
 
     t0 = time.time()
-    aimmd.Worker(params, 'run1').simulate('worker1.run', noappend=True, walltime=10)
+    aimmd.Worker(params, 'run1').simulate('worker1', noappend=True, walltime=10)
     if time.time() - t0 < 10:
         print('FREE B FAILED')
 
