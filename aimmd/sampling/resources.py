@@ -102,8 +102,8 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
             resources_per_task == num_resources_available):
             # this happens when running srun on HPC clusters
             # or when requiring "all" resources to be used        
-            start = None
-            stop = None
+            start = 0
+            stop = num_resources_available
         else:
             # this happens when running on a node/workstation
             # with a few resources per task
@@ -116,7 +116,8 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
                   f"  available {resources_name}s: {num_resources_available}"
                   f"\n  {resources_name}s per task: {resources_per_task}")
         
-        return resources_available[start:stop]
+        return [resources_available[i % num_resources_avaialble]
+                for i in range(start, stop)]
     
     # CPU binding
     if cpus_per_task != 'skip':
@@ -134,7 +135,6 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
         except Exception as exception:
             print(f"[Warning] Could not set CPU affinity "
                   f"with {cpus}: {exception}")
-            cpus = "all"
     else:
         cpus = ",".join([str(id) for id in cpus_available])
     
