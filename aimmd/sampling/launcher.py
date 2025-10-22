@@ -34,7 +34,83 @@ def _run_task(params_file, directory,
     return 0
 
 
+class Processes:
+    """Used by `Launcher` to manage the processes spawned by the
+    `Launcher.run` method."""
+    
+    def __init__(self):
+        self.__list = []
+    
+    def __len__(self):
+        return len(self.__list)
+    
+    def __iter__(self):
+        return iter(self.__list)
+    
+    def __getitem__(self, key):
+        return self.__list[key]
+    
+    @property
+    def list(self):
+        return self.__list
+    
+    @property
+    def alive(self):
+        return ~self.closed
+    
+    @property
+    def closed(self):
+        result = np.repeat(False, len(self))
+        for i, process in enumerate(self):
+            if process._closed or not process.is_alive():
+                result[i] = True
+                if not process._closed:
+                    print(f'[Worker {process.pid}] terminated '
+                          f'with exit code {process.exitcode}')
+                    process.join()
+                    process.close()
+        return result
+    
+    def launch(self, *args):
+        process = ctx.Process(target=_run_task, args=args)
+        self.__list.append(process)
+        process.start()
+        print(f'[Worker {process.pid}] args: '
+              f'{" ".join([str(arg) for arg in args])}')
+    
+    def clean(self, timeout=20.):
+        
+        # graceful termination
+        t0 = time.time()
+        terminating = set()
+        while time.time() - t0 < timeout and np.any(self.alive):
+            for i in np.where(self.alive)[0]:
+                if i in terminating:
+                    continue
+                terminating.add(i)
+                try:
+                    os.kill(self[i].pid, signal.SIGINT)
+                except:
+                    pass
+        
+        # forced termination
+        for i in np.where(self.alive)[0]:
+            try:
+                self[i].kill()
+                self[i].join(timeout=1.)
+            except:
+                pass
+        
+        # final report
+        self.closed
+        
+        # pristine state
+        self.__list = []
+
+
 class Launcher:
+
+    processes = Processes()
     
     def __init__(self, params, directory,
                  termination_timeout=20.):
@@ -49,7 +125,6 @@ class Launcher:
             params = Params.load(params)
         self.params = params
         self.directory = directory
-        self.processes = Processes()  # in "run"
         self.termination_signal = None
         self.termination_timeout = termination_timeout
         
@@ -427,77 +502,3 @@ class Launcher:
             file.write(f'    echo "[Worker $i] No task assigned."\n')
             file.write(f'    ;;\n')
             file.write(f'  esac\n\'\n')
-
-
-class Processes:
-    """Used by `Launcher` to manage the processes spawned by the
-    `Launcher.run` method."""
-    
-    def __init__(self):
-        self.__list = []
-    
-    def __len__(self):
-        return len(self.__list)
-    
-    def __iter__(self):
-        return iter(self.__list)
-    
-    def __getitem__(self, key):
-        return self.__list[key]
-    
-    @property
-    def list(self):
-        return self.__list
-    
-    @property
-    def alive(self):
-        return ~self.closed
-    
-    @property
-    def closed(self):
-        result = np.repeat(False, len(self))
-        for i, process in enumerate(self):
-            if process._closed or not process.is_alive():
-                result[i] = True
-                if not process._closed:
-                    print(f'[Worker {process.pid}] terminated '
-                          f'with exit code {process.exitcode}')
-                    process.join()
-                    process.close()
-        return result
-    
-    def launch(self, *args):
-        process = ctx.Process(target=_run_task, args=args)
-        self.__list.append(process)
-        process.start()
-        print(f'[Worker {process.pid}] args: '
-              f'{" ".join([str(arg) for arg in args])}')
-    
-    def clean(self, timeout=20.):
-        
-        # graceful termination
-        t0 = time.time()
-        terminating = set()
-        while time.time() - t0 < timeout and np.any(self.alive):
-            for i in np.where(self.alive)[0]:
-                if i in terminating:
-                    continue
-                terminating.add(i)
-                try:
-                    os.kill(self[i].pid, signal.SIGINT)
-                except:
-                    pass
-        
-        # forced termination
-        for i in np.where(self.alive)[0]:
-            try:
-                self[i].kill()
-                self[i].join(timeout=1.)
-            except:
-                pass
-        
-        # final report
-        self.closed
-        
-        # pristine state
-        self.__list = []
