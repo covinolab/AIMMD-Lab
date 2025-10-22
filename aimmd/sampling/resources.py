@@ -62,14 +62,12 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
         gpus_per_task = str(gpus_per_task).lower()
     
     # check correctness
-    if (type(cpus_per_task) is str and
-        cpus_per_task not in ['all', 'skip']
-       ) or cpus_per_task <= 0:
+    if cpus_per_task not in ['all', 'skip'] and (
+        type(cpus_per_task) is int and cpus_per_task <= 0):
         raise TypeError(f'cpus_per_task must be either a positive '
                         f'integer or "all", "skip"')
-    if (type(gpus_per_task) is str and
-        gpus_per_task not in ['all', 'skip']
-       ) or gpus_per_task < 0:
+    if gpus_per_task not in ['all', 'skip'] and (
+        type(gpus_per_task) is int and gpus_per_task < 0):
         raise TypeError(f'gpus_per_task must be either 0, a positive '
                         f'integer, or "all", "skip"')
     
@@ -97,7 +95,7 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
             resources_per_task > num_resources_available):
             raise RuntimeError(
                 f"{num_resources_available} {resources_name}s available "
-                f"but {resources_per_task} requested per task.")
+                f"but {resources_per_task} requested for task.")
         
         # determine the actual resources allocated for the task
         if resources_per_task == 'all' or (
@@ -123,7 +121,7 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
     # CPU binding
     if cpus_per_task != 'skip':
         cpus = _determine_resources(cpus_per_task, cpus_available, 'CPU')
-        cpus_per_tasks = len(cpus)
+        cpus_per_task = len(cpus)
         
         # actual binding
         os.environ["OMP_NUM_THREADS"] = str(cpus_per_task)
@@ -143,7 +141,6 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
     # GPU binding
     if gpus_per_task != 'skip' and gpus_per_task:
         gpus = _determine_resources(gpus_per_task, gpus_available, 'GPU')
-        gpus_per_tasks = len(gpus)
         
         # GPU binding
         os.environ["CUDA_VISIBLE_DEVICES"] = gpus
