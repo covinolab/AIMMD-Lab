@@ -15,6 +15,10 @@ def get_available_cpus():
         return list(range(psutil.cpu_count(logical=False)))
 
 
+def get_num_cpus():
+    return len(get_available_cpus())
+
+
 def get_num_gpus():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # ignore *all* warnings in this block
