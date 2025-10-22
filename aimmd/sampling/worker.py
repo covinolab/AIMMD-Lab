@@ -151,4 +151,7 @@ class Worker:
         return self.run('simulate', run_file, log_file, noappend, walltime)
 
 if __name__ == '__main__':
-    Worker(*sys.argv[1:3], 0, None, None, sys.argv[3]).run(*sys.argv[4:])
+    Worker(*sys.argv[1:7]).run(*sys.argv[7:])
+    # 1: params, 2: directory, 3: localid, 4: cpus_per_task,
+    # 5: gpus_per_task, 6: termination_timeout
+    # 7+: worker run arguments
