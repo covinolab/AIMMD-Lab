@@ -62,9 +62,17 @@ class Worker:
         # counting doesn't start at zero, and we have doubling of some worker ids.
         # Instead, enforce that this is provided externally in the run script.
         self.localid = int(localid)
-        self.cpus_per_task = cpus_per_task
-        self.gpus_per_task = gpus_per_task
-
+        
+        # determine CPUs and GPUs per task
+        if cpus_per_task in ['None', 'none', '', None]:
+            self.cpus_per_task = None
+        else:
+            self.cpus_per_task = int(cpus_per_task)
+        if gpus_per_task in ['None', 'none', '', None]:
+            self.gpus_per_task = None
+        else:
+            self.gpus_per_task = int(gpus_per_task)
+        
         # register signal handlers (for all future tasks)
         signal.signal(signal.SIGTERM, self.terminate_handler)
         signal.signal(signal.SIGINT, self.terminate_handler)
