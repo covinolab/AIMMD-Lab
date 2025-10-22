@@ -339,11 +339,12 @@ class Launcher:
             file.write(f'  case $SLURM_PROCID in\n')
             def _case(i, description, noappend=False):
                 file.write(f'\n  {i})  # worker {i} ({description})\n')
-                file.write(f'    "${{PYTHON}}" "${{WORKER}}" "${{PARAMS}}" '
-                           f'"{self.directory}" {i % ntasks_per_node} '
-                           f'None {gpus_per_task} {termination_timeout} '
-                           f'simulate worker{i} worker{i}.log'
-                           f'{" noappend" if noappend else ""} &\n')
+                file.write(
+                    f'    "${{PYTHON}}" "${{WORKER}}" "${{PARAMS}}" '
+                    f'"{self.directory}" {i % ntasks_per_node} '
+                    f'{cpus_per_task} {gpus_per_task} {termination_timeout} '
+                    f'simulate worker{i} worker{i}.log'
+                    f'{" noappend" if noappend else ""} &\n')
                 file.write(f'    pid=$!\n')
                 file.write(f'    stop_condition $pid\n')
                 file.write(f'  ;;\n')
@@ -381,18 +382,20 @@ class Launcher:
             file.write(f'    pids=()\n')
             
             # trainer
-            file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" {(i + 1) % ntasks_per_node} '
-                       f'None {gpus_per_task} {termination_timeout} '
-                       f'train trainer.log &\n')
+            file.write(
+                '    "${PYTHON}" "${WORKER}" "${PARAMS}" '
+                f'"{self.directory}" {(i + 1) % ntasks_per_node} '
+                f'{cpus_per_task} {gpus_per_task} {termination_timeout} '
+                f'train trainer.log &\n')
             file.write(f'    pids+=($!)\n')
             
             # manager
-            file.write('    "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                       f'"{self.directory}" {(i + 1) % ntasks_per_node} '
-                       f'None {gpus_per_task} {termination_timeout} '
-                       f'manage {n} {nA} {nB} {eA} {eB} '
-                       f'manager.log {nsteps} {nframes} &\n')
+            file.write(
+                '    "${PYTHON}" "${WORKER}" "${PARAMS}" '
+                f'"{self.directory}" {(i + 1) % ntasks_per_node} '
+                f'{cpus_per_task} {gpus_per_task} {termination_timeout} '
+                f'manage {n} {nA} {nB} {eA} {eB} '
+                f'manager.log {nsteps} {nframes} &\n')
             file.write(f'    pids+=($!)\n')
             
             # monitor
