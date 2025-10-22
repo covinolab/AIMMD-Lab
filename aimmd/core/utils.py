@@ -1215,7 +1215,7 @@ def fit(network, pathensemble,
         r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
 
     
-    print(f'Reseting the network parameters ({now()})\n')
+    print(f'Resetting the network parameters ({now()})\n')
     network.reset_parameters()
     
     losses = []
