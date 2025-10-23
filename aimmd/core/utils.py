@@ -187,6 +187,10 @@ class class_or_instancemethod(classmethod):
         return descr_get(instance, type_)
 
 
+def placeholder_values_function(descriptors):
+    return np.zeros(len(descriptors))
+
+
 class PlaceholderNetwork(torch.nn.Module):
     """Just identity. Loaded by params by default."""
     
@@ -1794,7 +1798,7 @@ def rescale_committor():
 
 
 def load_initial_paths(directory, topology, states_function, descriptors_function,
-                       values_function=lambda descriptors:np.zeros(len(descriptors)),
+                       values_function=placeholder_values_function,
                        verbose=True):
     fnames = sorted([fname for fname in os.listdir(directory)
                      if '.xtc' == fname[-4:] or '.trr' == fname[-4:]])
@@ -1824,7 +1828,7 @@ def update_shooting_chain(
     topology,  # relative to the destination
     states_function,  # function that gives the states
     descriptors_function,  # function that gives the descriptors
-    values_function=lambda descriptors:np.zeros(len(descriptors)),
+    values_function=placeholder_values_function,
         # function that gives the values
     load_h5=False,  # if load from saved h5 file (or backup)
     add_missing_paths=True):
@@ -2057,7 +2061,7 @@ def update_equilibrium_simulations(
     topology = params.topology
     states_function = params.states_function
     descriptors_function = params.descriptors_function
-    values_function = lambda descriptors: np.zeros(len(descriptors))
+    values_function = placeholder_values_function
     trajectory_extension = params.trajectory_extension
     max_excursion_length = params.max_excursion_length
     extra_extend_frames = params.extra_extend_frames
@@ -2399,7 +2403,7 @@ def update_pathensemble(
     topology='run.gro',
     states_function=None,
     descriptors_function=None,
-    values_function=lambda descriptors: np.zeros(len(descriptors)),
+    values_function=placeholder_values_function,
     trajectory_extension='.xtc',
     add_missing_paths=True,
     add_missing_frames=False,
@@ -2824,8 +2828,6 @@ def initialize_shooting_simulation(
     shooting_chains=None, equilibrium=PathEnsemblesCollection()):
     # report info
     i = len(chain)
-    descriptors_function = pool.descriptors_function
-    values_function = pool.values_function
     old_fname = f'path{i:06g} -> ' if i else ''
     new_fname = f'path{i+1:06g}'
     relpath = os.path.relpath(chain.directory, directory)
@@ -2836,6 +2838,8 @@ def initialize_shooting_simulation(
     network = params.network
     topology = params.topology
     lorentzian = params.lorentzian
+    descriptors_function = params.descriptors_function
+    values_function = params.values_function
     #selection_pool_size = params.selection_pool_size
     adjust_selection_in_marginal_bins = \
         params.adjust_selection_in_marginal_bins
@@ -2905,7 +2909,7 @@ def initialize_shooting_simulation(
         print(f'    {_fname}')
     
     # update values & display preliminary statistics
-    pool.update_values()
+    pool.update_values(values_function=values_function)
     values = pool.values(internal=True)
     states = pool.states(internal=True)
     print(f'*** current pool shooting interfaces '
