@@ -716,8 +716,10 @@ Manager and trainer share an extra task together."""
                 raise FileNotFoundError(
                     f'Parameter file {filename} not found.')
             os.chdir(path.parent)
-        else:
+        if not filename or len(args) + len(kwargs):
             path = Path(".").resolve()
+            # filename is not enough to reconstruct parameters,
+            # so do not include it here
         
         sys.path.insert(0, '')  # allows to see modules in path.parent
         
