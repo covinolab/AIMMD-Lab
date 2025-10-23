@@ -9,6 +9,7 @@ dependencies:
   - python
   - pip
 
+  - dill
   - tqdm
   - numpy
   - scipy
