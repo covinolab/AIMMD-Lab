@@ -291,7 +291,9 @@ def manage(self, n, nA, nB, eA=0, eB=0,
             
             # run acceptance/rejection to determine weight
             if do_tps:
-                run_acceptance_rejection_on_latest_path(chains[k], network)
+                # load params at the time of SP selection
+                bins, densities = load_network_and_projections(network, chain.directory)
+                run_acceptance_rejection_on_latest_path(chains[k], values_function)
             
             # update pool
             pool_index = np.load(f'{chains[k].directory}/pool_index.npy')
