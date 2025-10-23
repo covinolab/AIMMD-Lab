@@ -122,6 +122,14 @@ class Worker:
         self.task = task
         
         try:
+            # always go params' directory
+            cwd = os.getcwd()
+            directory = self.directory
+            self.directory = os.path.relpath(
+                self.directory, f'{self.params.path.parent}')
+            # directory relative to params' folder
+            os.chdir(self.params.path.parent)
+            
             # task execution
             if task == 'train':
                 return train(self, *args)
@@ -134,6 +142,8 @@ class Worker:
             raise TypeError(f'Task {task} not implented for AIMMD worker')
         
         finally:
+            os.chdir(cwd)  # back to main folder
+            self.directory = directory  # directory relative to main folder
             self.terminate_operations()
     
     def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
