@@ -127,9 +127,8 @@ def manage(self, n, nA, nB, eA=0, eB=0,
         print(f'\n    shots{chain_id}')
         chain = chains[chain_id]
         pool = update_selection_pool(
-            PathEnsemble(), chain, selection_pool_size,
-            None, initial_paths, at_least_one_transition_in_pool,
-            values_function, True)
+            PathEnsemble(), chain, selection_pool_size, None,
+            initial_paths, at_least_one_transition_in_pool, load_h5=True)
         
         # attempt recovery from unpleasant situation (not supported with TPS)
         if len(chain) and chain.weights[-1] and \
@@ -161,7 +160,7 @@ def manage(self, n, nA, nB, eA=0, eB=0,
     if len(extra_equilibriumA):
         print(f'\nLoading extra free simulations around A ({now()})')
         equilibriumA += update_pathensemble(directory, topology,
-            states_function, descriptors_function, values_function,
+            states_function, descriptors_function,
             add_missing_paths=False, add_missing_frames=False,
             shooting_chains=[],
             equilibriumA=extra_equilibriumA, equilibriumB=[],
@@ -170,7 +169,7 @@ def manage(self, n, nA, nB, eA=0, eB=0,
     if len(extra_equilibriumB):
         print(f'\nLoading extra free simulations around B ({now()})')
         equilibriumB += update_pathensemble(directory, topology,
-            states_function, descriptors_function, values_function,
+            states_function, descriptors_function,
             add_missing_paths=False, add_missing_frames=False,
             shooting_chains=[],
             equilibriumA=[], equilibriumB=extra_equilibriumB,
@@ -230,7 +229,7 @@ def manage(self, n, nA, nB, eA=0, eB=0,
         if len(extra_equilibriumA):
             #print(f'\nLoading extra free simulations around A ({now()})')
             equilibriumA += update_pathensemble(directory, topology,
-                states_function, descriptors_function, values_function,
+                states_function, descriptors_function,
                 add_missing_paths=False, add_missing_frames=False,
                 shooting_chains=[],
                 equilibriumA=extra_equilibriumA, equilibriumB=[],
@@ -239,7 +238,7 @@ def manage(self, n, nA, nB, eA=0, eB=0,
         if len(extra_equilibriumB):
             #print(f'\nLoading extra free simulations around B ({now()})')
             equilibriumB += update_pathensemble(directory, topology,
-                states_function, descriptors_function, values_function,
+                states_function, descriptors_function,
                 add_missing_paths=False, add_missing_frames=False,
                 shooting_chains=[],
                 equilibriumA=[], equilibriumB=extra_equilibriumB,
