@@ -1961,6 +1961,7 @@ def update_equilibrium_trajectory(
     add_missing_frames=True,
     verbose=True):  # in trajectory file
     """
+    Called only by manager, not by trainer.
     Also returns added_nframes
     """
     
@@ -2048,12 +2049,15 @@ def update_equilibrium_simulations(
     save_h5=False,
     simulate=False,
     verbose=False):
+    """
+    Used by manager only, so no need to update values here.
+    """
     
     # retrieve params
     topology = params.topology
     states_function = params.states_function
     descriptors_function = params.descriptors_function
-    values_function = params.values_function
+    values_function = lambda descriptors: np.zeros(len(descriptors))
     trajectory_extension = params.trajectory_extension
     max_excursion_length = params.max_excursion_length
     extra_extend_frames = params.extra_extend_frames
