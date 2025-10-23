@@ -112,8 +112,15 @@ def manage(self, n, nA, nB, eA=0, eB=0,
         chain.save(f'{chain.directory}/chain.h5', directory='.')
         chains.append(chain)
         print(f'    {chain}')
-        backwards.append(chain[:0])
-        forwards.append(chain[:0])
+        backward = chain[:0]
+        forward = chain[:0]
+        # reset values function to speed-up computation
+        backward.values_function = lambda descriptors: np.repeat(
+          0., len(descriptors))
+        backward.values_function = lambda descriptors: np.repeat(
+          0., len(descriptors))
+        backwards.append(backward)
+        forwards.append(forward)
     
     # available transitions
     pathensemble = PathEnsemblesCollection(*chains)
