@@ -2553,11 +2553,8 @@ def scorporate_pathensembles(pathensemble):
     return shots, equilibriumA, equilibriumB
 
 
-def run_acceptance_rejection_on_latest_path(chain, network):
+def run_acceptance_rejection_on_latest_path(chain, values_function):
     """Executed when doing TPS."""
-    
-    # load params at the time of SP selection
-    bins, densities = load_network_and_projections(network, chain.directory)
     
     def compute_sp_bias(values, sp_value, bins, densities):
         densities = np.append(densities, [inf])
@@ -2601,7 +2598,7 @@ def run_acceptance_rejection_on_latest_path(chain, network):
     keepers = [leading, -1]
     
     # get values
-    chain.update_values(network, key=keepers)
+    chain.update_values(values_function=values_function, key=keepers)
     leading_values, trial_values = chain.values(keepers, internal=True)
     leading_sp_value, trial_sp_value = chain.shooting_values[keepers]
     
