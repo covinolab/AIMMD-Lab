@@ -430,8 +430,8 @@ Manager and trainer share an extra task together."""
                     value.__source__ = getsource(value)
                     if (not value.__source__.startswith('def ')
                         and 'lambda' in value.__source__):
-                        value.__source__ = f'{name} = ' + 'lambda'.join(
-                            value.__source__.split('lambda')[1:])                        
+                        value.__source__ = f'{name} = lambda ' + (
+                          'lambda'.join(value.__source__.split('lambda')[1:]))                      
                 else:
                     value.__source__ = (f'from {value.__module__} '
                                         f'import {name}\n')
@@ -489,7 +489,7 @@ Manager and trainer share an extra task together."""
             # by setting attribute, you loose link to path
             super().__setattr__('path', Path('.').resolve())
         
-        # assign (path is last in "load" so you restore it
+        # assign (path is last in "load" so you will restore it)
         super().__setattr__(name, value)
         
         # special checks (after assignment)
