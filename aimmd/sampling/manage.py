@@ -292,7 +292,7 @@ def manage(self, n, nA, nB, eA=0, eB=0,
             # run acceptance/rejection to determine weight
             if do_tps:
                 # load params at the time of SP selection
-                bins, densities = load_network_and_projections(network, chain.directory)
+                bins, densities = load_network_and_projections(network, chains[k].directory)
                 run_acceptance_rejection_on_latest_path(chains[k], values_function)
             
             # update pool
