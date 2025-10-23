@@ -96,7 +96,7 @@ def manage(self, n, nA, nB, eA=0, eB=0,
     
     print(f'\nLoading initial path(s) ({now()})')
     initial_paths = load_initial_paths(f'{directory}/initial_paths', topology,
-        states_function, descriptors_function, values_function)
+        states_function, descriptors_function)
     print(f'    {initial_paths}')
     assert initial_paths.nframes
     
@@ -105,22 +105,14 @@ def manage(self, n, nA, nB, eA=0, eB=0,
     backwards = []  # shooting simulation segments
     forwards = []
     for chain_id in range(n):
-        chain = PathEnsemble()
-        update_shooting_chain(chain, chain_id,
-            directory, topology, states_function, descriptors_function,
-            values_function, load_h5=True)
+        chain = update_shooting_chain(
+            PathEnsemble(), chain_id, directory, topology,
+            states_function, descriptors_function, load_h5=True)[0]
         chain.save(f'{chain.directory}/chain.h5', directory='.')
         chains.append(chain)
         print(f'    {chain}')
-        backward = chain[:0]
-        forward = chain[:0]
-        # reset values function to speed-up computation
-        backward.values_function = lambda descriptors: np.repeat(
-          0., len(descriptors))
-        forward.values_function = lambda descriptors: np.repeat(
-          0., len(descriptors))
-        backwards.append(backward)
-        forwards.append(forward)
+        backwards.append(chain[:0])
+        forwards.append(chain[:0])
     
     # available transitions
     pathensemble = PathEnsemblesCollection(*chains)
@@ -136,7 +128,8 @@ def manage(self, n, nA, nB, eA=0, eB=0,
         chain = chains[chain_id]
         pool = update_selection_pool(
             PathEnsemble(), chain, selection_pool_size,
-            None, initial_paths, at_least_one_transition_in_pool, True)
+            None, initial_paths, at_least_one_transition_in_pool,
+            values_function, True)
         
         # attempt recovery from unpleasant situation (not supported with TPS)
         if len(chain) and chain.weights[-1] and \
