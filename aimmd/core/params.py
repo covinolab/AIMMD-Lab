@@ -14,8 +14,11 @@ from .utils import (class_or_instancemethod, fit,
 from typing import List, Callable
 from inspect import getsource
 from pathlib import Path, PosixPath
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, MISSING
 from MDAnalysis.coordinates.memory import MemoryReader
+
+# for correct printing
+fit.__source__ = 'fit = aimmd.core.utils.fit'
 
 # find executables
 PYTHON = sys.executable
@@ -29,6 +32,34 @@ if GMX is None:
 # all data in a class
 @dataclass
 class Params:
+    """Collects all parameters file for an AIMMD run and analysis.
+    
+    All fields have a detailed descriptions, most of them come with a default.
+    However, "states_function", "descriptors_function", "values_function", and
+    "initial_paths" must be specified during initialization.
+    
+    Usage
+    -----
+    >>> import aimmd
+    >>>
+    >>> # minimal initalization without parameters file
+    >>> params = aimmd.Params(states_function=states_function,
+                              descriptors_function=descriptors_function,
+                              values_function=values_function,
+                              initial_paths=initial_paths)
+    >>> with open('params.py', 'w') as file:
+    ...    print(params)  # params.py created on-the-spot
+    ...    file.write(f'{params}')
+    >>>
+    >>> # initialization with parameters file "params.py"...
+    >>> # (this allows for more complex functions definitions)
+    >>> params = aimmd.Params("params.py")
+    >>> params = aimmd.Params.load("params.py")
+    >>> # the two methods above are equivalent
+    >>>
+    >>> # initialization where some "params.py" parameters are oversubscribed
+    >>> params = aimmd.Params("params.py", initial_paths=initial_paths)
+    """
     
     # user-defined functions for PathEnsemble objects
     
@@ -358,6 +389,139 @@ Manager and trainer share an extra task together."""
 """Will perform engine operations relative to `path`'s directory."""
                  })
     
+    def __init__(self, *args, **kwargs):
+        """
+        kwargs: parameters field -> value.
+        If len(args) > 0: first element must be a filename.
+        Then load parameters in filename.
+        Parameters not in filename and kwargs are given the default value.
+        
+        If filename in kwargs, then treat it as a params file.
+        
+        Returns
+        -------
+        aimmd.params.Params
+        """
+        
+        # determine whether loading from file
+        try:
+            filename = Path(args[0]).resolve()
+            args = args[1:]
+        except (IndexError, TypeError, FileNotFoundError):
+            filename = None
+        
+        # create separate instance
+        instance = Params.load(filename, *args, **kwargs)
+        
+        # assign instance's fields to self
+        for name in self.__dataclass_fields__:
+            value = getattr(instance, name)
+            super().__setattr__(name, value)
+    
+    def __setattr__(self, name, value):
+        """Enforce data types when reassigning params."""
+        
+        # check that name is present in fields
+        if name in self.__dataclass_fields__ and name not in [
+            'initial_paths', 'engine', 'network']:
+            expected_type = self.__dataclass_fields__[name].type
+            
+            # function
+            if expected_type is Callable:
+                if not callable(value):
+                    raise TypeError(f'{name} must be callable, '
+                                    f'got {type(value).__name__}')
+                try:  # assign source
+                    value.__source__ = getsource(value)
+                except Exception:
+                    value.__source__ = (f"def {name}(*args):\n"
+                                        f"# source unavailable\n    pass")
+            
+            # list of strings
+            elif expected_type is List[str]:
+                if type(value) is not list:
+                    raise TypeError(f'{name} must be list of strings, '
+                                    f'got {type(value).__name__}')
+                elif np.any([type(element) is not str for element in value]):
+                    raise TypeError(f'{name} must be list of strings, '
+                                    f'at least one of its elements is not')
+            
+            # all the rest
+            elif expected_type != type(value):
+                raise TypeError(f'{name} must be {expected_type}, '
+                                f'got {type(value).__name__}')
+        
+        # special check: initial paths (before assignment)
+        if name == 'initial_paths':
+            if not len(value):
+                raise TypeError(f'Need at least one initial path, please set '
+                                f'initial_paths with a list of strings or '
+                                f'MDAnalysis trajectories')
+        
+        # special check: engine (before assignment)
+        if name == 'engine':
+            value = value.lower()
+            if value not in ['gromacs', 'toy']:
+                raise TypeError(f'{name} must be either "gromacs" or "toy", '
+                                f'got {value}')
+        
+        # special check: network
+        if name == 'network':
+            for attribute in ['forward', 'state_dict', 'load_state_dict']:
+                if not hasattr(value, attribute) or not callable(
+                    getattr(value, attribute)):
+                    raise TypeError(f'{name} must have method "{attribute}"')
+        
+        # special check: path
+        if name == 'path':
+            if not os.path.exists(value):
+                raise TypeError(f'Source path {value} does not exist.')
+        
+        # assign
+        super().__setattr__(name, value)
+        
+        # special check: descriptors_function (after assignment)
+        if name == 'descriptors_function' and hasattr(self, 'initial_paths'):
+            self._check_descriptors_function()
+        
+        # special check: values_function (after assignment)
+        if name == 'values_function' and hasattr(self, 'initial_paths'):
+            self._check_values_function()
+
+    def __str__(self):
+        """Verbose string representation of params with descriptions and
+        function bodies."""
+        
+        lines = []
+        
+        for name in self.__dataclass_fields__:
+            field = self.__dataclass_fields__[name]
+            value = getattr(self, name)
+            
+            if not callable(value) or name == 'network':
+                if name == 'network':
+                    network_class = value.__class__
+                    if network_class.__module__ != '__main__':
+                        lines.append(f'import {network_class.__module__}.'
+                                     f'{network_class.__name__}')
+                        lines.append(f'{name} = {network_class.__module__}.'
+                                     f'{network_class.__name__}()')
+                    else:
+                        lines.append(f'{name} = {network_class.__name__}()')
+                elif name == 'initial_paths':
+                    lines.append(f'{name} = ['
+                        f'{", ".join([path.filename for path in value])}]')
+                elif name == 'path':
+                    lines.append(f'{name} = {value}')
+                else:
+                    lines.append(f'{name} = {repr(value)}')
+                if desc := field.metadata.get("description", ""):
+                    lines.append(f"\"\"\"{desc}\"\"\"\n")
+            else:  # if it's a function, just show its content
+                lines.append(value.__source__)
+        
+        return "\n".join(lines)
+    
     # engine-dependent mdrun command
     @property
     def mdrun(self):
@@ -533,174 +697,118 @@ Manager and trainer share an extra task together."""
             raise exception
         
         finally:
-            os.chdir(cwd)   
-    
-    def __post_init__(self):
-        """Check provided functions. Replace initial_path strings with
-        MDAnalysis trajectories. Ensure initial paths are transitions.
-        Return processed initial paths."""
-        
-        self._check_initial_paths_and_states_function()
-        self._check_descriptors_function()
-        self._check_values_function()
-        setattr(self, 'path', Path('.').resolve())  # will set to file later
-    
-    def __str__(self):
-        """Verbose string representation of params with descriptions and
-        function bodies."""
-        
-        lines = []
-        
-        for f in fields(self):
-            name = f.name
-            value = getattr(self, name)
-            
-            if not callable(value) or name == 'network':
-                if name == 'network':
-                    network_class = value.__class__
-                    if network_class.__module__ != '__main__':
-                        lines.append(f'import {network_class.__module__}.'
-                                     f'{network_class.__name__}')
-                        lines.append(f'{name} = {network_class.__module__}.'
-                                     f'{network_class.__name__}()')
-                    else:
-                        lines.append(f'{name} = {network_class.__name__}()')
-                elif name == 'initial_paths':
-                    lines.append(f'{name} = ['
-                        f'{", ".join([path.filename for path in value])}]')
-                elif name == 'path':
-                    lines.append(f'{name} = {value}')
-                else:
-                    lines.append(f'{name} = {repr(value)}')
-                if desc := f.metadata.get("description", ""):
-                    lines.append(f"\"\"\"{desc}\"\"\"\n")
-            else:  # if it's a function, just show its content
-                lines.append(value.__source__)
-        
-        return "\n".join(lines)
-    
-    def __setattr__(self, name, value):
-        """Enforce data types when reassigning params."""
-        
-        # get type hints dynamically from dataclass field definitions
-        hints = {f.name: f.type for f in fields(self)}
-        
-        # check
-        if name in hints and name not in [
-            'initial_paths', 'engine', 'network']:
-            expected_type = hints[name]
-            
-            # function
-            if expected_type is Callable:
-                if not callable(value):
-                    raise TypeError(f'{name} must be callable, '
-                                    f'got {type(value).__name__}')
-                try:  # assign source
-                    value.__source__ = getsource(value)
-                except Exception:
-                    value.__source__ = (f"def {name}(*args):\n"
-                                        f"# source unavailable\n    pass")
-            
-            # list of strings
-            elif expected_type is List[str]:
-                if type(value) is not list:
-                    raise TypeError(f'{name} must be list of strings, '
-                                    f'got {type(value).__name__}')
-                elif np.any([type(element) is not str for element in value]):
-                    raise TypeError(f'{name} must be list of strings, '
-                                    f'at least one of its elements is not')
-            
-            # all the rest
-            elif expected_type != type(value):
-                raise TypeError(f'{name} must be {expected_type}, '
-                                f'got {type(value).__name__}')
-        
-        # special check: initial paths
-        if name == 'initial_paths':
-            if not len(value):
-                raise TypeError(f'Need at least one initial path, please set '
-                                f'initial_paths with a list of strings or '
-                                f'MDAnalysis trajectories')
-                self._check_initial_paths_and_states_function()
-        
-        # special check: engine (before assignment)
-        if name == 'engine':
-            value = value.lower()
-            if value not in ['gromacs', 'toy']:
-                raise TypeError(f'{name} must be either "gromacs" or "toy", '
-                                f'got {value}')
-        
-        # special check: network
-        if name == 'network':
-            for attribute in ['forward', 'state_dict', 'load_state_dict']:
-                if not hasattr(value, attribute) or not callable(
-                    getattr(value, attribute)):
-                    raise TypeError(f'{name} must have method "{attribute}"')
-        
-        # special check: path
-        if name == 'path':
-            if not os.path.exists(value):
-                raise TypeError(f'Source path {value} does not exist.')
-        
-        # assign
-        super().__setattr__(name, value)
-        
-        # special check: descriptors_function (after assignment)
-        if name == 'descriptors_function' and hasattr(self, 'initial_paths'):
-            self._check_descriptors_function()
-        
-        # special check: values_function (after assignment)
-        if name == 'values_function' and hasattr(self, 'initial_paths'):
-            self._check_values_function()
+            os.chdir(cwd)
     
     @class_or_instancemethod
-    def load(self_or_cls, filename='params.py'):
+    def load(self_or_cls, filename='params.py', *args, **kwargs):
         """
         Load parameters and functions from a Python file and update Params
-        instance. Ensures that all helpers/constants are visible to the
-        functions and network methods without creating a module.
-        """
-        path = Path(filename).resolve()
-        if not path.exists():
-            raise FileNotFoundError(f'Parameter file {filename} not found.')
+        instance *in place*. Load additional `kwargs` with higher priority.
         
+        filename: str or None
+            if None, just run normal init
+        """
         cwd = os.getcwd()
-        os.chdir(path.parent)
+        
+        if filename:
+            path = Path(filename).resolve()
+            if not path.exists():
+                raise FileNotFoundError(
+                    f'Parameter file {filename} not found.')
+            os.chdir(path.parent)
+        else:
+            path = Path(".").resolve()
+        
         sys.path.insert(0, '')  # allows to see modules in path.parent
         
         try:
-            # execute the file
-            source = path.read_text()
-            exec_namespace = {}
-            exec(compile(source, str(path), 'exec'), exec_namespace)
-            
-            # extract fields
-            kwargs = {}
-            for name in exec_namespace:
-                if name in {field.name for field in fields(Params)}:
-                    kwargs[name] = exec_namespace[name]
-            
-            # create or update instance
+            # create or select instance
             if isinstance(self_or_cls, type):
-                instance = self_or_cls(**kwargs)
+                instance = super().__new__(self_or_cls)
             else:
                 instance = self_or_cls
-                for name, value in kwargs.items():
-                    if name != 'initial_paths':
-                        setattr(instance, name, value)
             
-            # handle initial_paths last
-            if 'initial_paths' in kwargs:
-                setattr(instance, 'initial_paths', kwargs['initial_paths'])
+            # fields with already present values or their default
+            fields = {name:
+                      getattr(instance, name)
+                          if hasattr(instance, name) else
+                      self_or_cls.__dataclass_fields__[name].default
+                          if self_or_cls.__dataclass_fields__[name].default
+                          is not MISSING else
+                      self_or_cls.__dataclass_fields__[name].default_factory()
+                          if self_or_cls.__dataclass_fields__[name
+                          ].default_factory is not MISSING else
+                      MISSING for name in self_or_cls.__dataclass_fields__}
+            
+            # defaults
+            new_states_function = False
+            new_descriptors_function = False
+            new_values_function = False
+            new_initial_paths = False
+            
+            # update fields with args (in the right order)            
+            for value, name in zip(args, self_or_cls.__dataclass_fields__):
+                if name in kwargs:
+                    raise TypeError(f'multiple assignements of {name} '
+                                    f'when calling Params.load; either '
+                                    f'remove the positional argument or '
+                                    f'the keyword argument')
+                fields[name] = value
+            
+            # update fields with kwargs
+            for name in kwargs:
+                if name in fields:
+                    fields[name] = kwargs[name]
+                if name == 'states_function':
+                    new_states_function = True
+                if name == 'descriptors_function':
+                    new_descriptors_function = True
+                if name == 'values_function':
+                    new_values_function = True
+                if name == 'initial_paths':
+                    new_initial_paths = True
+            
+            # execute the file and extract fields
+            if filename:
+                source = path.read_text()
+                exec_namespace = {}
+                exec(compile(source, str(path), 'exec'), exec_namespace)
+                for name in exec_namespace:
+                    if name in fields and name not in kwargs: 
+                        # only if not assigned already
+                        fields[name] = exec_namespace[name]
+                        if name == 'states_function':
+                            new_states_function = True
+                        if name == 'descriptors_function':
+                            new_descriptors_function = True
+                        if name == 'values_function':
+                            new_values_function = True
+                        if name == 'initial_paths':
+                            new_initial_paths = True
+            
+            # assign fields; raise error for missing fields
+            for name in list(fields):
+                if fields[name] is MISSING:
+                    raise TypeError(f'{name} not provided for Params')
+                instance.__setattr__(name, fields[name])
+            
+            # post-init operations and return
+            if new_states_function or new_initial_paths:
                 instance._check_initial_paths_and_states_function()
-            
-            # assign path and return
-            setattr(instance, 'path', path)
+            if new_descriptors_function:
+                instance._check_descriptors_function()
+            if new_values_function:
+                instance._check_values_function()
+            instance.__setattr__('path', path)
             return instance
         
         finally:
             os.chdir(cwd)
             sys.path.pop(0)
+    
+    def update(self, *args, **kwargs):
+        """Like load but without filename."""
+        return self.load(None, *args, **kwargs)
     
     def crop_initial_paths(self):
         """Leave only the transition parts in `params.inital_paths`, to
