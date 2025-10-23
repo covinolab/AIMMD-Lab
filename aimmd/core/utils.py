@@ -1793,9 +1793,9 @@ def rescale_committor():
     """ADD"""
 
 
-def load_initial_paths(directory, topology, states_function,
-                      descriptors_function, values_function,
-                      verbose=True):
+def load_initial_paths(directory, topology, states_function, descriptors_function,
+                       values_function=lambda descriptors:np.zeros(len(descriptors)),
+                       verbose=True):
     fnames = sorted([fname for fname in os.listdir(directory)
                      if '.xtc' == fname[-4:] or '.trr' == fname[-4:]])
     initial_paths = PathEnsemble()
@@ -1824,7 +1824,8 @@ def update_shooting_chain(
     topology,  # relative to the destination
     states_function,  # function that gives the states
     descriptors_function,  # function that gives the descriptors
-    values_function,  # function that gives the values
+    values_function=lambda descriptors:np.zeros(len(descriptors)),
+        # function that gives the values
     load_h5=False,  # if load from saved h5 file (or backup)
     add_missing_paths=True):
     """
@@ -1873,7 +1874,7 @@ def update_shooting_chain(
                       f'to chain in {directory}')
                 added_nframes += nframes
     
-    return added_nframes
+    return chain, added_nframes
 
 
 def update_selection_pool(
@@ -1883,6 +1884,7 @@ def update_selection_pool(
     pool_index=None,  # index of pool to be removed
     initial_paths=PathEnsemble(),  # will there be?
     at_least_one_transition=False,  # in pool
+    values_function=None,  # if present: reassign
     load_h5=False):
     """
     Will inherit all pathensemble attributes from chain.
@@ -1893,7 +1895,8 @@ def update_selection_pool(
     pool.topology = chain.topology
     pool.states_function = chain.states_function
     pool.descriptors_function = chain.descriptors_function
-    pool.values_function = chain.values_function
+    if values_function:
+        pool.values_function = values_function
     
     def update_initial_path_directory(initial_paths):
         _initial_paths = initial_paths.copy()
@@ -2392,7 +2395,7 @@ def update_pathensemble(
     topology='run.gro',
     states_function=None,
     descriptors_function=None,
-    values_function=lambda descriptors: np.repeat(0., len(descriptors)),
+    values_function=lambda descriptors: np.zeros(len(descriptors)),
     trajectory_extension='.xtc',
     add_missing_paths=True,
     add_missing_frames=False,
@@ -2479,9 +2482,8 @@ def update_pathensemble(
     for expression in shooting_chains:
         n = 0
         while os.path.exists(f'{directory}/{expression}{n}'):
-            chain = PathEnsemble()
-            nframes = update_shooting_chain(
-                chain, f'{expression}{n}', directory, topology,
+            chain, nframes = update_shooting_chain(
+                PathEnsemble(), f'{expression}{n}', directory, topology,
                 states_function, descriptors_function, values_function,
                 add_missing_paths=add_missing_paths, load_h5=True)
             chains.append(chain)
@@ -2818,8 +2820,8 @@ def initialize_shooting_simulation(
     shooting_chains=None, equilibrium=PathEnsemblesCollection()):
     # report info
     i = len(chain)
-    descriptors_function = chain.descriptors_function
-    values_function = chain.values_function
+    descriptors_function = pool.descriptors_function
+    values_function = pool.values_function
     old_fname = f'path{i:06g} -> ' if i else ''
     new_fname = f'path{i+1:06g}'
     relpath = os.path.relpath(chain.directory, directory)
