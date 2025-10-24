@@ -436,12 +436,19 @@ Manager and trainer share an extra task together."""
                     value.__source__ = (f'from {value.__module__} '
                                         f'import {name}\n')
             
-            # initial paths
+            # initial paths (converted in real-time)
             elif name == 'initial_paths':
-                if not len(value):
+                if type(value) is str:
+                    value = [value]  # from string to list of strings
+                if not hasattr(value, '__len__') or not len(value):
                     raise TypeError(f'Need at least one initial path, please '
                                     f'set initial_paths with a list of strings'
                                     f' or MDAnalysis trajectories')
+                if hasattr(value, 'filename'):
+                    value = [value]  # from MDA trajectory to list of
+                value = list(value)
+                for i, path in enumerate(value):
+                    value[i] = self._convert_path(path)
             
             # engine
             elif name == 'engine':
@@ -487,12 +494,27 @@ Manager and trainer share an extra task together."""
                                 f'got {type(value).__name__}')
             
             # by setting attribute, you loose link to path
-            super().__setattr__('path', Path('.').resolve())
+            if hasattr(self, 'path'):
+                path = self.path
+                if self.path.is_file():
+                    path = path.parent
+            else:
+                path = Path('.').resolve()
+            super().__setattr__('path', path)
         
         # assign (path is last in "load" so you will restore it)
         super().__setattr__(name, value)
         
         # special checks (after assignment)
+        # you can change states_function and only check that everything
+        # ...goes fine after new initial paths are given
+        if name == 'initial_paths':
+            if hasattr(self, 'states_function'):
+                self._check_initial_paths_and_states_function()
+            if hasattr(self, 'descriptors_function'):
+                self._check_initial_paths_and_states_function()
+            if hasattr(self, 'values_function'):
+                self._check_initial_paths_and_states_function()
         if name == 'descriptors_function' and hasattr(self, 'initial_paths'):
             self._check_descriptors_function()
         if name == 'values_function' and hasattr(self, 'initial_paths'):
@@ -555,6 +577,34 @@ Manager and trainer share an extra task together."""
         if self.engine == 'toy':
             return ''
     
+    def _convert_path(self, path):
+        """Convert path from sting to MDAnalysis `MemoryReader`.
+        Otherwise do nothing"""
+
+        if type(path) is not str:
+            return path
+        
+        # absolute path
+        path = f'{Path(path).resolve()}'
+        
+        # go to the right folder
+        cwd = os.getcwd()
+        folder = self.path.parent if self.path.is_file() else self.path
+        os.chdir(folder)
+        
+        try:
+            # relative path with respect to params' folder
+            relpath = os.path.relpath(path, folder)
+            return mda.Universe(
+                self.topology, relpath, in_memory=True).trajectory
+        
+        except Exception as exception:
+            raise TypeError(f'The initial path "{path}" resulted '
+                            f'in the following error:\n{exception}')
+        
+        finally:  # back to the original folder
+            os.chdir(cwd)
+    
     def _check_initial_paths_and_states_function(
         self, initial_paths=[], crop=False):
         """Run states_function and inspect result. Replace initial_path
@@ -569,17 +619,7 @@ Manager and trainer share an extra task together."""
         
         # iterate through initial paths
         for i, path in enumerate(initial_paths):
-            
-            # replace strings with MDAnalysis trajectories
-            if type(path) is str:
-                filename = path
-                try:
-                    path = mda.Universe(
-                        self.topology, filename, in_memory=True).trajectory
-                except Exception as exception:
-                    raise TypeError(f'The initial path "{path}" resulted '
-                                    f'in the following error:\n{exception}')
-                initial_paths[i] = path
+            initial_paths[i] = self._convert_path(path)
             
             # compute states and check if the output of states_function
             states = self.states_function(path)
@@ -647,6 +687,7 @@ Manager and trainer share an extra task together."""
     def _check_engine(self, timeout=10):
         """Will be called by user if necessary."""
         
+        # go to the right folder
         cwd = os.getcwd()
         os.chdir(self.path.parent if self.path.is_file() else self.path)
         
@@ -707,7 +748,7 @@ Manager and trainer share an extra task together."""
         except Exception as exception:
             raise exception
         
-        finally:
+        finally:  # back to the original folder
             os.chdir(cwd)
     
     @class_or_instancemethod
@@ -727,7 +768,10 @@ Manager and trainer share an extra task together."""
                 raise FileNotFoundError(
                     f'Parameter file {filename} not found.')
             filename = f'{filename}'.split('/')[-1].rstrip('.py')
-            os.chdir(path.parent)
+            folder = path.parent
+            os.chdir(folder)
+        else:
+            folder = Path('.').resolve()
         
         sys.path.insert(0, '')  # allows to see modules in path.parent
         
@@ -735,10 +779,21 @@ Manager and trainer share an extra task together."""
             # create or select instance
             if isinstance(self_or_cls, type):
                 instance = super().__new__(self_or_cls)
-                initialize = True  # creating a new instance
+                instance.__setattr__('path', folder)  # temporary path
             else:
                 instance = self_or_cls
-                initialize = False
+                if instance.path.is_file():
+                    instance_folder = instance.path.parent
+                else:
+                    instance_folder = instance.path
+                if filename and instance_folder != folder:
+                    raise TypeError(
+                        f"New params' filename \"{path}\" must be "
+                        f"in the same folder associated to this"
+                        f"aimmd.Params object: \"{instance_folder}\"")
+            
+            # temporary path
+            instance.__setattr__('path', folder)
             
             # fields with already present values or their default
             fields = {name:
@@ -755,8 +810,6 @@ Manager and trainer share an extra task together."""
             
             # defaults
             new_states_function = False
-            new_descriptors_function = False
-            new_values_function = False
             new_initial_paths = False
             
             # update fields with args (in the right order)            
@@ -774,10 +827,6 @@ Manager and trainer share an extra task together."""
                     fields[name] = kwargs[name]
                 if name == 'states_function':
                     new_states_function = True
-                if name == 'descriptors_function':
-                    new_descriptors_function = True
-                if name == 'values_function':
-                    new_values_function = True
                 if name == 'initial_paths':
                     new_initial_paths = True
             
@@ -792,21 +841,14 @@ Manager and trainer share an extra task together."""
                         # only if not assigned already
                         fields[name] = exec_namespace[name]
                         num_fields_from_filename += 1
+                        if name in ['states_function', 'descriptors_function',
+                                    'values_function', 'network', 'fit']:
+                            # register origin
+                            fields[name].__module__ = filename
                         if name == 'states_function':
-                            fields[name].__module__ = filename
                             new_states_function = True
-                        if name == 'descriptors_function':
-                            fields[name].__module__ = filename
-                            new_descriptors_function = True
-                        if name == 'values_function':
-                            fields[name].__module__ = filename
-                            new_values_function = True
                         if name == 'initial_paths':
                             new_initial_paths = True
-                        if name == 'network':
-                            fields[name].__module__ = filename
-                        if name == 'fit':
-                            fields[name].__module__ = filename
             
             # assign fields; raise error for missing fields
             for name in list(fields):
@@ -814,13 +856,9 @@ Manager and trainer share an extra task together."""
                     raise TypeError(f'{name} not provided for Params')
                 instance.__setattr__(name, fields[name])
             
-            # post-init operations
+            # post-init operation: since you set them together, check again
             if new_states_function or new_initial_paths:
                 instance._check_initial_paths_and_states_function()
-            if new_descriptors_function:
-                instance._check_descriptors_function()
-            if new_values_function:
-                instance._check_values_function()
             
             # save new file and set path while saving
             if num_fields_from_filename < len(fields):
@@ -832,7 +870,10 @@ Manager and trainer share an extra task together."""
             
             return instance
         
-        finally:
+        except Exception as exception:
+            raise exception
+        
+        finally:  # back to the original folder
             os.chdir(cwd)
             sys.path.pop(0)
     
