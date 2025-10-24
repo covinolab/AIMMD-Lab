@@ -10,7 +10,8 @@ def test_params():
   from aimmd.core.utils import absolute_path
   
   cwd = os.getcwd()
-  os.chdir('retinal')
+  FOLDER = tests_dir+ '/retinal'
+  os.chdir(FOLDER)
   
   try:
       
