@@ -691,9 +691,8 @@ Manager and trainer share an extra task together."""
             if type(states) != np.ndarray or len(states) != len(path)\
             or len(states.shape) > 1\
             or states.dtype != np.dtype('<U1'):
-                raise TypeError(f'When loading "{filename}", states_function '
-                                f'does not return an equally long array of '
-                                f'chars (=states)')
+                raise TypeError(f'states_function does not return an '
+                                f'equally long array of chars (=states)')
             
             # look for a transition
             crossings = np.where(np.diff((states == 'R').astype(int)))[0]
@@ -1010,7 +1009,7 @@ Manager and trainer share an extra task together."""
             value = getattr(self, name)
             if hasattr(value, '__module__'):
                 if value.__module__ == '__main__':
-                    value.__module__ = filename.rstrip('.py')
+                    value.__module__ = filename.split('/')[-1].rstrip('.py')
                     if name == 'network':
                         value.__source__ = (
                             f'from {value.__module__} import '
