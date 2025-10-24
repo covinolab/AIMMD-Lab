@@ -520,6 +520,28 @@ Manager and trainer share an extra task together."""
         if name == 'values_function' and hasattr(self, 'initial_paths'):
             self._check_values_function()
     
+    def __eq__(self, params):
+        # after initialization, all fields are already populated
+        for name in self.__dataclass_fields__:
+            value1 = getattr(self, name)
+            value2 = getattr(params, name)
+            if name == 'initial_paths':
+                if len(value1) != len(value2):
+                    return False
+                for path1, path2 in zip(value1, value2):
+                    # after initialization, all paths are already
+                    # MDAnalysis trajectories
+                    if path1.filename != path2.filename:
+                        return False
+            elif hasattr(value1, '__module__'):
+                # also params.path falls in here,
+                # and has always the same module, so it's never False
+                if value1.__module__ != value2.__module__:
+                    return False
+            elif value1 != value2:
+                return False
+        return True
+    
     def __str__(self):
         """Verbose string representation of params with descriptions and
         function bodies."""
@@ -595,8 +617,7 @@ Manager and trainer share an extra task together."""
         try:
             # relative path with respect to params' folder
             relpath = os.path.relpath(path, folder)
-            return mda.Universe(
-                self.topology, relpath, in_memory=True).trajectory
+            return mda.Universe(self.topology, relpath).trajectory
         
         except Exception as exception:
             raise TypeError(f'The initial path "{path}" resulted '
@@ -646,7 +667,9 @@ Manager and trainer share an extra task together."""
                                     if path.velocity_array else None,
                                 filename=path.filename)
                         else:
+                            filename = path.filename
                             path = path[b:e + 2]
+                            path.filename = filename
                         initial_paths[i] = path
                     break
             
@@ -937,6 +960,21 @@ Manager and trainer share an extra task together."""
             
             # copy params
             file.write('\n'.join(self.__str__().split('\n')[1:]))
+        
+        # change module and source to new file
+        for name in self.__dataclass_fields__:
+            value = getattr(self, name)
+            if hasattr(value, '__module__'):
+                if value.__module__ == '__main__':
+                    value.__module__ = filename.rstrip('.py')
+                    if name == 'network':
+                        value.__source__ = (
+                            f'from {value.__module__} import '
+                            f'{value.__class__.__name__}\n'
+                            f'network = {value.__class__.__name__}()\n')
+                    else:
+                        value.__source__ = (f'from {value.__module__} '
+                                            f'import {name}\n')
         
         # update path info and report
         path = Path(filename).resolve()
