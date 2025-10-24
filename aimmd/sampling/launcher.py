@@ -135,14 +135,7 @@ class Launcher:
         
         # params need a written file
         if not params.path.is_file():
-            i = 0
-            while os.path.exists(
-                fname := f'{params.path}/params{str(i) if i else ""}.py'):
-                i += 1
-            with open(fname, 'w') as file:
-                file.write(f'{params}')  # already good
-            print(f'Written {fname} for params')
-            params.path = Path(fname).resolve()
+            params.save()
         
         # create folder structure (keep existing data)
         for i, folder in enumerate([self.directory,

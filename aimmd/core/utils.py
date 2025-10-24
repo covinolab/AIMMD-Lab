@@ -187,6 +187,10 @@ class class_or_instancemethod(classmethod):
         return descr_get(instance, type_)
 
 
+def placeholder_values_function(descriptors):
+    return np.zeros(len(descriptors))
+
+
 class PlaceholderNetwork(torch.nn.Module):
     """Just identity. Loaded by params by default."""
     
@@ -1793,9 +1797,9 @@ def rescale_committor():
     """ADD"""
 
 
-def load_initial_paths(directory, topology, states_function,
-                      descriptors_function, values_function,
-                      verbose=True):
+def load_initial_paths(directory, topology, states_function, descriptors_function,
+                       values_function=placeholder_values_function,
+                       verbose=True):
     fnames = sorted([fname for fname in os.listdir(directory)
                      if '.xtc' == fname[-4:] or '.trr' == fname[-4:]])
     initial_paths = PathEnsemble()
@@ -1824,7 +1828,8 @@ def update_shooting_chain(
     topology,  # relative to the destination
     states_function,  # function that gives the states
     descriptors_function,  # function that gives the descriptors
-    values_function,  # function that gives the values
+    values_function=placeholder_values_function,
+        # function that gives the values
     load_h5=False,  # if load from saved h5 file (or backup)
     add_missing_paths=True):
     """
@@ -1873,7 +1878,7 @@ def update_shooting_chain(
                       f'to chain in {directory}')
                 added_nframes += nframes
     
-    return added_nframes
+    return chain, added_nframes
 
 
 def update_selection_pool(
@@ -1883,6 +1888,7 @@ def update_selection_pool(
     pool_index=None,  # index of pool to be removed
     initial_paths=PathEnsemble(),  # will there be?
     at_least_one_transition=False,  # in pool
+    values_function=None,  # if present: reassign
     load_h5=False):
     """
     Will inherit all pathensemble attributes from chain.
@@ -1893,7 +1899,8 @@ def update_selection_pool(
     pool.topology = chain.topology
     pool.states_function = chain.states_function
     pool.descriptors_function = chain.descriptors_function
-    pool.values_function = chain.values_function
+    if values_function:
+        pool.values_function = values_function
     
     def update_initial_path_directory(initial_paths):
         _initial_paths = initial_paths.copy()
@@ -1958,6 +1965,7 @@ def update_equilibrium_trajectory(
     add_missing_frames=True,
     verbose=True):  # in trajectory file
     """
+    Called only by manager, not by trainer.
     Also returns added_nframes
     """
     
@@ -2045,12 +2053,15 @@ def update_equilibrium_simulations(
     save_h5=False,
     simulate=False,
     verbose=False):
+    """
+    Used by manager only, so no need to update values here.
+    """
     
     # retrieve params
     topology = params.topology
     states_function = params.states_function
     descriptors_function = params.descriptors_function
-    values_function = params.values_function
+    values_function = placeholder_values_function
     trajectory_extension = params.trajectory_extension
     max_excursion_length = params.max_excursion_length
     extra_extend_frames = params.extra_extend_frames
@@ -2392,7 +2403,7 @@ def update_pathensemble(
     topology='run.gro',
     states_function=None,
     descriptors_function=None,
-    values_function=lambda descriptors: np.repeat(0., len(descriptors)),
+    values_function=placeholder_values_function,
     trajectory_extension='.xtc',
     add_missing_paths=True,
     add_missing_frames=False,
@@ -2479,9 +2490,8 @@ def update_pathensemble(
     for expression in shooting_chains:
         n = 0
         while os.path.exists(f'{directory}/{expression}{n}'):
-            chain = PathEnsemble()
-            nframes = update_shooting_chain(
-                chain, f'{expression}{n}', directory, topology,
+            chain, nframes = update_shooting_chain(
+                PathEnsemble(), f'{expression}{n}', directory, topology,
                 states_function, descriptors_function, values_function,
                 add_missing_paths=add_missing_paths, load_h5=True)
             chains.append(chain)
@@ -2553,11 +2563,8 @@ def scorporate_pathensembles(pathensemble):
     return shots, equilibriumA, equilibriumB
 
 
-def run_acceptance_rejection_on_latest_path(chain, network):
+def run_acceptance_rejection_on_latest_path(chain, values_function):
     """Executed when doing TPS."""
-    
-    # load params at the time of SP selection
-    bins, densities = load_network_and_projections(network, chain.directory)
     
     def compute_sp_bias(values, sp_value, bins, densities):
         densities = np.append(densities, [inf])
@@ -2601,7 +2608,7 @@ def run_acceptance_rejection_on_latest_path(chain, network):
     keepers = [leading, -1]
     
     # get values
-    chain.update_values(network, key=keepers)
+    chain.update_values(values_function=values_function, key=keepers)
     leading_values, trial_values = chain.values(keepers, internal=True)
     leading_sp_value, trial_sp_value = chain.shooting_values[keepers]
     
@@ -2821,8 +2828,6 @@ def initialize_shooting_simulation(
     shooting_chains=None, equilibrium=PathEnsemblesCollection()):
     # report info
     i = len(chain)
-    descriptors_function = chain.descriptors_function
-    values_function = chain.values_function
     old_fname = f'path{i:06g} -> ' if i else ''
     new_fname = f'path{i+1:06g}'
     relpath = os.path.relpath(chain.directory, directory)
@@ -2833,6 +2838,8 @@ def initialize_shooting_simulation(
     network = params.network
     topology = params.topology
     lorentzian = params.lorentzian
+    descriptors_function = params.descriptors_function
+    values_function = params.values_function
     #selection_pool_size = params.selection_pool_size
     adjust_selection_in_marginal_bins = \
         params.adjust_selection_in_marginal_bins
@@ -2902,7 +2909,7 @@ def initialize_shooting_simulation(
         print(f'    {_fname}')
     
     # update values & display preliminary statistics
-    pool.update_values()
+    pool.update_values(values_function=values_function)
     values = pool.values(internal=True)
     states = pool.states(internal=True)
     print(f'*** current pool shooting interfaces '
