@@ -6,6 +6,7 @@ AI for Molecular Mechanism Discovery
 AI-enhanced path sampling simulations, both on a workstation and on HPC clusters. Massive parallelization supported!
 
 ## Required (main) packages
+- `dill`
 - `tqdm`
 - `numpy`
 - `scipy`
