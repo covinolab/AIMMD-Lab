@@ -1250,7 +1250,7 @@ def fit(network, pathensemble,
             # when using graphs, we need to process the the DataDict objects
             # instead of arrays
             if save_memory:  # separately to save memory
-                d = process_descriptors([descriptors['data_list'][i] for i in indices])
+                d = process_descriptors(descriptors[indices,:])
             else:
                 d = [descriptors['data_list'][i] for i in indices]
             d = Batch.from_data_list(d).to(device).to_dict()
