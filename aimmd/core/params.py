@@ -829,6 +829,27 @@ Manager and trainer share an extra task together."""
                     new_states_function = True
                 if name == 'initial_paths':
                     new_initial_paths = True
+                    
+                    # process to ensure right relative path is registered
+                    value = fields[name]
+                    if type(value) is str:
+                        value = [value]  # from string to list of strings
+                    if not hasattr(value, '__len__') or not len(value):
+                        raise TypeError(
+                            f'Need at least one initial path, please '
+                            f'set initial_paths with a list of strings'
+                            f' or MDAnalysis trajectories')
+                    if hasattr(value, 'filename'):
+                        value = [value]  # from MDA trajectory to list of
+                    value = list(value)
+                    os.chdir(cwd)
+                    for i, initial_path in enumerate(value):
+                        if type(initial_path) is str:
+                            initial_path = f'{Path(initial_path).resolve()}'
+                            value[i] = os.path.relpath(
+                                initial_path, f'{folder}')
+                    os.chdir(folder)
+                    fields[name] = value
             
             # execute the file and extract fields
             num_fields_from_filename = 0
