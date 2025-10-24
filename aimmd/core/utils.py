@@ -13,6 +13,7 @@ import subprocess
 import MDAnalysis as mda
 from time import sleep
 from tqdm import tqdm
+from pathlib import Path
 from datetime import datetime
 from scipy.special import expit
 from .pathensemble import (MDATrajectory,
@@ -166,6 +167,10 @@ def convert_seconds(seconds):
 
 def now():
     return str(datetime.now())[11:19]
+
+
+def absolute_path(path):
+    return f'{Path(path).resolve()}'
 
 
 def remove(path, verbose=True):
