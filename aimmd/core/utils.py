@@ -169,8 +169,16 @@ def now():
     return str(datetime.now())[11:19]
 
 
-def absolute_path(path):
-    return f'{Path(path).resolve()}'
+def absolute_path(path, go_to=None):
+    """Gives absolute path, with respect to the folder specified by "go_to"
+    (if "go_to" is not None."""
+    cwd = os.getcwd()
+    if go_to:
+        os.chdir(go_to)
+    try:
+        return f'{Path(path).resolve()}'
+    finally:
+        os.chdir(cwd)
 
 
 def remove(path, verbose=True):
