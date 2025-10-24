@@ -169,14 +169,21 @@ def now():
     return str(datetime.now())[11:19]
 
 
-def absolute_path(path, go_to=None):
-    """Gives absolute path, with respect to the folder specified by "go_to"
-    (if "go_to" is not None."""
+def absolute_path(path, go_to=None, check=True, text=True):
+    """Gives absolute path.
+    If "go_to" is not None:  with respect to the folder specified by "go_to".
+    If "check" is True: checks existing before returning.
+    If "text" is False: returns pathlib.Path object instead."""
     cwd = os.getcwd()
     if go_to:
         os.chdir(go_to)
     try:
-        return f'{Path(path).resolve()}'
+        result = Path(path).resolve()
+        if check and not results.exists():
+            raise TypeError(f'{result} does not exist')
+        if text:
+            return f'{Path(path).resolve()}'
+        return result
     finally:
         os.chdir(cwd)
 
