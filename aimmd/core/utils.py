@@ -179,7 +179,7 @@ def absolute_path(path='.', go_to=None, check=True, text=True):
         os.chdir(go_to)
     try:
         result = Path(path).resolve()
-        if check and not results.exists():
+        if check and not result.exists():
             raise TypeError(f'{result} does not exist')
         if text:
             return f'{Path(path).resolve()}'
