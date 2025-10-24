@@ -180,7 +180,7 @@ def absolute_path(path='.', go_to=None, check=True, text=True):
     try:
         result = Path(path).resolve()
         if check and not result.exists():
-            raise TypeError(f'{result} does not exist')
+            raise FileNotFoundError(f'{path} does not exist')
         if text:
             return f'{Path(path).resolve()}'
         return result
