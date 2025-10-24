@@ -13,7 +13,7 @@ from .utils import (class_or_instancemethod, fit,
                     PlaceholderNetwork, execute_command)
 from typing import List, Callable
 from pathlib import Path, PosixPath
-from dill.source import getsource
+from dill.source import getsource, getsourcefile
 from dataclasses import dataclass, field, MISSING
 from MDAnalysis.coordinates.memory import MemoryReader
 
@@ -426,13 +426,35 @@ Manager and trainer share an extra task together."""
                 if not callable(value):
                     raise TypeError(f'{name} must be callable, '
                                     f'got {type(value).__name__}')
+                
+                # function directly defined in main
                 if value.__module__ == '__main__':
                     value.__source__ = getsource(value)
                     if (not value.__source__.startswith('def ')
                         and 'lambda' in value.__source__):
                         value.__source__ = f'{name} = lambda ' + (
-                          'lambda'.join(value.__source__.split('lambda')[1:]))                      
+                          'lambda'.join(value.__source__.split('lambda')[1:]))
+
+                # function coming from somewhere
                 else:
+                    # resolve nested imports
+                    try:
+                        filename = getsourcefile(value)
+                        path = Path(filename)
+                        if self.path.is_file():
+                            folder = self.path.parent
+                        else:
+                            folder = self.path
+                        try:
+                            path.relative_to(folder)
+                            value.__module__ = filename.split(
+                                '/')[-1].rstrip('.py')
+                        except:
+                            pass
+                    except:
+                        pass
+
+                    # assign source after having defined the right module
                     value.__source__ = (f'from {value.__module__} '
                                         f'import {name}\n')
             
@@ -464,11 +486,33 @@ Manager and trainer share an extra task together."""
                         getattr(value, attribute)):
                         raise TypeError(
                             f'{name} must have method "{attribute}"')
+                
+                # class defined in main
                 if value.__module__ == '__main__':
                     value.__source__ = (
                         f'{getsource(value.__class__)}\n'
                         f'network = {value.__class__.__name__}()\n')
+                
+                # class defined somewhere
                 else:
+                    # resolve nested imports
+                    try:
+                        filename = getsourcefile(value.__class__)
+                        path = Path(filename)
+                        if self.path.is_file():
+                            folder = self.path.parent
+                        else:
+                            folder = self.path
+                        try:
+                            path.relative_to(folder)
+                            value.__module__ = filename.split(
+                                '/')[-1].rstrip('.py')
+                        except:
+                            pass
+                    except:
+                        pass
+                    
+                    # assign source after having determined the right module
                     value.__source__ = (
                         f'from {value.__module__} import '
                         f'{value.__class__.__name__}\n'
@@ -961,7 +1005,7 @@ Manager and trainer share an extra task together."""
             # copy params
             file.write('\n'.join(self.__str__().split('\n')[1:]))
         
-        # change module and source to new file
+        # change module and source to the new file (only if defined in main)
         for name in self.__dataclass_fields__:
             value = getattr(self, name)
             if hasattr(value, '__module__'):
