@@ -9,7 +9,8 @@ import numpy as np
 import shutil
 import mdtraj as md
 import MDAnalysis as mda
-from .utils import (class_or_instancemethod, fit,
+from .utils import (absolute_path,
+                    class_or_instancemethod, fit,
                     PlaceholderNetwork, execute_command)
 from typing import List, Callable
 from pathlib import Path, PosixPath
@@ -380,7 +381,7 @@ Manager and trainer share an extra task together."""
     
     path : PosixPath = field(
         init=False,
-        default=Path('.').resolve(),
+        default=absolute_path(text=False),
         metadata={'description':
 """Will perform engine operations relative to `path`'s directory."""
                  })
@@ -401,7 +402,7 @@ Manager and trainer share an extra task together."""
         
         # determine whether loading from file
         try:
-            filename = Path(args[0]).resolve()
+            filename = absolute_path(args[0])
             args = args[1:]
         except (IndexError, TypeError, FileNotFoundError):
             filename = None
@@ -413,9 +414,9 @@ Manager and trainer share an extra task together."""
         for name in self.__dataclass_fields__:
             value = getattr(instance, name)
             super().__setattr__(name, value)
-    
-    def __setattr__(self, name, value):
-        """Enforce data types when reassigning params."""
+
+    def _setattr(self, name, value):
+        """Helper function."""
         
         # assign fields
         if name in self.__dataclass_fields__:
@@ -435,19 +436,15 @@ Manager and trainer share an extra task together."""
                         value.__source__ = f'{name} = lambda ' + (
                           'lambda'.join(value.__source__.split('lambda')[1:]))
 
-                # function coming from somewhere
+                # function defined somewhere else
                 else:
                     # resolve nested imports
                     try:
-                        filename = getsourcefile(value)
-                        path = Path(filename)
-                        if self.path.is_file():
-                            folder = self.path.parent
-                        else:
-                            folder = self.path
+                        origin = absolute_path(
+                            getsourcefile(value), text=False)
                         try:
-                            path.relative_to(folder)
-                            value.__module__ = filename.split(
+                            origin.relative_to(self.parent)
+                            value.__module__ = str(origin).split(
                                 '/')[-1].rstrip('.py')
                         except:
                             pass
@@ -493,19 +490,15 @@ Manager and trainer share an extra task together."""
                         f'{getsource(value.__class__)}\n'
                         f'network = {value.__class__.__name__}()\n')
                 
-                # class defined somewhere
+                # class defined somewhere else
                 else:
                     # resolve nested imports
                     try:
-                        filename = getsourcefile(value.__class__)
-                        path = Path(filename)
-                        if self.path.is_file():
-                            folder = self.path.parent
-                        else:
-                            folder = self.path
+                        origin = absolute_path(
+                            getsourcefile(value.__class__), text=False) 
                         try:
-                            path.relative_to(folder)
-                            value.__module__ = filename.split(
+                            origin.relative_to(self.parent)
+                            value.__module__ = str(origin).split(
                                 '/')[-1].rstrip('.py')
                         except:
                             pass
@@ -543,7 +536,7 @@ Manager and trainer share an extra task together."""
                 if self.path.is_file():
                     path = path.parent
             else:
-                path = Path('.').resolve()
+                path = absolute_path(text=False)
             super().__setattr__('path', path)
         
         # assign (path is last in "load" so you will restore it)
@@ -563,6 +556,21 @@ Manager and trainer share an extra task together."""
             self._check_descriptors_function()
         if name == 'values_function' and hasattr(self, 'initial_paths'):
             self._check_values_function()
+    
+    def __setattr__(self, name, value):
+        """Enforce data types when reassigning params."""
+        
+        # backup old value
+        if hasattr(self, name):
+            backup = getattr(self, name)
+        
+        try:
+            self._setattr(name, value)
+        
+        # in case of errors, back to the old value
+        except Exception as exception:
+            super().__setattr__(name, backup)
+            raise exception
     
     def __eq__(self, params):
         # after initialization, all fields are already populated
@@ -621,9 +629,15 @@ Manager and trainer share an extra task together."""
         
         return "\n".join(lines)
     
-    # engine-dependent mdrun command
+    @property
+    def parent(self):
+        if self.path.is_file():
+            return self.path.parent
+        return self.path
+    
     @property
     def mdrun(self):
+        # engine-dependent mdrun command
         if self.engine == 'gromacs':
             return self.gmx_mdrun
         if self.engine == 'toy':
@@ -651,24 +665,9 @@ Manager and trainer share an extra task together."""
             return path
         
         # absolute path
-        path = f'{Path(path).resolve()}'
-        
-        # go to the right folder
-        cwd = os.getcwd()
-        folder = self.path.parent if self.path.is_file() else self.path
-        os.chdir(folder)
-        
-        try:
-            # relative path with respect to params' folder
-            relpath = os.path.relpath(path, folder)
-            return mda.Universe(self.topology, relpath).trajectory
-        
-        except Exception as exception:
-            raise TypeError(f'The initial path "{path}" resulted '
-                            f'in the following error:\n{exception}')
-        
-        finally:  # back to the original folder
-            os.chdir(cwd)
+        path = absolute_path(path, go_to=self.parent)
+        topology = absolute_path(self.topology, go_to=self.parent)
+        return mda.Universe(topology, path).trajectory
     
     def _check_initial_paths_and_states_function(
         self, initial_paths=[], crop=False):
@@ -755,7 +754,7 @@ Manager and trainer share an extra task together."""
         
         # go to the right folder
         cwd = os.getcwd()
-        os.chdir(self.path.parent if self.path.is_file() else self.path)
+        os.chdir(self.parent)
         
         try:
             # reset
@@ -826,40 +825,36 @@ Manager and trainer share an extra task together."""
         filename: str or None
             if None, just run normal init
         """
-        cwd = os.getcwd()
         
+        # which folder we need to go to?
         if filename:
-            path = Path(filename).resolve()
-            if not path.exists():
-                raise FileNotFoundError(
-                    f'Parameter file {filename} not found.')
-            filename = f'{filename}'.split('/')[-1].rstrip('.py')
+            path = absolute_path(filename, text=False)
+            if not path.is_file():
+                raise TypeError(f'{filename} must be a file')
             folder = path.parent
-            os.chdir(folder)
         else:
-            folder = Path('.').resolve()
+            folder = absolute_path(text=False)
         
+        # go to folder
+        cwd = os.getcwd()
+        os.chdir(folder)
         sys.path.insert(0, '')  # allows to see modules in path.parent
         
+        # in case of problems: restore
+        backup = {}
+        
         try:
-            # create or select instance
+            # do we need to create or select an instance of Params?
             if isinstance(self_or_cls, type):
                 instance = super().__new__(self_or_cls)
                 instance.__setattr__('path', folder)  # temporary path
             else:
                 instance = self_or_cls
-                if instance.path.is_file():
-                    instance_folder = instance.path.parent
-                else:
-                    instance_folder = instance.path
-                if filename and instance_folder != folder:
+                if filename and instance.parent != folder:
                     raise TypeError(
                         f"New params' filename \"{path}\" must be "
                         f"in the same folder associated to this"
-                        f"aimmd.Params object: \"{instance_folder}\"")
-            
-            # temporary path
-            instance.__setattr__('path', folder)
+                        f"aimmd.Params object: \"{instance.parent}\"")
             
             # fields with already present values or their default
             fields = {name:
@@ -890,7 +885,15 @@ Manager and trainer share an extra task together."""
             # update fields with kwargs
             for name in kwargs:
                 if name in fields:
+                    
+                    # backup old values
+                    if hasattr(instance, name):
+                        backup[name] = fields[name]
+                    
+                    # get new values
                     fields[name] = kwargs[name]
+                
+                # special fields
                 if name == 'states_function':
                     new_states_function = True
                 if name == 'initial_paths':
@@ -908,35 +911,41 @@ Manager and trainer share an extra task together."""
                     if hasattr(value, 'filename'):
                         value = [value]  # from MDA trajectory to list of
                     value = list(value)
-                    os.chdir(cwd)
                     for i, initial_path in enumerate(value):
                         if type(initial_path) is str:
-                            initial_path = f'{Path(initial_path).resolve()}'
-                            value[i] = os.path.relpath(
-                                initial_path, f'{folder}')
-                    os.chdir(folder)
+                            value[i] = absolute_path(initial_path, go_to=cwd)
                     fields[name] = value
             
-            # execute the file and extract fields
+            # execute the file and extract fields...
             num_fields_from_filename = 0
             if filename:
                 source = path.read_text()
                 exec_namespace = {}
+                module = str(path).split('/')[-1].rstrip('.py')
                 exec(compile(source, str(path), 'exec'), exec_namespace)
                 for name in exec_namespace:
-                    if name in fields and name not in kwargs: 
-                        # only if not assigned already
+                    
+                    # ...only if not assigned already
+                    if name in fields and name not in kwargs:
+                        
+                        # backup old values
+                        if hasattr(instance, name):
+                            backup[name] = fields[name]
+                        
+                        # get new values
                         fields[name] = exec_namespace[name]
                         num_fields_from_filename += 1
                         if name in ['states_function', 'descriptors_function',
                                     'values_function', 'network', 'fit']:
                             # register origin
-                            fields[name].__module__ = filename
-                        if name == 'states_function':
-                            new_states_function = True
-                        if name == 'initial_paths':
-                            new_initial_paths = True
-            
+                            fields[name].__module__ = module
+                    
+                    # special fields
+                    if name == 'states_function':
+                        new_states_function = True
+                    if name == 'initial_paths':
+                        new_initial_paths = True
+                        
             # assign fields; raise error for missing fields
             for name in list(fields):
                 if fields[name] is MISSING:
@@ -956,8 +965,11 @@ Manager and trainer share an extra task together."""
                 instance.__setattr__('path', path)
             
             return instance
-        
+
+        # in case of error: return to old values
         except Exception as exception:
+            for name in backup:
+                object.__setattr__(instance, name, backup[name])
             raise exception
         
         finally:  # back to the original folder
@@ -974,11 +986,10 @@ Manager and trainer share an extra task together."""
         # determine correct path (never overwrite)
         if not path:
             path = self.path
-        if Path(f'{path}').resolve().is_file():
-            filename = f'{path}'
-        else:
-            filename = f'{path}/params.py'
-        while Path(filename).resolve().exists():
+        filename = absolute_path(path)
+        if self.path == self.parent:
+            filename = f'{filename}/params.py'
+        while Path(filename).exists():
             filename = filename.rstrip('.py')
             i = len(filename)
             while filename[i - 1:].isnumeric() and i:
@@ -1022,7 +1033,8 @@ Manager and trainer share an extra task together."""
         # update path info and report
         path = Path(filename).resolve()
         self.__setattr__('path', path)
-        print(f'Written params to {path}')
+        print(f'Written full params and descriptions to '
+              f'"{os.path.relpath(path, os.getcwd())}"')
     
     def crop_initial_paths(self):
         """Leave only the transition parts in `params.inital_paths`, to
