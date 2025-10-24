@@ -169,7 +169,7 @@ def now():
     return str(datetime.now())[11:19]
 
 
-def absolute_path(path, go_to=None, check=True, text=True):
+def absolute_path(path='.', go_to=None, check=True, text=True):
     """Gives absolute path.
     If "go_to" is not None:  with respect to the folder specified by "go_to".
     If "check" is True: checks existing before returning.
