@@ -1034,10 +1034,6 @@ Manager and trainer share an extra task together."""
             for name in modules:
                 if type(modules[name]) is not type(sys):
                     continue
-                if modules[name].__name__ == 'os' and name == 'os':
-                    continue  # already imported
-                if modules[name].__name__ == 'sys' and name == 'sys':
-                    continue  # already imported
                 file.write(f'import {modules[name].__name__} as {name}\n')
             file.write(f'inf = float("inf")\n\n')
             
