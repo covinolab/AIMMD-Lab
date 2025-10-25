@@ -35,31 +35,34 @@ def test_toy_1d():
         initial_path.save('initial.xtc')
         params = aimmd.Params('params.py')
         
-        print('Test 1: creating launcher')
+        print('Test 1: creating launcher with "params" object')
         launcher = aimmd.Launcher(params, 'run1')
+
+        print('Test 2: creating launcher with "params1.py"')
+        launcher = aimmd.Launcher('params1.py', 'run1')
         
-        print('Test 2: creating slurm job script')
+        print('Test 3: creating slurm job script')
         launcher.create_job('job.sh', n=1, nA=1, nB=1,
                             ntasks_per_node=4, cpus_per_task=8,
                             gpus_per_task=1, walltime=3600)
         
-        print('Test 3: individual worker (train)')
-        worker = aimmd.Worker(params, 'run1')
+        print('Test 4: individual worker (train)')
+        worker = aimmd.Worker('params1.py', 'run1')
         worker.train(nrounds=2, walltime=60)
         check_file('run1/network.h5')
         
-        print('Test 4: individual worker (manager)')
+        print('Test 5: individual worker (manager)')
         t0 = time.time()
         worker.manage(n=1, nA=1, nB=1, walltime=5)
         check_time(5, 'manager')
         
-        print('Test 5: individual worker (simulator)')
+        print('Test 6: individual worker (simulator)')
         t0 = time.time()
         worker.simulate('worker0', noappend=True, walltime=10)
         check_time(10, 'simulator')
         check_file('run1/equilibriumA/traj000001.part0002.xtc')
         
-        print('Test 6: AIMMD run sharing resources')
+        print('Test 7: AIMMD run sharing resources')
         t0 = time.time()
         launcher.run(1, 1, 1, cpus_per_task='share', gpus_per_task='share',
                      nsteps=10, walltime=60)
@@ -69,22 +72,20 @@ def test_toy_1d():
                 raise RuntimeError('not reached 10 steps')
         check_file('run1/equilibriumB/traj000001.part0002.xtc')
         
-        print('Test 7: AIMMD run with "all" resources (append)')
+        print('Test 8: AIMMD run with "all" resources (append)')
         t0 = time.time()
         launcher.run(1, 1, 1, cpus_per_task='all', gpus_per_task='all',
                      walltime=20)
         check_time(20, 'AIMMD')
         
-        print('Test 8: AIMMD run with limited resources (append)')
+        print('Test 9: AIMMD run with limited resources (append)')
         t0 = time.time()
         launcher.run(1, 1, 1, cpus_per_task=1, gpus_per_task=0,
                      walltime=20)
         check_time(20, 'AIMMD')
         
-        print('Test 9: two AIMMD runs with LaunchersCollection '
+        print('Test 10: two AIMMD runs with LaunchersCollection '
               '(append + new)')
-        with open('params1.py') as file:
-            print(file.read())  # DEBUG
         launchers = aimmd.LaunchersCollection(launcher,
             aimmd.Launcher('params1.py', 'run2'))
         t0 = time.time()
