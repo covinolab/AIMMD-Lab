@@ -426,7 +426,7 @@ Manager and trainer share an extra task together."""
             if expected_type is Callable:
                 if not callable(value):
                     raise TypeError(f'{name} must be callable, '
-                                    f'got {type(value).__name__}')
+                                    f'got {type(value).__name__}: {value}')
                 
                 # function directly defined in main
                 if value.__module__ == '__main__':
@@ -610,7 +610,7 @@ Manager and trainer share an extra task together."""
                 return False
         return True
     
-    def __str__(self):
+    def __str__(self, go_to=None):
         """Verbose string representation of params with descriptions and
         function bodies."""
         
@@ -632,7 +632,13 @@ Manager and trainer share an extra task together."""
             
             # initial paths
             elif name == 'initial_paths':
-                filenames = [f'"{path.filename}"' for path in value]
+                if not go_to:
+                    go_to = os.getcwd()
+                else:
+                    go_to = str(go_to)
+                filenames = [
+                    f'"{os.path.relpath(path.filename, go_to)}"'
+                    for path in value]
                 lines.append(f'{name} = [{", ".join(filenames)}]')
             
             # all the rest
