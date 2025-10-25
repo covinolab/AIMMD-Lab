@@ -28,7 +28,6 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
                     f'{self.directory}/{run_file}.ready']
     
     # control through files
-    os.system(f'rm -f {self.directory}/{run_file}.run')
     os.system(f'touch {self.directory}/{run_file}.ready')
     
     # process arguments
@@ -63,8 +62,8 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
     # main cycle
     while True:
         
-        # received the signal
-        if bool(self.termination_signal):
+        # stop condition met / termination signal received
+        if stop_condition():
             break
         
         # what to simulate
