@@ -62,6 +62,7 @@ def test_params():
         # as if you defined "identity" directly on terminal
         identity = lambda x: 1
         identity.__module__ = '__main__'
+        identity.__source__ = 'lambda x: 1'
         
         params3 = aimmd.Params(
             params.path, fit=identity,
