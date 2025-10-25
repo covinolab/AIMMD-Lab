@@ -430,12 +430,17 @@ Manager and trainer share an extra task together."""
                 
                 # function directly defined in main
                 if value.__module__ == '__main__':
-                    value.__source__ = getsource(value)
+                    try:
+                        value.__source__ = getsource(value)
+                    except:
+                        if not hasattr(value, '__source__'):
+                            value.__source__ = \
+                                f'lambda : raise Exception("not found")'
                     if (not value.__source__.startswith('def ')
                         and 'lambda' in value.__source__):
                         value.__source__ = f'{name} = lambda ' + (
                           'lambda'.join(value.__source__.split('lambda')[1:]))
-
+                
                 # function defined somewhere else
                 else:
                     # resolve nested imports
@@ -486,9 +491,14 @@ Manager and trainer share an extra task together."""
                 
                 # class defined in main
                 if value.__module__ == '__main__':
-                    value.__source__ = (
-                        f'{getsource(value.__class__)}\n'
-                        f'network = {value.__class__.__name__}()\n')
+                    try:
+                        value.__source__ = f'{getsource(value.__class__)}\n'
+                    except:
+                        if not hasattr(value, '__source__'):
+                            value.__source__ = (
+                                f'class  {value.__class__.__name__}:\n'
+                                f'    def __init__(self):\n'
+                                f'        raise Exception("not found")\n\n')
                 
                 # class defined somewhere else
                 else:
@@ -508,8 +518,11 @@ Manager and trainer share an extra task together."""
                     # assign source after having determined the right module
                     value.__source__ = (
                         f'from {value.__module__} import '
-                        f'{value.__class__.__name__}\n'
-                        f'network = {value.__class__.__name__}()\n')
+                        f'{value.__class__.__name__}\n')
+                
+                # compose
+                value.__source__ = (value.__source__ +
+                    f'network = {value.__class__.__name__}()\n')
             
             # list of strings
             elif expected_type is List[str]:
@@ -563,13 +576,16 @@ Manager and trainer share an extra task together."""
         # backup old value
         if hasattr(self, name):
             backup = getattr(self, name)
+        else:
+            backup = None
         
         try:
             self._setattr(name, value)
         
         # in case of errors, back to the old value
         except Exception as exception:
-            super().__setattr__(name, backup)
+            if backup is not None:
+                super().__setattr__(name, backup)
             raise exception
     
     def __eq__(self, params):
@@ -756,8 +772,7 @@ Manager and trainer share an extra task together."""
         cwd = os.getcwd()
         os.chdir(self.parent)
         
-        try:
-            # reset
+        try:  # cleanup
             os.system(f'rm -f .params_check_engine*')
             
             if self.engine == 'gromacs':
@@ -810,7 +825,8 @@ Manager and trainer share an extra task together."""
                 if exit := execute_command(cmd, walltime=timeout):
                     raise RuntimeError(f'{cmd} failed with exit code {exit}')
         
-        except Exception as exception:
+        except Exception as exception:  # cleanup
+            os.system(f'rm -f .params_check_engine*')
             raise exception
         
         finally:  # back to the original folder
