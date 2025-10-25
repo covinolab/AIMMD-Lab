@@ -11,22 +11,13 @@ def test_params():
     
     cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     tests_dir = cwd if cwd.endswith('tests') else cwd + '/tests'
-    FOLDER = tests_dir+ '/retinal'
+    FOLDER = tests_dir + '/retinal'
     
-    def cleanup():
-        os.chdir(FOLDER)
-        os.system('rm params?.py')
-        os.system('rm -rf run1 run2')
-    
-    def setup():
+    try:  # setup
         os.chdir(FOLDER)
         os.system('mkdir run1 run2')
         os.system('cp params.py run1')
         os.system('cp initial.trr run1')
-    
-    try:
-        cleanup()
-        setup()
         
         print('Test 1: loading "params.py" into "params" object')
         params = aimmd.Params('params.py')
@@ -67,7 +58,11 @@ def test_params():
             
         print('Test 6: loading "params1.py" file into "params3" with '
               'additional  fields (fit function and initial paths)')
+        
+        # as if you defined "identity" directly on terminal
         identity = lambda x: 1
+        identity.__module__ = '__main__'
+        
         params3 = aimmd.Params(
             params.path, fit=identity,
             initial_paths=['initial.trr', 'run1/initial.trr'])
@@ -180,8 +175,9 @@ def test_params():
         except TypeError:
             pass
     
-    finally:
-        cleanup()
+    finally:  # cleanup
+        os.chdir(FOLDER)
+        os.system('rm -rf params?.py run1 run2')
         os.chdir(cwd)
 
 
