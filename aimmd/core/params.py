@@ -860,7 +860,7 @@ Manager and trainer share an extra task together."""
         # go to folder
         cwd = os.getcwd()
         os.chdir(folder)
-        sys.path.insert(0, f'{folder}')  # allows to see modules in path.parent
+        sys.path.insert(0, str(folder))
         
         # in case of problems: restore
         backup = {}
@@ -942,8 +942,11 @@ Manager and trainer share an extra task together."""
             num_fields_from_filename = 0
             if filename:
                 source = path.read_text()
-                print(source)  # DEBUG DEBUG
-                exec_namespace = {}
+                exec_namespace = {
+                    "__name__": "__main__",
+                    "__file__": str(path),
+                    "__package__": None,
+                }
                 module = str(path).split('/')[-1].rstrip('.py')
                 exec(compile(source, str(path), 'exec'), exec_namespace)
                 for name in exec_namespace:
