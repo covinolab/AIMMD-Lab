@@ -942,6 +942,7 @@ Manager and trainer share an extra task together."""
             num_fields_from_filename = 0
             if filename:
                 source = path.read_text()
+                print(source)  # DEBUG DEBUG
                 exec_namespace = {}
                 module = str(path).split('/')[-1].rstrip('.py')
                 exec(compile(source, str(path), 'exec'), exec_namespace)
@@ -1024,9 +1025,6 @@ Manager and trainer share an extra task together."""
         
         # actual save
         with open(filename, 'w') as file:
-            
-            # see modules in current folder
-            file.write(f'#DEBUG\nprint(sys.path)\n\n')
             
             # copy main modules
             modules = vars(sys.modules['__main__'])
