@@ -173,7 +173,7 @@ def test_toy_1d():
     print(':', path)
     print('Saving the path as a separate trajectory file')
     path.write('initial2.xtc', overwrite=True)
-    print('Check for bugfix', md.load('initial2.xtc'), top='run.gro')  # BUGFIX
+    print('Check for bugfix', md.load('initial2.xtc', top='run.gro'))  # BUGFIX
     print('Adding it to the "initial path" ensemble', end='')
     initial_path = equilibrium[:0]
     initial_path.add_path('../initial2.xtc')
