@@ -860,7 +860,7 @@ Manager and trainer share an extra task together."""
         # go to folder
         cwd = os.getcwd()
         os.chdir(folder)
-        sys.path.insert(0, '')  # allows to see modules in path.parent
+        sys.path.insert(0, f'{folder}')  # allows to see modules in path.parent
         
         # in case of problems: restore
         backup = {}
@@ -1026,8 +1026,9 @@ Manager and trainer share an extra task together."""
         with open(filename, 'w') as file:
             
             # see modules in current folder
+            file.write('import os\n')
             file.write('import sys\n')
-            file.write(f"sys.path.insert(0, '')\n\n")
+            file.write(f"sys.path.insert(0, os.path.dirname(__file__))\n\n")
             
             # copy main modules
             modules = vars(sys.modules['__main__'])
@@ -1035,6 +1036,8 @@ Manager and trainer share an extra task together."""
             for name in modules:
                 if type(modules[name]) is not type(sys):
                     continue
+                if modules[name].__name__ == 'os' and name == 'os':
+                    continue  # already imported
                 if modules[name].__name__ == 'sys' and name == 'sys':
                     continue  # already imported
                 file.write(f'import {modules[name].__name__} as {name}\n')
