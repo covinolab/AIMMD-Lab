@@ -12,37 +12,40 @@ def test_params():
     cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     tests_dir = cwd if cwd.endswith('tests') else cwd + '/tests'
     FOLDER = tests_dir+ '/retinal'
-    os.chdir(FOLDER)
     
-    try:
-        
-        os.system('rm params?.py')  # all the rest
+    def cleanup():
+        os.chdir(FOLDER)
+        os.system('rm params?.py')
         os.system('rm -rf run1 run2')
+    
+    def setup():
+        os.chdir(FOLDER)
         os.system('mkdir run1 run2')
         os.system('cp params.py run1')
         os.system('cp initial.trr run1')
+    
+    try:
+        cleanup()
+        setup()
         
         print('Test 1: loading "params.py" into "params" object')
         params = aimmd.Params('params.py')
         if not os.path.exists('params1.py'):
             raise RuntimeError('params1.py not created')
         
-        print('Test 2: checking "params" engine')
-        params._check_engine()
-        
-        print('Test 3: loading "params.py" into "params2" results in "params"'
+        print('Test 2: loading "params.py" into "params2" results in "params"'
               ' and "params2" being equal')
         params2 = aimmd.Params('params.py')
         assert params == params2
         
-        print('Test 4: loading "params1.py" into "params2" returns the same '
+        print('Test 3: loading "params1.py" into "params2" returns the same '
               '"params2" as before')
         params2 = aimmd.Params(params.path)
         assert params == params2
         if os.path.exists('params3.py'):
             raise RuntimeError('params3.py should not exist')
         
-        print('Test 5: loading "params1.py" into "params2" while in the '
+        print('Test 4: loading "params1.py" into "params2" while in the '
               '"run1" folder returns the same "params2" as before')
         os.chdir('run1')
         params2 = aimmd.Params(params.path)
@@ -50,7 +53,7 @@ def test_params():
         if os.path.exists('../params3.py'):
             raise RuntimeError('params3.py should not exist')
         
-        print('Test 6: loading "params.py" into "params2" while in the '
+        print('Test 5: loading "params.py" into "params2" while in the '
               '"run1" folder creates "params3.py" in the "retinal" folder, '
               'and returns the same "params2" as before')
         params2 = aimmd.Params('../params.py')
@@ -62,7 +65,7 @@ def test_params():
         # back to "retinal"
         os.chdir('..')
             
-        print('Test 7: loading "params1.py" file into "params3" with '
+        print('Test 6: loading "params1.py" file into "params3" with '
               'additional  fields (fit function and initial paths)')
         identity = lambda x: 1
         params3 = aimmd.Params(
@@ -85,7 +88,7 @@ def test_params():
                                f'should be run1/initial.trr, '
                                f'{params3.initial_paths[1].filename} instead')
         
-        print('Test 8: updating "params3" with "params3.py" leaves "params3"'
+        print('Test 7: updating "params3" with "params3.py" leaves "params3"'
               ' unchanged')
         params3 = params3.load('params4.py')
         if os.path.exists('params5.py'):
@@ -93,14 +96,14 @@ def test_params():
         
         assert params3.fit(10) == 1
         
-        print('Test 9: udating "params2" with "params2.py" leaves "params2" '
+        print('Test 8: udating "params2" with "params2.py" leaves "params2" '
               'unchanged')
         params2 = params2.load('params2.py')
         assert params == params2
         if os.path.exists('params5.py'):
             raise RuntimeError('params5.py should not exist')
         
-        print('Test 10: udating "params2" with the different fields in '
+        print('Test 9: udating "params2" with the different fields in '
               '"params3" results in "params2" being equivalent to "params3"')
         params2 = params2.update(
             fit=identity, initial_paths=['initial.trr', 'run1/initial.trr'])
@@ -108,7 +111,7 @@ def test_params():
         if not os.path.exists('params5.py'):
             raise RuntimeError('params5.py not created')
         
-        print('Test 11: trying to assign a bad states function throws an '
+        print('Test 10: trying to assign a bad states function throws an '
               'error and leaves the corresponding field unchanged')
         try:
             params.update(states_function=identity)
@@ -119,7 +122,7 @@ def test_params():
                 raise RuntimeError('states function should not be identity')
             pass  # success
         
-        print('Test 12: trying to assign a bad descriptors_function throws '
+        print('Test 11: trying to assign a bad descriptors_function throws '
               'an error and leaves the corresponding field unchanged')
         try:
             params.descriptors_function = identity
@@ -131,7 +134,7 @@ def test_params():
                     'descriptors function should not be identity')
             pass  # success
         
-        print('Test 13: trying to assign a bad values function throws an '
+        print('Test 12: trying to assign a bad values function throws an '
               'error and leaves the corresponding field unchanged')
         try:
             params.values_function = identity
@@ -142,7 +145,7 @@ def test_params():
                 raise RuntimeError('values function should not be identity')
             pass  # success
         
-        print('Test 14: trying to assign bad initial_paths throws an error '
+        print('Test 13: trying to assign bad initial_paths throws an error '
               'and leaves the corresponding field unchanged')
         try:
             params.initial_paths = 'run.gro'
@@ -152,7 +155,7 @@ def test_params():
                 raise RuntimeError('"params.initial_paths" changed')
             pass  # success
         
-        print('Test 15: saving initial paths to the "run2" folder, going to '
+        print('Test 14: saving initial paths to the "run2" folder, going to '
               'that folder, and reloading one saved path as initial path for '
               '"params4"')
         params3.save_initial_paths('run2')
@@ -164,16 +167,21 @@ def test_params():
         assert params4.initial_paths[0].filename == absolute_path(
             'initial.trr')
         
-        print('Test 16: checking "params4" initial paths and states function '
+        print('Test 15: checking "params4" initial paths and states function '
               'after moving to a different folder ("run1")')
         os.chdir('../run1')
         params4._check_initial_paths_and_states_function()
         
-        print('Test 17: checking "params4" engine after moving to a '
-              'different folder ("run1")')
-        params4._check_engine()
+        print('Test 16: checking that "params4" cannot be updated with a '
+              'file in a different folder than "retinal"')
+        try:
+            params4 = params4.load('params.py')
+            raise RuntimeError('"params4" was updated with "run1/params.py"')
+        except TypeError:
+            pass
     
     finally:
+        cleanup()
         os.chdir(cwd)
 
 
