@@ -1026,9 +1026,7 @@ Manager and trainer share an extra task together."""
         with open(filename, 'w') as file:
             
             # see modules in current folder
-            file.write('import os\n')
-            file.write('import sys\n')
-            file.write(f"sys.path.insert(0, os.path.dirname(__file__))\n\n")
+            file.write(f'DEBUG print(sys.path)\n\n')
             
             # copy main modules
             modules = vars(sys.modules['__main__'])
