@@ -83,6 +83,8 @@ def test_toy_1d():
         
         print('Test 9: two AIMMD runs with LaunchersCollection '
               '(append + new)')
+        with open('params1.py') as file:
+            print(file.read())  # DEBUG
         launchers = aimmd.LaunchersCollection(launcher,
             aimmd.Launcher('params1.py', 'run2'))
         t0 = time.time()
