@@ -62,8 +62,8 @@ def simulate(self, run_file, log_file=None, noappend=False, walltime=inf):
     # main cycle
     while True:
         
-        # stop condition met / termination signal received
-        if stop_condition():
+        # received the signal / reached walltime
+        if bool(self.termination_signal) or time.time() - t0 > walltime:
             break
         
         # what to simulate
