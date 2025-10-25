@@ -1026,7 +1026,7 @@ Manager and trainer share an extra task together."""
         with open(filename, 'w') as file:
             
             # see modules in current folder
-            file.write(f'DEBUG print(sys.path)\n\n')
+            file.write(f'#DEBUG\nprint(sys.path)\n\n')
             
             # copy main modules
             modules = vars(sys.modules['__main__'])
