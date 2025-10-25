@@ -861,6 +861,7 @@ Manager and trainer share an extra task together."""
         cwd = os.getcwd()
         os.chdir(folder)
         sys.path.insert(0, '')  # allows to see modules in path.parent
+        print(sys.path)  # FOR BUGFIX
         
         # in case of problems: restore
         backup = {}
