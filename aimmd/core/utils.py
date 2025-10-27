@@ -11,6 +11,7 @@ import functools
 import traceback
 import subprocess
 import MDAnalysis as mda
+import torch._dynamo
 from time import sleep
 from tqdm import tqdm
 from pathlib import Path
@@ -499,7 +500,6 @@ def fit(network, pathensemble,
     TODO: include free/shot A-R and B-R paths.
     """
     
-    import torch
     if graphs:
         # only need to import this torch_geometric Batch if graphs
         # are used as descriptors. Otherwise, avoid the dependency.
