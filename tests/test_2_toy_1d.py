@@ -6,6 +6,7 @@ Conducts an AIMMD run on a 1D toy model defined in the "toy_1d" folder.
 def test_toy_1d():
     
     import os
+    import sys
     import time
     import aimmd
     import numpy as np
