@@ -499,6 +499,7 @@ def fit(network, pathensemble,
     TODO: include free/shot A-R and B-R paths.
     """
     
+    import torch
     if graphs:
         # only need to import this torch_geometric Batch if graphs
         # are used as descriptors. Otherwise, avoid the dependency.
