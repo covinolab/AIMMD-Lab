@@ -462,20 +462,7 @@ Manager and trainer share an extra task together."""
                         value.__source__ = f'{name} = lambda ' + (
                           'lambda'.join(value.__source__.split('lambda')[1:]))
                 
-                # function defined somewhere else
-                else:
-                    # resolve nested imports
-                    try:
-                        origin = absolute_path(
-                            getsourcefile(value), text=False)
-                        try:
-                            origin.relative_to(self.parent)
-                            value.__module__ = str(origin).rstrip('.py')
-                        except:
-                            pass
-                    except:
-                        pass
-                    
+                else:  # function defined somewhere else
                     # assign source after having defined the right module
                     value.__source__ = (  # when "local" import, omit path
                         f'from {value.__module__.split("/")[-1]} '
@@ -521,30 +508,22 @@ Manager and trainer share an extra task together."""
                                 f'class  {value.__class__.__name__}:\n'
                                 f'    def __init__(self):\n'
                                 f'        raise Exception("not found")\n\n')
-                
-                # class defined somewhere else
-                else:
-                    # resolve nested imports
-                    if True:
-                        origin = absolute_path(
-                            getsourcefile(value.__class__), text=False)
-                        try:
-                            origin.relative_to(self.parent)
-                            value.__class__.__module__ = str(
-                                origin).rstrip('.py')
-                        except:
-                            pass
-                    else:
-                        pass
                     
-                    # assign source after having determined the right module
+                    # compose
+                    value.__source__ = (value.__source__ +
+                        f'network = {value.__class__.__name__}()')
+                
+                # class defined somewhere else, network defined in main
+                elif value.__module__ == '__main__':
                     value.__source__ = (  # when "local" import, omit path
                         f'from {value.__class__.__module__.split("/")[-1]} '
-                        f'import {value.__class__.__name__}\n')
+                        f'import {value.__class__.__name__}\n'
+                        f'network = {value.__class__.__name__}()')
                 
-                # compose
-                value.__source__ = (value.__source__ +
-                    f'network = {value.__class__.__name__}()\n')
+                else:  # both defined somewhere else
+                    value.__source__ = (  # when "local" import, omit path
+                        f'from {value.__module__.split("/")[-1]} '
+                        f'import network\n')
             
             # list of strings
             elif expected_type is List[str]:
@@ -628,7 +607,6 @@ Manager and trainer share an extra task together."""
                 # and has always the same module, so it's never False
                 if (value1.__class__.__module__ !=
                     value2.__class__.__module__):
-                    print(name, value1.__class__, value2.__class__, 'classes modules different', value1.__class__.__module__,  value2.__class__.__module__)
                     return False
             elif hasattr(values1, '__module__'):
                 if value1.__module__ != value2.__module:
