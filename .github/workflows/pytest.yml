@@ -31,7 +31,7 @@ jobs:
         python setup.py install
     - name: Test with pytest
       run: |
-        pytest -v --cov=aimmd --cov-report=xml --color=yes tests/
+        pytest -v --cov=aimmd --cov-report=xml --color=yes --import-mode=importlib tests/
         
     - name: CodeCov
       uses: codecov/codecov-action@v1
