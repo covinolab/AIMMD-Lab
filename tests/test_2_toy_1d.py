@@ -33,7 +33,9 @@ def test_toy_1d():
         initial_path.xyz = np.linspace([[0.,0.,0.]], [[1.,1.,1.]])
         initial_path.time = np.arange(len(initial_path))
         initial_path.save('initial.xtc')
+        print('************** before params', list(sys.modules.items()))
         params = aimmd.Params('params.py')
+        print('************** after params', list(sys.modules.items()))
         
         print('Test 1: creating launcher with "params" object')
         launcher = aimmd.Launcher(params, 'run1')
@@ -47,6 +49,7 @@ def test_toy_1d():
                             gpus_per_task=1, walltime=3600)
         
         print('Test 4: individual worker (train)')
+        print('************** before worker', list(sys.modules.items()))
         worker = aimmd.Worker('params1.py', 'run1')
         worker.train(nrounds=2, walltime=60)
         check_file('run1/network.h5')
