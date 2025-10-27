@@ -5,6 +5,7 @@ AIMMD parameters management / defaults.
 import os
 import sys
 import torch
+import types
 import numpy as np
 import shutil
 import mdtraj as md
@@ -14,9 +15,29 @@ from .utils import (absolute_path,
                     PlaceholderNetwork, execute_command)
 from typing import List, Callable
 from pathlib import Path, PosixPath
-from dill.source import getsource, getsourcefile
+from dill.source import getsource
 from dataclasses import dataclass, field, MISSING
 from MDAnalysis.coordinates.memory import MemoryReader
+
+from pathlib import Path
+
+def getsourcefile(obj):
+    """On current working directory."""
+    cwd = Path('.').resolve()
+    if isinstance(obj, type):
+        result = None
+        for name in dir(obj):
+            method = getattr(obj, name)
+            try:
+                if absolute_path(
+                    method.__code__.co_filename, text=False).parent == cwd:
+                    result = method.__code__.co_filename
+            except:
+                pass
+        if not result:
+            return absolute_path(f'{obj.__module__.split("/")[-1]}.py')
+        return result
+    return obj.__code__.co_filename
 
 # find executables
 PYTHON = sys.executable
@@ -449,16 +470,16 @@ Manager and trainer share an extra task together."""
                             getsourcefile(value), text=False)
                         try:
                             origin.relative_to(self.parent)
-                            value.__module__ = str(origin).split(
-                                '/')[-1].rstrip('.py')
+                            value.__module__ = str(origin).rstrip('.py')
                         except:
                             pass
                     except:
                         pass
-
+                    
                     # assign source after having defined the right module
-                    value.__source__ = (f'from {value.__module__} '
-                                        f'import {name}\n')
+                    value.__source__ = (  # when "local" import, omit path
+                        f'from {value.__module__.split("/")[-1]} '
+                        f'import {name}\n')
             
             # initial paths (converted in real-time)
             elif name == 'initial_paths':
@@ -490,9 +511,10 @@ Manager and trainer share an extra task together."""
                             f'{name} must have method "{attribute}"')
                 
                 # class defined in main
-                if value.__module__ == '__main__':
+                if value.__class__.__module__ == '__main__':
                     try:
-                        value.__source__ = f'{getsource(value.__class__)}\n'
+                        value.__source__ = \
+                            f'{getsource(value.__class__)}\n'
                     except:
                         if not hasattr(value, '__source__'):
                             value.__source__ = (
@@ -503,22 +525,22 @@ Manager and trainer share an extra task together."""
                 # class defined somewhere else
                 else:
                     # resolve nested imports
-                    try:
+                    if True:
                         origin = absolute_path(
-                            getsourcefile(value.__class__), text=False) 
+                            getsourcefile(value.__class__), text=False)
                         try:
                             origin.relative_to(self.parent)
-                            value.__module__ = str(origin).split(
-                                '/')[-1].rstrip('.py')
+                            value.__class__.__module__ = str(
+                                origin).rstrip('.py')
                         except:
                             pass
-                    except:
+                    else:
                         pass
                     
                     # assign source after having determined the right module
-                    value.__source__ = (
-                        f'from {value.__module__} import '
-                        f'{value.__class__.__name__}\n')
+                    value.__source__ = (  # when "local" import, omit path
+                        f'from {value.__class__.__module__.split("/")[-1]} '
+                        f'import {value.__class__.__name__}\n')
                 
                 # compose
                 value.__source__ = (value.__source__ +
@@ -601,10 +623,15 @@ Manager and trainer share an extra task together."""
                     # MDAnalysis trajectories
                     if path1.filename != path2.filename:
                         return False
-            elif hasattr(value1, '__module__'):
+            elif hasattr(value1, '__class__'):  # network
                 # also params.path falls in here,
                 # and has always the same module, so it's never False
-                if value1.__module__ != value2.__module__:
+                if (value1.__class__.__module__ !=
+                    value2.__class__.__module__):
+                    print(name, value1.__class__, value2.__class__, 'classes modules different', value1.__class__.__module__,  value2.__class__.__module__)
+                    return False
+            elif hasattr(values1, '__module__'):
+                if value1.__module__ != value2.__module:
                     return False
             elif value1 != value2:
                 return False
@@ -615,7 +642,7 @@ Manager and trainer share an extra task together."""
         function bodies."""
         
         if self.path.is_file():
-            lines = [f'___ Params from {self.path} ___ ']
+            lines = [f'___ Params in {self.path} ___ ']
         else:
             lines = [f'___ Params ___']
         
@@ -639,6 +666,7 @@ Manager and trainer share an extra task together."""
                 filenames = [
                     f'"{os.path.relpath(path.filename, go_to)}"'
                     for path in value]
+                print('writing filenames', filenames)
                 lines.append(f'{name} = [{", ".join(filenames)}]')
             
             # all the rest
@@ -739,8 +767,9 @@ Manager and trainer share an extra task together."""
             
             # transition not found
             if not transition_found:
-                raise TypeError(f'The {i + 1}-th trajectory in initial_paths '
-                                f'does not contain a transition')
+                raise TypeError(f'The {i + 1}-th initial_path '
+                                f'"{initial_paths[i].filename}" does not '
+                                f'contain a transition')
         
         # return processed initial paths
         return initial_paths 
@@ -860,10 +889,11 @@ Manager and trainer share an extra task together."""
         # go to folder
         cwd = os.getcwd()
         os.chdir(folder)
-        sys.path.insert(0, str(folder))
+        sys.path.insert(0, f'{folder}')
         
-        # in case of problems: restore
-        backup = {}
+        # in case of problems: restore modules and params fields
+        backup_modules = sys.modules.copy()
+        backup_params = {}
         
         try:
             # do we need to create or select an instance of Params?
@@ -910,7 +940,7 @@ Manager and trainer share an extra task together."""
                     
                     # backup old values
                     if hasattr(instance, name):
-                        backup[name] = fields[name]
+                        backup_params[name] = fields[name]
                     
                     # get new values
                     fields[name] = kwargs[name]
@@ -941,37 +971,122 @@ Manager and trainer share an extra task together."""
             # execute the file and extract fields...
             num_fields_from_filename = 0
             if filename:
+                
+                # assign local modules names
+                local_module_names = {}
+                temporarily_removed_modules = {}
+                
+                # find all local py files in the folder except the main script
+                for local_path in folder.glob("*.py"):
+                    
+                    # each file in the current folder will get a "local"
+                    # module name, corresponding to its full path without .py
+                    #
+                    # however, the params' "filename" may also be executed
+                    # as a standalone file in a "fresh" python interpreter,
+                    # and still give the same results
+                    #
+                    # in order to achieve this goal, ONLY during the params
+                    # loading phase, the "local" module name is replaced
+                    # by a temporary module name with the relative path
+                    # instead of the full path
+                    #
+                    # importantly, there may be already imported modules with
+                    # the same name as those temporary module names
+                    #
+                    # the "original" modules with conflicting names
+                    # temporarily swap their name with the local module name,
+                    # and get their original one back only at the end of
+                    # "filename"'s execution
+                    #
+                    # special care is put in restoring the original modules
+                    # situation in case some error happens
+                    
+                    local_module_name = str(local_path).rstrip('.py')
+                    original_module_name = local_module_name.split('/')[-1]
+                    local_module_names[original_module_name] = \
+                        local_module_name
+                    
+                    # swap name of original modules
+                    if original_module_name in sys.modules:
+                        sys.modules[local_module_name] = \
+                            sys.modules.pop(original_module_name)
+                    
+                    # ALL local modules are temporarily removed
+                    # incidentally, this means that one may just change the
+                    # local parameters files, and those modules are updated
+                    # at the next Params.load call, in contrast with the usual
+                    # behavior when importing modules with python
+                    if local_module_name in sys.modules:
+                        temporarily_removed_modules[local_module_name] = \
+                            sys.modules.pop(local_module_name)
+                
+                # add current directory to sys.path
+                sys.path.insert(0, '')
+                
+                # treat filename as a (local) module
+                module_name = str(path).split('/')[-1].rstrip('.py')
+                module = types.ModuleType(module_name)
+                module.__file__ = str(path)
+                sys.modules[module_name] = module
+                
+                # execute the file inside the module’s namespace
                 source = path.read_text()
-                exec_namespace = {
-                    "__name__": "__main__",
-                    "__file__": str(path),
-                    "__package__": None,
-                }
-                module = str(path).split('/')[-1].rstrip('.py')
-                exec(compile(source, str(path), 'exec'), exec_namespace)
-                for name in exec_namespace:
+                exec(compile(source, str(path), "exec"), module.__dict__)
+                
+                # populate the fields
+                for name in module.__dict__:
                     
                     # ...only if not assigned already
                     if name in fields and name not in kwargs:
                         
                         # backup old values
                         if hasattr(instance, name):
-                            backup[name] = fields[name]
+                            backup_params[name] = fields[name]
                         
                         # get new values
-                        fields[name] = exec_namespace[name]
+                        fields[name] = module.__dict__[name]
                         num_fields_from_filename += 1
-                        if name in ['states_function', 'descriptors_function',
-                                    'values_function', 'network', 'fit']:
-                            # register origin
-                            fields[name].__module__ = module
                     
                     # special fields
                     if name == 'states_function':
                         new_states_function = True
                     if name == 'initial_paths':
                         new_initial_paths = True
+                
+                # after "filename" execution, we can swap original and local
+                # modules name avoiding conflicts
+                for original_name, local_name in local_module_names.items():
+                    original_module = None
+                    local_module = None
+                    
+                    # retrieve modules
+                    if original_name in sys.modules:
+                        local_module = sys.modules.pop(original_name)
+                    if local_name in sys.modules:
+                        original_module = sys.modules.pop(local_name)
+                    
+                    # actual swapping
+                    if original_module is not None:
+                        sys.modules[original_name] = original_module
+                    if local_module is not None:
+                        sys.modules[local_name] = local_module
                         
+                        # let classes and functions inherit the change
+                        # through their __module__ attribute
+                        # (necessary only for local modules, used in __str__
+                        #  and save methods)
+                        for name, obj in local_module.__dict__.items():
+                            if callable(obj) or isinstance(obj, type):
+                                obj.__module__ = local_name
+                
+                # put back temporarily removed modules that were not
+                # reimported in the procedure
+                for module_name in temporarily_removed_modules:
+                    if module_name not in sys.modules:
+                        sys.modules[module_name] = \
+                            temporarily_removed_modules[module_name]
+            
             # assign fields; raise error for missing fields
             for name in list(fields):
                 if fields[name] is MISSING:
@@ -991,14 +1106,18 @@ Manager and trainer share an extra task together."""
                 instance.__setattr__('path', path)
             
             return instance
-
-        # in case of error: return to old values
+        
         except Exception as exception:
-            for name in backup:
-                object.__setattr__(instance, name, backup[name])
+            
+            # restore modules
+            sys.modules = backup_modules
+            
+            # restore attributes
+            for name in backup_params:
+                object.__setattr__(instance, name, backup_params[name])
             raise exception
         
-        finally:  # back to the original folder
+        finally:  # back to the original folder & path
             os.chdir(cwd)
             sys.path.pop(0)
     
@@ -1007,14 +1126,22 @@ Manager and trainer share an extra task together."""
         return self.load(None, *args, **kwargs)
 
     def save(self, path=None):
-        """Save to file and replace params.path"""
+        """Save to file and replace params.path.
+        MUST be in the same folder as params' working directory."""
         
         # determine correct path (never overwrite)
         if not path:
             path = self.path
-        filename = absolute_path(path)
-        if self.path == self.parent:
-            filename = f'{filename}/params.py'
+        else:
+            path = absolute_path(path, text=False, check=False)
+        if path == self.parent:
+            filename = f'{self.parent}/params.py'
+        elif path.parent != self.parent:
+            raise TypeError(f'params must be saved be in '
+                            f'"{os.path.relpath(str(self.parent), ".")}"')
+        else:
+            filename = f'{path}'
+        
         while Path(filename).exists():
             filename = filename.rstrip('.py')
             i = len(filename)
@@ -1044,17 +1171,20 @@ Manager and trainer share an extra task together."""
         # change module and source to the new file (only if defined in main)
         for name in self.__dataclass_fields__:
             value = getattr(self, name)
-            if hasattr(value, '__module__'):
+            if callable(value):
                 if value.__module__ == '__main__':
-                    value.__module__ = filename.split('/')[-1].rstrip('.py')
-                    if name == 'network':
-                        value.__source__ = (
-                            f'from {value.__module__} import '
-                            f'{value.__class__.__name__}\n'
-                            f'network = {value.__class__.__name__}()\n')
-                    else:
-                        value.__source__ = (f'from {value.__module__} '
-                                            f'import {name}\n')
+                    value.__module__ = filename.rstrip('.py')
+                value.__source__ = (  # when "local" import, omit path
+                    f'from {value.__module__.split("/")[-1]} '
+                    f'import {name}\n')
+            if (hasattr(value, '__class__') and
+                value.__class__.__module__ == '__main__'):
+                value.__class__.__module__ = filename.rstrip('.py')
+            if name == 'network':
+                value.__source__ = (  # when "local" import, omit path
+                    f'from {value.__class__.__module__.split("/")[-1]}'
+                    f' import {value.__class__.__name__}\n'
+                    f'network = {value.__class__.__name__}()\n')
         
         # update path info and report
         path = Path(filename).resolve()
