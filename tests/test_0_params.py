@@ -71,7 +71,7 @@ def test_params():
             raise RuntimeError('params4.py not created')
         
         if params3.fit.__module__ != \
-            absolute_path('params4.py').rstrip('.py')
+            absolute_path('params4.py').rstrip('.py'):
             raise RuntimeError(f'new fit not assigned to params4, '
                                f'{params3.fit.__module__} instead')
         
