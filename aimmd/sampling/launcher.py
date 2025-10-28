@@ -3,6 +3,7 @@ import sys
 import time
 import numpy as np
 import signal
+import traceback
 import multiprocessing
 from math import ceil
 from pathlib import Path
@@ -29,7 +30,8 @@ def _run_task(params_file, directory,
                localid, cpus_per_task, gpus_per_task,
                termination_timeout).run(task, *args)
     except Exception as exception:
-        print(f'[Error] {exception}')
+        print(f'\n[Worker {os.getpid()}] Error')
+        traceback.print_exc()
         return 1
     return 0
 
