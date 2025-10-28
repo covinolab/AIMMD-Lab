@@ -3,6 +3,7 @@ import pty
 import copy
 import time
 import torch
+import types
 import psutil
 import numpy as np
 import select
@@ -206,6 +207,19 @@ class class_or_instancemethod(classmethod):
         else:
             descr_get = self.__func__.__get__
         return descr_get(instance, type_)
+
+
+def clone_function(function):
+    new_function = types.FunctionType(
+        function.__code__, 
+        function.__globals__, 
+        name=function.__name__,
+        argdefs=copy.deepcopy(function.__defaults__),
+        closure=function.__closure__)
+    new_function.__module__ = function.__module__
+    if hasattr(function, '__source__'):
+        new_function.__source__ = function.__source__
+    return new_function
 
 
 def placeholder_values_function(descriptors):
