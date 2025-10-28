@@ -3,7 +3,6 @@ import pty
 import copy
 import time
 import torch
-import types
 import psutil
 import numpy as np
 import select
@@ -171,11 +170,11 @@ def now():
     return str(datetime.now())[11:19]
 
 
-def absolute_path(path='.', go_to=None, check=True, text=True):
+def absolute_path(path='.', go_to=None, check=True):
     """Gives absolute path.
     If "go_to" is not None:  with respect to the folder specified by "go_to".
     If "check" is True: checks existing before returning.
-    If "text" is False: returns pathlib.Path object instead."""
+    Returns pathlib.Path object."""
     cwd = os.getcwd()
     if go_to:
         os.chdir(go_to)
@@ -183,8 +182,6 @@ def absolute_path(path='.', go_to=None, check=True, text=True):
         result = Path(path).resolve()
         if check and not result.exists():
             raise FileNotFoundError(f'{path} does not exist')
-        if text:
-            return f'{Path(path).resolve()}'
         return result
     finally:
         os.chdir(cwd)
@@ -207,19 +204,6 @@ class class_or_instancemethod(classmethod):
         else:
             descr_get = self.__func__.__get__
         return descr_get(instance, type_)
-
-
-def clone_function(function):
-    new_function = types.FunctionType(
-        function.__code__, 
-        function.__globals__, 
-        name=function.__name__,
-        argdefs=copy.deepcopy(function.__defaults__),
-        closure=function.__closure__)
-    new_function.__module__ = function.__module__
-    if hasattr(function, '__source__'):
-        new_function.__source__ = function.__source__
-    return new_function
 
 
 def placeholder_values_function(descriptors):
