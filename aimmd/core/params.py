@@ -29,13 +29,12 @@ def getsourcefile(obj):
         for name in dir(obj):
             method = getattr(obj, name)
             try:
-                if absolute_path(
-                    method.__code__.co_filename, text=False).parent == cwd:
+                if absolute_path(method.__code__.co_filename).parent == cwd:
                     result = method.__code__.co_filename
             except:
                 pass
         if not result:
-            return absolute_path(f'{obj.__module__.split("/")[-1]}.py')
+            return str(absolute_path(f'{obj.__module__.split("/")[-1]}.py'))
         return result
     return obj.__code__.co_filename
 
@@ -402,7 +401,7 @@ Manager and trainer share an extra task together."""
     
     path : PosixPath = field(
         init=False,
-        default=absolute_path(text=False),
+        default=absolute_path(),
         metadata={'description':
 """Will perform engine operations relative to `path`'s directory."""
                  })
@@ -449,21 +448,22 @@ Manager and trainer share an extra task together."""
                     raise TypeError(f'{name} must be callable, '
                                     f'got {type(value).__name__}: {value}')
                 
-                # function directly defined in main
-                if value.__module__ == '__main__':
-                    try:
-                        value.__source__ = getsource(value)
-                    except:
-                        if not hasattr(value, '__source__'):
-                            value.__source__ = \
-                                f'lambda : raise Exception("not found")'
-                    if (not value.__source__.startswith('def ')
-                        and 'lambda' in value.__source__):
-                        value.__source__ = f'{name} = lambda ' + (
-                          'lambda'.join(value.__source__.split('lambda')[1:]))
+                # always try to get function source
+                try:
+                    value.__source__ = getsource(value)
+                except:
+                    if not hasattr(value, '__source__'):
+                        value.__source__ = \
+                            f'lambda : raise Exception("not found")'
                 
-                else:  # function defined somewhere else
-                    # assign source after having defined the right module
+                # process lambda functions
+                if (not value.__source__.startswith('def ')
+                    and 'lambda' in value.__source__):
+                    value.__source__ = f'{name} = lambda' + (
+                      'lambda'.join(value.__source__.split('lambda')[1:]))
+                
+                # function defined not in main
+                if value.__module__ != '__main__':
                     value.__source__ = (  # when "local" import, omit path
                         f'from {value.__module__.split("/")[-1]} '
                         f'import {name}\n')
@@ -497,20 +497,20 @@ Manager and trainer share an extra task together."""
                         raise TypeError(
                             f'{name} must have method "{attribute}"')
                 
+                # always try to get class source
+                try:
+                    value.__class__.__source__ = getsource(value.__class__)
+                except:
+                    if not hasattr(value.__class__, '__source__'):
+                        value.__class__.__source__ = (
+                            f'class {value.__class__.__name__}:\n'
+                            f'    def __init__(self):\n'
+                            f'        raise Exception("not found")\n')
+                
                 # class defined in main
                 if value.__class__.__module__ == '__main__':
-                    try:
-                        value.__source__ = \
-                            f'{getsource(value.__class__)}\n'
-                    except:
-                        if not hasattr(value, '__source__'):
-                            value.__source__ = (
-                                f'class  {value.__class__.__name__}:\n'
-                                f'    def __init__(self):\n'
-                                f'        raise Exception("not found")\n\n')
-                    
-                    # compose
-                    value.__source__ = (value.__source__ +
+                    value.__source__ = (
+                        f'{value.__class__.__source__}\n'
                         f'network = {value.__class__.__name__}()')
                 
                 # class defined somewhere else, network defined in main
@@ -545,13 +545,13 @@ Manager and trainer share an extra task together."""
                                 f'got {type(value).__name__}')
             
             # by setting attribute, you loose link to path
-            if hasattr(self, 'path'):
-                path = self.path
-                if self.path.is_file():
-                    path = path.parent
-            else:
-                path = absolute_path(text=False)
-            super().__setattr__('path', path)
+            # if hasattr(self, 'path'):
+            #     path = self.path
+            #     if self.path.is_file():
+            #         path = path.parent
+            # else:
+            #     path = absolute_path()
+            # super().__setattr__('path', path)
         
         # assign (path is last in "load" so you will restore it)
         super().__setattr__(name, value)
@@ -590,10 +590,16 @@ Manager and trainer share an extra task together."""
             raise exception
     
     def __eq__(self, params):
+        # different working directory
+        if self.parent != params.parent:
+            return False
+        
         # after initialization, all fields are already populated
         for name in self.__dataclass_fields__:
             value1 = getattr(self, name)
             value2 = getattr(params, name)
+            
+            # check initial paths
             if name == 'initial_paths':
                 if len(value1) != len(value2):
                     return False
@@ -602,17 +608,69 @@ Manager and trainer share an extra task together."""
                     # MDAnalysis trajectories
                     if path1.filename != path2.filename:
                         return False
-            elif hasattr(value1, '__class__'):  # network
-                # also params.path falls in here,
-                # and has always the same module, so it's never False
-                if (value1.__class__.__module__ !=
-                    value2.__class__.__module__):
-                    return False
-            elif hasattr(values1, '__module__'):
-                if value1.__module__ != value2.__module:
-                    return False
+            
+            # check functions / instances of classes
+            elif hasattr(value1, '__module__'):
+                
+                # if they are functions, the check is easy
+                if hasattr(value1, '__code__'):
+                    if value1.__code__.co_code != value2.__code__.co_code:
+                        return False
+                    if (value1.__code__.co_argcount !=
+                        value2.__code__.co_argcount):
+                        return False
+                
+                # now we are checking instances of classes;
+                # when both values are not from main...
+                elif (value1.__module__ != '__main__' and
+                      value2.__module__ != '__main__'):
+                    
+                    # ...they must have the same module
+                    if value1.__module__ != value2.__module__:
+                        return False
+                
+                else: # otherwise, they must share the same source
+                    try:
+                        object1 = value1
+                        object2 = value2
+                        assert object1.__source__ == object2.__source__
+                    
+                    except:
+                        # last chance: the classes must share the same source
+                        if hasattr(value1, '__class__') and hasattr(
+                            value1.__class__, '__source__') and hasattr(
+                            value2.__class__, '__source__'):
+                            object1 = value1.__class__
+                            object2 = value2.__class__
+                            if object1.__source__ != object2.__source__:
+                                return False
+                            
+                            # we'll then reference the class and not
+                            # directly the instance
+                        
+                        else:  # that was your last chance...
+                            return False
+                    
+                    # finally, if not from main, they must be local
+                    if object1.__module__ == '__main__':
+                        try:
+                            path = absolute_path(f'{object2.__module__}.py',
+                                                 go_to=self.parent)
+                            assert path.parent == self.parent
+                        except:
+                            return False
+                    if object2.__module__ == '__main__':
+                        try:
+                            path = absolute_path(f'{object1.__module__}.py',
+                                                 go_to=self.parent)
+                            assert path.parent == self.parent
+                        except:
+                            return False
+            
+            # check other types of values (easy)
             elif value1 != value2:
                 return False
+        
         return True
     
     def __str__(self, go_to=None):
@@ -638,13 +696,10 @@ Manager and trainer share an extra task together."""
             # initial paths
             elif name == 'initial_paths':
                 if not go_to:
-                    go_to = os.getcwd()
-                else:
-                    go_to = str(go_to)
+                    go_to = absolute_path()
                 filenames = [
                     f'"{os.path.relpath(path.filename, go_to)}"'
                     for path in value]
-                print('writing filenames', filenames)
                 lines.append(f'{name} = [{", ".join(filenames)}]')
             
             # all the rest
@@ -689,7 +744,7 @@ Manager and trainer share an extra task together."""
         """Convert path from sting to MDAnalysis `MemoryReader`.
         Otherwise do nothing"""
 
-        if type(path) is not str:
+        if type(path) not in (str, PosixPath):
             return path
         
         # absolute path
@@ -782,7 +837,7 @@ Manager and trainer share an extra task together."""
         """Will be called by user if necessary."""
         
         # go to the right folder
-        cwd = os.getcwd()
+        cwd = absolute_path()
         os.chdir(self.parent)
         
         try:  # cleanup
@@ -857,15 +912,15 @@ Manager and trainer share an extra task together."""
         
         # which folder we need to go to?
         if filename:
-            path = absolute_path(filename, text=False)
+            path = absolute_path(filename)
             if not path.is_file():
                 raise TypeError(f'{filename} must be a file')
             folder = path.parent
         else:
-            folder = absolute_path(text=False)
+            folder = path = absolute_path()
         
         # go to folder
-        cwd = os.getcwd()
+        cwd = absolute_path()
         os.chdir(folder)
         sys.path.insert(0, f'{folder}')
         
@@ -877,7 +932,6 @@ Manager and trainer share an extra task together."""
             # do we need to create or select an instance of Params?
             if isinstance(self_or_cls, type):
                 instance = super().__new__(self_or_cls)
-                instance.__setattr__('path', folder)  # temporary path
             else:
                 instance = self_or_cls
                 if filename and instance.parent != folder:
@@ -902,6 +956,7 @@ Manager and trainer share an extra task together."""
             # defaults
             new_states_function = False
             new_initial_paths = False
+            instance.__setattr__('path', path)
             
             # update fields with args (in the right order)            
             for value, name in zip(args, self_or_cls.__dataclass_fields__):
@@ -911,7 +966,7 @@ Manager and trainer share an extra task together."""
                                     f'remove the positional argument or '
                                     f'the keyword argument')
                 kwargs[name] = value
-            
+                        
             # update fields with kwargs
             for name in kwargs:
                 if name in fields:
@@ -1010,7 +1065,7 @@ Manager and trainer share an extra task together."""
                 
                 # execute the file inside the module’s namespace
                 source = path.read_text()
-                exec(compile(source, str(path), "exec"), module.__dict__)
+                exec(compile(source, path, "exec"), module.__dict__)
                 
                 # populate the fields
                 for name in module.__dict__:
@@ -1055,7 +1110,9 @@ Manager and trainer share an extra task together."""
                         # (necessary only for local modules, used in __str__
                         #  and save methods)
                         for name, obj in local_module.__dict__.items():
-                            if callable(obj) or isinstance(obj, type):
+                            if (callable(obj) or isinstance(obj, type)) and (
+                                hasattr(obj, '__module__') and
+                                obj.__module__ == original_name):
                                 obj.__module__ = local_name
                 
                 # put back temporarily removed modules that were not
@@ -1077,11 +1134,9 @@ Manager and trainer share an extra task together."""
             
             # save new file and set path while saving
             if num_fields_from_filename < len(fields):
-                # only when params file did not have all fields
+                # save it only when params file did not have all fields
                 # already defined with no defaults
                 instance.save()
-            else:
-                instance.__setattr__('path', path)
             
             return instance
         
@@ -1093,6 +1148,7 @@ Manager and trainer share an extra task together."""
             # restore attributes
             for name in backup_params:
                 object.__setattr__(instance, name, backup_params[name])
+            
             raise exception
         
         finally:  # back to the original folder & path
@@ -1103,25 +1159,28 @@ Manager and trainer share an extra task together."""
         """Like load but without filename."""
         return self.load(None, *args, **kwargs)
 
-    def save(self, path=None):
+    def save(self, path=None, seek_existing_file=True):
         """Save to file and replace params.path.
-        MUST be in the same folder as params' working directory."""
+        MUST be in the same folder as params' working directory.
+        path: if None, assign by default
+        seek_existing_file: if True, try to replace path with already
+        existing file"""
         
         # determine correct path (never overwrite)
         if not path:
             path = self.path
         else:
-            path = absolute_path(path, text=False, check=False)
+            path = absolute_path(path, check=False)
         if path == self.parent:
-            filename = f'{self.parent}/params.py'
+            filename = Path(f'{self.parent}/params.py')
         elif path.parent != self.parent:
             raise TypeError(f'params must be saved be in '
                             f'"{os.path.relpath(str(self.parent), ".")}"')
         else:
-            filename = f'{path}'
+            filename = path
         
-        while Path(filename).exists():
-            filename = filename.rstrip('.py')
+        while filename.exists():
+            filename = str(filename).rstrip('.py')
             i = len(filename)
             while filename[i - 1:].isnumeric() and i:
                 i -= 1
@@ -1129,46 +1188,47 @@ Manager and trainer share an extra task together."""
                 n = int(filename[i:]) + 1
             else:
                 n = 1
-            filename = f'{filename[:i]}{n}.py'
+            filename = Path(f'{filename[:i]}{n}.py')
         
-        # actual save
-        with open(filename, 'w') as file:
+        # create text object
+        text = []
             
-            # copy main modules
-            modules = vars(sys.modules['__main__'])
-            file.write(f'# packages\n')
-            for name in modules:
-                if type(modules[name]) is not type(sys):
-                    continue
-                file.write(f'import {modules[name].__name__} as {name}\n')
-            file.write(f'inf = float("inf")\n\n')
-            
-            # copy params
-            file.write('\n'.join(self.__str__().split('\n')[1:]))
+        # copy main modules
+        modules = vars(sys.modules['__main__'])
+        text.append(f'# packages\n')
+        for name in modules:
+            if type(modules[name]) is not type(sys):
+                continue
+            text.append(f'import {modules[name].__name__} as {name}\n')
+        text.append(f'inf = float("inf")\n\n')
         
-        # change module and source to the new file (only if defined in main)
-        for name in self.__dataclass_fields__:
-            value = getattr(self, name)
-            if callable(value):
-                if value.__module__ == '__main__':
-                    value.__module__ = filename.rstrip('.py')
-                value.__source__ = (  # when "local" import, omit path
-                    f'from {value.__module__.split("/")[-1]} '
-                    f'import {name}\n')
-            if (hasattr(value, '__class__') and
-                value.__class__.__module__ == '__main__'):
-                value.__class__.__module__ = filename.rstrip('.py')
-            if name == 'network':
-                value.__source__ = (  # when "local" import, omit path
-                    f'from {value.__class__.__module__.split("/")[-1]}'
-                    f' import {value.__class__.__name__}\n'
-                    f'network = {value.__class__.__name__}()\n')
+        # copy params
+        text.append('\n'.join(self.__str__().split('\n')[1:]))
+        text = "".join(text)
+
+        # was there? then use it
+        writing = True
+        if seek_existing_file:
+            for old_filename in sorted(filename.parent.glob("*.py")):
+                if old_filename.read_text() == text:
+                    writing = False
+                    filename = old_filename
+                    break
+        
+        # only when different: write it
+        if writing:
+            with open(filename, 'w') as file:
+                file.write(text)
+            
+            # report
+            print(f'Written full params and descriptions to '
+              f'"{os.path.relpath(filename, absolute_path())}"')
+        else:
+            print(f'Assigned parameters file '
+              f'"{os.path.relpath(filename, absolute_path())}"')
         
         # update path info and report
-        path = Path(filename).resolve()
-        self.__setattr__('path', path)
-        print(f'Written full params and descriptions to '
-              f'"{os.path.relpath(path, os.getcwd())}"')
+        self.__setattr__('path', filename)
     
     def crop_initial_paths(self):
         """Leave only the transition parts in `params.inital_paths`, to
