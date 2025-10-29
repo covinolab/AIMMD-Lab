@@ -175,17 +175,17 @@ def test_params():
                   'methods missing, initializing it on __main__, and then '
                   'trying to update "params2" with the object results in an '
                   'error')
-            class NewNetwork:  # without required methods
+            class Network1:  # without required methods
                 pass
             
-            network = NewNetwork()
+            new_network = Network1()
             
             # as if on terminal
-            NewNetwork.__module__ = '__main__'
-            network.__module__ = '__main__'
+            Network1.__module__ = '__main__'
+            new_network.__module__ = '__main__'
             
             try:
-                params2.update(network=network)
+                params2.update(network=new_network)
                 raise RuntimeError('"params2" could be updated')
             except TypeError:
                 pass
@@ -195,16 +195,16 @@ def test_params():
                   'updating "params2" with "network" changes "params2" and '
                   'generates the file "params3.py" where the network is '
                   '"network" (regardless of the original variable name)')
-            class NewNetwork:  # with required methods
+            class Network2:  # with required methods
                 def forward(): pass
                 def state_dict(): pass
                 def load_state_dict(): pass
             
-            new_network = NewNetwork()
+            new_network = Network2()
             
             # as if on terminal
-            NewNetwork.__module__ = '__main__'
-            NewNetwork.__source__ = (
+            Network2.__module__ = '__main__'
+            Network2.__source__ = (
                 'class NewNetwork:\n'
                 '    def forward(): pass\n'
                 '    def state_dict(): pass\n'
@@ -214,7 +214,7 @@ def test_params():
             params2.update(network=new_network)
             if not os.path.exists('params3.py'):
                 raise RuntimeError('params3.py not created')
-
+            
             print('Test 17: reloading "params3.py" now gives an equivalent '
                   'object to "params2"')
             assert aimmd.Params('params3.py') == params2
