@@ -205,7 +205,7 @@ def test_params():
             # as if on terminal
             Network2.__module__ = '__main__'
             Network2.__source__ = (
-                'class NewNetwork:\n'
+                'class Network2:\n'
                 '    def forward(): pass\n'
                 '    def state_dict(): pass\n'
                 '    def load_state_dict(): pass\n')
