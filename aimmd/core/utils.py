@@ -2582,7 +2582,8 @@ def scorporate_pathensembles(pathensemble):
     return shots, equilibriumA, equilibriumB
 
 
-def run_acceptance_rejection_on_latest_path(chain, values_function):
+def run_acceptance_rejection_on_latest_path(
+    chain, values_function, bins, densities):
     """Executed when doing TPS."""
     
     def compute_sp_bias(values, sp_value, bins, densities):
