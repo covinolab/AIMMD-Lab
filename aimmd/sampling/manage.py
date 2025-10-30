@@ -285,7 +285,8 @@ def manage(self, n, nA, nB, eA=0, eB=0,
             if do_tps:
                 # load params at the time of SP selection
                 bins, densities = load_network_and_projections(network, chains[k].directory)
-                run_acceptance_rejection_on_latest_path(chains[k], values_function)
+                run_acceptance_rejection_on_latest_path(
+                    chains[k], values_function, bins, densities)
             
             # update pool
             pool_index = np.load(f'{chains[k].directory}/pool_index.npy')
