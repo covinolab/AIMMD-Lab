@@ -1147,8 +1147,8 @@ class PathEnsemble(AbstractPathEnsemble):
                     new_values = values_function(
                         self.frames(sample_indices))
                 np.set_printoptions(precision=16, suppress=True)
-                print(old_values, new_values)
-                if np.all((old_values - new_values)/old_values < 1e-4):
+                print(f"old_values: {old_values}, new_values: {new_values}")
+                if np.all(np.abs(old_values - new_values) < 1e-4):
                     only_zeros = True  # network unchanged
                     print("Skipping re-evaluation of existing values since network is unchanged.")
 
