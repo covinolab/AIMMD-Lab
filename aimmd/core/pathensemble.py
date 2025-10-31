@@ -1120,11 +1120,38 @@ class PathEnsemble(AbstractPathEnsemble):
                       values_function=None, key=None):
         """
         Calls again descriptors_function over frame_descriptors.
+        If the network has not changed from the last call, only evaluate 
+        values for new additions to the ensemble that have not
+        been properly initialised (identical to only_zeros=True).
+        If it has changed, proceed to evaluate those frames for which the parameters request it.
+
+        As PathEnsemble doesn't track changes to the network, which is not passed to PathEnsemble at all,
+        it will be assumed that if network outputs for the first 3 frames in the path ensemble are unchanged,
+        the network hasn't changed (for deterministic value functions).
         """
         if not len(self):
             return
         if values_function is None:
             values_function = self.values_function
+
+        if len(self.__frame_values)>=3:
+            sample_indices = np.array([0, 1, 2])
+            if only_zeros:
+                sample_indices = np.where(self.__frame_values==0.)[0][:3]
+            if len(sample_indices):
+                old_values = self.__frame_values[sample_indices].copy()
+                if self.__frame_descriptors.shape[1]:
+                    new_values = values_function(
+                        self.__frame_descriptors[sample_indices])
+                else:
+                    new_values = values_function(
+                        self.frames(sample_indices))
+                np.set_printoptions(precision=16, suppress=True)
+                print(old_values, new_values)
+                if np.all((old_values - new_values)/old_values < 1e-4):
+                    only_zeros = True  # network unchanged
+                    print("Skipping re-evaluation of existing values since network is unchanged.")
+
         if only_reactive or only_zeros or key is not None:
             mask = np.ones(len(self.__frame_values), dtype=bool)
             if key is not None:
