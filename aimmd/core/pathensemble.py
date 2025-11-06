@@ -1120,7 +1120,7 @@ class PathEnsemble(AbstractPathEnsemble):
                       values_function=None, 
                       key=None,
                       check_for_network_change=True,
-                      sparse_update_max_frames=None,
+                      sparse_update_max_frames=-1,
                       verbose=False):
         """
         Calls again descriptors_function over frame_descriptors, and then the network to evaluate values.
@@ -1150,12 +1150,12 @@ class PathEnsemble(AbstractPathEnsemble):
             If True, check if the network has changed since last evaluation.
             Default is True.
         sparse_update_max_frames : int, optional
-            If set, and if the number of frames to be updated exceeds this
+            If set to other than -1, and if the number of frames to be updated exceeds this
             number, only update a random subset of frames up to this number.
             The other frames will be set to zero values, to avoid carry-over
             between sparse bin updates. Incompatible with 
             checking for network change.
-            Default is None.
+            Default is -1.
         verbose : bool, optional
             If True, print information about the update process. Default is False.
 
@@ -1168,7 +1168,7 @@ class PathEnsemble(AbstractPathEnsemble):
         if values_function is None:
             values_function = self.values_function
 
-        if sparse_update_max_frames is not None and check_for_network_change:
+        if sparse_update_max_frames != -1 and check_for_network_change:
             raise ValueError("sparse_update_max_frames and check_for_network_change are incompatible options.")
 
         # check for network change
@@ -1189,7 +1189,7 @@ class PathEnsemble(AbstractPathEnsemble):
                     if verbose:
                         print("Skipping re-evaluation of existing values since network is unchanged.")
 
-        if only_reactive or only_zeros or key is not None or sparse_update_max_frames is not None:
+        if only_reactive or only_zeros or key is not None or sparse_update_max_frames != -1:
             mask = np.ones(len(self.__frame_values), dtype=bool)
             if key is not None:
                 try:
@@ -1204,7 +1204,7 @@ class PathEnsemble(AbstractPathEnsemble):
                 mask *= self.__frame_states == 'R'
             if only_zeros:
                 mask *= self.__frame_values == 0.
-            if sparse_update_max_frames is not None:
+            if sparse_update_max_frames != -1:
                 # check number of frames to update
                 n_frames_to_update = np.sum(mask)
                 if n_frames_to_update > sparse_update_max_frames:
@@ -1233,8 +1233,8 @@ class PathEnsemble(AbstractPathEnsemble):
         else:
             self.__frame_values = values_function(
                 self.__frame_descriptors)
-        
-        if sparse_update_max_frames is not None:
+
+        if sparse_update_max_frames != -1:
             # Set zero values to those frames that have not been sparsely updated
             self.__frame_values[~mask] = 0.
 

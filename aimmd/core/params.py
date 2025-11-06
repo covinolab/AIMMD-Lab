@@ -387,9 +387,9 @@ energy and rates estimates. Passed to `pathensemble.reweight`."""
                  })
     
     sparse_update_max_frames : int = field(
-        default = None,
+        default = -1,
         metadata={'description':
-        """Maximum number of frames to use for sparse value updates. If None,
+        """Maximum number of frames to use for sparse value updates. If -1,
         use all available frames."""
                  })
 
@@ -778,7 +778,7 @@ Manager and trainer share an extra task together."""
         crop: if True, crop each trajectory to first transition.
         """
         # check for options consistency
-        if self.reweight_pathensemble_after_training and self.sparse_update_max_frames is not None:
+        if self.reweight_pathensemble_after_training and self.sparse_update_max_frames != -1:
             raise ValueError('When reweight_pathensemble_after_training is True, sparse_update_max_frames must be None.')
 
         # either new paths or already attributed ones
