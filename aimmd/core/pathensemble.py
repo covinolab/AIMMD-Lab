@@ -2482,7 +2482,8 @@ class PathEnsemblesCollection(AbstractPathEnsemble):
                 only_reactive=only_reactive,
                 only_zeros=only_zeros,
                 values_function=values_function,
-                sparse_update_max_frames=sparse_update_max_frames
+                sparse_update_max_frames=int(sparse_update_max_frames / len(self.pathensembles)) if sparse_update_max_frames > 0 else -1,
+                verbose=verbose
             )
 
     """
