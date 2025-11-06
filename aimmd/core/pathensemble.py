@@ -222,7 +222,7 @@ class AbstractPathEnsemble:
             condition += self.initial_states[key].ravel() == 'B'
         if forward:
             condition += self.final_states[key].ravel() == 'B'
-        return np.array([+np.inf if c else np.max(v, where=np.nonzero(v)) # The guard against zero values is to deal with sparse updates
+        return np.array([+np.inf if c else np.max(v, where=(v != 0), initial=-np.inf) # The guard against zero values is to deal with sparse updates
                          for v, c in zip(values, condition)])
     
     def min_values(self, key=None, backward=True, forward=True):
@@ -232,7 +232,7 @@ class AbstractPathEnsemble:
             condition += self.initial_states[key].ravel() == 'A'
         if forward:
             condition += self.final_states[key].ravel() == 'A'
-        return np.array([-np.inf if c else np.min(v, where=np.nonzero(v)) # The guard against zero values is to deal with sparse updates
+        return np.array([-np.inf if c else np.min(v, where=(v != 0), initial=np.inf) # The guard against zero values is to deal with sparse updates
                          for v, c in zip(values, condition)])
     
     def density(self, values, shooting_value, neighbors=10):
@@ -2474,15 +2474,17 @@ class PathEnsemblesCollection(AbstractPathEnsemble):
 
     def update_values(self,
         only_reactive=False, only_zeros=False,
-        values_function=None, verbose=False):
+        values_function=None, verbose=False, sparse_update_max_frames=-1):
         for i, pathensemble in enumerate(self.pathensembles):
             if verbose:
                 print('Pathensemble', i + 1, 'out of', len(self.pathensembles))
             pathensemble.update_values(
                 only_reactive=only_reactive,
                 only_zeros=only_zeros,
-                values_function=values_function)
-    
+                values_function=values_function,
+                sparse_update_max_frames=sparse_update_max_frames
+            )
+
     """
     Paths manipulation.
     """
