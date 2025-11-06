@@ -222,7 +222,7 @@ class AbstractPathEnsemble:
             condition += self.initial_states[key].ravel() == 'B'
         if forward:
             condition += self.final_states[key].ravel() == 'B'
-        return np.array([+np.inf if c else np.max(v)
+        return np.array([+np.inf if c else np.max(v, where=np.nonzero(v)) # The guard against zero values is to deal with sparse updates
                          for v, c in zip(values, condition)])
     
     def min_values(self, key=None, backward=True, forward=True):
@@ -232,7 +232,7 @@ class AbstractPathEnsemble:
             condition += self.initial_states[key].ravel() == 'A'
         if forward:
             condition += self.final_states[key].ravel() == 'A'
-        return np.array([-np.inf if c else np.min(v)
+        return np.array([-np.inf if c else np.min(v, where=np.nonzero(v)) # The guard against zero values is to deal with sparse updates
                          for v, c in zip(values, condition)])
     
     def density(self, values, shooting_value, neighbors=10):
@@ -1117,9 +1117,13 @@ class PathEnsemble(AbstractPathEnsemble):
     def update_values(self,
                       only_reactive=False,
                       only_zeros=False,
-                      values_function=None, key=None):
+                      values_function=None, 
+                      key=None,
+                      check_for_network_change=True,
+                      sparse_update_max_frames=None,
+                      verbose=False):
         """
-        Calls again descriptors_function over frame_descriptors.
+        Calls again descriptors_function over frame_descriptors, and then the network to evaluate values.
         If the network has not changed from the last call, only evaluate 
         values for new additions to the ensemble that have not
         been properly initialised (identical to only_zeros=True).
@@ -1128,13 +1132,47 @@ class PathEnsemble(AbstractPathEnsemble):
         As PathEnsemble doesn't track changes to the network, which is not passed to PathEnsemble at all,
         it will be assumed that if network outputs for the first 3 frames in the path ensemble are unchanged,
         the network hasn't changed (for deterministic value functions).
+
+        Parameters
+        ----------
+        only_reactive : bool, optional
+            If True, only re-evaluate values for frames in reactive states.
+            Default is False.
+        only_zeros : bool, optional
+            If True, only re-evaluate values for frames with value 0.
+            Default is False.
+        values_function : function, optional
+            Function to compute values from descriptors. If None, use the one
+            stored in the PathEnsemble. Default is None.
+        key : array-like, optional
+            Indices of paths to consider. If None, consider all paths. Default is None.
+        check_for_network_change : bool, optional
+            If True, check if the network has changed since last evaluation.
+            Default is True.
+        sparse_update_max_frames : int, optional
+            If set, and if the number of frames to be updated exceeds this
+            number, only update a random subset of frames up to this number.
+            The other frames will be set to zero values, to avoid carry-over
+            between sparse bin updates. Incompatible with 
+            checking for network change.
+            Default is None.
+        verbose : bool, optional
+            If True, print information about the update process. Default is False.
+
+        Returns
+        -------
+        None
         """
         if not len(self):
             return
         if values_function is None:
             values_function = self.values_function
 
-        if len(self.__frame_values)>=3:
+        if sparse_update_max_frames is not None and check_for_network_change:
+            raise ValueError("sparse_update_max_frames and check_for_network_change are incompatible options.")
+
+        # check for network change
+        if check_for_network_change and len(self.__frame_values)>=3:
             sample_indices = np.array([0, 1, 2])
             if only_zeros:
                 sample_indices = np.where(self.__frame_values==0.)[0][:3]
@@ -1146,13 +1184,12 @@ class PathEnsemble(AbstractPathEnsemble):
                 else:
                     new_values = values_function(
                         self.frames(sample_indices))
-                np.set_printoptions(precision=16, suppress=True)
-                print(f"old_values: {old_values}, new_values: {new_values}")
                 if np.all(np.abs(old_values - new_values) < 1e-4):
                     only_zeros = True  # network unchanged
-                    print("Skipping re-evaluation of existing values since network is unchanged.")
+                    if verbose:
+                        print("Skipping re-evaluation of existing values since network is unchanged.")
 
-        if only_reactive or only_zeros or key is not None:
+        if only_reactive or only_zeros or key is not None or sparse_update_max_frames is not None:
             mask = np.ones(len(self.__frame_values), dtype=bool)
             if key is not None:
                 try:
@@ -1167,6 +1204,21 @@ class PathEnsemble(AbstractPathEnsemble):
                 mask *= self.__frame_states == 'R'
             if only_zeros:
                 mask *= self.__frame_values == 0.
+            if sparse_update_max_frames is not None:
+                # check number of frames to update
+                n_frames_to_update = np.sum(mask)
+                if n_frames_to_update > sparse_update_max_frames:
+                    if verbose:
+                        print(f"Sparse update: {n_frames_to_update} frames to update exceeds maximum of {sparse_update_max_frames}. Updating a random subset.")
+                    # select random subset
+                    indices_to_update = np.where(mask)[0]
+                    selected_indices = np.random.choice(
+                        indices_to_update,
+                        size=sparse_update_max_frames,
+                        replace=False)
+                    new_mask = np.zeros(len(self.__frame_values), dtype=bool)
+                    new_mask[selected_indices] = True
+                    mask = new_mask
             if not np.sum(mask):
                 return
             if self.__frame_descriptors.shape[1]:
@@ -1181,7 +1233,11 @@ class PathEnsemble(AbstractPathEnsemble):
         else:
             self.__frame_values = values_function(
                 self.__frame_descriptors)
-    
+        
+        if sparse_update_max_frames is not None:
+            # Set zero values to those frames that have not been sparsely updated
+            self.__frame_values[~mask] = 0.
+
     """
     Paths manipulation.
     """
@@ -1627,7 +1683,7 @@ class PathEnsemble(AbstractPathEnsemble):
         # override frames option
         if not self.__frame_descriptors.shape[1]:
             frames = True
-        
+
         # extract frames and weights
         frame_weights = np.zeros(self.nframes)
         path_indices = np.arange(len(self))[key].ravel()
@@ -1641,6 +1697,8 @@ class PathEnsemble(AbstractPathEnsemble):
         if vmax is not None:
             frame_weights[self.__frame_values >= vmax] = 0.
         frame_indices = np.where(frame_weights > 0)[0]
+        # disregard further frames with zero values
+        frame_indices = frame_indices[self.__frame_values[frame_indices] != 0.]
         weights = frame_weights[frame_indices]  # now weights of frames
         
         # get values

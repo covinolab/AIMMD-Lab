@@ -19,7 +19,11 @@ inf = float('inf')
 print = functools.partial(print, flush=True)
 
 def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
-    """nrounds: number of training rounds."""
+    """nrounds: number of training rounds.
+    walltime: maximum walltime in seconds.
+    verbose: whether to print detailed information during training.
+    log_file: file to log output to. If None, logs to stdout.
+    """
     
     # report
     self.log_file = log_file
@@ -62,6 +66,8 @@ def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
     include_marginal_bins = self.params.include_marginal_bins
     reweight_parameters = self.params.reweight_parameters
     do_tps = self.params.do_tps
+    sparse_update_max_frames = self.params.sparse_update_max_frames
+    reweight_pathensemble_after_training = self.params.reweight_pathensemble_after_training
     
     print(f'\nLoading initial path(s) ({now()})')
     initial_paths = load_initial_paths(f'{directory}/initial_paths', topology,
@@ -133,7 +139,7 @@ def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
             return pathensemble
         
         print(f'\nUpdating the path ensemble values ({now()})')
-        pathensemble.update_values()
+        pathensemble.update_values(sparse_update_max_frames=sparse_update_max_frames)
         initial_paths.update_values()
         
         print(f'\nObtaining the adaptation bins ({now()})')
@@ -143,8 +149,8 @@ def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
             states=include_marginal_bins)
         print(f'    bins: {array2string(bins, 9)}')
         
-        print(f'\nReweighting the full path ensemble ({now()})')
-        if not do_tps:
+        if reweight_pathensemble_after_training:
+            print(f'\nReweighting the full path ensemble ({now()})')
             _reweight_parameters = reweight_parameters.copy()
             if 'sp_cutoff_min' not in _reweight_parameters and len(bins) > 3:
                 _reweight_parameters['sp_cutoff_min'] = 2 * bins[+1] - bins[+2]
