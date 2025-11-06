@@ -94,12 +94,8 @@ def test_sparse_value_updates_and_bins():
 
     # Check that no values are zero after full update
     assert not any(pe.frame_values == 0), "Path Ensemble has zero values after full update."
-
-    # update sparsely with clash, this should raise an error
-    with pytest.raises(ValueError):
-        pe.update_values(sparse_update_max_frames=10, check_for_network_change=True)
     
-    pe.update_values(sparse_update_max_frames=10, check_for_network_change=False)
+    pe.update_values(sparse_update_max_frames=10)
 
     # Check that all but 10 values are zero after sparse update
     num_zeros = sum(pe.frame_values == 0)
@@ -108,7 +104,7 @@ def test_sparse_value_updates_and_bins():
 
     # Check that different frames are set to zero after another sparse update
     previous_zeros_indices = zeros_indices.copy()
-    pe.update_values(sparse_update_max_frames=10, check_for_network_change=False)
+    pe.update_values(sparse_update_max_frames=10)
     new_zeros_indices = pe.frame_values == 0
 
     assert not all(previous_zeros_indices == new_zeros_indices), "Path Ensemble sparse update did not change zeroed frames on subsequent call."

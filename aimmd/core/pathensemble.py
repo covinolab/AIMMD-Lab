@@ -1153,8 +1153,8 @@ class PathEnsemble(AbstractPathEnsemble):
             If set to other than -1, and if the number of frames to be updated exceeds this
             number, only update a random subset of frames up to this number.
             The other frames will be set to zero values, to avoid carry-over
-            between sparse bin updates. Incompatible with 
-            checking for network change.
+            between sparse bin updates. Incompatible with
+            checking for network change, if set check_for_network_change will set to False.
             Default is -1.
         verbose : bool, optional
             If True, print information about the update process. Default is False.
@@ -1168,8 +1168,8 @@ class PathEnsemble(AbstractPathEnsemble):
         if values_function is None:
             values_function = self.values_function
 
-        if sparse_update_max_frames != -1 and check_for_network_change:
-            raise ValueError("sparse_update_max_frames and check_for_network_change are incompatible options.")
+        if sparse_update_max_frames != -1:
+            check_for_network_change = False
 
         # check for network change
         if check_for_network_change and len(self.__frame_values)>=3:
