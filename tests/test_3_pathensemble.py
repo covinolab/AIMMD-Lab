@@ -1,4 +1,4 @@
-"""" Tests relating to pathensemble module."""
+""" Tests relating to pathensemble module."""
 
 def test_only_update_pathensemble_when_network_changes():
     """ This test checks new functionality in pathensemble, where the values are only updated when
