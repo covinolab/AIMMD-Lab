@@ -2713,13 +2713,13 @@ def get_bins(pathensemble, nbins=10,
     if eA[0] == -inf and pathensemble.nframes:
         try:
             eA = np.array([np.min(pathensemble.frame_values[
-                           pathensemble.frame_states == 'R' & (pathensemble.frame_values != 0)])])
+                           (pathensemble.frame_states == 'R') & (pathensemble.frame_values != 0)])])
         except:
             eA = np.array([np.min(pathensemble.frame_values[pathensemble.frame_values != 0])])
     if eB[0] == +inf and pathensemble.nframes:
         try:
             eB = np.array([np.max(pathensemble.frame_values[
-                           pathensemble.frame_states == 'R' & (pathensemble.frame_values != 0)])])
+                           (pathensemble.frame_states == 'R') & (pathensemble.frame_values != 0)])])
         except:
             eB = np.array([np.max(pathensemble.frame_values[pathensemble.frame_values!=0])])
     
