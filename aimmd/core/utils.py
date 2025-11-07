@@ -331,6 +331,7 @@ def fit(network, pathensemble,
         early_stopping_min_samples=1000,
         early_stopping_split=0.1,
         graphs=False,
+        sparse_update_max_frames=False,
         verbose=False,
         worker=None):
     
@@ -515,7 +516,7 @@ def fit(network, pathensemble,
     
     if nbins or thA is not None or thB is not None:  # needed in these cases
         print(f'Updating the pathensemble values ({now()})')
-        pathensemble.update_values(only_reactive=True)  # with previous model
+        pathensemble.update_values(only_reactive=True, sparse_update_max_frames=sparse_update_max_frames)  # with previous model
     
     # getting descriptors size
     if initial_paths is not None:
@@ -2669,12 +2670,17 @@ def get_bins(pathensemble, nbins=10,
         shots = pathensemble
         equilibriumA = pathensemble[:0]
         equilibriumB = pathensemble[:0]
-    if not equilibriumA.nframes and not np.sum(pathensemble.are_transitions):
-        equilibriumA = initial_paths.crop(
-            frame_indices=initial_paths.frame_states =='A')
-    if not equilibriumB.nframes and not np.sum(pathensemble.are_transitions):
-        equilibriumB = initial_paths.crop(
-            frame_indices=initial_paths.frame_states =='B')
+    try:
+        if not equilibriumA.nframes and not np.sum(pathensemble.are_transitions):
+            equilibriumA = initial_paths.crop(
+                frame_indices=initial_paths.frame_states == 'A')
+        if not equilibriumB.nframes and not np.sum(pathensemble.are_transitions):
+            equilibriumB = initial_paths.crop(
+                frame_indices=initial_paths.frame_states =='B')
+    except (AttributeError, TypeError):
+        # No initial paths provided which could be used to substitute for equilibrium data in binning
+        # This is not a problem, we will only use the available shooting paths
+        pass
     equilibrium = equilibriumA + equilibriumB
     pathensemble = shots + equilibrium
     
@@ -2702,29 +2708,31 @@ def get_bins(pathensemble, nbins=10,
         eB = np.array([+inf])
     
     # if not crossing prob. data: just min and max value
+    # The guard against zero values is for cases of sparse updates, for the
+    # equilibrium data, it is taken care of in PathEnsemble.max/min_values()
     if eA[0] == -inf and pathensemble.nframes:
         try:
             eA = np.array([np.min(pathensemble.frame_values[
-                           pathensemble.frame_states == 'R'])])
+                           (pathensemble.frame_states == 'R') & (pathensemble.frame_values != 0)])])
         except:
-            eA = np.array([np.min(pathensemble.frame_values)])
+            eA = np.array([np.min(pathensemble.frame_values[pathensemble.frame_values != 0])])
     if eB[0] == +inf and pathensemble.nframes:
         try:
             eB = np.array([np.max(pathensemble.frame_values[
-                           pathensemble.frame_states == 'R'])])
+                           (pathensemble.frame_states == 'R') & (pathensemble.frame_values != 0)])])
         except:
-            eB = np.array([np.max(pathensemble.frame_values)])
+            eB = np.array([np.max(pathensemble.frame_values[pathensemble.frame_values!=0])])
     
     # assign
     begin = np.clip(eA[min(limit, len(eA) - 1)], begin, -cutoff_min)
     end = np.clip(eB[min(limit, len(eB) - 1)], +cutoff_min, end)
-    
+
     # further correct (avoid empty bins)
     if eA[-1] > begin:
         begin = eA[-1]
     if eB[-1] < end:
         end = eB[-1]
-    
+
     if begin < end:
         bins = np.linspace(begin, end, nbins + 1)
     else:

@@ -378,6 +378,21 @@ must support `rescale_knots` and `rescale_values`!"""
 energy and rates estimates. Passed to `pathensemble.reweight`."""
                  })
     
+    reweight_pathensemble_after_training :  bool = field(
+        default = True,
+        metadata={'description':
+        """If True: reweight the path ensemble after training the network.
+        This is useful for generating kinetics after every training, but
+        incompatible with using sparse value updates."""
+                 })
+    
+    sparse_update_max_frames : int = field(
+        default = -1,
+        metadata={'description':
+        """Maximum number of frames to use for sparse value updates. If -1,
+        use all available frames."""
+                 })
+
     # save options
     
     save_interval : int = field(
@@ -757,9 +772,15 @@ Manager and trainer share an extra task together."""
         """Run states_function and inspect result. Replace initial_path
         strings with MDAnalysis trajectories. Ensure initial paths are
         transitions. Return processed initial paths.
+
+        Also check for options consistency.
+
         crop: if True, crop each trajectory to first transition.
         """
-        
+        # check for options consistency
+        if self.reweight_pathensemble_after_training and self.sparse_update_max_frames != -1:
+            raise ValueError('When reweight_pathensemble_after_training is True, sparse_update_max_frames must be -1.')
+
         # either new paths or already attributed ones
         if not initial_paths:
             initial_paths = self.initial_paths
