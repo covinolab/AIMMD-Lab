@@ -779,7 +779,7 @@ Manager and trainer share an extra task together."""
         """
         # check for options consistency
         if self.reweight_pathensemble_after_training and self.sparse_update_max_frames != -1:
-            raise ValueError('When reweight_pathensemble_after_training is True, sparse_update_max_frames must be None.')
+            raise ValueError('When reweight_pathensemble_after_training is True, sparse_update_max_frames must be -1.')
 
         # either new paths or already attributed ones
         if not initial_paths:
