@@ -2677,7 +2677,7 @@ def get_bins(pathensemble, nbins=10,
         if not equilibriumB.nframes and not np.sum(pathensemble.are_transitions):
             equilibriumB = initial_paths.crop(
                 frame_indices=initial_paths.frame_states =='B')
-    except:
+    except (AttributeError, TypeError):
         # No initial paths provided which could be used to substitute for equilibrium data in binning
         # This is not a problem, we will only use the available shooting paths
         pass
