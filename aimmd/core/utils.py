@@ -2673,7 +2673,7 @@ def get_bins(pathensemble, nbins=10,
     try:
         if not equilibriumA.nframes and not np.sum(pathensemble.are_transitions):
             equilibriumA = initial_paths.crop(
-                frame_indices=initial_paths.frame_states =='A')
+                frame_indices=initial_paths.frame_states == 'A')
         if not equilibriumB.nframes and not np.sum(pathensemble.are_transitions):
             equilibriumB = initial_paths.crop(
                 frame_indices=initial_paths.frame_states =='B')
