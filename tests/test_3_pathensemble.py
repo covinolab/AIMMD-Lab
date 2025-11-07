@@ -112,8 +112,8 @@ def test_sparse_value_updates_and_bins():
     bins = get_bins(pe, cutoff_min=0.5)
 
     assert len(bins) > 1, "Path Ensemble sparse update did not allow binning to proceed correctly."
-    assert np.max(bins) == np.max(pe.frame_values[pe.frame_values != 0]), "Did not get correct max bin value."
-    assert np.min(bins) == np.min(pe.frame_values[pe.frame_values != 0]), "Did not get correct min bin value."
+    assert np.max(bins) == np.max(pe.frame_values[(pe.frame_values != 0) & (pe.frame_states == 'R')]), "Did not get correct max bin value."
+    assert np.min(bins) == np.min(pe.frame_values[(pe.frame_values != 0) & (pe.frame_states == 'R')]), "Did not get correct min bin value."
 
     # Now let's make sure the densities calculation in the trainer works properly with sparse updates
     bins = get_bins(pe, states=True)
@@ -128,5 +128,5 @@ def test_sparse_value_updates_and_bins():
     os.chdir(cwd)
 
 if __name__ == '__main__':
-    #test_only_update_pathensemble_when_network_changes()
+    test_only_update_pathensemble_when_network_changes()
     test_sparse_value_updates_and_bins()
