@@ -331,7 +331,8 @@ def fit(network, pathensemble,
         early_stopping_min_samples=1000,
         early_stopping_split=0.1,
         graphs=False,
-        sparse_update_max_frames=False,
+        sparse_update_max_frames=-1,
+        batching_strategy='draw-replace',
         verbose=False,
         worker=None):
     
@@ -468,7 +469,17 @@ def fit(network, pathensemble,
     graphs : bool, default=False
         If True, the descriptors are graphs, stored in the mlcolvar DataDict
         format. If False, they are numpy arrays.
-    
+
+    sparse_update_max_frames : int, default=-1
+        Maximum number of frames to use for sparse pathensemble value updates. If -1, use all frames.
+
+    batching_strategy : str, default='draw-replace'
+        Strategy to draw training batches. Options are:
+        - 'draw-replace': draw points with replacement according to selection probabilities.
+            One epoch is just one batch.
+        - 'loop-all': loop over all points in the training set without replacement, in batches of
+            size `batch_size`. One epoch is complete when all points have been used once.
+
     verbose : bool, default=False
         If True, be loud and noise. Among other things, show a progress bar
         during training.
@@ -498,7 +509,9 @@ def fit(network, pathensemble,
     
     TODO: include free/shot A-R and B-R paths.
     """
-    
+
+    assert batching_strategy in ('draw-replace', 'loop-all'), (f"Invalid batching strategy: {batching_strategy}")
+
     if graphs:
         # only need to import this torch_geometric Batch if graphs
         # are used as descriptors. Otherwise, avoid the dependency.
@@ -1201,7 +1214,7 @@ def fit(network, pathensemble,
     # Early stopping setup
 
     # disable early stopping, if threshold of training set size is not met
-    if len(selection_probabilities) < early_stopping_min_samples:
+    if (len(selection_probabilities) < early_stopping_min_samples) and train_validation_early_stopping:
         train_validation_early_stopping = False
         print(f"\nDisabling early stopping since < {early_stopping_min_samples} samples.")
 
@@ -1258,29 +1271,74 @@ def fit(network, pathensemble,
         for param_group in optimizer.param_groups:
             # slowly increase lr
             param_group['lr'] = lr * min(1, (counter.n + 1) / (epochs / 20))
-        
-        # sample batch
-        indices = np.random.choice(len(selection_probabilities),
-                                   batch_size, p=selection_probabilities)
-        
+
+        # Get batch indices
+        if batching_strategy == 'draw-replace':
+            # sample batch
+            indices = np.random.choice(len(selection_probabilities),
+                                       batch_size, p=selection_probabilities)
+        elif batching_strategy == 'loop-all':
+            # do not consider zero selection probabilities - they are not in the training set
+            training_indices = np.where(selection_probabilities > 0)[0]
+            # random permutation
+            training_indices = training_indices[torch.randperm(len(training_indices))]
+            try: # ensure array, if training set size is 1
+                len(training_indices)
+            except TypeError:
+                training_indices = np.array([training_indices])
+            batches = [training_indices[i:i + batch_size]
+                       for i in range(0, len(training_indices), batch_size)]
+
         if not graphs:
             if save_memory:  # separately to save memory
-                d = process_descriptors(descriptors[indices])
+                if batching_strategy == 'draw-replace':
+                    d = process_descriptors(descriptors[indices])
+                elif batching_strategy == 'loop-all':
+                    d = [
+                        process_descriptors(descriptors[batch]) for batch in batches
+                    ]
             else:
-                d = descriptors[indices]
-            d = torch.tensor(d, dtype=dtype, device=device)
-            d.requires_grad = True
+                if batching_strategy == 'draw-replace':
+                    d = descriptors[indices]
+                elif batching_strategy == 'loop-all':
+                    d = [descriptors[batch] for batch in batches]
+            if batching_strategy == 'draw-replace':
+                d = torch.tensor(d, dtype=dtype, device=device)
+                d.requires_grad = True
+            elif batching_strategy == 'loop-all':
+                d = [torch.tensor(batch_d, dtype=dtype, device=device)
+                     for batch_d in d]
+                for batch_d in d:
+                    batch_d.requires_grad = True
         else:
             # when using graphs, we need to process the the DataDict objects
             # instead of arrays
             if save_memory:  # separately to save memory
-                d = process_descriptors(descriptors[indices,:])
+                if batching_strategy == 'draw-replace':
+                    d = process_descriptors(descriptors[indices,:])
+                elif batching_strategy == 'loop-all':
+                    d = [
+                        process_descriptors(descriptors[batch, :]) for batch in batches
+                    ]
             else:
-                d = [descriptors['data_list'][i] for i in indices]
-            d = Batch.from_data_list(d).to(device).to_dict()
-               
-        r = torch.tensor(results[indices], dtype=dtype, device=device)
+                if batching_strategy == 'draw-replace':
+                    d = [descriptors['data_list'][i] for i in indices]
+                elif batching_strategy == 'loop-all':
+                    d = [
+                        [descriptors['data_list'][i] for i in batch] for batch in batches
+                    ]
+            if batching_strategy == 'draw-replace':
+                d = Batch.from_data_list(d).to(device).to_dict()
+            elif batching_strategy == 'loop-all':
+                d = [Batch.from_data_list(batch_d).to(device).to_dict()
+                     for batch_d in d]
         
+        if batching_strategy == 'draw-replace':
+            r = torch.tensor(results[indices], dtype=dtype, device=device)
+        elif batching_strategy == 'loop-all':
+            r = [torch.tensor(results[batch], dtype=dtype, device=device)
+                 for batch in batches]
+
         # define loss function
         # Note: refactored this to allow for computation of validation loss
         def loss_function(q, r):
@@ -1307,11 +1365,17 @@ def fit(network, pathensemble,
             
             # standard binomial loss
             else:
-                exp_pos_q = torch.exp(+q[:, 0])
-                exp_neg_q = torch.exp(-q[:, 0])
-                toA_contrib = r[:, 0] * torch.log(1. + exp_pos_q)
-                toB_contrib = r[:, 1] * torch.log(1. + exp_neg_q)
-                loss = torch.sum((toA_contrib + toB_contrib) / torch.sum(r))
+                #exp_pos_q = torch.exp(+q[:, 0])
+                #exp_neg_q = torch.exp(-q[:, 0])
+                #toA_contrib = r[:, 0] * torch.log(1. + exp_pos_q)
+                #toB_contrib = r[:, 1] * torch.log(1. + exp_neg_q)
+                #loss = torch.sum((toA_contrib + toB_contrib) / torch.sum(r))
+
+                # More stable version, which will not output NaN for large |q|
+                pred_commitor = torch.sigmoid(q[:, 0])
+                toA_contribution = r[:, 0] * torch.log(1 - pred_commitor + 1e-20)
+                toB_contribution = r[:, 1] * torch.log(pred_commitor + 1e-20)
+                loss = - torch.sum(toA_contribution + toB_contribution) / torch.sum(r)
 
             # Compute the smoothness penalty
             if loss_smoothening_weight:
@@ -1334,16 +1398,38 @@ def fit(network, pathensemble,
             loss = loss_function(q, r)
             loss.backward()
             return loss
-        
+
         # update network
         network.train()
-        loss = optimizer.step(closure)
-        losses.append(float(loss.detach()))
+        if batching_strategy == 'draw-replace':
+            loss = optimizer.step(closure)
+            losses.append(float(loss.detach()))
+        elif batching_strategy == 'loop-all':
+            epoch_loss = 0.0
+            for n in range(len(batches)):
+                optimizer.zero_grad()
+                q = network(d[n])
+                loss_batch = loss_function(q, r[n])
+                loss_batch.backward()
+                optimizer.step()
+                epoch_loss += loss_batch.item()
+            losses.append(epoch_loss)
         
         # report scales
-        q = network(d).detach()
-        scales.append(max(float(torch.max(q)), -float(torch.min(q))))
-        Range = float(torch.min(q)), float(torch.max(q))
+        network.eval()
+        with torch.no_grad():
+            if batching_strategy == 'draw-replace':
+                q = network(d).detach()
+            elif batching_strategy == 'loop-all':
+                q = torch.tensor(
+                        np.concatenate(
+                            [network(d[n]).detach().cpu().numpy() for n in range(len(batches))],
+                            axis=0),
+                        dtype=dtype,
+                        device=device
+                    )
+            scales.append(max(float(torch.max(q)), -float(torch.min(q))))
+            Range = float(torch.min(q)), float(torch.max(q))
 
         # update counter
         if verbose:
@@ -1443,7 +1529,39 @@ def fit(network, pathensemble,
         network.load_state_dict(state_dict0)
     
     # recompute scales and range in case they changed
-    q = network(d).detach()
+    network.eval()
+    with torch.no_grad():
+        if batching_strategy == 'draw-replace':
+            q = network(d).detach()
+        elif batching_strategy == 'loop-all':
+            q = torch.tensor(
+                    np.concatenate(
+                        [network(d[n]).detach().cpu().numpy() for n in range(len(batches))],
+                        axis=0),
+                    dtype=dtype,
+                    device=device
+                )
+
+    # At this stage, save a little violin plot to visually control the quality of the training, if verbose
+    if verbose:
+        prediction = torch.sigmoid(q).cpu().numpy().flatten()
+        pathtypes = torch.cat(r, dim=0).cpu().numpy() if batching_strategy == 'loop-all' else r.cpu().numpy()
+        pathtypes = pathtypes[:,1] - pathtypes[:,0]
+        import matplotlib.pyplot as plt
+        plt.violinplot(
+            [prediction[pathtypes == -1] if len(prediction[pathtypes == -1]) else [-0.2],
+            prediction[pathtypes == 0] if len(prediction[pathtypes == 0]) else [-0.2],
+            prediction[pathtypes == 1] if len(prediction[pathtypes == 1]) else [-0.2]],
+            positions=[-1, 0, 1],
+            showmeans=True
+        )
+        plt.xticks([-1, 0, 1], ["ARA", "TP", "BRB"])
+        plt.xlabel("Actual Shooting Result")
+        plt.ylabel("Predicted Committor ($p_B$)")
+        plt.title("Training Set Quality Analysis")
+        plt.savefig(f"trainingset_quality_analysis.pdf")
+        plt.clf()
+
     scales[-1] = max(float(torch.max(q)), -float(torch.min(q)))
     Range = float(torch.min(q)), float(torch.max(q))
     
