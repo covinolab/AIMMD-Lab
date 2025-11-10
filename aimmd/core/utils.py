@@ -1365,11 +1365,17 @@ def fit(network, pathensemble,
             
             # standard binomial loss
             else:
-                exp_pos_q = torch.exp(+q[:, 0])
-                exp_neg_q = torch.exp(-q[:, 0])
-                toA_contrib = r[:, 0] * torch.log(1. + exp_pos_q)
-                toB_contrib = r[:, 1] * torch.log(1. + exp_neg_q)
-                loss = torch.sum((toA_contrib + toB_contrib) / torch.sum(r))
+                #exp_pos_q = torch.exp(+q[:, 0])
+                #exp_neg_q = torch.exp(-q[:, 0])
+                #toA_contrib = r[:, 0] * torch.log(1. + exp_pos_q)
+                #toB_contrib = r[:, 1] * torch.log(1. + exp_neg_q)
+                #loss = torch.sum((toA_contrib + toB_contrib) / torch.sum(r))
+
+                # More stable version, which will not output NaN for large |q|
+                pred_commitor = torch.sigmoid(q[:, 0])
+                toA_contribution = r[:, 0] * torch.log(1 - pred_commitor + 1e-20)
+                toB_contribution = r[:, 1] * torch.log(pred_commitor + 1e-20)
+                loss = - torch.sum(toA_contribution + toB_contribution) / torch.sum(r)
 
             # Compute the smoothness penalty
             if loss_smoothening_weight:
