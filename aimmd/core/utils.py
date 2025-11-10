@@ -1214,7 +1214,7 @@ def fit(network, pathensemble,
     # Early stopping setup
 
     # disable early stopping, if threshold of training set size is not met
-    if len(selection_probabilities) < early_stopping_min_samples:
+    if (len(selection_probabilities) < early_stopping_min_samples) and train_validation_early_stopping:
         train_validation_early_stopping = False
         print(f"\nDisabling early stopping since < {early_stopping_min_samples} samples.")
 
