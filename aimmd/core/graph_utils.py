@@ -20,6 +20,8 @@ try:
     from mlcolvar.data.graph.utils import create_dataset_from_configurations
     from mlcolvar.utils.io import _configures_from_trajectory, _z_table_from_top, _names_from_top
     import multiprocessing
+    from torch_geometric.nn import radius_graph
+    import time
 except ImportError as e:
     raise ImportError(f"Module {e.name} not found. The module 'aimmd.core.graph_utils' requires additional dependencies.") from e
 
@@ -416,6 +418,184 @@ def process_descriptors_multiprocessing(
             conn
         )
         end = time()
+        if verbose:
+            print(f"Stored new graphs in database in {end - start:.2f} seconds.")
+
+        # now assemble the full graphs list
+        for i, graph in enumerate(new_graphs):
+            loaded_graphs[missing_indices[i]] = graph
+
+    dataset = mlcolvar.data.DictDataset(
+        dictionary={
+            'data_list': loaded_graphs
+        },
+        data_type = "graphs",
+    )  
+    return dataset
+
+
+def get_graphs_pyg(
+        descriptors: np.ndarray,
+        mdanalysis_universe: mda.Universe,
+        system_selection: str,
+        environment_selection: str,
+        cutoff: float,
+        verbose: bool = False,
+    ) -> list[torch_geometric.data.Data]:
+    """ Process descriptors into torch_geometric graphs using MDAnalysis for pbc handling.
+
+    Parameters
+    ----------
+    descriptors : np.ndarray
+        Array of shape (n_frames, n_atoms * 3) with atomic coordinates.
+    mdanalysis_universe : mda.Universe
+        MDAnalysis Universe object with the system topology.
+    system_selection : str
+        MDAnalysis selection string for the system of interest.
+    environment_selection : str
+        MDAnalysis selection string for the environment.
+    cutoff : float
+        Cutoff distance for graph construction (in Angstrom).
+    verbose : bool, optional
+        Whether to print progress, by default False.
+
+    Returns
+    -------
+    list[torch_geometric.data.Data]
+        List of torch_geometric Data objects representing the graphs.
+    """
+    coordinate_array_reshaped = descriptors.reshape(descriptors.shape[0], -1, 3)
+
+    system = mdanalysis_universe.select_atoms(system_selection)
+    surroundings = mdanalysis_universe.select_atoms(environment_selection)
+    system_and_surroundings = system + surroundings
+
+    # get atomic numbers set for guests and surroundings
+    atom_types= list(set(mdanalysis_universe.atoms.types))
+
+    transform = mda.transformations
+    data_list = []
+    for frame in tqdm(coordinate_array_reshaped, disable=not verbose):
+        # take care of pbcs, placing the system in the center of the box and restoring environment around it
+        ts = mdanalysis_universe.trajectory[0]
+        mdanalysis_universe.atoms.positions = frame
+        ts = transform.unwrap(system)(ts)
+        ts = transform.center_in_box(system, wrap=False)(ts)
+        ts = transform.wrap(mdanalysis_universe.atoms)(ts)
+
+        surroundings = mdanalysis_universe.select_atoms(environment_selection)
+        system_and_surroundings = system + surroundings
+        positions = system_and_surroundings.positions.copy()
+
+        # Get node attributes: one-hot encoding of atom types
+        node_attr = np.zeros((system_and_surroundings.n_atoms, len(atom_types)), dtype=np.float32)
+        for i, atom in enumerate(system_and_surroundings.atoms.types):
+            node_attr[i, atom_types.index(atom)] = 1.0
+
+        edge_index = radius_graph(
+            x=torch.tensor(positions, dtype=torch.float),
+            r=cutoff,
+            loop=False,
+            max_num_neighbors=128,
+        )
+
+        # shifts are empty, as GNN is equivariant and positions are given
+        shifts = torch.zeros(edge_index.shape[1], 3, dtype=torch.float)
+        data = Data(
+                positions=torch.tensor(positions, dtype=torch.float), 
+                edge_index=edge_index, node_attrs=torch.tensor(node_attr, dtype=torch.float), 
+                shifts=shifts
+            )
+        data_list.append(data)
+
+    return data_list
+
+
+def process_descriptors_pyg(
+        descriptors: np.ndarray,
+        mdanalysis_universe: mda.Universe,
+        system_selection: str,
+        environment_selection: str,
+        cutoff: float,
+        conn: sqlite3.Connection,
+        verbose: bool = False,
+        compression_lib: str = "lz4",
+    ) -> list[torch_geometric.data.Data]:
+    """ Transform the descriptors to network input using MDAnalysis and torch_geometric.
+    Here, we transform the atomic positions to a graph embedding using MDAnalysis for pbc 
+    handling and torch_geometric with torch_cluster for graph construction.
+    
+    Parameters
+    ----------
+    descriptors : np.ndarray
+        The input descriptors (atomic positions) to be transformed.
+    mdanalysis_universe : mda.Universe
+        The MDAnalysis universe object for handling periodic boundary conditions.
+    system_selection : str
+        The selection string for the system atoms.
+    environment_selection : str
+        The selection string for the environment atoms.
+    cutoff : float
+        The cutoff distance for constructing the graph.
+    conn : sqlite3.Connection
+        The SQLite connection for storing/loading graphs.
+    verbose : bool, optional
+        Whether to print verbose output (default is False).
+    compression_lib : str, optional
+        The compression library to use for storing graphs (default is "lz4").
+        Supported options: "gzip", "lz4", "none".
+    
+    Returns
+    -------
+    mlcolvar.data.DictDataset
+        The dataset containing the processed graphs.
+    """
+
+    if verbose:
+        print(f"Processing descriptors with shape: {descriptors.shape}")
+
+    # First, we need to transform the descriptors to an md.Trajectory object
+    n_atoms = len(mdanalysis_universe.atoms)
+    n_frames = descriptors.shape[0]
+    assert descriptors.shape[1] == n_atoms * 3, \
+        f"Descriptors should have shape (n_frames, {n_atoms * 3}), got {descriptors.shape}"
+
+    # precompute hashes
+    stable_hashes = [get_stable_hash(config) for config in descriptors]
+    # get indices of configurations in and not in the database
+    loaded_graphs = [load_from_sqlite(stable_hash, conn, compression_lib=compression_lib) for stable_hash in stable_hashes]
+    missing_indices = []
+    for i, graph in enumerate(loaded_graphs):
+        if graph is None:
+            missing_indices.append(i)
+    if verbose:
+        print(f"There are {len(missing_indices)} missing graphs out of {n_frames} total.")
+
+    if len(missing_indices) != 0:
+        # process missing graphs
+        start = time.time()
+        descriptors_missing = np.array([descriptors[i] for i in missing_indices])
+        graphs_list_new = get_graphs_pyg(
+            descriptors=descriptors_missing,
+            mdanalysis_universe=mdanalysis_universe,
+            system_selection=system_selection,
+            environment_selection=environment_selection,
+            cutoff=cutoff,
+            verbose=verbose,
+        )
+        end = time.time()
+        if verbose:
+            print(f"Created new graphs in {end - start:.2f} seconds.")
+
+        # Store new graphs in database
+        start = time.time()
+        new_graphs = [graphs_list_new[i] for i in range(len(missing_indices))]
+        
+        for i, graph in enumerate(new_graphs):
+            graph_hash = stable_hashes[missing_indices[i]]
+            store_in_sqlite(graph_hash, graph, conn, compression_lib = compression_lib)
+
+        end = time.time()
         if verbose:
             print(f"Stored new graphs in database in {end - start:.2f} seconds.")
 
