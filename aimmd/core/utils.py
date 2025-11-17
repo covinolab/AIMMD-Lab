@@ -1958,6 +1958,92 @@ def load_initial_paths(directory, topology, states_function, descriptors_functio
         initial_paths = initial_paths.merge(temp)
     return initial_paths
 
+def load_committor_sampling_frames(committor_sampling_frames_paths, topology, states_function, descriptors_function,
+                       values_function=placeholder_values_function,
+                       verbose=True):
+    """ Load all frames used for committor sampling. Equivalent to 
+    loading initial paths but without filtering for transitions only.
+    
+    Parameters
+    ----------
+    committor_sampling_frames_paths : list of str
+        List of paths to the files containing the committor sampling frames.
+    topology : str
+        Path to the topology file.
+    states_function : function
+        Function that gives the states.
+    descriptors_function : function
+        Function that gives the descriptors.
+    values_function : function, optional
+        Function that gives the values. Default is placeholder_values_function.
+    verbose : bool, optional
+        If True, print verbose output. Default is True.
+    
+    Returns
+    -------
+    committor_sampling_frames : PathEnsemble
+        A PathEnsemble object containing the committor sampling frames.
+    """
+    fnames = sorted([fname for fname in committor_sampling_frames_paths
+                     if '.xtc' == fname[-4:] or '.trr' == fname[-4:]])
+    committor_sampling_frames = PathEnsemble()
+    for fname in fnames:
+        temp = PathEnsemble()
+        temp.directory = os.path.dirname(fname)
+        temp.topology = os.path.relpath(topology, temp.directory)
+        temp.states_function = states_function
+        temp.descriptors_function = descriptors_function
+        temp.values_function = values_function
+        temp.append(fname, verbose=verbose)
+        temp.split()
+        committor_sampling_frames = committor_sampling_frames.merge(temp)
+    return committor_sampling_frames
+
+def save_committor_sampling_outcomes(shooting_outcomes: list[list[tuple]], outfile: str):
+    """
+    Save the committor sampling outcomes to a file.
+
+    Parameters
+    ----------
+    shooting_outcomes : list of list of tuple   
+        The shooting outcomes to save.
+    outfile : str
+        The path to the output file.
+    """
+    with open(outfile, 'w') as f:
+        for n, outcomes in enumerate(shooting_outcomes):
+            out_line = str(n)+':'
+            for outcome in outcomes:
+                out_line += f'{outcome};'
+            f.write(out_line + '\n')
+
+def load_committor_sampling_outcomes(infile: str) -> list[list[tuple]]:
+    """
+    Load the committor sampling outcomes from a file.
+
+    Parameters
+    ----------
+    infile : str
+        The path to the input file.
+
+    Returns
+    -------
+    shooting_outcomes : list of list of tuple
+        The loaded shooting outcomes.
+    """
+    shooting_outcomes = []
+    with open(infile, 'r') as f:
+        for line in f:
+            parts = line.strip().split(':')
+            n = int(parts[0])
+            outcomes_str = parts[1].split(';')[:-1]  # last is empty
+            outcomes = []
+            for outcome_str in outcomes_str:
+                outcome_tuple = tuple(map(int, outcome_str.strip('()').split(',')))
+                outcomes.append(outcome_tuple)
+            shooting_outcomes.append(outcomes)
+    return shooting_outcomes
+
 
 def update_shooting_chain(
     chain,  # PathEnsemble object

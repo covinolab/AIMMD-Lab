@@ -8,6 +8,9 @@ from ..core.utils import (now,
                           remove,
                           stop_simulation,
                           load_initial_paths,
+                          load_committor_sampling_frames,
+                          save_committor_sampling_outcomes,
+                          load_committor_sampling_outcomes,
                           load_network_and_projections,
                           initialize_shooting_simulation,
                           update_shooting_chain,
@@ -334,3 +337,88 @@ def manage(self, n, nA, nB, eA=0, eB=0,
     print(f'\nReached {step_number.n} steps ({now()}), '
           f'{pathensemble.nframes} total frames')
     return pathensemble
+
+def manage_committor_sampling(self, n: int, log_file: str = None, walltime: float = inf):
+    """ Manages committor sampling simulations. 
+    
+    Parameters
+    ----------
+    n : int
+        Number of workers for shooting simulations.
+    log_file : str, optional
+        Path to a log file. If None, logs are printed to standard output.
+    walltime : float, optional
+        Maximum wall time in seconds for the committor sampling process. Default is infinity.
+
+    Returns
+    -------
+    shooting_outcomes: list of lists
+        A list containing the shooting outcomes for each simulation.
+    """
+    t0 = time.time()
+
+    # report
+    self.log_file = log_file
+    print(f"Starting worker: manage ({now()})")
+    if not log_file:
+        print(f"Press Control+C to interrupt.")
+
+    # Get relevant parameters
+    directory = self.directory
+    topology = self.params.topology
+    states_function = self.params.states_function
+    descriptors_function = self.params.descriptors_function
+    values_function = self.params.values_function
+    network = self.params.network
+    committor_sampling_numshots = self.params.committor_sampling_numshots
+    committor_sampling_frames = self.params.committor_sampling_frames
+    trajectory_extension = self.params.trajectory_extension
+
+    # logging of the outcomes
+    # Format: frame_index;outcome1;outcome2  ...
+    # eg: 0;[2,0];[1,1];[0,2] ...
+    outfile = f"{directory}/committor_sampling_intermediate_outcomes.txt"
+
+    # bind resources
+    self.bind_resources()
+
+    # loading committor sampling frames
+    print(f'\nLoading committor sampling frames ({now()})')
+    committor_sampling_frames = load_committor_sampling_frames(
+        committor_sampling_frames, topology, states_function, descriptors_function)
+    print(f'    {committor_sampling_frames}')
+    assert committor_sampling_frames.nframes > 0
+
+    # initialize shooting outcomes, or load existing ones from previous run
+    if os.path.exists(outfile):
+        print(f'\nLoading existing committor sampling outcomes ({now()})')
+        shooting_outcomes = load_committor_sampling_outcomes(outfile)
+    else:
+        shooting_outcomes = [[] for _ in range(len(committor_sampling_frames))]
+        save_committor_sampling_outcomes(shooting_outcomes, outfile)
+        print(f'    Initialized outcomes for {len(shooting_outcomes)} frames')
+
+    # main loop over frames
+    print(f'\nStarting committor sampling simulations ({now()})')
+
+    def stop_condition():
+        if time.time() - t0 > walltime:
+            return True
+
+        are_we_done = True
+        for frame_index in range(len(shooting_outcomes)):
+            # check if this frame needs more shooting simulations
+            current_outcomes = shooting_outcomes[frame_index]
+            if len(current_outcomes) >= committor_sampling_numshots:
+                continue  # already done
+
+            are_we_done = False  # at least one frame needs more shots
+        return are_we_done
+
+    # main managing cycle
+    while True:
+        # Stopping condition: have all the required shooting simulations been performed?
+        if stop_condition():
+            break
+
+        

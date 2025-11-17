@@ -106,6 +106,30 @@ contain transitions (checked automatically). Will replace filenames by
 MDAnalysis trajectories."""
         })
     
+    # committor sampling
+
+    committor_sampling_frames: list = field(
+        default=[],
+        metadata={'description':
+        """ List of trajectory filenames (readable by MDAnalysis),
+        containing frames of which the committor is to be sampled.
+        Required for committor sampling option. """}
+    )
+
+    committor_sampling: bool = field(
+        default=False,
+        metadata={'description':
+        """ If True, perform committor sampling on the frames listed in
+        `committor_sampling_frames`. This overrides the AIMMD managing logic in
+         favour of committor sampling only. """}
+    )
+
+    committor_sampling_numshots : int = field(
+        default=100,
+        metadata={'description':
+        """ Number of shots per frame for committor sampling. """}
+    )
+
     # system's name
     
     name: str = field(
