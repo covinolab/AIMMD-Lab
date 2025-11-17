@@ -14,6 +14,7 @@ try:
     import hashlib
     import pickle
     import gzip
+    import lz4
     import sqlite3
     from mlcolvar.data.dataset import DictDataset
     from mlcolvar.data.graph.utils import create_dataset_from_configurations
@@ -59,15 +60,18 @@ def init_db(db_path: str = "graphs_cache.sqlite") -> sqlite3.Connection:
     return conn  
 
 
-def load_from_sqlite(key: str, conn: sqlite3.Connection) -> torch_geometric.data.Data | None:
+def load_from_sqlite(key: str, conn: sqlite3.Connection, compression_lib = "gzip") -> torch_geometric.data.Data | None:
     """ Load a graph from SQLite cache.
-    
+
     Parameters
     ----------
     key : str
         The key of the graph to be loaded.
     conn : sqlite3.Connection
         The SQLite connection.
+    compression_lib : str, optional
+        The compression library to use, by default "gzip".
+        Supported: "gzip", "lz4", "none".
     Returns
     -------
     torch_geometric.data.Data | None
@@ -77,12 +81,38 @@ def load_from_sqlite(key: str, conn: sqlite3.Connection) -> torch_geometric.data
     row = cursor.fetchone()
     if row is None:
         return None
-    return pickle.loads(gzip.decompress(row[0]))
+    if compression_lib == "gzip":
+        return pickle.loads(gzip.decompress(row[0]))
+    elif compression_lib == "lz4":
+        return pickle.loads(lz4.frame.decompress(row[0]))
+    elif compression_lib == "none":
+        return pickle.loads(row[0])
+    return None
 
-def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Connection):
-    """ Store a graph in SQLite cache. """
+def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Connection, compression_lib = "gzip"):
+    """ Store a graph in SQLite cache. 
+    
+    Parameters
+    ----------
+    key : str
+        The key of the graph to be stored.
+    data : torch_geometric.data.Data
+        The graph to be stored.
+    conn : sqlite3.Connection
+        The SQLite connection.
+    compression_lib : str, optional
+        The compression library to use, by default "gzip".
+        Supported: "gzip", "lz4", "none".
+    """
     msgpack_bytes = pickle.dumps(data)
-    compressed_data = gzip.compress(msgpack_bytes)
+    if compression_lib == "gzip":
+        compressed_data = gzip.compress(msgpack_bytes)
+    elif compression_lib == "lz4":
+        compressed_data = lz4.frame.compress(msgpack_bytes)
+    elif compression_lib == "none":
+        compressed_data = msgpack_bytes
+    else:
+        raise ValueError(f"Unknown compression library: {compression_lib}")
     conn.execute("INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)", (key, compressed_data))
     conn.commit()
 
