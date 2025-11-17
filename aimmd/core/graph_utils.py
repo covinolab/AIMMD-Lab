@@ -22,6 +22,7 @@ try:
     import multiprocessing
     from torch_geometric.nn import radius_graph
     import time
+    import MDAnalysis.transformations as transformations
 except ImportError as e:
     raise ImportError(f"Module {e.name} not found. The module 'aimmd.core.graph_utils' requires additional dependencies.") from e
 
@@ -473,15 +474,14 @@ def get_graphs_pyg(
     # get atomic numbers set for guests and surroundings
     atom_types= list(set(mdanalysis_universe.atoms.types))
 
-    transform = mda.transformations
     data_list = []
     for frame in tqdm(coordinate_array_reshaped, disable=not verbose):
         # take care of pbcs, placing the system in the center of the box and restoring environment around it
         ts = mdanalysis_universe.trajectory[0]
         mdanalysis_universe.atoms.positions = frame
-        ts = transform.unwrap(system)(ts)
-        ts = transform.center_in_box(system, wrap=False)(ts)
-        ts = transform.wrap(mdanalysis_universe.atoms)(ts)
+        ts = transformations.unwrap(system)(ts)
+        ts = transformations.center_in_box(system, wrap=False)(ts)
+        ts = transformations.wrap(mdanalysis_universe.atoms)(ts)
 
         surroundings = mdanalysis_universe.select_atoms(environment_selection)
         system_and_surroundings = system + surroundings
