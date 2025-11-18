@@ -109,7 +109,7 @@ MDAnalysis trajectories."""
     # committor sampling
 
     committor_sampling_frames: list = field(
-        default=[],
+        default_factory=lambda: [],
         metadata={'description':
         """ List of trajectory filenames (readable by MDAnalysis),
         containing frames of which the committor is to be sampled.

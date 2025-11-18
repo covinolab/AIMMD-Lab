@@ -3374,3 +3374,116 @@ def initialize_shooting_simulation(
     np.save(f'{chain.directory}/shoot_bias.npy', selection_bias)
     np.save(f'{chain.directory}/pool_index.npy', index)
     print(f'\nShooting initialization completed ({now()})\n')
+
+def write_shooting_points_as_trajectory(topology: str,
+                                       filename: str,
+                                       pathensemble: PathEnsemble | PathEnsemblesCollection = None,
+                                       run_folder: str = None,
+                                       num_ARA: int = -1,
+                                       num_TP: int = -1,
+                                       num_BRB: int = -1,
+                                       verbose: bool = False) -> None:
+    """ Take the shooting points from a PathEnsemble or PathEnsemblesCollection,
+    or alternatively from a run folder containing directories shots[0-n].
+    Write them as on trajectory file, e.g. for committor sampling. Random
+    selection of a certain number of shooting points from each category
+    are possible. Only xtc format writing is supported.
+    
+    Parameters
+    ----------
+    topology : str
+        The topology file to use for the trajectory (to be read by MDAnalysis).
+    filename : str
+        The output trajectory filename. Must end with .xtc.
+    pathensemble : PathEnsemble or PathEnsemblesCollection, optional
+        The path ensemble(s) from which to extract shooting points.
+    run_folder : str, optional
+        The run folder containing shots[0-n] directories to extract shooting points from.
+    num_ARA : int, optional
+        Number of A-excursion shooting points to include. If -1, include all.
+    num_TP : int, optional
+        Number of transition path shooting points to include. If -1, include all.
+    num_BRB : int, optional
+        Number of B-excursion shooting points to include. If -1, include all.
+    verbose : bool, optional
+        Whether to print verbose output. Defaults to False.
+    
+    Returns
+    -------
+    None
+    """
+    
+    # Basic input consistency checks
+    if not filename.endswith('.xtc'):
+        raise ValueError('Output filename must end with .xtc')
+    if (pathensemble is None) and (run_folder is None):
+        raise ValueError('Either pathensemble or run_folder must be provided.')
+    if (pathensemble is not None) and (run_folder is not None):
+        raise ValueError('Only one of pathensemble or run_folder should be provided.')
+    
+    # Construct the PathEnsemblesCollection if run_folder is given
+    if run_folder is not None:
+        # Get shot trajectories in the run folder
+        n_available = 0
+        while os.path.exists(f'{run_folder}/shots{n_available}'):
+            n_available += 1
+        if n_available == 0:
+            raise ValueError(f'No shots directories found in {run_folder}')
+        if verbose:
+            print(f'Found {n_available} shots directories in {run_folder}')
+        pathensembles = [
+            np.load(f'{run_folder}/shots{n}/chain.h5', allow_pickle=True)
+            for n in range(n_available)
+        ]
+        pathensemble = PathEnsemblesCollection(*pathensembles)
+        if verbose:
+            print(f'Loaded PathEnsemblesCollection from {run_folder}')
+    
+    # Get indices of different types of shooting points
+    ARA_indices = []
+    TP_indices = []
+    BRB_indices = []
+    for i, result in enumerate(pathensemble.shooting_results):
+        if result[0] == 2 and result[1] == 0:
+            ARA_indices.append(i)
+        elif result[0] == 1 and result[1] == 1:
+            TP_indices.append(i)
+        elif result[0] == 0 and result[1] == 2:
+            BRB_indices.append(i)
+        else:
+            raise ValueError(f'Unexpected shooting result {result} at index {i}')
+    if verbose:
+        print(f'Found {len(ARA_indices)} ARA, {len(TP_indices)} TP, '
+              f'and {len(BRB_indices)} BRB shooting points.')
+        
+    # Randomly select specified number of shooting points from each category, if given
+    if num_ARA > -1 and num_ARA > len(ARA_indices):
+        raise ValueError(f'Requested {num_ARA} ARA points, but only '
+                         f'{len(ARA_indices)} available.')
+    if num_TP > -1 and num_TP > len(TP_indices):
+        raise ValueError(f'Requested {num_TP} TP points, but only '
+                         f'{len(TP_indices)} available.')
+    if num_BRB > -1 and num_BRB > len(BRB_indices):
+        raise ValueError(f'Requested {num_BRB} BRB points, but only '
+                         f'{len(BRB_indices)} available.')
+    if num_ARA != -1:
+        ARA_indices = np.random.choice(ARA_indices, size=min(num_ARA, len(ARA_indices)), replace=False).tolist()
+    if num_TP != -1:
+        TP_indices = np.random.choice(TP_indices, size=min(num_TP, len(TP_indices)), replace=False).tolist()
+    if num_BRB != -1:
+        BRB_indices = np.random.choice(BRB_indices, size=min(num_BRB, len(BRB_indices)), replace=False).tolist()
+    
+    selected_indices = ARA_indices + TP_indices + BRB_indices
+    if verbose:
+        print(f'Selected total of {len(selected_indices)} shooting points '
+              f'for output trajectory.')
+        
+    # write trajectory with selected shooting points
+    topology_universe = mda.Universe(topology)
+    with mda.Writer(filename, n_atoms=topology_universe.atoms.n_atoms) as writer:
+        for index in selected_indices:
+            topology_universe.trajectory[0]  # reset to first frame
+            topology_universe.atoms.positions = pathensemble.shooting_descriptors[index].reshape(-1, 3)
+            writer.write(topology_universe.atoms)
+    if verbose:
+        print(f'Wrote shooting points trajectory to {filename}')
