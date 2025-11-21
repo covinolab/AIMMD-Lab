@@ -12,17 +12,28 @@ from ..core.utils import (now,
                           update_pathensemble,
                           scorporate_pathensembles,
                           get_bins)
+from ..core.pathensemble import PathEnsemblesCollection
 
 inf = float('inf')
 
 # quick logging
 print = functools.partial(print, flush=True)
 
-def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
+kAB_current_estimate = None
+kBA_current_estimate = None
+
+def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf, pathensemble_fraction=-1):
     """nrounds: number of training rounds.
     walltime: maximum walltime in seconds.
     verbose: whether to print detailed information during training.
     log_file: file to log output to. If None, logs to stdout.
+    pathensemble_fraction: fraction of the path ensemble to use for training. -1 means all paths.
+
+    Returns
+    -------
+    pathensemble : aimmd.core.pathensemble.PathEnsemble
+        The final path ensemble after training.
+    
     """
     
     # report
@@ -82,6 +93,7 @@ def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
     t0 = time.time()
     counts = 0
     def stop_condition():
+        self.termination_signal = None
         if time.time() - t0 > walltime or counts >= nrounds:
             self.termination_signal = 2   # sigint
         return bool(self.termination_signal)
@@ -100,6 +112,26 @@ def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
         shooting_chains, equilibriumA, equilibriumB = scorporate_pathensembles(
             pathensemble)
         
+        if pathensemble_fraction > 0:
+            # select a fraction of paths only
+            shooting_chains_fraction = []
+            for schain in shooting_chains.pathensembles:
+                n_paths = len(schain)
+                n_select = max(1, int(n_paths * pathensemble_fraction))
+                schain_new = schain[:n_select]
+                shooting_chains_fraction.append(schain_new)
+            shooting_chains = PathEnsemblesCollection(*shooting_chains_fraction)
+
+            # for equilibrium, just make fractions, without going into subpathensembles
+            n_paths_A = len(equilibriumA)
+            n_select_A = max(1, int(n_paths_A * pathensemble_fraction))
+            equilibriumA = equilibriumA[:n_select_A]
+            n_paths_B = len(equilibriumB)
+            n_select_B = max(1, int(n_paths_B * pathensemble_fraction))
+            equilibriumB = equilibriumB[:n_select_B]
+
+            pathensemble = shooting_chains + equilibriumA + equilibriumB
+            print(f"Made subset of path ensemble, now with {len(pathensemble)} paths and {pathensemble.nframes} frames.")
         # extra equilibriumA and equilibriumB
         if len(extra_equilibriumA):
             print(f'\nLoading extra free simulations around A ({now()})')
@@ -174,6 +206,11 @@ def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
                 kBA = np.nan
             print(f'    kAB estimate: {kAB:.3e} [1/dt]')
             print(f'    kBA estimate: {kBA:.3e} [1/dt]')
+
+            # put this in global variables to be read by the convergence function
+            global kAB_current_estimate, kBA_current_estimate
+            kAB_current_estimate = kAB
+            kBA_current_estimate = kBA
             
             # rescale committor: determine params
             if rescale_committor:
@@ -338,3 +375,68 @@ def train(self, log_file=None, verbose=False, nrounds=inf, walltime=inf):
         time.sleep(1)
     
     return pathensemble
+
+def kinetics_convergence(self, log_file=None, chunks = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0],
+                         kinetics_outfile='kinetics_convergence.txt', kinetics_convergence_plotfile='kinetics_convergence.pdf'):
+    """ Perform convergence analysis of kinetics on the current path ensemble.
+    This works by taking the first x fraction of the paths in the path ensemble,
+    training a network for those, and computing kinetics. Requires that
+    in the params reweight_pathensemble_after_training=True and
+    sparse_update_max_frames=-1 (otherwise no kinetics calculation can be performed.)
+    
+    Parameters
+    ----------
+    log_file : str or None
+        File to log output to. If None, logs to stdout.
+    chunks : list of float
+        Fractions of the path ensemble to consider for convergence analysis.
+    kinetics_outfile : str
+        File to save kinetics convergence data to.
+    kinetics_convergence_plotfile : str
+        File to save kinetics convergence plot to.
+
+    Returns
+    -------
+    None
+    """
+
+    kAB_estimates = []
+    kBA_estimates = []
+
+    for fraction in chunks:
+        print(f'\n=== Kinetics convergence analysis: fraction {fraction} ===\n')
+        
+        # train on fraction of path ensemble
+        train(self, log_file=log_file, nrounds=1, walltime=inf,
+                   pathensemble_fraction=fraction)
+        
+        # read current estimates from global variables
+        global kAB_current_estimate, kBA_current_estimate
+        kAB_estimates.append(kAB_current_estimate)
+        kBA_estimates.append(kBA_current_estimate)
+        
+        print(f'Kinetics estimates at fraction {fraction}: '
+              f'kAB = {kAB_current_estimate}, kBA = {kBA_current_estimate}\n')
+    
+    # save results to file
+    with open(kinetics_outfile, 'w') as f:
+        f.write('# fraction kAB[1/dt] kBA[1/dt]\n')
+        for fraction, kAB, kBA in zip(chunks, kAB_estimates, kBA_estimates):
+            f.write(f'{fraction} {kAB} {kBA}\n')
+    print(f'Kinetics convergence data saved to {kinetics_outfile}')
+    # generate convergence plot
+    try:
+        import matplotlib.pyplot as plt
+        plt.figure()
+        plt.plot(chunks, kAB_estimates, marker='o', label='kAB')
+        plt.plot(chunks, kBA_estimates, marker='o', label='kBA')
+        plt.xlabel('Run progression / fraction of paths')
+        plt.yscale('log')
+        plt.ylabel('Kinetics Estimates [1/dt]')
+        plt.title('Kinetics Convergence Analysis')
+        plt.legend()
+        plt.savefig(kinetics_convergence_plotfile)
+        plt.close()
+        print(f'Kinetics convergence plot saved to {kinetics_convergence_plotfile}')
+    except ImportError:
+        print('matplotlib not available, skipping convergence plot generation.')
