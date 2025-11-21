@@ -7,7 +7,7 @@ import MDAnalysis as mda
 from aimmd.core import Params
 from aimmd.core.utils import now, remove
 from aimmd.sampling.train import train
-from aimmd.sampling.manage import manage
+from aimmd.sampling.manage import manage, manage_committor_sampling
 from aimmd.sampling.simulate import simulate
 from aimmd.sampling.resources import bind_resources
 
@@ -134,7 +134,10 @@ class Worker:
             if task == 'train':
                 return train(self, *args)
             if task == 'manage':
-                return manage(self, *args)
+                if self.params.committor_sampling:
+                    return manage_committor_sampling(self, *args)
+                else:
+                    return manage(self, *args)
             if task == 'simulate':
                 return simulate(self, *args)
             

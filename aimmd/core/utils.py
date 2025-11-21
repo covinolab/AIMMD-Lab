@@ -1989,7 +1989,7 @@ def load_committor_sampling_frames(committor_sampling_frames_paths, topology, st
     committor_sampling_frames = PathEnsemble()
     for fname in fnames:
         temp = PathEnsemble()
-        temp.directory = os.path.dirname(fname)
+        temp.directory = os.path.dirname(fname) if os.path.dirname(fname) else '.'
         temp.topology = os.path.relpath(topology, temp.directory)
         temp.states_function = states_function
         temp.descriptors_function = descriptors_function
@@ -2005,7 +2005,7 @@ def save_committor_sampling_outcomes(shooting_outcomes: list[list[tuple]], outfi
 
     Parameters
     ----------
-    shooting_outcomes : list of list of tuple   
+    shooting_outcomes : list of list of np.array
         The shooting outcomes to save.
     outfile : str
         The path to the output file.
@@ -2028,7 +2028,7 @@ def load_committor_sampling_outcomes(infile: str) -> list[list[tuple]]:
 
     Returns
     -------
-    shooting_outcomes : list of list of tuple
+    shooting_outcomes : list of list of np.array
         The loaded shooting outcomes.
     """
     shooting_outcomes = []
@@ -2039,8 +2039,9 @@ def load_committor_sampling_outcomes(infile: str) -> list[list[tuple]]:
             outcomes_str = parts[1].split(';')[:-1]  # last is empty
             outcomes = []
             for outcome_str in outcomes_str:
-                outcome_tuple = tuple(map(int, outcome_str.strip('()').split(',')))
-                outcomes.append(outcome_tuple)
+                # convert numpy strings into array
+                outcome = np.fromstring(outcome_str.strip("[]"),sep=' ')
+                outcomes.append(outcome)
             shooting_outcomes.append(outcomes)
     return shooting_outcomes
 
@@ -3374,6 +3375,62 @@ def initialize_shooting_simulation(
     np.save(f'{chain.directory}/shoot_bias.npy', selection_bias)
     np.save(f'{chain.directory}/pool_index.npy', index)
     print(f'\nShooting initialization completed ({now()})\n')
+
+def initialize_shooting_simulation_from_descriptors(
+    chain: PathEnsemble,
+    directory: str,
+    params: object,
+    descriptors: np.ndarray,
+):
+    """
+    Initialize shooting simulations directly from a provided descriptors array.
+    Each descriptor is used
+    to generate a shooting point and launch forward/backward simulations.
+
+    Parameters
+    ----------
+    chain : PathEnsemble object
+        The chain to which the new shooting simulations belong.
+    directory : str
+        Base directory of the project.
+    params : object
+        Params object.
+    descriptors : array-like
+        Array of descriptors. Each will be used to generate a shooting point.
+    """
+
+    # basic reporting
+    i = len(chain)
+    old_fname = f'path{i:06g} -> ' if i else ''
+    new_fname = f'path{i+1:06g}'
+    relpath = os.path.relpath(chain.directory, directory)
+
+    print(f'\nInitializing shooting sims for chain {relpath}: '
+          f'{old_fname}{new_fname}  ({now()})')
+
+    # unpack minimal needed parameters
+    topology = params.topology
+
+    print(f'    Received {descriptors.shape} descriptors for shooting')
+
+    # For each descriptor, generate the shooting point and launch simulations
+
+    print(f'\n=== Starting simulation ')
+
+    # make shooting point trajectory
+    mda_universe = mda.Universe(topology)
+    mda_universe.atoms.positions = descriptors.reshape(-1, 3)
+    mda_trajectory = MDATrajectory([mda_universe], [0], [0])
+
+    # run backward/forward trajectories
+    initialize_simulation(
+        mda_trajectory,
+        params,
+        f'{chain.directory}/back',
+        f'{chain.directory}/forw'
+    )
+
+    print(f'\nShooting initializations completed ({now()})\n')
 
 def write_shooting_points_as_trajectory(topology: str,
                                        filename: str,
