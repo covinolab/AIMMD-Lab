@@ -1502,9 +1502,10 @@ def fit(network, pathensemble,
                 else:
                     no_improvement_steps += 1
                     if verbose:
-                        print(f'    Early stopping report, epoch {i}: no improvement for '
-                        f'{no_improvement_steps} steps, loss {loss:.3e} validation loss {val_loss:.3e} '
-                        f'(min val loss: {min_validation_loss:.3e})')
+                        if no_improvement_steps % (early_stopping_patience // 10) == 0:
+                            print(f'    Early stopping report, epoch {i}: no improvement for '
+                            f'{no_improvement_steps} steps, loss {losses[-1]:.3e} validation loss {val_loss:.3e} '
+                            f'(min val loss: {min_validation_loss:.3e})')
                     if no_improvement_steps >= early_stopping_patience:
                         print(f'    Early stopping triggered after {no_improvement_steps} steps without improvement, '
                             f'restoring best model from early stopping '
@@ -1527,6 +1528,13 @@ def fit(network, pathensemble,
         print(f'!!! bad range ({Range[0]:.3f}, {Range[1]:.3f}), '
               f'restoring original parameters')
         network.load_state_dict(state_dict0)
+
+    # If we're doing early stopping and have recorded a best model, restore it
+    if train_validation_early_stopping:
+        if min_validation_loss < np.inf:
+            print(f'    Restoring best model from early stopping '
+                  f'(last val loss: {val_loss:.3e}, min val loss: {min_validation_loss:.3e})')
+            network.load_state_dict(state_dict_early_stopping)
     
     # recompute scales and range in case they changed
     network.eval()
