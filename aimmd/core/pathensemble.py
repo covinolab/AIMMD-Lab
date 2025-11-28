@@ -1203,6 +1203,7 @@ class PathEnsemble(AbstractPathEnsemble):
                 self.__frame_values[self.__frame_states == 'B'] = +np.inf
                 mask *= self.__frame_states == 'R'
             if only_zeros:
+                print(self.__frame_values)
                 mask *= self.__frame_values == 0.
             if sparse_update_max_frames != -1:
                 # check number of frames to update

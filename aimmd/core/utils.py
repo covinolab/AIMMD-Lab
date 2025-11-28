@@ -1182,9 +1182,13 @@ def fit(network, pathensemble,
     keepers = selection_probabilities > 0
     if not np.sum(keepers):  # no other choice
         print('Extending to states')
+        if train_validation_early_stopping:
+            print("Disabling early stopping while extending to states.")
+            train_validation_early_stopping = False
         selection_probabilities += 1.
         results[:len(inA_values), 0] += 1.
         results[len(inB_values):n_internal_frames, 1] += 1.
+        
         keepers = np.ones(len(selection_probabilities), dtype=bool)
     selection_probabilities = selection_probabilities[keepers]
     values = values[keepers]
@@ -1551,7 +1555,8 @@ def fit(network, pathensemble,
                 )
 
     # At this stage, save a little violin plot to visually control the quality of the training, if verbose
-    if verbose:
+    # only makes sense with 'loop-all' batching strategy
+    if verbose and batching_strategy == 'loop-all':
         prediction = torch.sigmoid(q).cpu().numpy().flatten()
         pathtypes = torch.cat(r, dim=0).cpu().numpy() if batching_strategy == 'loop-all' else r.cpu().numpy()
         pathtypes = pathtypes[:,1] - pathtypes[:,0]
