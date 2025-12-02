@@ -472,7 +472,7 @@ def get_graphs_pyg(
     system_and_surroundings = system + surroundings
 
     # get atomic numbers set for guests and surroundings
-    atom_types= list(set(mdanalysis_universe.atoms.types))
+    atom_types= list(sorted(set(mdanalysis_universe.atoms.types)))
 
     data_list = []
     for frame in tqdm(coordinate_array_reshaped, disable=not verbose):

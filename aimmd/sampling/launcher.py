@@ -243,10 +243,12 @@ class Launcher:
                 localid += 1
             
             # trainer (sharing the same localid as manager)
-            self.processes.launch(self.params.path, self.directory,
-                                  localid, cpus_per_task, gpus_per_task,
-                                  termination_timeout,
-                                  'train', 'trainer.log')
+            # trainer is not required for committor sampling
+            if not self.params.committor_sampling:
+                self.processes.launch(self.params.path, self.directory,
+                                    localid, cpus_per_task, gpus_per_task,
+                                    termination_timeout,
+                                    'train', 'trainer.log')
             
             # manager (sharing the same localid as trainer)
             self.processes.launch(self.params.path, self.directory,
@@ -478,12 +480,14 @@ class Launcher:
             file.write(f'    pids=()\n')
             
             # trainer
-            file.write(
-                '    "${PYTHON}" "${WORKER}" "${PARAMS}" '
-                f'"{self.directory}" {(i + 1) % ntasks_per_node} '
-                f'{cpus_per_task} {gpus_per_task} {termination_timeout} '
-                f'train trainer.log &\n')
-            file.write(f'    pids+=($!)\n')
+            # trainer is not required for committor sampling
+            if not self.params.committor_sampling:
+                file.write(
+                    '    "${PYTHON}" "${WORKER}" "${PARAMS}" '
+                    f'"{self.directory}" {(i + 1) % ntasks_per_node} '
+                    f'{cpus_per_task} {gpus_per_task} {termination_timeout} '
+                    f'train trainer.log &\n')
+                file.write(f'    pids+=($!)\n')
             
             # manager
             file.write(

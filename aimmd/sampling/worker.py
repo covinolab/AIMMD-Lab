@@ -6,8 +6,8 @@ import subprocess
 import MDAnalysis as mda
 from aimmd.core import Params
 from aimmd.core.utils import now, remove
-from aimmd.sampling.train import train
-from aimmd.sampling.manage import manage
+from aimmd.sampling.train import train, kinetics_convergence
+from aimmd.sampling.manage import manage, manage_committor_sampling
 from aimmd.sampling.simulate import simulate
 from aimmd.sampling.resources import bind_resources
 
@@ -134,9 +134,14 @@ class Worker:
             if task == 'train':
                 return train(self, *args)
             if task == 'manage':
-                return manage(self, *args)
+                if self.params.committor_sampling:
+                    return manage_committor_sampling(self, *args)
+                else:
+                    return manage(self, *args)
             if task == 'simulate':
                 return simulate(self, *args)
+            if task == 'kinetics_convergence':
+                return kinetics_convergence(self, *args)
             
             # not implemented
             raise TypeError(f'Task {task} not implented for AIMMD worker')
@@ -154,6 +159,41 @@ class Worker:
         
         # just call "run"
         return self.run('train', log_file, verbose, nrounds, walltime)
+    
+    def convergence_kinetics(self, log_file=None, chunks = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0],
+                             kinetics_outfile='kinetics_convergence.txt', kinetics_convergence_plotfile='kinetics_convergence.pdf'):
+        """ Perform convergence analysis of kinetics on the current path ensemble.
+        This works by taking the first x fraction of the paths in the path ensemble,
+        training a network for those, and computing kinetics. Requires that
+        in the params reweight_pathensemble_after_training=True and
+        sparse_update_max_frames=-1 (otherwise no kinetics calculation can be performed.)
+        
+        Parameters
+        ---------
+        log_file : str, optional
+           Log file to write output to. By default None.
+        chunks : list of float, optional
+           List of fractions of the path ensemble to use for convergence
+           analysis. By default [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0].
+        kinetics_outfile : str, optional
+           Output file to write kinetics convergence results to.
+           By default 'kinetics_convergence.txt'.
+        kinetics_convergence_plotfile : str, optional
+           Output file to write kinetics convergence plot to.
+           By default 'kinetics_convergence.pdf'.
+        """
+
+        assert self.params.reweight_pathensemble_after_training, \
+            "reweight_pathensemble_after_training must be True for kinetics convergence analysis"
+        assert self.params.sparse_update_max_frames==-1, \
+            "sparse_update_max_frames must be -1 for kinetics convergence analysis"
+        
+        # preprocessing exclusive to this function
+        os.system(f'rm -f {self.directory}/initial_paths/*')
+        self.params.save_initial_paths(f'{self.directory}/initial_paths')
+
+        return self.run('kinetics_convergence', log_file, chunks,
+                        kinetics_outfile, kinetics_convergence_plotfile)
     
     def manage(self, n, nA, nB, eA=0, eB=0, log_file=None,
                nsteps=inf, nframes=inf, walltime=inf):

@@ -1182,9 +1182,13 @@ def fit(network, pathensemble,
     keepers = selection_probabilities > 0
     if not np.sum(keepers):  # no other choice
         print('Extending to states')
+        if train_validation_early_stopping:
+            print("Disabling early stopping while extending to states.")
+            train_validation_early_stopping = False
         selection_probabilities += 1.
         results[:len(inA_values), 0] += 1.
         results[len(inB_values):n_internal_frames, 1] += 1.
+        
         keepers = np.ones(len(selection_probabilities), dtype=bool)
     selection_probabilities = selection_probabilities[keepers]
     values = values[keepers]
@@ -1502,9 +1506,10 @@ def fit(network, pathensemble,
                 else:
                     no_improvement_steps += 1
                     if verbose:
-                        print(f'    Early stopping report, epoch {i}: no improvement for '
-                        f'{no_improvement_steps} steps, loss {loss:.3e} validation loss {val_loss:.3e} '
-                        f'(min val loss: {min_validation_loss:.3e})')
+                        if no_improvement_steps % (early_stopping_patience // 10) == 0:
+                            print(f'    Early stopping report, epoch {i}: no improvement for '
+                            f'{no_improvement_steps} steps, loss {losses[-1]:.3e} validation loss {val_loss:.3e} '
+                            f'(min val loss: {min_validation_loss:.3e})')
                     if no_improvement_steps >= early_stopping_patience:
                         print(f'    Early stopping triggered after {no_improvement_steps} steps without improvement, '
                             f'restoring best model from early stopping '
@@ -1527,6 +1532,13 @@ def fit(network, pathensemble,
         print(f'!!! bad range ({Range[0]:.3f}, {Range[1]:.3f}), '
               f'restoring original parameters')
         network.load_state_dict(state_dict0)
+
+    # If we're doing early stopping and have recorded a best model, restore it
+    if train_validation_early_stopping:
+        if min_validation_loss < np.inf:
+            print(f'    Restoring best model from early stopping '
+                  f'(last val loss: {val_loss:.3e}, min val loss: {min_validation_loss:.3e})')
+            network.load_state_dict(state_dict_early_stopping)
     
     # recompute scales and range in case they changed
     network.eval()
@@ -1543,7 +1555,8 @@ def fit(network, pathensemble,
                 )
 
     # At this stage, save a little violin plot to visually control the quality of the training, if verbose
-    if verbose:
+    # only makes sense with 'loop-all' batching strategy
+    if verbose and batching_strategy == 'loop-all':
         prediction = torch.sigmoid(q).cpu().numpy().flatten()
         pathtypes = torch.cat(r, dim=0).cpu().numpy() if batching_strategy == 'loop-all' else r.cpu().numpy()
         pathtypes = pathtypes[:,1] - pathtypes[:,0]
@@ -1957,6 +1970,93 @@ def load_initial_paths(directory, topology, states_function, descriptors_functio
             raise
         initial_paths = initial_paths.merge(temp)
     return initial_paths
+
+def load_committor_sampling_frames(committor_sampling_frames_paths, topology, states_function, descriptors_function,
+                       values_function=placeholder_values_function,
+                       verbose=True):
+    """ Load all frames used for committor sampling. Equivalent to 
+    loading initial paths but without filtering for transitions only.
+    
+    Parameters
+    ----------
+    committor_sampling_frames_paths : list of str
+        List of paths to the files containing the committor sampling frames.
+    topology : str
+        Path to the topology file.
+    states_function : function
+        Function that gives the states.
+    descriptors_function : function
+        Function that gives the descriptors.
+    values_function : function, optional
+        Function that gives the values. Default is placeholder_values_function.
+    verbose : bool, optional
+        If True, print verbose output. Default is True.
+    
+    Returns
+    -------
+    committor_sampling_frames : PathEnsemble
+        A PathEnsemble object containing the committor sampling frames.
+    """
+    fnames = sorted([fname for fname in committor_sampling_frames_paths
+                     if '.xtc' == fname[-4:] or '.trr' == fname[-4:]])
+    committor_sampling_frames = PathEnsemble()
+    for fname in fnames:
+        temp = PathEnsemble()
+        temp.directory = os.path.dirname(fname) if os.path.dirname(fname) else '.'
+        temp.topology = os.path.relpath(topology, temp.directory)
+        temp.states_function = states_function
+        temp.descriptors_function = descriptors_function
+        temp.values_function = values_function
+        temp.append(fname, verbose=verbose)
+        temp.split()
+        committor_sampling_frames = committor_sampling_frames.merge(temp)
+    return committor_sampling_frames
+
+def save_committor_sampling_outcomes(shooting_outcomes: list[list[tuple]], outfile: str):
+    """
+    Save the committor sampling outcomes to a file.
+
+    Parameters
+    ----------
+    shooting_outcomes : list of list of np.array
+        The shooting outcomes to save.
+    outfile : str
+        The path to the output file.
+    """
+    with open(outfile, 'w') as f:
+        for n, outcomes in enumerate(shooting_outcomes):
+            out_line = str(n)+':'
+            for outcome in outcomes:
+                out_line += f'{outcome};'
+            f.write(out_line + '\n')
+
+def load_committor_sampling_outcomes(infile: str) -> list[list[tuple]]:
+    """
+    Load the committor sampling outcomes from a file.
+
+    Parameters
+    ----------
+    infile : str
+        The path to the input file.
+
+    Returns
+    -------
+    shooting_outcomes : list of list of np.array
+        The loaded shooting outcomes.
+    """
+    shooting_outcomes = []
+    with open(infile, 'r') as f:
+        for line in f:
+            parts = line.strip().split(':')
+            n = int(parts[0])
+            outcomes_str = parts[1].split(';')[:-1]  # last is empty
+            outcomes = []
+            for outcome_str in outcomes_str:
+                # convert numpy strings into array
+                outcome = np.fromstring(outcome_str.strip("[]"),sep=' ')
+                outcomes.append(outcome)
+            shooting_outcomes.append(outcomes)
+    return shooting_outcomes
 
 
 def update_shooting_chain(
@@ -3288,3 +3388,172 @@ def initialize_shooting_simulation(
     np.save(f'{chain.directory}/shoot_bias.npy', selection_bias)
     np.save(f'{chain.directory}/pool_index.npy', index)
     print(f'\nShooting initialization completed ({now()})\n')
+
+def initialize_shooting_simulation_from_descriptors(
+    chain: PathEnsemble,
+    directory: str,
+    params: object,
+    descriptors: np.ndarray,
+):
+    """
+    Initialize shooting simulations directly from a provided descriptors array.
+    Each descriptor is used
+    to generate a shooting point and launch forward/backward simulations.
+
+    Parameters
+    ----------
+    chain : PathEnsemble object
+        The chain to which the new shooting simulations belong.
+    directory : str
+        Base directory of the project.
+    params : object
+        Params object.
+    descriptors : array-like
+        Array of descriptors. Each will be used to generate a shooting point.
+    """
+
+    # basic reporting
+    i = len(chain)
+    old_fname = f'path{i:06g} -> ' if i else ''
+    new_fname = f'path{i+1:06g}'
+    relpath = os.path.relpath(chain.directory, directory)
+
+    print(f'\nInitializing shooting sims for chain {relpath}: '
+          f'{old_fname}{new_fname}  ({now()})')
+
+    # unpack minimal needed parameters
+    topology = params.topology
+
+    print(f'    Received {descriptors.shape} descriptors for shooting')
+
+    # For each descriptor, generate the shooting point and launch simulations
+
+    print(f'\n=== Starting simulation ')
+
+    # make shooting point trajectory
+    mda_universe = mda.Universe(topology)
+    mda_universe.atoms.positions = descriptors.reshape(-1, 3)
+    mda_trajectory = MDATrajectory([mda_universe], [0], [0])
+
+    # run backward/forward trajectories
+    initialize_simulation(
+        mda_trajectory,
+        params,
+        f'{chain.directory}/back',
+        f'{chain.directory}/forw'
+    )
+
+    print(f'\nShooting initializations completed ({now()})\n')
+
+def write_shooting_points_as_trajectory(topology: str,
+                                       filename: str,
+                                       pathensemble: PathEnsemble | PathEnsemblesCollection = None,
+                                       run_folder: str = None,
+                                       num_ARA: int = -1,
+                                       num_TP: int = -1,
+                                       num_BRB: int = -1,
+                                       verbose: bool = False) -> None:
+    """ Take the shooting points from a PathEnsemble or PathEnsemblesCollection,
+    or alternatively from a run folder containing directories shots[0-n].
+    Write them as on trajectory file, e.g. for committor sampling. Random
+    selection of a certain number of shooting points from each category
+    are possible. Only xtc format writing is supported.
+    
+    Parameters
+    ----------
+    topology : str
+        The topology file to use for the trajectory (to be read by MDAnalysis).
+    filename : str
+        The output trajectory filename. Must end with .xtc.
+    pathensemble : PathEnsemble or PathEnsemblesCollection, optional
+        The path ensemble(s) from which to extract shooting points.
+    run_folder : str, optional
+        The run folder containing shots[0-n] directories to extract shooting points from.
+    num_ARA : int, optional
+        Number of A-excursion shooting points to include. If -1, include all.
+    num_TP : int, optional
+        Number of transition path shooting points to include. If -1, include all.
+    num_BRB : int, optional
+        Number of B-excursion shooting points to include. If -1, include all.
+    verbose : bool, optional
+        Whether to print verbose output. Defaults to False.
+    
+    Returns
+    -------
+    None
+    """
+    
+    # Basic input consistency checks
+    if not filename.endswith('.xtc'):
+        raise ValueError('Output filename must end with .xtc')
+    if (pathensemble is None) and (run_folder is None):
+        raise ValueError('Either pathensemble or run_folder must be provided.')
+    if (pathensemble is not None) and (run_folder is not None):
+        raise ValueError('Only one of pathensemble or run_folder should be provided.')
+    
+    # Construct the PathEnsemblesCollection if run_folder is given
+    if run_folder is not None:
+        # Get shot trajectories in the run folder
+        n_available = 0
+        while os.path.exists(f'{run_folder}/shots{n_available}'):
+            n_available += 1
+        if n_available == 0:
+            raise ValueError(f'No shots directories found in {run_folder}')
+        if verbose:
+            print(f'Found {n_available} shots directories in {run_folder}')
+        pathensembles = [
+            np.load(f'{run_folder}/shots{n}/chain.h5', allow_pickle=True)
+            for n in range(n_available)
+        ]
+        pathensemble = PathEnsemblesCollection(*pathensembles)
+        if verbose:
+            print(f'Loaded PathEnsemblesCollection from {run_folder}')
+    
+    # Get indices of different types of shooting points
+    ARA_indices = []
+    TP_indices = []
+    BRB_indices = []
+    for i, result in enumerate(pathensemble.shooting_results):
+        if result[0] == 2 and result[1] == 0:
+            ARA_indices.append(i)
+        elif result[0] == 1 and result[1] == 1:
+            TP_indices.append(i)
+        elif result[0] == 0 and result[1] == 2:
+            BRB_indices.append(i)
+        else:
+            raise ValueError(f'Unexpected shooting result {result} at index {i}')
+    if verbose:
+        print(f'Found {len(ARA_indices)} ARA, {len(TP_indices)} TP, '
+              f'and {len(BRB_indices)} BRB shooting points.')
+        
+    # Randomly select specified number of shooting points from each category, if given
+    if num_ARA > -1 and num_ARA > len(ARA_indices):
+        raise ValueError(f'Requested {num_ARA} ARA points, but only '
+                         f'{len(ARA_indices)} available.')
+    if num_TP > -1 and num_TP > len(TP_indices):
+        raise ValueError(f'Requested {num_TP} TP points, but only '
+                         f'{len(TP_indices)} available.')
+    if num_BRB > -1 and num_BRB > len(BRB_indices):
+        raise ValueError(f'Requested {num_BRB} BRB points, but only '
+                         f'{len(BRB_indices)} available.')
+    if num_ARA != -1:
+        ARA_indices = np.random.choice(ARA_indices, size=min(num_ARA, len(ARA_indices)), replace=False).tolist()
+    if num_TP != -1:
+        TP_indices = np.random.choice(TP_indices, size=min(num_TP, len(TP_indices)), replace=False).tolist()
+    if num_BRB != -1:
+        BRB_indices = np.random.choice(BRB_indices, size=min(num_BRB, len(BRB_indices)), replace=False).tolist()
+    
+    selected_indices = ARA_indices + TP_indices + BRB_indices
+    if verbose:
+        print(f'Selected total of {len(selected_indices)} shooting points '
+              f'for output trajectory.')
+        
+    # write trajectory with selected shooting points
+    topology_universe = mda.Universe(topology)
+    with mda.Writer(filename, n_atoms=topology_universe.atoms.n_atoms) as writer:
+        for index in selected_indices:
+            topology_universe.trajectory[0]  # reset to first frame
+            topology_universe.atoms.positions = pathensemble.shooting_descriptors[index].reshape(-1, 3)
+            writer.write(topology_universe.atoms)
+    if verbose:
+        print(f'Wrote shooting points trajectory to {filename}')
