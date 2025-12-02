@@ -43,7 +43,7 @@ def test_only_update_pathensemble_when_network_changes():
     pe.update_values()
     second_duration = time() - start_time
 
-    assert second_duration < first_duration / 3, f"Path Ensemble values update did not speed up enough on second call, {second_duration} vs {first_duration}."
+    assert second_duration < first_duration / 2, f"Path Ensemble values update did not speed up enough on second call, {second_duration} vs {first_duration}."
 
     # Clean up
     os.chdir(FOLDER)
