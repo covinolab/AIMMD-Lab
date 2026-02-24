@@ -8,6 +8,7 @@ import sys
 import time
 import select
 import signal
+import threading
 import traceback
 import subprocess
 import multiprocessing
@@ -144,25 +145,28 @@ def execute_command(command, stop_condition=lambda : False,
             terminate_process_and_print_remaining_output()
 
 
-def target_wrapper(name, receiver1, receiver2, target, *args, **kwargs):
+def target_wrapper(target, name, *args, **kwargs):
     """Wrapper that signals parent after Python is fully initialized.
     Used by TaskExecutor to coordinate multiple processes.
+    Necessary with multiprocessing spawn.
     """
+    pid = os.getpid()
+    tid = threading.get_ident()
+    error_message = ''
     try:
-        # run function
-        receiver2.send("running")
+        print(f"[PID {pid}, TID {tid}: {name}] starting {now()}")
+        if args:
+            print(f'...   args: {args}')
+        if kwargs:
+            print(f'... kwargs: {kwargs}')
         target(*args, **kwargs)
-        receiver2.send("complete")
-    
-    # keyboard interrupt: no errors
-    except KeyboardInterrupt:
-        pass
-    
-    # errors and traceback
     except Exception as exception:
-        traceback.print_exc()
-        receiver2.send("error")
-
-    # no more sending data
+        error_message = str(exception)
+        #traceback.print_exc()
+        raise exception
     finally:
-        receiver2.close()
+        if not error_message:
+            print(f"[PID {pid}, TID {tid}: {name}] exited correctly")
+        else:
+            print(f"[PID {pid}, TID {tid}: {name}] exited with error"
+                  f" ({error_message})")
