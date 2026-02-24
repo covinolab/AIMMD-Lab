@@ -81,7 +81,7 @@ class LauncherHelpers(ABC):
 
     def _terminate_handler(self, signum=None, frame=None):        
         print(f'\n[{self}] received termination signal {signum} {now()}')
-        self._clean_processes()
+        self._processes.clear()
         
         # standard behavior
         if signum == signal.SIGINT:
@@ -194,11 +194,3 @@ class LauncherHelpers(ABC):
             self._ntasks_per_node = int(ntasks_per_node)
         else:
             self._ntasks_per_node = total_num_processes
-
-    def _add_process(self, args, description):
-        self._processes.add(run_task, *args, name=description)
-
-    def _clean_processes(self):
-        self._processes.stop(self._processes.alive,
-                              timeout=self.termination_timeout)
-        self._processes = ProcessExecutor()
