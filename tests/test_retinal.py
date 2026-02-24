@@ -8,6 +8,7 @@ on different machines is not guaranteed.
 import pytest
 
 @pytest.mark.slow
+@pytest.mark.usefixtures("capfd")
 def test_retinal():
 
     import os
