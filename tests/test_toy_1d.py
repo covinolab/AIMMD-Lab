@@ -7,7 +7,6 @@ on different machines is not guaranteed.
 """
 import pytest
 
-@pytest.mark.usefixtures("capfd")
 def test_toy_1d():
 
     import os
