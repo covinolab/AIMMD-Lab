@@ -18,13 +18,17 @@ try:
     import sqlite3
     from mlcolvar.data.dataset import DictDataset
     from mlcolvar.data.graph.utils import create_dataset_from_configurations
-    from mlcolvar.utils.io import _configures_from_trajectory, _z_table_from_top, _names_from_top
+    from mlcolvar.utils.io import (_configures_from_trajectory
+                                   _z_table_from_top,
+                                   _names_from_top)
     import multiprocessing
     from torch_geometric.nn import radius_graph
     import time
     import MDAnalysis.transformations as transformations
 except ImportError as e:
-    raise ImportError(f"Module {e.name} not found. The module 'aimmd.core.graph_utils' requires additional dependencies.") from e
+    raise ImportError(f"Module {e.name} not found. "
+                      f"The module 'aimmd.network.graph_utils'
+                      f"requires additional dependencies.") from e
 
 def atom_coordinate_descriptors_function(trajectory: mda.coordinates.timestep.Timestep, verbose=False) -> np.ndarray:
     """From an MDAnalysis trajectory to descriptors, which will be cached by pathensemble.
