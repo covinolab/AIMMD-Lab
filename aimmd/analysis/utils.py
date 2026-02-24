@@ -6,6 +6,7 @@
 import numpy as np
 from math import inf, nan
 from scipy.stats import beta
+from scipy.interpolate import RegularGridInterpolator
 
 # aimmd imports
 from ..pathensemble.utils import match_patterns
@@ -303,8 +304,9 @@ def solve_committor_by_relaxation(
             if np.abs(r - r1) < 1e-16:
                 break
         if split > 1:
-            P0 = np.array([interpolate(x, y, P1, X1, Y1)
-                           for x, y in zip(X.ravel(), Y.ravel())]).reshape(X.shape)
+            interp = RegularGridInterpolator((Y1[:, 0], X1[0, :]), P1, bounds_error=False,
+                                             fill_value=None)
+            P0 = interp(np.column_stack((Y.ravel(), X.ravel()))).reshape(X.shape)
         else:
             P0 = P1.copy()
     return P0
