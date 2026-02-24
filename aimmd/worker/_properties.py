@@ -21,7 +21,7 @@ class WorkerProperties(ABC):
     @log_file.setter
     def log_file(self, log_file):
         if log_file is None:
-            return
+            log_file = self.original_stdout
         if log_file == 'stdout':
             log_file = self.original_stdout
         if log_file == self._log_file:
