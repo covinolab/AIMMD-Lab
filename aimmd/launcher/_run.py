@@ -77,7 +77,7 @@ class LauncherRun(ABC):
         
         # initialize processes, create folders
         for args, description in zip(*self._build()):
-            self._add_process(args, description)
+            self._processes.add(run_task, *args, name=description)
         
         # start processes
         try:
@@ -86,22 +86,22 @@ class LauncherRun(ABC):
             # wait for completion within walltime
             # stop all as soon as any other stops
             t0 = time.time()
-            while time.time() - t0 < walltime and self._processes.alive.any():
-                for i, receiver in enumerate(self._processes._receivers):
-                    name = self._processes._name(i)
-                    message = receiver()
-                    if message == 'error':
-                        self._processes.stop(timeout=self.termination_timeout)
-                        raise RuntimeError(
-                            f'[{name}] exited with error {now()}')
-                    if message == 'complete':
-                        print(f'[{name}] exited correctly {now()}')
-                        self._processes.stop(timeout=self.termination_timeout)
+            must_stop = False
+            while time.time() - t0 < walltime and not must_stop:
+                for process in self._processes:
+                    exitcode = process.exitcode
+                    if exitcode is None:
+                        continue
+                    must_stop = True
+                    if exitcode:
+                        raise RuntimeError('launcher run failed')
+                    break
+                time.sleep(.01)  # avoid freezing
         
-        # catch exceptions (needed when running just one process)
+        # catch exceptions
         except Exception as exception:
             raise exception
-
-        # clearn all
+        
+        # clear all processes
         finally:
-            self._clean_processes()
+            self._processes.clear(timeout=self.termination_timeout)
