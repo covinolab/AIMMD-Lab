@@ -19,8 +19,6 @@ ctx = multiprocessing.get_context('spawn')
 class TaskExecutor(ABC):
     """For both list of processes or threads."""
     
-    __task_name__ = 'Task'
-    
     def __init__(self):
         self._tasks = []
         self._names = []
@@ -28,7 +26,6 @@ class TaskExecutor(ABC):
         self._targets = []
         self._args = []
         self._kwargs = []
-        self._receivers = []
     
     def __len__(self):
         return len(self._tasks)
@@ -47,18 +44,14 @@ class TaskExecutor(ABC):
         text = [f'{self.__class__.__name__} with {len(self)} '
                 f'task{"s" if len(self) != 1 else ""}']
         if len(self):
-            text.append(':\n... ')
+            text.append(':')
         for i in range(len(self)):
-            text.append(f':\n... {self._name(localid)}')
+            text.append(f'\n... {self._names[i]}')
         return ''.join(text)
-
+    
     @abstractmethod
     def _initialize(self, target, *args, **kwargs):
         pass
-
-    def _name(self, localid):
-        return (f'{self.__task_name__}{self._idents[localid]}: '
-                f'{self._names[localid]}')
 
     def _alive(self, localid):
         if self._tasks[localid] is None:
@@ -79,61 +72,28 @@ class TaskExecutor(ABC):
     def _closed(self, localid):
         return False
 
-    def _reset(self, localid):
+    def _reset(self, localid, timeout=20.):
         """Replace task with pristine task. Allows to restart."""
-
-        # cannot reset if still alive
-        if self._alive(localid):
-            raise RuntimeError(f'[{self._name(localid)}] '
-                               f'still alive, cannot reset')
-
+        
         # close old process
+        self.stop(localid, timeout=timeout)
         self._close(localid)
         self._tasks[localid] = None
         self._idents[localid] = ''
-        self._receivers[localid] = None
     
     def _build(self, localid):
         target = self._targets[localid]
         args = self._args[localid]
         kwargs = self._kwargs[localid]
-        receiver1, receiver2 = multiprocessing.Pipe()
-        target = functools.partial(target_wrapper, self._name(localid),
-            receiver1, receiver2, target, *args, **kwargs)
-
-        # receiver is a function that always returns
-        # latest message; you may want to change its name
-        closed = False
-        last_message = ''
-        def receiver():
-            nonlocal last_message, closed
-            
-            if closed:
-                return last_message
-            
-            try:
-                while receiver1.poll():
-                    last_message = receiver1.recv()
-            except EOFError:
-                closed = True
-
-            if last_message and last_message != 'running':
-                receiver1.close()
-            
-            return last_message
-        
-        self._tasks[localid] = self._initialize(target)
-        self._receivers[localid] = receiver
-        
-        return self._tasks[localid], self._receivers[localid]
+        name = self._names[localid]
+        target = functools.partial(
+            target_wrapper, target, name, *args, **kwargs)
+        self._tasks[localid] = self._initialize(target)        
+        return self._tasks[localid]
     
     @property
     def tasks(self):
         return list(self._tasks)
-
-    @property
-    def names(self):
-        return list(self._names)
 
     @property
     def idents(self):
@@ -172,20 +132,12 @@ class TaskExecutor(ABC):
         self._targets.append(target)
         self._args.append(args)
         self._kwargs.append(kwargs)
-        self._receivers.append(None)
     
     def sequential(self, key=None):
         localids = np.arange(len(self))[key].flatten()
         for localid in localids:
-            try:
-                self._targets[localid](
-                    *self._args[localid], **self._kwargs[localid])
-                print(f'[{self._name(localid)}] exited correctly {now()}')
-            except Exception as exception:
-                raise RuntimeError(
-                    f'[{self._name(localid)}] exited with error: '
-                    f'{exception} {now()}\n{traceback.format_exc()}')
-        
+            target_wrapper(target, name, *args, **kwargs)
+    
     def run(self, key=None, parallel=True, timeout=20.):
         localids = np.arange(len(self))[key].flatten()
         
@@ -196,32 +148,11 @@ class TaskExecutor(ABC):
             return self.sequential(localids)
         
         for i, localid in enumerate(localids):
+
+            # reset and start task
             self._reset(localid)
-            
-            task, receiver = self._build(localid)
+            task = self._build(localid)
             task.start()
-                        
-            # wait for ready
-            while not receiver():
-                continue
-            
-            # register identification number and update name in process
-            self._idents[localid] = f' {task.ident}'
-            print(f'[{self._name(localid)}] started {now()}')
-            if args := self._args[localid]:
-                print(f'...   args: {self._args[localid]}')
-            if kwargs := self._kwargs[localid]:
-                print(f'... kwargs: {kwargs}')
-            
-            # do not proceed if some process already stopped
-            for i, receiver in enumerate(self._receivers[:i + 1]):
-                name = self._name(i)
-                message = receiver()
-                if message == 'error':
-                    raise RuntimeError(
-                        f'[{name}] exited with error {now()}')
-                if message == 'complete':
-                    print(f'[{name}] exited correctly {now()}')
     
     def stop(self, key=None, timeout=20.):
 
@@ -236,22 +167,30 @@ class TaskExecutor(ABC):
                 if self._alive(localid):
                     if localid not in terminating:
                         self._terminate(localid)
-                        print(f'[{self._name(localid)}] '
-                              f'sent termination signal {now()}')
                         terminating.add(localid)
                 else:
-                    self._close(localid)
                     localids.remove(localid)
         
-        # force termination
+        # force termination within timeout
         for localid in localids:
             if self._alive(localid):
                 self._kill(localid)
-                print(f'[{self._name(localid)}] sent kill signal {now()}')
+                time.sleep(timeout)
         
         # final swipe
         for localid in localids:
-            if not self._alive(localid):
-                self._close(localid)
-            else:
-                print(f'[{self._name(localid)}] still alive {now()}')
+            if self._alive(localid):
+                print(f'Warning: some processes are still alive {now()}')
+                break
+    
+    def clear(self, timeout=20.):
+        """Close all tasks and remove them"""
+        self.stop(self.alive, timeout=timeout)
+        for localid in range(len(self)):
+            self._close(localid)
+        self._tasks = []
+        self._names = []
+        self._idents = []
+        self._targets = []
+        self._args = []
+        self._kwargs = []
