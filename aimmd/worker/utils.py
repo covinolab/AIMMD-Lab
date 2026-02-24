@@ -19,9 +19,9 @@ from ..core.utils import now, process_state
 from ..path.utils import get_cache_fname
 from ..pathensemble import PathEnsemble
 from ..execute.utils import execute_command
-from ..network.utils import rescale
 from ..analysis.utils import bin_centers
 from ..pathensemble.utils import match_patterns, assemble_pathensemble
+from ..network.rescale_utils import rescale
 
 # functions
 def update_selection_pool(pool, size, chain,
