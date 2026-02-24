@@ -105,7 +105,7 @@ class ToyEngine:
                         return 1
                     raise RuntimeError(error_msg)
             if log_file:
-                print(f'Appending to {fname}', file=log_file)
+                print(f'Appending to {fname!r}', file=log_file)
 
         # finally run simulation
         n_atoms = reader.trajectory.n_atoms
