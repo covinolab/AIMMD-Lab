@@ -21,12 +21,15 @@ def fit(params,
         pathensemble,
         keys=None,
         
-        # binning
+        # values binning
         nbins=0,
         cutoff_min=0.5,
         cutoff_max=20.,
         state_bins='',
         max_adjustment_in_bin=10.0,
+        transition_path_upweighting=1.0,
+        end_state_factor=1.0,
+        sparse_update_max_frames=-1,
         
         # data augmentation
         augment='no',
@@ -38,6 +41,9 @@ def fit(params,
         loss_regularization_weight=0,
         epochs=500,
         batch_size=4096,
+        batching_strategy='draw-replace',
+        
+        # stopping
         stop=50.,
         train_validation_early_stopping=False,
         early_stopping_patience=10,
@@ -112,6 +118,19 @@ def fit(params,
         Allow for rare shooting results to compute at most
         "max_adjustment_in_bin" more frequently in the training batch,
         counterbalancing this with a rescaling of the shooting result.
+
+    transition_path_upweighting: float, default=1.0
+        Make transitions more important in the sampling.
+        
+    end_state_factor : float, default=1.0
+        Factor to weight the selection probabilities of points in the end
+        states, if `state_bins` includes state 1 and/or 2. Useful to increase
+        or decrease the importance of end state points in the training, as
+        deviations from a 1/3 weighting.
+
+    sparse_update_max_frames : int, default=-1
+        Maximum number of frames to use for sparse pathensemble value updates.
+        If -1, use all frames.
     
     augment : str, default='no'
         If 'yes', include all available data in the training set: shooting
@@ -148,6 +167,14 @@ def fit(params,
         selection probabilities, its size will always be `batch_size`, even
         with very small training sets.
 
+    batching_strategy : str, default='draw-replace'
+        Strategy to draw training batches. Options are:
+        - 'draw-replace': draw points with replacement according to selection
+          probabilities. One epoch is just one batch.
+        - 'loop-all': loop over all points in the training set without
+          replacement, in batches of size `batch_size`. One epoch is complete
+          when all points have been used once.
+
     stop : float, default=50.0
         Stop when the scale of the logit committor reaches this value.
         
@@ -156,20 +183,21 @@ def fit(params,
         and use early stopping based on the validation loss.
     
     early_stopping_patience : int, default=10
-        Number of epochs with no improvement on the validation loss. After this
-        number of epochs, stop the training. Reset to best validation epoch 
-        at the end.
+        Number of epochs with no improvement on the validation loss. After 
+        this number of epochs, stop the training. Reset to best validation
+        epoch at the end.
 
     early_stopping_min_samples : int, default=1000
-        Minimum number of samples in the training set to enable early stopping.
+        Min number of samples in the training set to enable early stopping.
 
     early_stopping_split : float, default=0.1
-        Fraction of the training set to use as validation set for early stopping.
+        Fraction of the training set to use as validation set for early
+        stopping.
 
     in_memory : bool, default=False
         If `True`, reload (transformed) descriptors for every batch.
         If `False`, load *all* descriptors just once.
-        ATM ALL DESCRIPTORS ARE LOADED TOGETHER, TRANSFORMED LATER if True
+        Atm all descriptors are loaded together, transformed later if True
     
     graphs : bool, default=False
         If True, the descriptors are graphs, stored in the mlcolvar DataDict
@@ -203,14 +231,19 @@ def fit(params,
         just 0 or 1) since the function includes and regularizes all data.
     """
 
-    # check input parameters
-    if augment not in ('no', 'yes', 'experimental'):
-        raise TypeError("augment parameter must be "
-                        "either 'no', 'yes', or 'experimental'")      
-    
-    # will periodically check
-    def must_stop():
-        return getattr(worker, 'termination_signal', False)
+    # input consistency checks
+    assert (batching_strategy in ('draw-replace', 'loop-all'),
+            f"Invalid batching strategy: {batching_strategy}")
+    assert (augment in ('no', 'yes', 'experimental'),
+            f"Invalid augment: {augment!r}")
+    assert (sparse_update_max_frames == -1,
+            'In this version of aimmd, only '
+            'sparse_update_max_frames = -1 is supported')
+
+    if graphs:
+        # only need to import this torch_geometric Batch if graphs
+        # are used as descriptors. Otherwise, avoid the dependency.
+        from torch_geometric.data import Batch
     
     # initialize
     t0 = time.time()
@@ -224,14 +257,12 @@ def fit(params,
                           'positions')
     descriptor_transform = params.descriptor_transform or (lambda x:x)
     
-    if graphs:
-        # only need to import this torch_geometric Batch if graphs
-        # are used as descriptors. Otherwise, avoid the dependency.
-        from torch_geometric.data import Batch
-    
     if not augment:
         th1 = None
         th2 = None
+
+    # define stop function: will periodically check
+    must_stop = lambda : getattr(worker, 'termination_signal', False)
     
     # classify paths
     types = pathensemble.types()
@@ -429,10 +460,10 @@ def fit(params,
     # in 1, in 2 data
     n_internal_frames = lengths[0] + lengths[1]
     if lengths[0]:
-        selection_probabilities[:lengths[0]] = 1 / lengths[0]  
+        selection_probabilities[:lengths[0]] = end_state_factor / lengths[0] 
     if lengths[1]:
         selection_probabilities[lengths[0]:n_internal_frames
-            ] = 1 / lengths[1]
+            ] = end_state_factor / lengths[1]
 
     # merge sparse bins together
     print(f'\nBins {bins}')
@@ -501,6 +532,13 @@ def fit(params,
         (results[n_internal_frames:, 1] >
          results[n_internal_frames:, 0]).any()):
         selection_probabilities[lengths[0]:n_internal_frames] = 0.
+    
+    # modulate selection probabilities for transition paths
+    cumsum_lengths = np.cumsum(lengths)
+    free_tp_indices = range(cumsum_lengths[3], cumsum_lengths[5])
+    shot_tp_indices = range(cumsum_lengths[7], cumsum_lengths[9])
+    selection_probabilities[free_tp_indices] *= transition_path_upweighting
+    selection_probabilities[shot_tp_indices] *= transition_path_upweighting
 
     # restrict to selection_probabilities > 0
     keepers = selection_probabilities > 0
@@ -508,9 +546,46 @@ def fit(params,
     values = values[keepers[n_internal_frames:]]
     descriptors = descriptors[keepers]
     results = results[keepers]
-    print(f'\nTraining set size {len(selection_probabilities)}')
+    training_set_size = len(selection_probabilities)
     if not keepers.any() or must_stop():
         return [], [], [], [], []
+    
+    # Early stopping setup
+    
+    # disable early stopping, if threshold of training set size is not met
+    if training_set_size < early_stopping_min_samples:
+        train_validation_early_stopping = False
+        print(f"\nDisabling early stopping since "
+              f"total samples {training_set_size} < "
+              f"{early_stopping_min_samples} min samples.")
+
+    if train_validation_early_stopping:
+        state_dict_early_stopping = copy.deepcopy(network.state_dict())
+        no_improvement_steps = 0
+        min_validation_loss = np.inf
+        validation_losses = []
+        validation_set_size = int(training_set_size * early_stopping_split)
+        print(f"\nUsing early stopping with {validation_set_size} "
+              f"samples for validation set.")
+        validation_indices = np.random.choice(
+            training_set_size, size=validation_set_size, replace=False)
+        training_set_size -= validation_set_size
+        # set selection probabilities of validation set to zero in training set
+        selection_probabilities[validation_indices] = 0.
+        
+        # create validation vectors
+        if not graphs:
+            d_val = descriptor_transform(descriptors[validation_indices])
+            d_val = torch.tensor(d_val, dtype=dtype, device=device)
+            d_val.requires_grad = True
+        else:
+            # when using graphs, we need to process the DataDict objects
+            # instead of arrays
+            d_val_list = [descriptors['data_list'][i] for i in validation_indices]
+            d_val = Batch.from_data_list(d_val_list).to(device).to_dict()                
+        r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
+    
+    print(f'\nTraining set size {training_set_size}')
     selection_probabilities /= selection_probabilities.sum()
     
     if in_memory:
@@ -530,41 +605,6 @@ def fit(params,
     min_loss2 = inf
     min_loss_step1 = 0
     min_loss_step2 = 0
-
-    # Early stopping setup
-
-    # disable early stopping, if threshold of training set size is not met
-    if (len(selection_probabilities) < early_stopping_min_samples and
-        train_validation_early_stopping):
-        train_validation_early_stopping = False
-        print(f"\nDisabling early stopping since < {early_stopping_min_samples} samples.")
-
-    if train_validation_early_stopping:
-        state_dict_early_stopping = copy.deepcopy(network.state_dict())  # early stopping
-        no_improvement_steps = 0
-        min_validation_loss = np.inf
-        validation_losses = []
-        validation_set_size = int(len(selection_probabilities) * early_stopping_split)
-        print(f"\nUsing early stopping with {validation_set_size} samples for validation set.")
-        validation_indices = np.random.choice(
-            len(selection_probabilities),
-            size=validation_set_size,
-            replace=False)
-        # set selection probabilities of validation set to zero in training set
-        selection_probabilities[validation_indices] = 0.
-        selection_probabilities /= np.sum(selection_probabilities)
-        
-        # create validation vectors
-        if not graphs:
-            d_val = descriptor_transform(descriptors[validation_indices])
-            d_val = torch.tensor(d_val, dtype=dtype, device=device)
-            d_val.requires_grad = True
-        else:
-            # when using graphs, we need to process the DataDict objects
-            # instead of arrays
-            d_val_list = [descriptors['data_list'][i] for i in validation_indices]
-            d_val = Batch.from_data_list(d_val_list).to(device).to_dict()                
-        r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
     
     print(f'Resetting the network parameters {now()}\n')
     network.reset_parameters()
@@ -582,8 +622,15 @@ def fit(params,
             param_group['lr'] = lr * min(1, (counter.n + 1) / (epochs / 20))
         
         # sample batch
-        indices = np.random.choice(len(selection_probabilities),
-                                   batch_size, p=selection_probabilities)
+        if batching_strategy == 'draw-replace':
+            indices = np.random.choice(training_set_size, batch_size,
+                p=selection_probabilities)
+        elif batching_strategy == 'loop-all':
+            # zero selection probabilities are ALREADY not in the training set
+            training_indices = np.random.permutation(training_set_size)
+            batches = [training_indices[i:i + batch_size]
+                       for i in range(0, len(training_indices), batch_size)]
+            raise NotImplementedError("can't to adapt this right now")
         
         if not graphs:
             if not in_memory:  # separately to save memory
@@ -628,13 +675,13 @@ def fit(params,
                                 loss_bayesian_factor ** 2)
                 loss -= 1.0
             
+            # standard binomial loss
             else:
-                # binomial loss
-                # (stable version, which will not output NaN for large |q|)
-                p = torch.sigmoid(q[:, 0])
-                to1_contrib = r[:, 0] * torch.log(1 - p + 1e-20)
-                to2_contrib = r[:, 1] * torch.log(    p + 1e-20)
-                loss = - torch.sum(to1_contrib + to2_contrib) / torch.sum(r)
+                exp_pos_q = torch.exp(+q[:, 0])
+                exp_neg_q = torch.exp(-q[:, 0])
+                to1_contrib = r[:, 0] * torch.log(1. + exp_pos_q)
+                to2_contrib = r[:, 1] * torch.log(1. + exp_neg_q)
+                loss = torch.sum(to1_contrib + to2_contrib) / torch.sum(r)
             
             # Compute the smoothness penalty
             if loss_smoothening_weight:
@@ -778,7 +825,6 @@ def fit(params,
     print(f'    last range ({Range[0]:.3f}, {Range[1]:.3f})')
     return losses, scales, values, selection_probabilities, results#, D, R
 
-#fit.__source__ = f'from aimmd.learning import fit'
 
 def placeholder(params, pathensemble, key, verbose, worker):
     return fit(params=params,
@@ -786,5 +832,3 @@ def placeholder(params, pathensemble, key, verbose, worker):
                key=key,
                verbose=verbose,
                worker=worker)
-
-#placholder.__source__ = f'from aimmd.learning import placholder'
