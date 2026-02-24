@@ -18,18 +18,22 @@ class ProcessExecutor(TaskExecutor):
         return ctx.Process(target=target)
     
     def _terminate(self, localid):
-        try:
-            os.kill(self._tasks[localid].pid, signal.SIGINT)
-        except:
-            pass
+        """Graceful termination of the process."""
+        task = self._tasks[localid]
+        if task and task.is_alive():
+            task.terminate()
     
     def _kill(self, localid):
-        self._tasks[localid].kill()
-        self._tasks[localid].join()
-
+        """Forcefully kill the process (alias to terminate in Python)."""
+        task = self._tasks[localid]
+        if task and task.is_alive():
+            task.terminate()
+    
     def _close(self, localid):
-        if self._tasks[localid] is not None:
-            self._tasks[localid].close()
+        """Join the process to clean up resources."""
+        task = self._tasks[localid]
+        if task:
+            task.join(timeout=0.1)  # small timeout to avoid blocking forever
     
     def _closed(self, localid):
         if self._tasks[localid] is None:
