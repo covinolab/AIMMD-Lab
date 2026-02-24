@@ -63,12 +63,9 @@ class WorkerShoot(ABC):
             sweep_indices = sweep_frames.indices[sweep_frames.states == t]
             sweep_size = len(sweep_indices)
         elif t != states[1]:
-            initial_paths = PathEnsemble(initial_paths.sample(1, t))
-            pool_size = 1
-        elif nbins > 1:
-            pool_size = params.selection_pool_size
-        else:
-            pool_size = 1
+            initial_paths = PathEnsemble([
+                path.sample(1, t) for path in initial_paths])
+        pool_size = params.selection_pool_size
         
         # eneconv
         if params.engine == 'gromacs':
