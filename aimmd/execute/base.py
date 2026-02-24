@@ -22,7 +22,6 @@ class TaskExecutor(ABC):
     def __init__(self):
         self._tasks = []
         self._names = []
-        self._idents = []
         self._targets = []
         self._args = []
         self._kwargs = []
@@ -79,7 +78,6 @@ class TaskExecutor(ABC):
         self.stop(localid, timeout=timeout)
         self._close(localid)
         self._tasks[localid] = None
-        self._idents[localid] = ''
     
     def _build(self, localid):
         target = self._targets[localid]
@@ -94,10 +92,6 @@ class TaskExecutor(ABC):
     @property
     def tasks(self):
         return list(self._tasks)
-
-    @property
-    def idents(self):
-        return list(self._idents)
     
     @property
     def targets(self):
@@ -128,7 +122,6 @@ class TaskExecutor(ABC):
         
         self._tasks.append(None)
         self._names.append(name)
-        self._idents.append('')
         self._targets.append(target)
         self._args.append(args)
         self._kwargs.append(kwargs)
@@ -190,7 +183,6 @@ class TaskExecutor(ABC):
             self._close(localid)
         self._tasks = []
         self._names = []
-        self._idents = []
         self._targets = []
         self._args = []
         self._kwargs = []
