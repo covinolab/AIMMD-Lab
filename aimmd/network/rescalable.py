@@ -10,7 +10,7 @@ from torch import nn
 from collections.abc import Iterable
 
 # internal imports
-from .utils import rescale
+from .rescale_utils import rescale
 
 # rescalable network module
 class Rescalable(ABC, nn.Module):
