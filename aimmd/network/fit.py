@@ -534,7 +534,8 @@ def fit(params,
     # Early stopping setup
 
     # disable early stopping, if threshold of training set size is not met
-    if len(selection_probabilities) < early_stopping_min_samples:
+    if (len(selection_probabilities) < early_stopping_min_samples and
+        train_validation_early_stopping):
         train_validation_early_stopping = False
         print(f"\nDisabling early stopping since < {early_stopping_min_samples} samples.")
 
@@ -627,13 +628,13 @@ def fit(params,
                                 loss_bayesian_factor ** 2)
                 loss -= 1.0
             
-            # standard binomial loss
             else:
-                exp_pos_q = torch.exp(+q[:, 0])
-                exp_neg_q = torch.exp(-q[:, 0])
-                to1_contrib = r[:, 0] * torch.log(1. + exp_pos_q)
-                to2_contrib = r[:, 1] * torch.log(1. + exp_neg_q)
-                loss = torch.sum(to1_contrib + to2_contrib) / torch.sum(r)
+                # binomial loss
+                # (stable version, which will not output NaN for large |q|)
+                p = torch.sigmoid(q[:, 0])
+                to1_contrib = r[:, 0] * torch.log(1 - p + 1e-20)
+                to2_contrib = r[:, 1] * torch.log(    p + 1e-20)
+                loss = - torch.sum(to1_contrib + to2_contrib) / torch.sum(r)
             
             # Compute the smoothness penalty
             if loss_smoothening_weight:
