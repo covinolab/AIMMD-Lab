@@ -1,56 +1,58 @@
 import sys
-import aimmd.core.utils
 import torch
 import numpy as np
-from tqdm import tqdm
+import warnings
+from aimmd.network import fit as _fit
+from aimmd.network.rescalable import Rescalable
+from MDAnalysis.lib.distances import calc_bonds, calc_dihedrals
 
 engine = 'toy'
-initial_paths = ['initial.xtc']
+initial_paths = 'initial.xtc'
+free_overriding_states = 'all'
 
-def fit(network, pathensemble,
-        keys=None,
-        initial_paths=None,
-        verbose=False,
-        worker=None):
-    return aimmd.core.utils.fit(network, pathensemble,
-        keys=keys,
-        initial_paths=initial_paths,
-        process_descriptors=lambda x:x,
-        save_memory=False,
-        nbins=0,
-        state_bins='AB',
-        augment=False,
-        lr=5e-2,
-        loss_bayesian_factor=100,
-        epochs=100,
-        batch_size=4096,
-        stop=50.,
-        verbose=verbose,
-        worker=worker)
+def toy_mdrun(ts):
+    for _ in range(100):
+        ts.positions = (ts.positions + .02 * np.random.normal()) % 10
 
-def descriptors_function(traj, verbose=False):
-    return np.array([
-        frame.positions[0, 0] for frame in
-        tqdm(traj, disable=not verbose, position=0, file=sys.stdout)]).reshape(-1, 1)
 
-def states_function(traj, verbose=False):
-    return np.array([
-        'A' if frame.positions[0, 0] <= 0.0 else
-        'B' if frame.positions[0, 0] >= 1.0 else 'R' for frame in
-        tqdm(traj, disable=not verbose, position=0, file=sys.stdout)], dtype='<U1')
+def states_function(trajectory):
+    result = []
+    for frame in trajectory:
+        import time
+        x = frame.positions[0,0]
+        if x < 1 or x > 9:
+            result.append('A')
+        elif x < 2:
+            result.append('R')
+        elif x < 3:
+            result.append('B')
+        elif x < 4:
+            result.append('S')
+        elif x < 5:
+            result.append('C')
+        elif x < 6:
+            result.append('T')
+        elif x < 7:
+            result.append('D')
+        elif x < 8:
+            result.append('U')
+        else:
+            result.append('E')
+    return np.array(result, dtype='<U1')
 
-class Network(torch.nn.Module):
+
+class Network(Rescalable):
     def __init__(self):
         super().__init__()
         self.call_kwargs = {}
-        n = 16
+        n = 64
         self.input = torch.nn.Linear(1, n)
         self.layer = torch.nn.Linear(n, n)
         self.activation = torch.nn.ReLU(n)
         self.output = torch.nn.Linear(n, 1)
         self.reset_parameters()
     def forward(self, x):
-        x = self.activation(self.input(x))
+        x = self.activation(self.input(x[:, :1]))
         x = self.activation(self.layer(x))
         x = self.output(x)
         return x
@@ -61,28 +63,33 @@ class Network(torch.nn.Module):
 
 network = Network()
 
-def process_descriptors(descriptors):
-    return descriptors
 
-def values_function(descriptors):
-    if not len(descriptors):
-        return np.zeros(0)
-    
-    device = next(network.parameters()).device
-    dtype = next(network.parameters()).dtype
-    network.eval()
-    
-    # initialize
-    results = []
-    descriptors = process_descriptors(descriptors)
-    
-    # compute in batches
-    with torch.no_grad():
-        for batch in torch.utils.data.DataLoader(
-            descriptors, batch_size=4096, shuffle=False):
-            batch = batch.to(device=device, dtype=dtype)
-            output = network(batch).detach().cpu().numpy().ravel()
-            results.append(output)
-    
-    # return
-    return np.concatenate(results)
+"""It must be of these inputs"""
+def fit(params,
+        pathensemble,
+        key=None,
+        verbose=False,
+        worker=None):
+    return _fit(params,
+        pathensemble,
+        key,
+        nbins=0,
+        cutoff_min=0.5,
+        cutoff_max=20.,
+        state_bins='all',
+        augment='no',
+        lr=1e-3,
+        loss_bayesian_factor=0,
+        loss_smoothening_weight=0,
+        loss_regularization_weight=0,
+        epochs=500,
+        batch_size=4096,
+        stop=50.,
+        train_validation_early_stopping=False,
+        early_stopping_patience=10,
+        early_stopping_min_samples=1000,
+        early_stopping_split=0.1,
+        in_memory=True,
+        graphs=False,
+        verbose=True,
+        worker=worker)
