@@ -21,7 +21,7 @@ setup(
         'of molecular systems characterized by rare-event transitions.'),
     long_description=readme(),
     long_description_content_type='text/markdown',
-    url='https://github.com/gl95/aimmd',  # replace with your repo URL
+    url='https://github.com/gl95/aimmd',
     packages=find_packages(exclude=('tests', 'docs', 'examples')),
     python_requires='>=3.9',
     install_requires=[
@@ -31,10 +31,10 @@ setup(
         'scipy',
         'torch',
         'mdtraj',
-        'MDAnalysis',
-        'matplotlib',
-        'tqdm',
         'psutil',
+        'filelock',
+        'matplotlib',
+        'MDAnalysis',
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
