@@ -1,42 +1,38 @@
-import sys
-import torch
-import numpy as np
-import mdtraj as md
-import warnings
-import aimmd.core.utils
-from tqdm import tqdm
+"""
+Directly defined params
+"""
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore")
-    mdtraj_frame = md.load('run.gro')
 trajectory_extension = '.trr'
 initial_paths = ['initial.trr']
 gmx_grompp = 'gmx grompp -maxwarn 4'
 gmx_mdrun = 'gmx mdrun -v -ntmpi 1'
+rescale_committor = False
+at_least_one_transition_in_pool = True
+selection_pool_size = 20
 
-couples = [(i,j) for i in range(80) for j in range(i+1, 80)]
+"""
+Auxiliary
+"""
 
-def cv(trajectory, verbose=False):
+import numpy as np
+couples = np.array([(i,j) for i in range(80) for j in range(i+1, 80)])
+
+from MDAnalysis.lib.distances import calc_dihedrals
+def cv(trajectory):
     """Isomerization dihedral, good for plots."""
     result = []
-    for frame in tqdm(trajectory, disable=not verbose, position=0, file=sys.stdout):
-        positions = np.round(frame.positions / 10., 2)
-        mdtraj_frame.xyz = positions.reshape((-1, *positions.shape))
-        mdtraj_frame.unitcell_vectors = np.round(
-            frame.triclinic_dimensions / 10., 2).reshape((-1, 3, 3))
-        dihedral = md.compute_dihedrals(mdtraj_frame, [[33,28,26,24]])[0]
-        result.append(dihedral[0])
+    for frame in trajectory:
+        result.append(calc_dihedrals(*frame.positions[[33, 28, 26, 24]]))
     return np.array(result)
 
+"""
+States function
+"""
 
-def states_function(trajectory, verbose=False):
+def states_function(trajectory):
     result = []
-    for frame in tqdm(trajectory, disable=not verbose, position=0, file=sys.stdout):
-        positions = np.round(frame.positions / 10., 2)
-        mdtraj_frame.xyz = positions.reshape((-1, *positions.shape))
-        mdtraj_frame.unitcell_vectors = np.round(
-            frame.triclinic_dimensions / 10., 2).reshape((-1, 3, 3))
-        dihedral = md.compute_dihedrals(mdtraj_frame, [[33,28,26,24]])[0]
+    for frame in trajectory:
+        dihedral = calc_dihedrals(*frame.positions[[33, 28, 26, 24]])
         if np.abs(dihedral) < np.pi/9:
             result.append('A')  # cis
         elif np.abs(dihedral - np.pi) < np.pi/9:
@@ -47,18 +43,32 @@ def states_function(trajectory, verbose=False):
             result.append('R')
     return np.array(result, dtype='<U1')
 
+"""
+Descriptors function & transform
+"""
 
-def descriptors_function(trajectory, verbose=False):
-    result = []
-    for frame in tqdm(trajectory, disable=not verbose, position=0, file=sys.stdout):
-        result.append(np.append(frame.positions.ravel(),
-                     frame._velocities.ravel()))
-    if not len(result):
-        result = np.zeros((0, 80*6))
-    return np.array(result)
+def descriptors_function(trajectory):
+    result = np.zeros((len(trajectory), 80 * 6))
+    i = 0
+    for frame in trajectory:
+        current = np.append(frame.positions.ravel(), frame._velocities.ravel())
+        result[i, :len(current)] = current
+        i += 1
+    return result
 
+from MDAnalysis.lib.distances import calc_bonds
+def descriptor_transform(descriptors, couples=couples):
+    return np.array([calc_bonds(
+            frame[couples[:, 0]], frame[couples[:, 1]])
+        for frame in descriptors[:, :80 * 3].reshape(-1, 80, 3)])
 
-class Network(torch.nn.Module):
+"""
+Network
+"""
+
+import torch
+from aimmd.network.rescalable import Rescalable
+class Network(Rescalable):
     def __init__(self):
         super().__init__()
         self.call_kwargs = {}
@@ -74,63 +84,43 @@ class Network(torch.nn.Module):
         x = self.output(x)
         return x
     def reset_parameters(self):
+        super().reset_parameters()
         self.input.reset_parameters()
         self.layer.reset_parameters()
         self.output.reset_parameters()
 
 network = Network()
 
+"""
+Fit
+"""
 
-def process_descriptors(descriptors):
-    """From positions to distances"""
-    positions = descriptors[:, :80*3]
-    mdtraj_frame.xyz = positions.reshape((len(descriptors), 80, 3)) / 10.
-    mdtraj_frame.unitcell_vectors = np.repeat(
-        [mdtraj_frame.unitcell_vectors[0]], len(mdtraj_frame.xyz), axis=0)
-    return md.compute_distances(mdtraj_frame, couples)
-
-
-def values_function(descriptors):
-    if not len(descriptors):
-        return np.zeros(0)
-    
-    device = next(network.parameters()).device
-    dtype = next(network.parameters()).dtype
-    network.eval()
-    
-    # initialize
-    results = []
-    descriptors = process_descriptors(descriptors)
-    
-    # compute in batches
-    with torch.no_grad():
-        for batch in torch.utils.data.DataLoader(
-            descriptors, batch_size=4096, shuffle=False):
-            batch = batch.to(device=device, dtype=dtype)
-            output = network(batch).detach().cpu().numpy().ravel()
-            results.append(output)
-    
-    # return
-    return np.concatenate(results)
-
-
-def fit(network, pathensemble,
-        keys=None,
-        initial_paths=None,
+from aimmd.network import fit as _fit
+def fit(params,
+        pathensemble,
+        key=None,
         verbose=False,
         worker=None):
-    return aimmd.core.utils.fit(network, pathensemble,
-        keys=keys,
-        initial_paths=initial_paths,
-        process_descriptors=process_descriptors,
-        save_memory=False,
-        nbins=0,
-        state_bins='AB',
-        augment=False,
-        lr=1e-3,
-        loss_bayesian_factor=1000,
+    return _fit(params,
+        pathensemble,
+        key,
+        nbins=10,
+        cutoff_min=0.5,
+        cutoff_max=20.,
+        state_bins='all',
+        augment='yes',
+        lr=5e-4,
+        loss_bayesian_factor=0,
+        loss_smoothening_weight=0,
+        loss_regularization_weight=0,
         epochs=500,
         batch_size=4096,
         stop=50.,
+        train_validation_early_stopping=False,
+        early_stopping_patience=10,
+        early_stopping_min_samples=1000,
+        early_stopping_split=0.1,
+        in_memory=True,
+        graphs=False,
         verbose=True,
         worker=worker)
