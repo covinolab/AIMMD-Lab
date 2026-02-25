@@ -1,5 +1,35 @@
 """
-...
+aimmd.params._paths
+==================
+
+Path/ensemble loading utilities for :class:`aimmd.params.Params`.
+
+This mixin provides methods that (re)loads Path and Pathensemble
+objects from an AIMMD run directory layout.
+
+High-level methods
+------------------
+free_trajectories(directory)
+    Collect unsplit free simulation trajectories (potentially composed of parts)
+    across states, and apply "indicted" exclusions.
+
+shot_paths(directory, prefix='chain', ...)
+    Collect shot paths from shooting-chain folders, optionally updating existing
+    cached ensembles.
+
+shot_chains(directory, ...)
+    Convenience wrapper around `shot_paths(..., prefix='chain', ...)`.
+
+pathensemble(directory, shot_chains=[])
+    Assemble a complete PathEnsemble containing:
+    - shot chains (ordered and optionally reusable),
+    - free trajectories.
+
+Notes
+-----
+These methods rely heavily on AIMMD's on-disk naming conventions (folder names,
+`traj??????.part????`, `path??????`, and optional `tps_weights.npy` in case of a
+TPS run).
 """
 
 # external
@@ -17,20 +47,43 @@ from ..core.utils import process_state
 from ..pathensemble import PathEnsemble
 from ..pathensemble.utils import assemble_pathensemble
 
+
 # params' paths loading methods
 class ParamsPaths(ABC):
-    
+
     def free_trajectories(self, directory):
-        """get (unsplit) free trajectories in pathensemble
-        also with indicted"""
+        """
+        Collect (unsplit) free trajectories from an AIMMD run directory.
+
+        Parameters
+        ----------
+        directory : str
+            Base run directory containing `free{state}/traj??????.part????` files.
         
+        Returns
+        -------
+        list of aimmd.path.Path
+            List of reconstructed free trajectories as `Path` objects.
+        
+        Notes
+        -----
+        - Free trajectories are stored split into parts:
+          `traj??????.part????{ext}`.
+          This method groups by `traj??????` index and assembles each into a
+          `Path(fnames, remove_overlapping_frames=True)`.
+        
+        - If `indicted.log` is present in `free{state}/`, it is parsed and
+          used to exclude frames from trajectories by assigning `_exclude_from`
+          or `exclude_from` (depending on code path).
+        """
+
         # initialize
         result = []
-        
+
         # get "offset" for determining the path number
         ext = self.trajectory_extension
         offset = len(ext) + 9
-        
+
         # iterate on allowed folders
         for t in self.states:
             # which paths are indicted?
@@ -75,22 +128,53 @@ class ParamsPaths(ABC):
                     result.append(traj)
                 except:
                     continue
-        
+
         # all together, categorized
         pathensemble = PathEnsemble()
         pathensemble._paths = result  # directly assign to be faster
         return result
-    
+
     def shot_paths(self, directory, prefix='chain',
                    target_state=None, k=None, old=None):
-        """get shot paths
-        prefix: of the folder
-        old: if provided, will update that.
+        """
+        Load shot paths (shooting trajectories) from a run directory.
+
+        Parameters
+        ----------
+        directory : str
+            Base run directory containing `{prefix}{state}{k}/path??????{ext}`.
+        prefix : str, optional
+            Folder prefix (e.g., 'chain', 'sweep', etc.).
+        target_state : str, optional
+            If None, load for all states in `self.states`.
+            Otherwise interpreted via `process_state(target_state, self.states)`.
+        k : int, str, iterable, or None, optional
+            Shooting chain index/indices to load.
+            - int/str: load exactly that chain.
+            - iterable: load those chains.
+            - None: scan all matching folders and load all chains found.
+        old : optional
+            Previously loaded data used for incremental updates.
+            May be a `PathEnsemble`, a list of `PathEnsemble`, or compatible
+            iterable depending on call mode.
+
+        Returns
+        -------
+        aimmd.pathensemble.PathEnsemble or list
+            For a specific `(target_state, k)` returns a `PathEnsemble`.
+            For a broader query returns a list indexed by k and/or state.
+
+        Notes
+        -----
+        - This function tries to reuse already-loaded paths and only append new
+          ones (except the last path which may still be changing on disk).
+        - For TPS (`self.chain_type == 'tps'`) it may load `tps_weights.npy` and
+          assign weights to newly loaded paths, zeroing weights for non-transitions.
         """
 
         # which state are we talking about?
         states = self.states
-        
+
         # load all of them
         if target_state is None:
             result = []
@@ -100,16 +184,16 @@ class ParamsPaths(ABC):
                 old = old[len(this):]
                 result.extend(this)
             return result
-        
+
         t = process_state(target_state, states)
-        
+
         if isinstance(k, (Integral, str)):
             try:
                 k = int(k)
             except:
                 raise TypeError(f'{k} must be integral, list of integrals, '
                                 f'or None, got {k!r}')
-            
+
             # get info
             folder = f'{directory}/{prefix}{t}{k}'
             ext = self.trajectory_extension
@@ -121,7 +205,7 @@ class ParamsPaths(ABC):
             elif isinstance(old, Iterable) and len(old):
                 if isinstance(old[0], PathEnsemble):
                     old_part = old[0][:-1]
-            
+
             # keep what we already have
             fnames = []
             # except for the last one that may still change
@@ -129,7 +213,7 @@ class ParamsPaths(ABC):
                 fname = path.fname
                 if fname not in fnames:
                     fnames.append(fname)
-            
+
             # new part
             new_part = PathEnsemble()
             for fname in sorted(glob(f'{folder}/path??????{ext}')):
@@ -137,10 +221,10 @@ class ParamsPaths(ABC):
                     path = Path(fname, shooting_index='find')
                     path.weight = path.is_complete(t, states)
                     new_part._paths.append(path)
-            
+
             # finally: add (do not copy paths)
             shot_paths = old_part + new_part
-            
+
             # get weights in case of tps
             if 'sweep' not in prefix and self.chain_type == 'tps':
                 new_weights = np.zeros(len(new_part))
@@ -155,10 +239,10 @@ class ParamsPaths(ABC):
                 except:
                     pass
                 new_part.weights = new_weights
-            
+
             # return
             return shot_paths
-        
+
         # for each k
         result = old or []
         if k is None:
@@ -178,13 +262,35 @@ class ParamsPaths(ABC):
                     result[k] = self.shot_paths(
                         directory, prefix, t, k, result[k])
         return result
-    
+
     def shot_chains(self, directory, target_state=None, k=None, old=None):
+        """
+        Convenience wrapper for `shot_paths(..., prefix='chain', ...)`.
+        """
         return self.shot_paths(directory, 'chain', target_state, k, old)
-    
+
     def pathensemble(self, directory, shot_chains=[]):
-        """Complete path ensemble with right states map.
-        Shooting chains: there, ready to be updated, already ordered."""
+        """
+        Assemble a complete PathEnsemble from shot chains + free trajectories.
+
+        Parameters
+        ----------
+        directory : str
+            AIMMD run directory.
+        shot_chains : list, optional
+            Previously loaded shot chains (used for incremental update).
+
+        Returns
+        -------
+        aimmd.pathensemble.PathEnsemble
+            Full ensemble with the correct state mapping and categories.
+
+        Notes
+        -----
+        This delegates to `assemble_pathensemble`, which expects:
+        - list of shot chains (PathEnsembles),
+        - list of free trajectories (Paths).
+        """
         return assemble_pathensemble(
             self.shot_chains(directory, None, None, shot_chains),
             self.free_trajectories(directory))
