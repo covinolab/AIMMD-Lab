@@ -1,5 +1,58 @@
 """
-...
+aimmd.launcher._helpers
+======================
+
+Helper mixin for :class:`aimmd.launcher.Launcher`.
+
+This module defines :class:`LauncherHelpers`, which provides the initialization
+and configuration logic used by AIMMD launchers. A launcher coordinates one or
+more *runs* (potentially with different parameter sets and working directories)
+and decides how many worker processes should be spawned for each run, and with
+which per-process resource allocations.
+
+In contrast to :class:`aimmd.worker.Worker`, which executes a single task in a
+single process, the launcher is responsible for:
+
+- validating and normalizing user inputs (params and directories),
+- expanding scalar configuration values to per-run arrays,
+- computing the number of worker processes required per run,
+- computing per-process CPU/GPU allocations from the available resources,
+- installing process-wide signal handlers to terminate all spawned tasks.
+
+Concepts
+--------
+Run
+    A single AIMMD working directory + parameter set pair. A launcher may manage
+    multiple runs at once (e.g., multiple replicas or multiple systems).
+
+Process budget
+    For each run, the launcher computes how many processes are needed for:
+    - reactive-region sampling (``n``),
+    - state-1 sampling (``n1``),
+    - state-2 sampling (``n2``),
+    - training (``nrounds``, > 0 value adds a training worker).
+
+Resource sharing
+    ``cpus_per_task`` and ``gpus_per_task`` can be specified as policies:
+
+    - ``'skip'``: do not bind; only report availability.
+    - ``'share'``: divide available resources across all processes the launcher
+      intends to run (across all runs combined).
+    - ``'all'``: assign all available resources to each process.
+    - int: explicit number of resources per process.
+
+Signal behavior
+---------------
+The launcher installs SIGINT/SIGTERM handlers that clear all managed processes.
+On SIGINT it raises ``KeyboardInterrupt``; on SIGTERM it exits with the
+conventional code ``128 + SIGTERM``.
+
+Notes
+-----
+- The helper `_terminate_handler` references ``sys`` but this module does not
+  import it. This is part of the original code and is preserved here; ensure
+  that the concrete launcher module imports ``sys`` or that this handler is not
+  invoked in contexts where ``sys`` is unavailable.
 """
 
 # external
@@ -17,27 +70,60 @@ from ..resources import get_num_cpus, get_num_gpus
 from ..core.utils import now
 from ..execute.processes import ProcessExecutor
 
-# launcher helpers
+
 class LauncherHelpers(ABC):
-    
+
     def _init(self, params, directories, termination_timeout=60.):
         """
-        params: either a string or an `aimmd.Params` instance, or a list
-                thereof
-        directory: path relative to working directory where to run simulations
-        termination_timeout: float, default 20
-            Grace time for terminating processes, after which they are killed
-        
-        All parameters for the run can be updated before (re)launching
-        a simulation.
-        """
+        Initialize a launcher instance.
 
+        Parameters
+        ----------
+        params : str or aimmd.params.Params or iterable of these
+            Parameter specification(s) for the run(s). Each element may be:
+
+            - a path to a saved Params file (string), loaded via
+              :meth:`aimmd.params.Params.load`, or
+            - an already instantiated :class:`~aimmd.params.Params`.
+
+            If a single string/Params is given, it is treated as a one-element
+            list (one run).
+        directories : str or iterable of str
+            Working directory (or directories) in which to run simulations. Each
+            directory is stored as a string and is interpreted relative to the
+            current working directory by higher-level launcher logic.
+
+            If a single string is given, it is treated as a one-element list.
+        termination_timeout : float, optional
+            Grace period (seconds) for terminating worker processes, after which
+            they may be killed by the executor. Stored as
+            :attr:`termination_timeout`. Default is ``60.``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        TypeError
+            If a params entry cannot be loaded, if any params object has no
+            initial paths, or if ``directories`` cannot be converted into a list
+            of strings.
+
+        Notes
+        -----
+        - All Params are forced to have a saved file on disk: if ``params[i].path``
+          is not a file, ``params[i].save()`` is called.
+        - If the number of params and directories differs, the shorter list is
+          extended by repeating its last element so that the lengths match.
+        - Signal handlers for SIGTERM and SIGINT are installed at initialization.
+        """
         # process params
         if isinstance(params, (str, Params)):
             params = [params]
         else:
             params = list(params)
-        
+
         # convert to Params object and check
         for i in range(len(params)):
             if isinstance(params[i], str):
@@ -50,7 +136,7 @@ class LauncherHelpers(ABC):
             # params need a saved file
             if not params[i].path.is_file():
                 params[i].save()
-        
+
         # process directories
         if type(directories) is str:
             directories = [directories]
@@ -60,29 +146,55 @@ class LauncherHelpers(ABC):
             except:
                 raise TypeError(f'{directories!r} must be either a str '
                                 f' or a list of strings')
-        
+
         # extend directories to params or viceversa
         delta = len(params) - len(directories)
         directories.extend(directories[-1:] * delta)
         params.extend(params[-1:] * -delta)
-        
+
         # initialize processes
         self._processes = ProcessExecutor()
-        
+
         # populate fields
         self._params = params
         self._directories = directories
-        self._update() # initialize
+        self._update()  # initialize
         self.termination_timeout = termination_timeout
-        
+
         # register signal handlers (for all future tasks)
         signal.signal(signal.SIGTERM, self._terminate_handler)
         signal.signal(signal.SIGINT, self._terminate_handler)
 
-    def _terminate_handler(self, signum=None, frame=None):        
+    def _terminate_handler(self, signum=None, frame=None):
+        """
+        Terminate all managed processes in response to a signal.
+
+        Parameters
+        ----------
+        signum : int, optional
+            Received signal number.
+        frame : frame, optional
+            Current stack frame (unused).
+
+        Returns
+        -------
+        None
+
+        Side Effects
+        ------------
+        - Clears all processes tracked by :attr:`_processes`.
+        - On SIGINT raises ``KeyboardInterrupt``.
+        - On SIGTERM exits with code ``128 + SIGTERM``.
+        - On any other signal exits with code ``0``.
+
+        Notes
+        -----
+        The concrete launcher is expected to provide a meaningful ``__repr__``
+        so that the printed message identifies the launcher instance.
+        """
         print(f'\n[{self}] received termination signal {signum} {now()}')
         self._processes.clear()
-        
+
         # standard behavior
         if signum == signal.SIGINT:
             raise KeyboardInterrupt
@@ -90,9 +202,34 @@ class LauncherHelpers(ABC):
             sys.exit(128 + signal.SIGTERM)
         else:
             sys.exit(0)
-    
+
     def _process_input(self, name, value, dtype=None):
-        """make it a list as long as self"""
+        """
+        Normalize a configuration input to a per-run array.
+
+        Parameters
+        ----------
+        name : str
+            Name of the input (used in error messages).
+        value : object
+            Input value. Supported forms are:
+            - scalar of type ``dtype`` (replicated across runs),
+            - iterable of values (must have length ``len(self)``),
+            - any other scalar (replicated and cast to ``dtype``).
+        dtype : type, optional
+            Desired dtype for the resulting NumPy array.
+
+        Returns
+        -------
+        numpy.ndarray
+            Array of length ``len(self)`` containing one value per run.
+
+        Raises
+        ------
+        TypeError
+            If an iterable is provided and its length does not match the number
+            of runs.
+        """
         if isinstance(value, dtype):
             value = np.repeat(value, len(self))
         elif isinstance(value, Iterable):
@@ -103,7 +240,7 @@ class LauncherHelpers(ABC):
         else:
             value = np.repeat(value, len(self)).astype(dtype)
         return value
-    
+
     def _update(self,
                 n=1, n1=0, n2=0,
                 reactive_region_mode='chain',
@@ -116,7 +253,61 @@ class LauncherHelpers(ABC):
                 cpus_per_task='share',
                 gpus_per_task='share',
                 ntasks_per_node=None):
-        """populate all fields required to run/create job"""
+        """
+        Update the launch plan and derived resource assignments.
+
+        This method converts the provided configuration into per-run arrays,
+        validates mode selections, computes how many worker processes will be
+        launched per run, and determines CPU/GPU allocations per process.
+
+        Parameters
+        ----------
+        n : int or iterable of int, optional
+            Number of processes allocated to sampling in the reactive region for
+            each run. Default is ``1``.
+        n1 : int or iterable of int, optional
+            Number of processes allocated to sampling associated with state 1.
+            Default is ``0``.
+        n2 : int or iterable of int, optional
+            Number of processes allocated to sampling associated with state 2.
+            Default is ``0``.
+        reactive_region_mode : {'chain', 'free', 'sweep'} or iterable, optional
+            Sampling mode used for the reactive region for each run. Default is
+            ``'chain'``.
+        state1_mode : {'free', 'shoot'} or iterable, optional
+            Mode used for state 1 processes for each run. Default is ``'free'``.
+        state2_mode : {'free', 'shoot'} or iterable, optional
+            Mode used for state 2 processes for each run. Default is ``'free'``.
+        nsteps : float or iterable of float, optional
+            Step budget used by workers as a stop condition. Default is ``inf``.
+        nframes : float or iterable of float, optional
+            Frame budget used by workers as a stop condition. Default is ``inf``.
+        nrounds : float or iterable of float, optional
+            Training-round budget. A > 0 value contributes one additional
+            process per run (see :attr:`_num_processes`). Default is ``inf``.
+        walltime : float, optional
+            Walltime limit in seconds (shared scalar across runs). Default is
+            ``inf``.
+        cpus_per_task : {'skip', 'share', 'all'} or int, optional
+            CPU allocation policy per process (see module docstring). Default is
+            ``'share'``.
+        gpus_per_task : {'skip', 'share', 'all'} or int, optional
+            GPU allocation policy per process (see module docstring). Default is
+            ``'share'``.
+        ntasks_per_node : int, optional
+            If provided, explicitly set the number of tasks per node. If not,
+            it defaults to the total number of processes computed across all
+            runs.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        TypeError
+            If any of the mode entries contain unsupported values.
+        """
         
         # process input
         n = self._process_input('n', n, int)
@@ -154,12 +345,12 @@ class LauncherHelpers(ABC):
         self._nframes = nframes
         self._nrounds = nrounds
         self._walltime = walltime
-        
+
         # get number of processes
         self._num_processes = (self._n1 + self._n2 + self._n +
                                self._nrounds.astype(bool))
         total_num_processes = sum(self._num_processes)
-        
+
         # determine number of CPUs per task
         self._cpus_per_task = cpus_per_task
         if cpus_per_task != 'skip':
@@ -171,7 +362,7 @@ class LauncherHelpers(ABC):
                 self._cpus_per_task = num_cpus_avail
             else:
                 self._cpus_per_task = int(cpus_per_task)
-        
+
         # determine number of GPUs per task
         self._gpus_per_task = gpus_per_task
         if gpus_per_task != 'skip':
@@ -183,7 +374,7 @@ class LauncherHelpers(ABC):
                 self._gpus_per_task = num_gpus_avail
             else:
                 self._gpus_per_task = int(gpus_per_task)
-        
+
         if ntasks_per_node:
             self._ntasks_per_node = int(ntasks_per_node)
         else:
