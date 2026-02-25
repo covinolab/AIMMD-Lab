@@ -1,6 +1,6 @@
 """
 aimmd.execute.processes
-=======================
+======================
 
 Process-based task executor implementation.
 
