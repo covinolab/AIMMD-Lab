@@ -1,5 +1,35 @@
 """
-...
+aimmd.path.utils
+===============
+
+Utility functions for the :mod:`aimmd.path` package.
+
+The functions in this module are small, dependency-light helpers used by the
+Path implementation and its mixins.
+
+Main utilities
+--------------
+get_fnames
+    Normalize filename inputs (strings, patterns, lists, txt/log lists) into a
+    flat list of existing trajectory filenames.
+get_last_time_and_dt
+    Robustly obtain the last time and an estimate of the time step from a
+    reader-like object.
+get_cache_fname
+    Map `(trajectory_fname, attribute)` pairs to the corresponding per-file
+    `.npy` cache filename.
+split
+    Split a state string/array into contiguous segments where the internal state
+    label changes (used to identify excursions and stopping conditions).
+compute_batch
+    Execute `function` on a concatenated batch and optionally update per-file
+    `.npy` caches for the computed target.
+
+Notes
+-----
+- Cache file updating is delegated to :func:`aimmd.cache.npy.update_npy`.
+- `compute_batch` uses :class:`aimmd.path.chainreader.ChainReader` when the
+  source is a reader-like stream, to avoid copying timesteps.
 """
 
 # external
@@ -16,6 +46,22 @@ from .chainreader import ChainReader
 
 # utils function
 def get_fnames(*patterns):
+    """Expand one or more filename specifications into a flat list of filenames.
+
+    Parameters
+    ----------
+    *patterns : str or pathlib.Path or Iterable
+        One or more filename specifications. Each element may be:
+        - a concrete filename,
+        - a glob pattern (containing '*' or '?'),
+        - a .txt/.log file listing filenames (whitespace-separated),
+        - an iterable of any of the above.
+
+    Returns
+    -------
+    list[str]
+        Flat list of resolved filenames (strings).
+    """
     result = []
     for pattern in patterns:
         if isinstance(pattern, (str, PosixPath)):
@@ -35,6 +81,22 @@ def get_fnames(*patterns):
 
 
 def get_last_time_and_dt(reader, last_index):
+    """Return the last time value and an estimate of the time step.
+
+    Parameters
+    ----------
+    reader : object
+        Reader-like sequence supporting `__getitem__` and returning either numeric
+        times or objects with a `.time` attribute.
+    last_index : int
+        Index of the last frame to query.
+
+    Returns
+    -------
+    tuple[float, float]
+        `(t_last, dt)` where `t_last` is the time of `reader[last_index]` and `dt`
+        is estimated from the previous frame if available (otherwise 1.0).
+    """
     """Last time, dt"""
     t1 = reader[last_index]
     if not isinstance(t1, Number):
@@ -51,11 +113,39 @@ def get_last_time_and_dt(reader, last_index):
 
 
 def get_cache_fname(fname, attribute):
+    """Return the `.npy` cache filename for a given trajectory file and attribute.
+
+    Parameters
+    ----------
+    fname : str
+        Trajectory filename.
+    attribute : str
+        Attribute name (e.g. 'states', 'values', 'positions').
+
+    Returns
+    -------
+    str
+        Cache filename of the form `f"{fname}.{attribute}.npy"`.
+    """
     """From fname to cache fname"""
     return f'{fname}.{attribute}.npy'
 
 
 def split(states):
+    """Split a state sequence into contiguous segments.
+
+    Parameters
+    ----------
+    states : array-like
+        Sequence of single-character state labels.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray]
+        `(start, stop)` arrays, where each pair `(start[i], stop[i])` identifies a
+        contiguous segment. The segmentation ignores the first and last frame when
+        detecting changes (by design of the original algorithm).
+    """
     states = np.asarray(states).astype('S1').view(np.uint8)
     diffs = np.diff(states[1:-1])
     # detect empty char-to-state crossings:
@@ -73,6 +163,30 @@ def split(states):
 def compute_batch(function,
                   batch_input, batch_targets,
                   source_is_reader, return_result=False):
+    """Compute a batch and optionally update per-file cache targets.
+
+    Parameters
+    ----------
+    function : callable
+        Function applied to the batch input. Must return an array-like result with
+        one output per input frame.
+    batch_input : list
+        List of batch chunks. If `source_is_reader` is True, each element is a
+        reader-like slice; otherwise each is a numpy array chunk.
+    batch_targets : list[tuple[str, array-like]]
+        List of `(cache_fname, locs)` pairs describing where to write the computed
+        results for each chunk.
+    source_is_reader : bool
+        If True, treat the input as reader-like and wrap it in `ChainReader`.
+    return_result : bool, optional
+        If True, return the computed array; otherwise return the number of computed
+        frames.
+
+    Returns
+    -------
+    numpy.ndarray or int
+        Computed result array if `return_result` else the number of computed frames.
+    """
     
     # compute batch
     if source_is_reader:
