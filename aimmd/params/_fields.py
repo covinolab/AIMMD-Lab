@@ -1,5 +1,23 @@
 """
-...
+aimmd.params._fields
+===================
+
+Dataclass field definitions for :class:`aimmd.params.Params`.
+
+This module defines :class:`~aimmd.params._fields.ParamsFields`, a dataclass-like
+mixin containing the full set of AIMMD parameters and their default values.
+
+Each field includes a human-readable description in `metadata['description']`,
+used by:
+- `Params.__str__` to generate a verbose parameters file representation,
+- `Params.save` to write a reproducible `params.py` script.
+
+Notes
+-----
+- This mixin is not intended to be used standalone.
+- Type annotations are used for validation by `ParamsHelpers._setattr`.
+- Some fields are callables that must be serializable by `ParamsIO.save`;
+  see `aimmd.params.utils.update_source`.
 """
 
 # external
@@ -15,344 +33,472 @@ from .._config import GROMACS
 from ..network.fit import fit
 from ..network.utils import placeholder as placeholder_network
 
-# params' fields
+
 @dataclass
 class ParamsFields(ABC):
-    
-    # states and states map
-    
-    states_function : Callable = field(
+    """
+    Dataclass field mixin defining the AIMMD parameter set.
+
+    This mixin contains:
+    - system definitions (topology, trajectory extension),
+    - engine configuration (GROMACS/toy),
+    - neural network components and data pipeline functions,
+    - path sampling / shooting selection options,
+    - saving and SLURM-related parameters,
+    - internal bookkeeping (`path`).
+
+    Notes
+    -----
+    - `states_function` has no default and must be provided.
+    - `path` is set at load time and is not meant to be user-assigned directly.
+    """
+
+    # ------------------------------------------------------------------
+    # States and state mapping
+    # ------------------------------------------------------------------
+
+    states_function: Callable = field(
         metadata={'description':
-"""From MDAnalysis trajectory to array of states."""
+"""Map an MDAnalysis trajectory or Timestep to state labels.
+This callable must accept an MDAnalysis trajectory-like object (or a Timestep,
+depending on your implementation) and return an array of state identifiers
+(e.g., one integer or one single-character label per frame). Used to:
+- detect whether a trajectory contains transitions,
+- classify frames as belonging to metastable states or the reactive region."""
                  })
-    
-    states : str = field(
+
+    states: str = field(
         default='ARB',
         metadata={'description':
-"""Which states are considered first metastable, reactive region,
-and final metastable, respectively."""
+"""State label specification. A compact string defining:
+- the first metastable state (e.g., 'A'),
+- the reactive/intermediate region label (e.g., 'R'),
+- the final metastable state (e.g., 'B').
+Example: 'ARB' means transitions are defined from A to B through R."""
                  })
-    
-    # system's main information
-    
+
+    # ------------------------------------------------------------------
+    # System information
+    # ------------------------------------------------------------------
+
     name: str = field(
         default='AIMMD',
         metadata={'description':
-"""System's name (will be used for creating slurm's jobs)."""
+"""System name, used when creating SLURM job names."""
         })
 
-    topology : str = field(
+    topology: str = field(
         default='run.gro',
         metadata={'description':
-"""System's topology (gro file) used for getting masses and by grompp."""
+"""Topology/structure file used for engine setup and mass lookup.
+Typically a GROMACS .gro file. Used by:
+- mass assignment routines,
+- (in case `engine = 'gromacs') `grompp` when constructing .tpr files."""
                  })
 
-    trajectory_extension : str = field(
+    trajectory_extension: str = field(
         default='.xtc',
         metadata={'description':
-"""Use `xtc` for compressed data, `trr` for full-precision data and also
-saving velocities along with the positions."""
+"""Trajectory file extension written and read by the engine.
+Common values:
+- '.xtc' : compressed coordinates (positions only),
+- '.trr' : full-precision coordinates and (optionally) velocities.
+Must be consistent with the engine configuration and your analysis pipeline."""
                  })
-    
-    # engine configuration
 
-    engine : str = field(
+    # ------------------------------------------------------------------
+    # Engine configuration
+    # ------------------------------------------------------------------
+
+    engine: str = field(
         default='gromacs',
         metadata={'description':
-"""Either "gromacs" or "toy" engine."""
+"""Simulation engine backend.
+Supported values:
+- 'gromacs' : external GROMACS runs,
+- 'toy'     : lightweight Python integrator (see `toy_mdrun`)."""
                  })
-    
-    # gromacs engine
-    
-    gmx_mdp : str = field(
+
+    # ------------------------------------------------------------------
+    # GROMACS engine configuration
+    # ------------------------------------------------------------------
+
+    gmx_mdp: str = field(
         default='run.mdp',
         metadata={'description':
-"""Used for initializing production runs (shooting / free simulations).
-Attention! It must be consistent with "trajectory_extension"."""
+"""GROMACS .mdp file used for production segments.
+Used when running shooting trajectories and free simulations.
+Must be compatible with `trajectory_extension` (e.g., if you require velocities,
+use settings consistent with '.trr')."""
                  })
-    
-    gmx_grompp : str = field(
+
+    gmx_grompp: str = field(
         default=f'{GROMACS} grompp -maxwarn 1',
         metadata={'description':
-"""Gromacs grompp and call options. Change to include index files. Allows to
-produce `tpr` files. Attention! "coordinates", "restraints", "output", and
-"nobackup" flags are added automatically, do not include them here."""
+"""Base `grompp` command used to build .tpr files.
+You may extend this command (e.g., add `-n index.ndx`), but do NOT include flags
+that AIMMD injects automatically (e.g., input coordinates, output file names,
+and `-nobackup` handling)."""
                  })
-    
-    gmx_mdrun : str = field(
+
+    gmx_mdrun: str = field(
         default=f'{GROMACS} mdrun -v -maxh 4',
         metadata={'description':
-"""Gromacs mdrun options. Change to optimize performance. Attention! "deffnm",
-"nobackup", and "noappend" flags (when required) are added automatically,
-do not include them here. To optimize performance: bear in mind one CPU core
-per task is dedicated to python for checking wether you have to stop.
-Thus, if cpus_per_task=12, you must set -ntmpi 11 to maximize exec speed."""
+"""Base `mdrun` command used to run dynamics.
+You may tune performance flags here (MPI/OMP/GPU), but do NOT include flags that
+AIMMD injects automatically (e.g., `-deffnm`, `-nobackup`, and `-noappend` where
+needed).
+Performance note:
+AIMMD typically dedicates one CPU core per worker to the Python control loop
+(stop-condition checks and bookkeeping). If you request `cpus_per_task = 12`,
+a common choice is to run GROMACS with `-ntmpi 11` (or equivalent) to avoid
+oversubscription."""
                  })
-    
-    gmx_eneconv : str = field(
+
+    gmx_eneconv: str = field(
         default=f'printf "c\nc\n" | {GROMACS} -nobackup eneconv -settime',
         metadata={'description':
-"""Command to merge Gromacs "edr" energy files of the backward and forward
-trajectory segments of a two-way shooting simulations. Leave emtpy in case
-you do not want to save energy files."""
-                 })
-    
-    # toy engine
-    
-    toy_mdrun : Callable = field(
-        default=None,
-        metadata={'description':
-"""Function for integrating to the next step in toy system.
-Transforms a MDAnalysis timestep."""
+"""Command used to merge GROMACS energy (.edr) files after two-way shooting.
+This command should merge backward/forward segment energy files into a single
+time-consistent .edr file (commonly via `eneconv -settime`).
+Set to an empty string to disable energy file merging/saving."""
                  })
 
-    toy_slowdown : float = field(
+    # ------------------------------------------------------------------
+    # Toy engine configuration
+    # ------------------------------------------------------------------
+
+    toy_mdrun: Callable = field(
+        default=None,
+        metadata={'description':
+"""Toy-engine integrator step function.
+Callable that advances the system by one step for the toy engine.
+It is expected to take an MDAnalysis Timestep (or equivalent) as input
+and return an updated version of it, depending on your toy setup."""
+                 })
+
+    toy_slowdown: float = field(
         default=0.01,
         metadata={'description':
-"""How much you slow down between integration steps with toy engine."""
+"""Artificial delay per toy integration step (seconds).
+Used to slow down the toy engine to emulate wall-clock behavior or to reduce
+CPU usage during debugging, while allowing AIMMD manager tasks to keep up with
+the simulation speed."""
                  })
-    
-    # other engines will be defined here
-    # [...]
-    
-    # neural network and computation options
-    
-    network : NeuralNetworkModule = field(
+
+    # ------------------------------------------------------------------
+    # Neural network and computation options
+    # ------------------------------------------------------------------
+
+    network: NeuralNetworkModule = field(
         default=placeholder_network,
         metadata={'description':
-"""Neural network model (used for logit committor estimates in AIMMD).
-Placeholder just returns input's first dimension. Attention! Network's class
-must be defined in the same params file you load."""
+"""Neural network model used to estimate logit-committor-like values.
+The network is evaluated on descriptors (or positions if descriptors are not
+provided). The default placeholder returns a trivial output.
+Important:
+If you load parameters from a Python params file, the network class must be
+importable or defined in that same file so it can be reconstructed."""
                  })
 
-    values_function : Callable = field(
+    values_function: Callable = field(
         default=None,
         metadata={'description':
-"""From array of descriptors to their corresponding (logit committor)
-values. If None: just evaluate the neural network on the descriptors."""
+"""Map descriptors to scalar values (typically logit committor).
+If None, AIMMD evaluates `network(descriptors)` directly.
+If provided, this callable must accept an array of descriptors and return a
+1D array of values (one per frame)."""
                  })
 
-    descriptors_function : Callable = field(
+    descriptors_function: Callable = field(
         default=None,
         metadata={'description':
-"""From MDAnalysis trajectory to array of descriptors (used by the model).
-If None: just use positions, retrieved from trajectory every time."""
+"""Compute descriptors from an MDAnalysis trajectory.
+If None, AIMMD uses raw positions (potentially more expensive and higher
+dimensional). If provided, the callable should return an array of descriptors
+(one descriptor vector per frame)."""
                  })
-    
-    descriptor_transform : Callable = field(
+
+    descriptor_transform: Callable = field(
         default=None,
         metadata={'description':
-"""Right before passing through NN input."""
+"""Transform applied to descriptors immediately before network evaluation.
+Typical uses:
+- normalization/standardization,
+- feature selection,
+- dimensionality transforms.
+If None, no transform is applied."""
                  })
-    
-    network_batch_size : int = field(
+
+    network_batch_size: int = field(
         default=4096,
         metadata={'description':
-"""Compute at most `network_batch_size` frames at a time."""
+"""Maximum number of frames evaluated by the network in a single batch.
+Reduce this value if you run out of GPU/CPU memory during inference."""
                  })
-    
-    # initial paths
-    
+
+    # ------------------------------------------------------------------
+    # Initial paths
+    # ------------------------------------------------------------------
+
     initial_paths: List = field(
         default_factory=lambda: [],
         metadata={'description':
-"""List of trajectory filenames or MDAnalysis trajectories or aimmd.Path
-objects. They must contain transitions (checked automatically). Will
-initialize an aimmd.PathEnsemble object."""
+"""Initial transition paths used to seed the PathEnsemble.
+Accepted elements include:
+- trajectory filenames (string or list of strings, regular expressions allowed),
+- MDAnalysis trajectory objects,
+- `aimmd.Path` objects.
+Paths are validated to contain transitions according to `states_function` and
+`states`. These paths initialize an `aimmd.PathEnsemble`."""
         })
-    
-    # shooting point selection options
-    
-    chain_type : str = field(
+
+    # ------------------------------------------------------------------
+    # Shooting point selection options
+    # ------------------------------------------------------------------
+
+    chain_type: str = field(
         default='rfps',
         metadata={'description':
-"""either: 'tps' (transition path sampling) or 'rfps' (rejection-free
-path sampling)."""
+"""Path-sampling chain type.
+Supported values:
+- 'tps'  : transition path sampling,
+- 'rfps' : rejection-free path sampling."""
                  })
-    
-    selection_pool_size : int = field(
+
+    selection_pool_size: int = field(
         default=10,
         metadata={'description':
-"""Number of candidate paths per selection step. When `chain_tpye = 'tps'`,
-`selection_pool_size = 1` is the only option."""
+"""Number of candidate paths for shooting point selection considered
+at each selection step. For standard TPS (`chain_type='tps'`), this must be 1.
+For RFPS, values > 1 enable pool-based selection and bin rebalancing, while
+improving the homogeneity of the sampled chain."""
                  })
-    
-    at_least_one_transition_in_pool : bool = field(
+
+    at_least_one_transition_in_pool: bool = field(
         default=False,
         metadata={'description':
-"""If True: ensure each pool contains at least 1 transition.
-This breaks detailed balance, but avoid getting stuck close to the states
-and compromise exploitation."""
+"""If True: ensure each selection pool contains at least 1 transition.
+If True, detailed balance is not strictly preserved, but it can reduce
+stagnation near state boundaries and improve exploration."""
                  })
-    
+
     nbins: int = field(
         default=10,
         metadata={'description':
-"""Number of bins partitioning the reactive region according to the
-logit committor. Must be >= 0."""
+"""Number of bins used to discretize value space in the reactive region.
+Bins are constructed in (logit) committor/value space and used to guide
+shooting point selection. Must be >= 0. 0 disables binning."""
                  })
 
-    cutoff_min : float = field(
+    cutoff_min: float = field(
         default=0.5,
         metadata={'description':
-"""Do not go below `cutoff_min` absolute value with the first and last
-finite bin boundaries."""
+"""Minimum absolute value for finite bin boundaries.
+Ensures that the first/last finite boundaries are not placed too close to zero
+in absolute value."""
                  })
-    
-    cutoff_max : float = field(
+
+    cutoff_max: float = field(
         default=20.0,
         metadata={'description':
-"""Do not exceed `cutoff_max` absolute value with the first and last
-finite bin boundaries. When not runnig free simulations, not inf bins will
-span from `-cutoff_max` to `cutoff_max`."""
+"""Maximum absolute value for finite bin boundaries.
+Finite boundaries are clipped to lie within [-cutoff_max, +cutoff_max].
+If free simulations are disabled, the finite bin range typically spans
+approximately `[-cutoff_max, +cutoff_max]` (with optional ±inf bins)."""
                  })
-    
-    marginal_bins : str = field(
+
+    marginal_bins: str = field(
         default='all',
         metadata={'description':
-"""Make additional bins boundaries at the initial/final interface (-inf/+inf),
-sacrificing a bit exploitation for the sake of exploration. It makes sense
-only when `selection_pool_size > 1`."""
+"""Add marginal bins at the state interfaces (±inf boundaries).
+This can increase exploration by explicitly treating state-adjacent regions as
+separate bins, at the cost of slightly reduced exploitation.
+Intended mainly for `selection_pool_size > 1`.
+Common values: 'all', '' (disable), or other package-specific selectors."""
                  })
-    
+
     lorentzian: float = field(
         default=inf,
         metadata={'description':
-"""Width of Lorentzian target distribution in logit committor space.
-If inf: sample shooting points uniformly between first and last bin."""
-                 })
-    
-    adjust_selection_in_bins : bool = field(
-        default=True,
-        metadata={'description':
-"""Try to correct over-selection in bins, without breaking detailed balance.
-Only effective when `selection_pool_size > 1`."""
-                 })
-    
-    memory : float = field(
-        default=1.0,
-        metadata={'description':
-"""Percent of shooting points to keep when computing the bins' populations,
-used to accelerate the convergence of future shooting points selection."""
-                 })
-    
-    free_overriding_states : str = field(
-        default='',
-        metadata={'description':
-"""Allow occasional shooting point selection from the free simulations
-around the states in `free_overriding_states`. If `all`: from all states.
-Warning: unoptimized, will slow down selection process by a bit."""
-                 })
-    
-    free_overriding_attempts : int = field(
-        default=100,
-        metadata={'description':
-"""Number of overriding attempts per every selection."""
+"""Lorentzian width controlling the target distribution in value space.
+If finite, shooting points are biased toward the center of the distribution
+according to a Lorentzian in logit/value space.
+If `inf`, shooting points are sampled approximately uniformly between the first
+and last finite bin boundaries."""
                  })
 
-    free_overriding_recovery_rate : float = field(
-        default=0.05,
+    adjust_selection_in_bins: bool = field(
+        default=True,
         metadata={'description':
-"""Attempt overriding from the same bin as the old shooting point with
-this probability. Too high values break the Markov Chain of paths too often.
-0.05 is a good compromise."""
+"""Apply a bin-population correction during selection.
+If True, AIMMD attempts to reduce over-selection of already overrepresented
+bins while preserving detailed balance (effective only when
+`selection_pool_size > 1`)."""
                  })
-    
-    restart_free_simulations_with_transitions : str = field(
+
+    free_overriding_states: str = field(
         default='',
         metadata={'description':
-"""States where to use the last frames of a random sampled transition
-instead of the latest crossing of the target state of the previous free
-simulation."""
+"""Enable occasional shooting point selection from free simulations near states.
+If non-empty, AIMMD may override the usual selection and draw shooting points
+from free-simulation segments around selected states.
+- If 'all': allow overriding around all states.
+- If empty: disable overriding.
+Warning: enabling this can slow down selection since you must reload the
+free simulations every time."""
                  })
-    
-    # shooting point initialization options
-    
-    gen_temperature : float = field(
+
+    free_overriding_attempts: int = field(
+        default=100,
+        metadata={'description':
+"""Number of frames from the free simulations considered for overriding.
+Higher values increase the chance of finding a usable free-simulation shooting
+point but can increase overhead."""
+                 })
+
+    free_overriding_recovery_rate: float = field(
+        default=0.05,
+        metadata={'description':
+"""Probability of overriding within the same bin as the previous shooting point.
+This is a “recovery” mechanism that can preserve local continuity, as orverriding
+is intended to happen only if the new shooting point has changed selection bin
+compared to the previous one. Too large values may disrupt the Markov chain
+(excessive overrides)."""
+                 })
+
+    restart_free_simulations_with_transitions: str = field(
+        default='',
+        metadata={'description':
+"""Restart free simulations from AIMMD-sampled transition for selected states.
+If non-empty, free simulations targeting specified states are be restarted from
+the last frames of randomly sampled transition paths rather than from the most
+recent state crossing observed in the previous free simulation.
+Accepted elements include:
+- a list of states in capital letters (eg. 'AB'),
+- 'all', which means that you consider *all* free simulations, regardless of their
+target state."""
+                 })
+
+    # ------------------------------------------------------------------
+    # Shooting point initialization options
+    # ------------------------------------------------------------------
+
+    gen_temperature: float = field(
         default=300.0,
         metadata={'description':
-"""Temperature velocity. If < 0, reuse velocities from the parent
-trajectory (works if `trajectory_extension == '.trr'`)."""
+"""Velocity generation temperature (Kelvin).
+If > 0: generate new velocities at this temperature.
+If < 0: reuse velocities from the parent trajectory (requires
+`trajectory_extension == '.trr'` so velocities are available)."""
                  })
-    
-    # simulation options
-    
+
+    # ------------------------------------------------------------------
+    # Simulation options
+    # ------------------------------------------------------------------
+
     max_length: int = field(
         default=50_000,
         metadata={'description':
-"""Maximum allowed number of frames per path. In this way, avoid the
-simulations getting stuck in long-lived intermediates."""
+"""Maximum allowed trajectory length (frames) for a single path.
+Prevents simulations from running indefinitely in long-lived intermediates.
+Paths exceeding this length are typically truncated/terminated by the engine
+control logic."""
                  })
-    
-    extra_free_frames : int = field(
+
+    extra_free_frames: int = field(
         default=0,
         metadata={'description':
-"""When performing free simulations, do not stop right after reaching the
-target state, but rather continue for furhter `extra_free_frames`.""" 
+"""Extra frames to continue after reaching the target state in free simulations.
+If > 0, free simulations do not stop immediately upon reaching the target
+state, but continue for `extra_free_frames` additional frames."""
                  })
-    
-    # logit committor fit options
-    
-    fit : Callable = field(
+
+    # ------------------------------------------------------------------
+    # Logit committor fit options
+    # ------------------------------------------------------------------
+
+    fit: Callable = field(
         default=staticmethod(fit),
         metadata={'description':
-"""Fit neural network parameters to pathensemble data. It must accept the
-following arguments: network, pathensemble (positional arguments),
-initial_paths, verbose, worker (otional arguments)."""
+"""Callable that fits network parameters to PathEnsemble data.
+Expected signature (conceptually):
+- positional: (network, pathensemble)
+- optional keyword args: initial_paths, verbose, worker
+This callable is invoked by AIMMD training logic to update `params.network`."""
                  })
-    
-    rescale_committor : bool = field(
+
+    rescale_committor: bool = field(
         default=False,
         metadata={'description':
-"""If True: rescale the NN output to recover the expected crossing
-probability behavior ~ `1/p` (from A) and ~ `1/(1 - p)` (from B),
-where p is the committor, in case of diffusive system with small
-enough interval between frames. Attention! For that, `params.network` must be
-an instance of `aimmd.network.Rescalable`
-*Experimental*: use only if also running free simulations,
-and at your own risk."""
+"""Rescale network outputs to enforce expected committor boundary behavior.
+If True, AIMMD rescales the model output to better match the expected crossing
+probabilities near the states (heuristically ~1/p from A and ~1/(1-p) from B,
+where p is the committor), assuming sufficiently small time between frames.
+Requires that `params.network` is a subclass of `aimmd.network.Rescalable`.
+Experimental: recommended only when also running free simulations."""
                  })
-    
-    # paths reweighting options 
-    
-    reweight_parameters : dict = field(
-        default_factory=lambda: {'free_threshold': 10},
-        metadata={'description':
-"""Dictionary of parameters used for reweighting the paths in a
-`PathEnsemble` object, necessary for free energy and rates estimates.
-Passed to `pathensemble.reweight`."""
-                 })
-    
-    # save options
 
-    trajectory_update_batch_size : int = field(
+    # ------------------------------------------------------------------
+    # Paths reweighting options
+    # ------------------------------------------------------------------
+
+    reweight_parameters: dict = field(
+        default_factory=lambda: {'free_threshold': 20},
+        metadata={'description':
+"""Dictionary of parameters for path reweighting and rate/free-energy estimation.
+Passed to `pathensemble.reweight(...)`. Typical entries control thresholds for
+including free-simulation data and regularization choices."""
+                 })
+
+    # ------------------------------------------------------------------
+    # Save options
+    # ------------------------------------------------------------------
+
+    trajectory_update_batch_size: int = field(
         default=1000,
         metadata={'description':
-"""Register `trajectory_update_batch_size` frames at a time."""
+"""Number of frames registered/processed per update batch.
+Controls how many frames are appended or indexed per internal update step.
+Reduce this if memory spikes while loading and analyzing trajectories."""
                  })
-    
-    network_save_interval : int = field(
+
+    network_save_interval: int = field(
         default=10,
         metadata={'description':
-"""Save NN model parameters every N shooting simulations."""
+"""Save network parameters every N shooting iterations.
+If 10, the model is saved after every 10 accepted/attempted shooting moves
+(depending on the higher-level training loop)."""
                  })
-    
-    # SLURM configuration (for HPC clusters)
-    
-    slurm_header : str = field(
+
+    # ------------------------------------------------------------------
+    # SLURM configuration
+    # ------------------------------------------------------------------
+
+    slurm_header: str = field(
         default='#SBATCH --mail-type=FAIL',
         metadata={'description':
-"""Default SLURM configuration. Attention! Never include #!/bin/bash,
-job-name, time, or number of nodes (will be determined automatically).
-Each two-way shooting and free simulation worker will occupy one task.
-Manager and trainer share an extra task together."""
+"""Default SLURM header lines inserted into generated job scripts.
+Do NOT include:
+- shebang (`#!/bin/bash`),
+- job name,
+- walltime,
+- node count.
+Those are set automatically by AIMMD.
+Scheduling model:
+- each shooting/free worker uses one SLURM task,
+- trainer takes an additional task."""
                  })
-    
-    # (full) path from which params were loaded
-    
-    path : PosixPath = field(
+
+    # ------------------------------------------------------------------
+    # Internal bookkeeping
+    # ------------------------------------------------------------------
+
+    path: PosixPath = field(
         init=False,
         default=PosixPath('.'),
         metadata={'description':
-"""Will perform engine operations relative to `path`'s directory."""
+"""Base working directory for engine operations.
+Engine commands (GROMACS/toy) are executed relative to this path.
+Set automatically on load; typically not user-assigned."""
                  })
