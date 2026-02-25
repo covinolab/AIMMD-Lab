@@ -2,27 +2,47 @@
 aimmd._init
 ===========
 
-Package initialization logic.
+Package initialization routine.
 
-This module provides :func:`initialize`, which performs a **one-time**
-initialization of the AIMMD runtime environment and stores the resulting
-configuration on :mod:`aimmd._config`.
+This module defines :func:`initialize`, which is executed at import time by
+``aimmd.__init__`` to set up AIMMD runtime configuration.
 
-Why a dedicated initializer?
-----------------------------
-AIMMD relies on:
-- external executables (notably GROMACS),
-- scientific Python libraries (NumPy/SciPy/MDAnalysis/etc.),
-- multiprocessing-safe behavior (especially when using spawn),
-- caching objects used across the package.
+Responsibilities
+----------------
+`initialize()` performs four categories of work:
 
-By centralizing this work in a single guarded function, we ensure consistent
-runtime setup while avoiding repeated side effects on repeated imports.
+1) Dependency import / availability checks
+   Ensures optional and required dependencies import cleanly early, so later
+   modules fail fast with clearer error messages.
+
+2) Resolve executables and package-internal paths
+   - determines the current Python executable,
+   - resolves the GROMACS executable from PATH,
+   - computes absolute package path roots (based on ``__file__``),
+   - sets paths to worker scripts and engine templates.
+
+3) Create shared caches
+   Creates the NPY and MDAnalysis reader caches and stores them in `_config`.
+   These caches are referenced in multiple places and should behave as singletons.
+
+4) Configure global behavior
+   - sets print flushing (quick logging),
+   - suppresses known-noisy MDAnalysis warnings,
+   - patches an MDAnalysis destructor to be more defensive during interpreter shutdown,
+   - sets NumPy print options,
+   - configures PyTorch interop threads for spawn compatibility,
+   - defines a default dimensions vector.
 
 Idempotency
 -----------
-The initializer uses the flag ``aimmd._config._initialized`` to ensure that it
-only runs once per interpreter session.
+The function uses `_config._initialized` as a guard: if initialization has
+already happened, it returns immediately.
+
+Notes
+-----
+- This routine has intentional side effects (global configuration).
+- Heavy imports are done inside the function to avoid import-time cost when
+  AIMMD is not actively used.
 """
 
 from . import _config
@@ -30,7 +50,6 @@ from . import _config
 def initialize():
     """
     Initialize the AIMMD runtime environment (idempotent).
-
     This routine:
     - Imports and validates required external dependencies.
     - Locates required executables (e.g., GROMACS) on PATH.
@@ -38,21 +57,18 @@ def initialize():
     - Instantiates shared caches for I/O.
     - Applies small runtime tweaks (warnings suppression, print behavior,
       thread settings for multiprocessing compatibility).
-
+    
     Notes
     -----
     - The function is safe to call multiple times; it will return immediately if
       initialization has already completed.
     - Fail-fast behavior: if GROMACS cannot be found, an EnvironmentError is raised.
     """
-    # Guard against re-initialization (important with repeated imports and
-    # multiprocessing spawn where modules may be imported again).
+    # Idempotency guard: initialization should run once per interpreter.
     if _config._initialized:
         return
     
-    # external (check dependencies)
-    # Importing here ensures that missing dependencies fail early and clearly,
-    # and avoids importing heavy modules if initialization is never needed.
+    # External dependency imports (also acts as a dependency presence check)
     import os
     import sys
     import dill
@@ -70,38 +86,37 @@ def initialize():
     import multiprocessing
     from pathlib import PosixPath
 
-    # aimmd imports
-    # Shared caches used across the package for efficient trajectory/array reading.
+    # AIMMD imports that depend on the above dependencies being available
     from .cache import NpyReaderCache, MDAReaderCache
     
     #########################
     # executables and paths #
     #########################
     
-    # Absolute path to the currently running Python interpreter.
+    # Path to the current Python interpreter (useful when spawning workers).
     _config.PYTHON = sys.executable
 
-    # Locate a GROMACS executable in PATH (support common names).
+    # Resolve GROMACS executable from PATH.
     _config.GROMACS = shutil.which('gmx') or shutil.which('gmx_mpi')
     if _config.GROMACS is None:
-        # Hard requirement: many workflows depend on calling gmx.
         raise EnvironmentError(
             "GROMACS exec not found in PATH. Please install GROMACS and "
             "ensure 'gmx' or 'gmx_mpi' is accessible in your environment.")
 
-    # Resolve the installation directory for AIMMD (used to build paths to
-    # internal resources such as worker scripts and engine parameter files).
+    # Package root directory (absolute path).
     _config.PARENT = str(PosixPath(__file__).resolve().parent)
 
-    # Paths to internal helper scripts/files.
+    # Worker launcher script path (used by AIMMD process orchestration).
     _config.WORKER = f'{_config.PARENT}/worker/run.py'
+
+    # Energy minimization mdp template path.
     _config.EM_MDP = f'{_config.PARENT}/engines/em.mdp'
     
     ##########
     # caches #
     ##########
     
-    # Instantiate caches once and share them via the global config.
+    # Shared caches (effectively singletons).
     _config.NPY_CACHE = NpyReaderCache()
     _config.MDA_CACHE = MDAReaderCache()
     
@@ -109,14 +124,10 @@ def initialize():
     # print options #
     #################
     
-    # quick logging
-    # Force print() to flush by default to make logs appear promptly,
-    # especially useful when running via multiprocessing or in batch systems.
+    # Quick logging: ensure prints flush immediately (useful in HPC logs).
     _config.print = functools.partial(print, flush=True)
     
-    # suppress some warnings in MDAnalysis
-    # MDAnalysis Reader objects can raise errors in __del__ during interpreter
-    # shutdown or when partially constructed; wrap __del__ defensively.
+    # MDAnalysis warning suppression and destructor hardening
     _old_del = MDAnalysis.coordinates.base.ReaderBase.__del__
     
     def _safe_del(self):
@@ -124,42 +135,34 @@ def initialize():
             _old_del(self)
         except (TypeError, AttributeError):
             # Suppress AttributeError caused by missing internal attributes
-            # (e.g., _xdr) during object finalization.
+            # (e.g., _xdr) during interpreter shutdown.
             pass
     
     MDAnalysis.coordinates.base.ReaderBase.__del__ = _safe_del
     
-    # Silence noisy user warnings from the XDR reader backend.
     warnings.filterwarnings("ignore", category=UserWarning,
                             module="MDAnalysis.coordinates.XDR")
     
-    # more compact array
-    # Global NumPy display precision for more readable console output.
+    # More compact NumPy prints across the package.
     numpy.set_printoptions(precision=3)
 
     ###################
     # multiprocessing #
     ###################
     
-    # call just once, for compatibility issues
-    # when spawning multiple processes
-    #
-    # In some environments, torch interop threading can cause issues when
-    # forking/spawning worker processes; restricting interop threads improves
-    # stability and avoids oversubscription.
+    # Compatibility: call just once, for spawn-related issues when creating
+    # multiple processes. This limits PyTorch interop thread usage.
     torch.set_num_interop_threads(1)
 
     ####################
     # trajectories i/o #
     ####################
 
-    # Default unit cell dimensions used when trajectory files lack explicit box
-    # information (lengths + angles).
+    # Default unit cell dimensions for frames missing dimension info.
     _config.DEFAULT_DIMENSIONS = numpy.array([0., 0., 0., 90., 90., 90.])
     
     #########
     # done! #
     #########
     
-    # Mark as initialized so subsequent calls are no-ops.
     _config._initialized = True
