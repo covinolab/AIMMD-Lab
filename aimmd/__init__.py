@@ -1,44 +1,44 @@
 '''
 aimmd — AI for molecular mechanism discovery
-==========================================
 
-Package entry point.
+Public package entry point.
+
+This module:
+- triggers one-time initialization (see :func:`aimmd._init.initialize`),
+- re-exports configuration symbols from :mod:`aimmd._config`,
+- exposes the most important high-level classes at package scope.
 
 What happens on import
 ----------------------
-Importing :mod:`aimmd` triggers a one-time initialization routine
-(:func:`aimmd._init.initialize`). This routine:
+Importing `aimmd` will call `initialize()` immediately. This is intentional,
+because many components assume `_config` is populated (e.g., caches, paths,
+executables). If you need a "no side effects" import in the future, this file
+is where you would introduce an opt-out mechanism.
 
-- checks/imports required dependencies,
-- locates external executables (e.g., GROMACS),
-- sets up caches and defaults,
-- applies small runtime compatibility tweaks (notably for multiprocessing).
+Public API
+----------
+The following objects are made available at top-level:
 
-This eager initialization is convenient for interactive use, but note that it
-does have side effects on import (environment checks, cache instantiation, etc.).
+- ``aimmd.utils`` (module): general utilities
+- ``aimmd.Path``: path object
+- ``aimmd.Params``: configuration container
+- ``aimmd.PathEnsemble``: main dataset/ensemble container
+- ``aimmd.Worker``: worker logic for running simulations / evaluations
+- ``aimmd.Launcher``: orchestration logic
 
-Public re-exports
------------------
-The package re-exports a selection of commonly used classes and utilities to
-provide a compact, user-facing API.
-
-Caveats / maintainability notes
--------------------------------
-- This module constructs ``__all__`` dynamically from configuration attributes.
-  If new configuration keys are added in :mod:`aimmd._init`, they will
-  automatically propagate into the star-import surface.
-- This file also defines lightweight summary/representation helpers so that the
-  package prints nicely in interactive contexts.
+Versioning
+----------
+``__version__`` is currently a static string.
 '''
-
-# initialize
+ 
+# initialize once; guarded by aimmd._config._initialized
 from ._init import initialize
-initialize()  # initialize once; guarded by aimmd._config._initialized
+initialize()
 
-# basic
-from ._config import *  # re-export config values populated by initialize()
+# basic (re-export runtime configuration symbols)
+from ._config import *
 
-# imports
+# imports (high-level public surface)
 from .core import utils
 from .path import Path
 from .params import Params
@@ -48,40 +48,18 @@ from .pathensemble import PathEnsemble
 
 # all/version
 __all__ = ['__version__']
-
-# NOTE:
-# The next lines assume that a name `_config` is available in this module scope.
-# If `_config` is not imported as a module object, this will raise NameError at runtime.
-# This comment documents the expectation without changing the logic.
 __all__.extend(dir(_config))
 __all__.remove('_initialized')
 __all__.extend(['utils',
     'Path', 'Params', 'PathEnsemble',
     'Worker', 'Launcher'
 ])
-
-# Semantic-ish version string for AIMMD.
 __version__ = '0.1.0'
 
 # summary/representation
 def _summary() -> str:
-    """
-    Return a short human-readable summary of the package.
-
-    Returns
-    -------
-    str
-        A concise string intended for interactive display.
-    """
+    # One-line summary used by __repr__.
     return f'AIMMD v{__version__} — AI for molecular mechanism discovery'
 
 def __repr__():
-    """
-    Provide a friendly representation in interactive contexts.
-
-    Notes
-    -----
-    This is a module-level helper and is not the same as ``object.__repr__``.
-    Some environments may call this when printing the module/package object.
-    """
     return _summary()
