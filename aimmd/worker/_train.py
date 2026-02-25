@@ -27,7 +27,7 @@ from ..network.rescale_utils import find_knots_and_values, rescale
 # train function of worker
 class WorkerTrain(ABC):
 
-    def train(self, nrounds=inf, keep_running=False, **kwargs):
+    def train(self, nrounds=1, keep_running=False, **kwargs):
         """nrounds: number of training rounds
         keep_running: after nrounds completed
             useful if waiting for new pathensemble data
