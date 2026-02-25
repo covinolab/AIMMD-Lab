@@ -16,9 +16,9 @@ from MDAnalysis import Universe, Writer
 
 # aimmd imports
 from ..path import Path
-from .._config import MDA_CACHE
+from .._config import MDA_CACHE, EM_MDP
 from ..cache.npy import load_npy
-from ..core.utils import randomize_velocities
+from ..core.utils import randomize_velocities, remove
 from ..engines.toy import ToyEngine
 from ..pathensemble import PathEnsemble
 from ..execute.utils import execute_command
@@ -34,6 +34,9 @@ class ParamsMethods(ABC):
         Works even with pathensemble.Path (in that case,
         take last frame; divide in parts if more than one frame)
         """
+
+        if not len(deffnm):
+            raise TypeError('at least one output name (deffnm) needed')
 
         previous_frames = []
         if isinstance(frame, Path):
@@ -86,12 +89,15 @@ class ParamsMethods(ABC):
                     writer.write(universe)
                 
                 # generate tpr
-                execute_command(
-                    f'{self.gmx_grompp} -nobackup -f {self.gmx_mdp} '
-                    f'-r {self.topology} -c {self.topology} '
-                    f'-o {deffnm}.tpr -t {temp}', walltime=timeout,
-                    log_file='stdout' if verbose else None,
-                    raise_if_failure=True)
+                try:
+                    execute_command(
+                        f'{self.gmx_grompp} -nobackup -f {self.gmx_mdp} '
+                        f'-r {self.topology} -c {self.topology} '
+                        f'-o {deffnm}.tpr -t {temp}', walltime=timeout,
+                        log_file='stdout' if verbose else None,
+                        raise_if_failure=True)
+                finally:
+                    remove(temp, verbose=False)
 
             # toy: directly write
             if self.engine == 'toy':
@@ -258,3 +264,45 @@ class ParamsMethods(ABC):
                     if not (os.path.exists(fname) and os.path.getsize(fname)):
                         return False
         return True
+
+    def minimize_energy(self, trajectory, out, em_mdp=None):
+        """minimize energy for all frames of trajectory"""
+
+        # only gromacs
+        if self.engine != 'gromacs':
+            raise TypeError('energy minimization supported only '
+                            'with Gromacs engine')
+
+        # convert to Path if not already
+        trajectory = Path(trajectory)
+        
+        # is out file ok?
+        out = PosixPath(out).resolve()
+        for fname in trajectory.fnames:
+            if PosixPath(fname).resolve() == out:
+                raise TypeError(f"can't overwrite {fname!r} "
+                                f"while performing energy minimization")
+        
+        # load positions in memory
+        trajectory.positions = trajectory.positions
+        
+        # just here, use the provided em file (or the default one)
+        gmx_mdp = self.gmx_mdp
+        self.gmx_mdp = em_mdp or EM_MDP
+        try:
+            # read positions from temporary file
+            for i, ts, fname, loc in zip(range(len(trajectory)),
+                                         trajectory,
+                                         trajectory.filenames,
+                                         trajectory.locs):
+                fname = PosixPath(fname)
+                temp = str(fname.with_name(f'.{fname.name}_{loc}'))
+                self.initialize_simulation(ts, temp)
+                self.run_simulation(temp)
+                trajectory.positions[i] = Path(f'{temp}.trr').positions[0]
+                remove(f'{temp}*', verbose=False)
+        finally:
+            self.gmx_mdp = gmx_mdp
+        
+        # write to "out"
+        trajectory.write(out, overwrite=True)
