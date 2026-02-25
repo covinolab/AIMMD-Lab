@@ -1,0 +1,6 @@
+; minimal energy minimization file, will be called by Params
+integrator    = steep
+nsteps        = 500
+emtol         = 1000
+emtstep       = 0.01
+cutoff-scheme = Verlet
