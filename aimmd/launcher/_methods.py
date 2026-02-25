@@ -165,7 +165,7 @@ class LauncherMethods(ABC):
                 args = ' '.join([f'"{arg}"'
                                  if not isinstance(arg, (bool, bool_)) else
                                  '"True"' if arg else '""' for arg in args])
-                file.write(f'srun --exclusive --ntasks=1 '
+                file.write(f'srun --exclusive --nnodes=1 --ntasks=1 '
                            f'--cpus-per-task={cpus_per_task} '
                            f'--gpus-per-task={gpus_per_task} \\\n')
                 file.write(f'  "${{PYTHON}}" "${{WORKER}}" {args} &\n')
