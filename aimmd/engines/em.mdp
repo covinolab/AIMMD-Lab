@@ -1,4 +1,19 @@
-; minimal energy minimization file, will be called by Params
+; aimmd.engines/em.mdp
+; --------------------
+; Minimal GROMACS energy minimization parameter file.
+;
+; Purpose
+; -------
+; This file is used as a small default EM template by AIMMD (see aimmd.engines.EM_MDP
+; and aimmd._config.EM_MDP in initialization). It is intentionally minimal and is
+; expected to work for many systems without tuning.
+;
+; Notes
+; -----
+; - Integrator: steepest descent.
+; - nsteps/emtol are conservative defaults (short EM, moderate tolerance).
+; - Verlet cutoff scheme is the default in modern GROMACS.
+
 integrator    = steep
 nsteps        = 500
 emtol         = 1000
