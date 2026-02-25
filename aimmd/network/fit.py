@@ -1,5 +1,33 @@
 """
-...
+aimmd.network.fit
+================
+
+Training utilities for AIMMD committor networks.
+
+This module provides the high-level :func:`fit` routine used to train
+``params.network`` (a `torch.nn.Module`) to predict the *logit committor* from
+AIMMD path-sampling data stored in a :class:`~aimmd.pathensemble.PathEnsemble`.
+
+Core idea
+---------
+Training data are assembled from multiple categories of paths/frames (internal
+state frames, free trajectories, and shooting trajectories). Each frame is
+associated with a 2-component "result" vector ``r = (r_to_state1, r_to_state2)``
+representing fractional contributions towards reaching each end state. A
+selection probability is also assigned to each frame to control how batches are
+drawn.
+
+The training objective is a log-binomial loss (optionally modified by a Bayesian
+quadratic penalty close to the end states) with optional smoothness and L1
+regularization terms.
+
+Side effects
+------------
+:func:`fit` **modifies the network in-place** by calling
+``network.reset_parameters()`` and then training with Adam. Depending on stop
+criteria and early stopping settings, the function may restore a previously saved
+state dict.
+
 """
 
 # external imports
@@ -16,7 +44,7 @@ from .utils import extract_indices_and_series
 from ..core.utils import concatenate, now
 from ..analysis.utils import compute_bins, merge_marginal_bins
 
-# fit function
+
 def fit(params,
         pathensemble,
         keys=None,
@@ -59,179 +87,184 @@ def fit(params,
         worker=None):
     
     """
-    Train a neural network to predict the logit committor from AIMMD
-    simulation data.
-    
-    This function fits the given `network` using path sampling results
-    stored in `pathensemble`. It uses a log-binomial loss and replaces
-    the network's weights with the fitted ones.
-    
-    If the input network is already partially trained and `nbins > 0`,
-    the function uses it to regularize the training process. Then, calling
-    this function multiple times during an AIMMD simulation campaign can
-    help improve convergence.
-    
-    If `agument` is `True`, the training set includes all available data:
-    shooting points, two-way shooting simulations, and free trajectories.
-    This broadens coverage and improves learning. Otherwise, it just trains
-    on the shooting points and their associated results.
-    
-    Attention! The network is modified in-place.
-    
+    Train ``params.network`` to predict the logit committor from AIMMD data.
+
+    The function builds a supervised dataset from `pathensemble` and performs an
+    iterative optimization of the network parameters using Adam. The target
+    labels are *fractional* shooting outcomes (not just hard 0/1), constructed
+    from shooting results and (optionally) augmented with additional trajectory
+    data.
+
+    Important
+    ---------
+    The network is modified **in-place**. Training begins after calling
+    ``network.reset_parameters()``; depending on termination criteria, the
+    function may restore earlier saved weights.
+
     Parameters
     ----------
     params : aimmd.Params
-        params.network: contains the neural network model to train
-        params.descriptor_transform: from descriptors to direct NN input
-    
+        AIMMD parameter container. This function uses (at least):
+
+        - ``params.network`` : torch.nn.Module
+            The network to train. Must have parameters so that
+            ``next(network.parameters())`` is valid.
+        - ``params.sorted_states`` : tuple[str, str, str]
+            State labels in the order ``(state1, reactant, state2)`` assigned to
+            variables ``a, r, b`` in the implementation.
+        - ``params.descriptors_function`` : bool or callable-like
+            Used to decide whether descriptors are read from ``'descriptors'`` or
+            ``'positions'`` in the path storage model.
+        - ``params.descriptor_transform`` : callable or None
+            Optional transformation applied to raw descriptors to obtain network
+            inputs. If None, an identity transform is used.
+
     pathensemble : PathEnsemble
-        Collection of sampled paths, including shooting and free simulations.
-        Used to build the training set. `pathensemble.params.network` contains
-        the neural network model to train. `pathensemble.initial_paths` are
-        used if `pathensemble` has no sampled paths.
-    
-    keys : array-like of int, range, or slice, optional
-        Use only the paths at these indices for training. Useful for
-        bootstrapping or block averaging.
-    
+        Collection of sampled paths providing:
+        - ``pathensemble.types()`` returning an array-like where each entry
+          encodes the path type as 4 characters (initial, internal, final, shoot).
+        - Path access compatible with :func:`aimmd.network.utils.extract_indices_and_series`,
+          i.e. supports indexing and provides the necessary per-path interface
+          (`type`, `internal('indices')`, `indices`, `shooting_index`, `get(...)`).
+
+    keys : None or array-like, optional
+        Selector for which paths to use for training.
+        **Note:** in the current implementation this argument is not used
+        directly (path selection is performed via internal masks built from
+        ``pathensemble.types()``). It is retained for API compatibility.
+
     nbins : int, default=0
-        Divide the reactive space in `nbins + 2` bins based on the input
-        neural network model, and assign selection probabilities to the
-        training set points such that each batch has a uniform population
-        across the bins. Plus, regularize the shooting results in the bins.
-        `nbins = 10` is usually a good value.
-    
-    cutoff_max : float, default=20.
-        The `cutoff_max` parameter in `utils.compute_bins`.
+        If > 0, define committor-space bins (via :func:`compute_bins`) and build
+        selection probabilities such that batches are more uniformly distributed
+        across bins. Also regularizes rare outcomes within bins.
 
     cutoff_min : float, default=0.5
-        The `cutoff_min` parameter in `utils.compute_bins`.
-    
+        Passed to :func:`compute_bins` as `cutoff_min` (lower cutoff in committor
+        space).
+
+    cutoff_max : float, default=20.0
+        Passed to :func:`compute_bins` as `cutoff_max` (upper cutoff in logit
+        scale).
+
     state_bins : str, default=''
-        Add two additional bins for the states defined in `state_bins`.
-        For example, `state_bins = 'AB'` includes both in A and in B data
-        in the training set. Assign selection probabilities to the training
-        set points such that each batch has a uniform population across all
-        the bins. state_bins = 'all' means include all states bins.
+        Controls inclusion of end-state bins. Examples:
+        - ``'AB'`` includes both end-state bins (where `A` and `B` are the end
+          state labels in `params.sorted_states`).
+        - ``'all'`` includes all state bins.
+        When state bins are excluded, the corresponding end-state frames may be
+        set to zero selection probability depending on data presence.
 
-    max_adjustment_in_bin : float, default=10
-        Allow for rare shooting results to compute at most
-        "max_adjustment_in_bin" more frequently in the training batch,
-        counterbalancing this with a rescaling of the shooting result.
+    max_adjustment_in_bin : float, default=10.0
+        Caps how strongly rare outcomes inside each bin are upweighted in
+        selection probability (and correspondingly downweighted in results).
 
-    transition_path_upweighting: float, default=1.0
-        Make transitions more important in the sampling.
-        
+    transition_path_upweighting : float, default=1.0
+        Multiplier applied to selection probabilities of frames belonging to
+        transition paths (free and shooting transition segments).
+
     end_state_factor : float, default=1.0
-        Factor to weight the selection probabilities of points in the end
-        states, if `state_bins` includes state 1 and/or 2. Useful to increase
-        or decrease the importance of end state points in the training, as
-        deviations from a 1/3 weighting.
+        Base factor used for end-state (in-`a`, in-`b`) selection probability
+        before bin-based adjustments.
 
     sparse_update_max_frames : int, default=-1
-        Maximum number of frames to use for sparse pathensemble value updates.
-        If -1, use all frames.
-    
-    augment : str, default='no'
-        If 'yes', include all available data in the training set: shooting
-        points, two-way shooting simulations, and free trajectories. This
-        broadens coverage and improves learning. Otherwise, it just trains
-        on the shooting points and their associated results.
-        If 'experimental': also assign further fractional results to
-        transitions to  further improve the training performance.
-    
-    lr : float, default=1e-3
-        Learning rate. Will use an ADAM optimizer.
-    
-    loss_bayesian_factor : float, default=100.0
-        In defining the logit committor square deviation training loss,
-        necessary with discrete data. If zero: apply standard logit
-        binomial loss (worse close to the states).
-    
-    loss_smoothening_weight : float, default=0.0
-        Weight of an additional term to the loss, corresponding to the
-        network's gradient with respect to the input regularization factor.
-    
-    loss_regularization_weight : float, default=0.0
-        Weight of an additional term to the loss, corresponding to the L1
-        regularization factor.
-        
-    epochs : int, default=500
-        Number of training epochs, each of which draws a new batch of
-        training set data and minimizes the loss for one step. The fit will
-        run up until 50% epochs more until the batch loss (removed the
-        smoothening and regularization weights) is the lowest ever recorded.
-    
-    batch_size : int, default=4096
-        Size of each training batch. Since the batch is drawn with selection
-        selection probabilities, its size will always be `batch_size`, even
-        with very small training sets.
+        Currently only ``-1`` is accepted (enforced by a check). Present for
+        forward compatibility with sparse updates.
 
-    batching_strategy : str, default='draw-replace'
-        Strategy to draw training batches. Options are:
-        - 'draw-replace': draw points with replacement according to selection
-          probabilities. One epoch is just one batch.
-        - 'loop-all': loop over all points in the training set without
-          replacement, in batches of size `batch_size`. One epoch is complete
-          when all points have been used once.
+    augment : {'no', 'yes', 'experimental'}, default='no'
+        Data augmentation mode.
+        - ``'no'``: train only on shooting-point outcomes (using the intersection
+          of backward and forward masks around the shooting point).
+        - ``'yes'``: include free-trajectory frames and use backward/forward
+          segments to assign fractional outcomes.
+        - ``'experimental'``: additional heuristic augmentation with fractional
+          transition contributions derived from free trajectories.
+
+    lr : float, default=1e-3
+        Base learning rate for Adam. The effective LR is ramped up over the first
+        ~5% of epochs (see implementation).
+
+    loss_bayesian_factor : float, default=0
+        If non-zero, use a modified squared-deviation loss (Bayesian-like) in
+        logit space to better handle discrete/imbalanced data near the states.
+        If zero, use a standard binomial (cross-entropy-like) loss.
+
+    loss_smoothening_weight : float, default=0
+        If non-zero, add a smoothness penalty based on the gradient of the
+        network output w.r.t. the input descriptors (requires `d.requires_grad`).
+
+    loss_regularization_weight : float, default=0
+        If non-zero, add L1 regularization over network parameters.
+
+    epochs : int, default=500
+        Target number of epochs. The loop may extend up to 1.5× epochs while
+        tracking best losses and may stop early due to `stop` scale or early
+        stopping criteria.
+
+    batch_size : int, default=4096
+        Number of samples per batch. With draw-with-replacement batching, the
+        batch size is fixed even for small datasets.
+
+    batching_strategy : {'draw-replace', 'loop-all'}, default='draw-replace'
+        Strategy for building batches.
+        - ``'draw-replace'`` draws with replacement according to selection
+          probabilities.
+        - ``'loop-all'`` is declared but not implemented (raises NotImplementedError).
 
     stop : float, default=50.0
-        Stop when the scale of the logit committor reaches this value.
-        
+        Stop training if the output scale (max absolute logit) reaches or exceeds
+        this value, or if NaNs appear.
+
     train_validation_early_stopping : bool, default=False
-        If True, split the training set into a training and validation set,
-        and use early stopping based on the validation loss.
-    
+        If True, create a validation split and stop when validation loss does not
+        improve for `early_stopping_patience` epochs (after scale/range conditions
+        are met).
+
     early_stopping_patience : int, default=10
-        Number of epochs with no improvement on the validation loss. After 
-        this number of epochs, stop the training. Reset to best validation
-        epoch at the end.
+        Number of consecutive no-improvement validation checks before stopping.
 
     early_stopping_min_samples : int, default=1000
-        Min number of samples in the training set to enable early stopping.
+        Minimum training set size required to enable early stopping.
 
     early_stopping_split : float, default=0.1
-        Fraction of the training set to use as validation set for early
-        stopping.
+        Fraction of the dataset used as validation set when early stopping is on.
 
     in_memory : bool, default=False
-        If `True`, reload (transformed) descriptors for every batch.
-        If `False`, load *all* descriptors just once.
-        Atm all descriptors are loaded together, transformed later if True
-    
+        Descriptor loading strategy:
+        - If True, transform all descriptors up-front and keep them in memory.
+        - If False, apply `descriptor_transform` per batch.
+
     graphs : bool, default=False
-        If True, the descriptors are graphs, stored in the mlcolvar DataDict
-        format. If False, they are numpy arrays.
-    
+        If True, descriptors are assumed to be graph objects in an mlcolvar-like
+        DataDict format, requiring `torch_geometric` for batching.
+
     verbose : bool, default=False
-        If True, be loud and noise. Among other things, show a progress bar
-        during training.
-    
-    worker : aimmd.Worker
-        Linked worker, to know when to interrupt.
-    
+        If True, show progress via `tqdm` and print more frequent diagnostics.
+
+    worker : aimmd.Worker or None, optional
+        If provided, training periodically checks for a termination signal via
+        ``getattr(worker, 'termination_signal', False)`` and returns empty outputs
+        if termination is requested.
+
     Returns
     -------
-    losses : list of float
-        Loss values from each training epoch.
-    
-    scales : list of float
-        Maximum absolute network output (logit committor) at each epoch.
-    
-    values : ndarray of float
-        Logit committor values for all training points.
-    
-    selection_probabilities : ndarray of float
-        Probability of selecting each training point in a batch. If the
-        network was already trained, these probabilities are adjusted to
-        improve sampling across committor values.
-    
-    results : ndarray of shape (N, 2)
-        Shooting results linked to each training point. Real numbers (not
-        just 0 or 1) since the function includes and regularizes all data.
-    """
+    losses : list[float]
+        Training loss per optimizer step (epoch).
+    scales : list[float]
+        Output scale per step, defined as ``max(max(q), -min(q))`` over the last
+        computed batch output `q`.
+    values : numpy.ndarray
+        1D array of "values" for the training points (logit committor-like
+        coordinate assembled from trajectory `values` sources). Only includes
+        frames kept after selection probability masking.
+    selection_probabilities : numpy.ndarray
+        Per-sample selection probabilities (normalized to sum to 1) used for
+        drawing training batches.
+    results : numpy.ndarray, shape (N, 2)
+        Per-sample fractional outcomes to each end state. These are adjusted
+        in bins for imbalance and may include augmented contributions.
 
-    # input consistency checks
+    """
+    # Input consistency checks (fail fast)
     if batching_strategy not in ('draw-replace', 'loop-all'):
         raise TypeError(f"Invalid batching strategy: {batching_strategy}")
     if augment not in ('no', 'yes', 'experimental'):
@@ -240,31 +273,37 @@ def fit(params,
         raise TypeError('In this version of aimmd, only '
                         'sparse_update_max_frames = -1 is supported')
     
+    # Optional dependency only when graph descriptors are enabled
     if graphs:
         # only need to import this torch_geometric Batch if graphs
         # are used as descriptors. Otherwise, avoid the dependency.
         from torch_geometric.data import Batch
     
-    # initialize
+    # Initialization: network, optimizer, descriptor handling
     t0 = time.time()
     losses, scales = [], []
     network = params.network
     device = next(network.parameters()).device
     dtype = next(network.parameters()).dtype
     optimizer = torch.optim.Adam(network.parameters(), lr=lr)
+
+    # states ordering: a (state1), r (reactant), b (state2)
     a, r, b = states = params.sorted_states
+
+    # choose where descriptors are sourced from in Path storage
     descriptors_source = ('descriptors' if params.descriptors_function else
                           'positions')
     descriptor_transform = params.descriptor_transform or (lambda x:x)
     
+    # legacy placeholders (kept as-is; only set when `augment` is falsy)
     if not augment:
         th1 = None
         th2 = None
 
-    # define stop function: will periodically check
+    # Stop condition hook (worker-driven)
     must_stop = lambda : getattr(worker, 'termination_signal', False)
     
-    # classify paths
+    # Classify paths by their type codes
     types = pathensemble.types()
     i, t, f, s = types.view('U1').reshape(len(types), 4).T
     # i: initial states of path
@@ -272,8 +311,8 @@ def fit(params,
     # s: shooting states of path
     # t: internal states path
 
-    # collect all data
-    # separate paths for convenience by internal indices
+    # Collect indices + descriptors/values for each relevant category
+    # (each call may skip paths that cannot provide the requested series)
     (in1, in1_back, in1_forw, in1_descriptors,
      npaths_in1) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == r) & (t == a)), descriptors_source)
@@ -341,7 +380,7 @@ def fit(params,
     if must_stop():
         return [], [], [], [], []
     
-    # report
+    # Report collection statistics
     lengths = [len(in1), len(in2),
                len(free1to1), len(free2to2),
                len(free1to2), len(free2to1),
@@ -371,7 +410,7 @@ def fit(params,
     
     print(f'\nCalculating shooting results and sel. probabilities {now()}')
     
-    # assign results
+    # Allocate per-category result arrays (fractional outcomes to a/b)
     in1_results = np.zeros((lengths[0], 2))
     in2_results = np.zeros((lengths[1], 2))
     free1to1_results = np.zeros((lengths[2], 2))
@@ -383,13 +422,15 @@ def fit(params,
     shot1to2_results = np.zeros((lengths[8], 2))
     shot2to1_results = np.zeros((lengths[9], 2))
 
+    # Deterministic labels for end-state frames
     # in 1
     in1_results[:, 0] = 1.
     
     # in 2
     in2_results[:, 1] = 1.
 
-    # at shooting points
+    # Assign shooting/free results depending on augmentation mode...    
+    # ...at shooting points
     if augment == 'no':
         shot1to1_results[shot1to1_back & shot1to1_forw, 0] += 2.0
         shot2to2_results[shot2to2_back & shot2to2_forw, 1] += 2.0
@@ -411,6 +452,7 @@ def fit(params,
         shot2to1_results[shot2to1_back, 1] += 1.0
         shot2to1_results[shot2to1_forw, 0] += 1.0
 
+    # experimental augmentation adds heuristic fractional transition weights
     if augment == 'experimental':
         conversion1to2 =    + expit(free1to1_values + free1to2_values).sum()
         conversion2to1 = (1 - expit(free2to2_values + free2to1_values)).sum()
@@ -427,7 +469,7 @@ def fit(params,
         print(f'Augmentation factor from {a} to {b}: {conversion1to2:.3e}')
         print(f'Augmentation factor from {b} to {a}: {conversion2to1:.3e}')
     
-    # add together
+    # Concatenate into global training vectors
     values = concatenate([free1to1_values, free2to2_values,  # only reactive
                           free1to2_values, free2to1_values,
                           shot1to1_values, shot2to2_values,
@@ -446,7 +488,7 @@ def fit(params,
     if must_stop():
         return [], [], [], [], []
 
-    # compute selection bins
+    # Compute committor-space bins to drive selection probability shaping
     bins = compute_bins(pathensemble, max(nbins, 1),
                         cutoff_max, cutoff_min,
                         find_extremes_with='transitions',
@@ -474,7 +516,7 @@ def fit(params,
         print(f'*** merged {nbins + 2 - len(bins)} bins together '
               f'to avoid overfitting: {bins}')
     
-    # other bins
+    # Assign selection probabilities and adjust results within each bin
     indices = np.digitize(values, bins) - 1
     present = results[n_internal_frames:].sum(axis=1).astype(bool)    
     for i, bin_counts in enumerate(counts):
@@ -550,8 +592,7 @@ def fit(params,
     if not keepers.any() or must_stop():
         return [], [], [], [], []
     
-    # Early stopping setup
-    
+    # Early stopping setup (optional)
     # disable early stopping, if threshold of training set size is not met
     if training_set_size < early_stopping_min_samples:
         train_validation_early_stopping = False
@@ -588,6 +629,7 @@ def fit(params,
     print(f'\nTraining set size {training_set_size}')
     selection_probabilities /= selection_probabilities.sum()
     
+    # optional global transform
     if in_memory:
         print(f'Transforming descriptors {now()}')
         descriptors = descriptor_transform(descriptors)
@@ -596,8 +638,7 @@ def fit(params,
     Training loop.
     """
     
-    # initialization
-    # backups for restoration
+    # Training loop: state backups and stopping logic
     state_dict0 = copy.deepcopy(network.state_dict())  # fixed
     state_dict1 = copy.deepcopy(network.state_dict())  # linked to min_loss1
     state_dict2 = copy.deepcopy(network.state_dict())  # linked to min_loss2
@@ -632,6 +673,7 @@ def fit(params,
                        for i in range(0, len(training_indices), batch_size)]
             raise NotImplementedError("can't to adapt this right now")
         
+        # build descriptors batch (array or graph)
         if not graphs:
             if not in_memory:  # separately to save memory
                 d = descriptor_transform(descriptors[indices])
@@ -648,8 +690,11 @@ def fit(params,
                 d = [descriptors['data_list'][i] for i in indices]
             d = Batch.from_data_list(d).to(device).to_dict()
 
+        # flatten non-graph descriptors for dense networks
         if not graphs:
             d = torch.flatten(d, start_dim=1)
+
+        # build result batch
         r = torch.tensor(results[indices], dtype=dtype, device=device)
         
         # define loss function
@@ -763,13 +808,9 @@ def fit(params,
             network.load_state_dict(state_dict2)
             break
         
-        # D.append(d)
-        # R.append(r)
-        
         # handle early stopping with validation set
         if train_validation_early_stopping:
             # compute validation loss
-
             network.eval()
             with torch.no_grad():
                 pred_val = network(d_val)
@@ -807,7 +848,7 @@ def fit(params,
     # close counter
     counter.close()
     
-    # error handling: result not as expected
+    # Final sanity check: restore original weights if range is inconsistent
     if Range[0] > 0 or Range[1] < 0 or scales[-1] < 1:
         print(f'!!! bad range ({Range[0]:.3f}, {Range[1]:.3f}), '
               f'restoring original parameters')
@@ -818,7 +859,7 @@ def fit(params,
     scales[-1] = max(float(torch.max(q)), -float(torch.min(q)))
     Range = float(torch.min(q)), float(torch.max(q))
     
-    # report and return
+    # Report and return
     print(f'\nTraining took {time.time()-t0:.1f}s')
     print(f'    {counter.n} epochs')
     print(f'    last loss {losses[-1]:.3e}')
@@ -828,6 +869,28 @@ def fit(params,
 
 
 def placeholder(params, pathensemble, key, verbose, worker):
+    """Compatibility wrapper around :func:`fit`.
+
+    Parameters
+    ----------
+    params : aimmd.Params
+        Passed through to :func:`fit`.
+    pathensemble : PathEnsemble
+        Passed through to :func:`fit`.
+    key : Any
+        Passed as `key` to :func:`fit` **as written** (note that :func:`fit`
+        defines `keys`, not `key`; this wrapper preserves current behavior).
+    verbose : bool
+        Passed through to :func:`fit`.
+    worker : aimmd.Worker or None
+        Passed through to :func:`fit`.
+
+    Returns
+    -------
+    tuple
+        Exactly the return value of :func:`fit`.
+
+    """
     return fit(params=params,
                pathensemble=pathensemble,
                key=key,
