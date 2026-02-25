@@ -10,9 +10,9 @@ and parsing expensive on-disk resources, such as:
 - NumPy `.npy` arrays (see :class:`aimmd.cache.npy.NpyReaderCache`)
 - MDAnalysis trajectory readers (see :class:`aimmd.cache.mda.MDAReaderCache`)
 
-These caches are created during package initialization in :mod:`aimmd._init`
+These caches are instantiated during package initialization in :mod:`aimmd._init`
 and exposed via :mod:`aimmd._config` (e.g. ``_config.NPY_CACHE`` and
-``_config.MDA_CACHE``). :contentReference[oaicite:5]{index=5}
+``_config.MDA_CACHE``).
 
 Design
 ------
@@ -27,27 +27,16 @@ The cache is a simple size-limited mapping:
 Subclass contract
 -----------------
 Subclasses implement:
-
-- ``_open(...)``:
-    Open/load the resource. In this codebase, `_open` is implemented as a
-    ``@staticmethod`` in subclasses, with signature ``_open(self, fname, ...)``.
-    This is a *deliberate* style choice in AIMMD: the cache calls
-    ``self._open(fname)`` and the staticmethod receives ``self`` explicitly.
-
-- Optionally ``_close(...)``:
-    Cleanup hook. Also implemented as a ``@staticmethod`` in current subclasses.
-
-- Optionally ``_extend(...)``:
-    Extension hook used by :meth:`get` when ``extend=True``.
+- :meth:`_open`: open/load the resource.
+- Optionally :meth:`_close`: cleanup hook for evicted entries.
+- Optionally :meth:`_extend`: extension/padding hook used by :meth:`get`.
 
 Important notes
 ---------------
-- Concurrency: this cache does not provide internal locking. Where file-level
-  concurrency matters (e.g., `.npy` writers/readers), the corresponding module
-  uses filesystem locks (see :mod:`aimmd.cache.npy`).
-- ``sys.getsizeof`` underestimates memory for containers / NumPy arrays; this
-  heuristic is preserved as-is.
-
+- Concurrency: this cache is process-local and does not implement internal locks.
+  When filesystem-level concurrency matters, use explicit file locks (see
+  :mod:`aimmd.cache.npy`).
+- Memory accounting via `sys.getsizeof` is heuristic; it is preserved as-is.
 """
 
 # external
@@ -57,7 +46,7 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import Iterable
 
-# abstract cache
+
 class AbstractCache(ABC):
     """
     Minimal size-limited cache base class.
@@ -73,9 +62,9 @@ class AbstractCache(ABC):
 
     Notes
     -----
-    - This cache is process-local and intentionally simple.
-    - The base class assumes that cached instances implement `__len__` because
-      :meth:`get` compares `len(instance)` against `min_length`.
+    - This cache assumes cached instances support `__len__`, because :meth:`get`
+      compares `len(instance)` against `min_length`.
+    - The cache is intentionally minimal and not thread/process safe.
     """
     max_size = None
     
@@ -92,26 +81,20 @@ class AbstractCache(ABC):
     @abstractmethod
     def _open(self, fname):
         """
-        Open/load the resource.
+        Open/load the resource identified by `fname`.
 
         Parameters
         ----------
         fname : str
-            File path.
+            File path or cache key.
 
         Returns
         -------
         object
             The opened resource instance.
-
-        Notes
-        -----
-        Subclasses frequently implement this as a `@staticmethod` with signature
-        `_open(self, fname, ...)`. The base class calls `self._open(fname)`.
         """
         pass
 
-    @staticmethod
     def _close(self, instance):
         """
         Close/cleanup a cached instance.
@@ -123,13 +106,11 @@ class AbstractCache(ABC):
 
         Notes
         -----
-        Default: no-op.
-        Subclasses may override (also as a `@staticmethod`) to close file handles
-        or readers.
+        Default: no-op. Subclasses override to close file handles/readers.
         """
-        pass
+        # no-op by default
+        return
 
-    @staticmethod
     def _extend(self, instance, min_length):
         """
         Optionally extend/pad an instance to satisfy a requested minimum length.
@@ -302,4 +283,3 @@ class AbstractCache(ABC):
         """
         while self._cache:
             self.remove()
-    
