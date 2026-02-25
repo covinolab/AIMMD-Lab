@@ -9,7 +9,8 @@ ensemble-level *projection* operator:
 
 - gather per-frame data from a set of paths,
 - optionally transform it with a user function,
-- accumulate weighted counts into an N-dimensional histogram (``np.histogramdd``).
+- accumulate weighted counts into an N-dimensional histogram (``np.histogramdd``),
+  with either the PathEnsemble or the user-defined weights.
 
 The implementation is optimized for large ensembles by processing data in
 fixed-size batches. This avoids concatenating all frames into a single array.
@@ -165,7 +166,7 @@ class PathEnsembleProject(ABC):
             for by multiplying weights by their multiplicity.
         weights : array_like, optional
             Per-path weights overriding ``self.weights[indices]``. If not
-            provided, ensemble weights are used.
+            provided, path ensemble weights are used (`self.weights[key]`).
         function : callable, default=lambda x: x
             Transformation applied to the raw per-frame data before binning.
             It must produce an array-like object with one row per frame.
