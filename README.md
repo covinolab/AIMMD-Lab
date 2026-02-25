@@ -16,6 +16,7 @@ AI-enhanced path sampling simulations, both on a workstation and on HPC clusters
 - `mdtraj`
 - `psutil`
 - GROMACS
+- 
 From the point of view of the requirements, the code is rather light.
 
 ## How to build you "params" file
@@ -42,7 +43,7 @@ launcher.run(n=1, nA=1, nB=1, nsteps=10, walltime=300)
 launcher.create_job('job.sh', n=1, nA=1, nB=1, nsteps=10)
 
 # on terminal
-Worker(params, folder).train(walltime=300)
+Worker(params, folder).train()
 ```
 
 ## Left to do
