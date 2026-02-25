@@ -185,6 +185,9 @@ class PathIO(ABC):
         else:
             key = range(len(self))
         n_frames = len(reader)
+
+        if not n_frames:
+            raise RuntimeError("no frames to write")
         
         # get universe and timestep
         indices = np.arange(self.n_atoms)[atoms].flatten()
@@ -192,9 +195,28 @@ class PathIO(ABC):
         universe = Universe.empty(n_atoms, trajectory=True)
         ts = universe.trajectory.ts
         
+        # get time info
+        if n_frames >= 2:
+            if times_in_memory:
+                t1, t2 = self.__dict__['times'][key[:2]]
+            else:
+                t1 = reader[0].time
+                t2 = reader[1].time
+            dt = abs(t2 - t1) or 1.0
+        else:
+            if times_in_memory:
+                t1 = self.__dict__['times'][key[0]]
+            else:
+                t1 = reader[0].time
+            dt = 1.0
+
+        # get direction
+        directions = np.ones(n_frames)
+        directions[:-1][np.diff(key) < 0] = -1.0
+        
         # initialize times list
         times = []
-        direction = +1.0
+        dt = 1.0
         
         # open writer
         writer = Writer(str(filename), len(indices))
@@ -202,42 +224,28 @@ class PathIO(ABC):
                         
             # iterate over frames
             for i, frame in enumerate(reader):
-                if times_in_memory:
-                    t = self.__dict__['times'][key[i]]
-                else:
-                    t = frame.time
-                times.append(t)
-                
-                # get direction and time info
-                if len(times) >= 2:
-                    if len(times) == 2:
-                        dt = abs(times[1] - times[0]) or 1.0
-                    if t0 is not None:
-                        t0 += dt
-                    if times[-1] > times[-2]:
-                        direction = +1.0
-                    else:
-                        direction = -1.0
-                
-                # assign second to last frame
-                if len(times) > 1:
-                    ts.positions = positions
-                    ts.velocities = velocities * direction
-                    ts.dimensions = dimensions
-                    if t0 is None:
-                        ts.time = times[-2]
-                    else:
-                        ts.time = t0
-                        times[-2] = t0
-                    
-                    # write second to last frame
-                    writer.write(universe)
-                
                 # get info
+
+                # time and dt
+                if times_in_memory:
+                    t2 = self.__dict__['times'][key[i]]
+                else:
+                    t2 = frame.time
+                if i == 1:
+                    dt = abs(t2 - t1)
+                t1 = t2
+                if t0 is not None:
+                    t = t0 + dt * i
+                else:
+                    t = t1
+
+                # positions
                 if positions_in_memory:
                     positions = self.__dict__['positions'][key[i]]
                 else:
                     positions = frame.positions[indices].copy()
+
+                # velocities (right direction)
                 if velocities_in_memory:
                     velocities = self.__dict__['velocities'][key[i]]
                 else:
@@ -246,6 +254,8 @@ class PathIO(ABC):
                         velocities = velocities[indices] * direction
                     else:
                         velocities = np.zeros((n_atoms, 3))
+
+                # dimensions
                 if dimensions_in_memory:
                     dimensions = self.__dict__['dimensions'][key[i]]
                 else:
@@ -254,26 +264,21 @@ class PathIO(ABC):
                         dimensions = DEFAULT_DIMENSIONS
                     else:
                         dimensions = dim
+                
+                # update and write frame
+                ts.positions = positions
+                ts.velocities = velocities * directions[i]
+                ts.dimensions = dimensions
+                ts.time = t
+                writer.write(universe)
+                times.append(t)
             
-            # assign last frame
-            ts.positions = positions
-            ts.velocities = velocities * direction
-            ts.dimensions = dimensions
-            if t0 is None:
-                ts.time = times[-1]
-            else:
-                ts.time = t0
-                times[-1] = t0
-
-            # write last frame
-            writer.write(universe)
-
             # return writer or written times
             if return_writer:
                 return writer
             writer.close()
             return times
-
+        
         # clear in case of exception
         except Exception as exception:
             writer.close()
