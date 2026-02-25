@@ -85,7 +85,7 @@ class PathCompute(ABC):
                         raise exception
                         
             if verbose:
-                progress.update(~mask.sum())
+                progress.update((~mask).sum())
             
             # how much do you need to compute?
             if not mask.any():
