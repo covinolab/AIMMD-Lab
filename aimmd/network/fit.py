@@ -232,14 +232,14 @@ def fit(params,
     """
 
     # input consistency checks
-    assert (batching_strategy in ('draw-replace', 'loop-all'),
-            f"Invalid batching strategy: {batching_strategy}")
-    assert (augment in ('no', 'yes', 'experimental'),
-            f"Invalid augment: {augment!r}")
-    assert (sparse_update_max_frames == -1,
-            'In this version of aimmd, only '
-            'sparse_update_max_frames = -1 is supported')
-
+    if batching_strategy not in ('draw-replace', 'loop-all'):
+        raise TypeError(f"Invalid batching strategy: {batching_strategy}")
+    if augment not in ('no', 'yes', 'experimental'):
+        raise TypeError(f"Invalid augment: {augment!r}")
+    if sparse_update_max_frames != -1:
+        raise TypeError('In this version of aimmd, only '
+                        'sparse_update_max_frames = -1 is supported')
+    
     if graphs:
         # only need to import this torch_geometric Batch if graphs
         # are used as descriptors. Otherwise, avoid the dependency.
