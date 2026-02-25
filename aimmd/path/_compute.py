@@ -229,7 +229,7 @@ class PathCompute(ABC):
             if not mask.any():
                 continue
             
-            # different treatment to optimize loading speed
+            # different treatments to optimize loading speed
             if source in ('reader', 'frames', 'positions', 'times',
                           'coordinates', 'velocities', 'dimensions'):
                 input_data = self._extract(
@@ -238,10 +238,11 @@ class PathCompute(ABC):
             else:
                 try:
                     input_data = self._extract(
-                        k, source, raise_if_missing=raise_if_error)
+                      k, source, raise_if_missing=True)
                 except Exception as exception:
                     if raise_if_error:
                         raise exception
+                    continue
                 mask = np.flatnonzero(mask[:len(input_data)])
                 input_data = input_data[mask]
             
