@@ -2,41 +2,52 @@
 aimmd.cache.base
 ================
 
-Base cache abstractions for AIMMD.
+Base cache abstractions used across AIMMD.
 
-This subpackage provides small, process-local, in-memory caches used to avoid
-repeated expensive I/O operations (e.g., repeatedly reading trajectory files or
-NumPy arrays). These caches are initialized during package startup in
-:func:`aimmd._init.initialize` and stored on :mod:`aimmd._config` as global
-singletons (e.g., ``_config.NPY_CACHE`` and ``_config.MDA_CACHE``).
+AIMMD uses small, process-local, in-memory caches to avoid repeatedly opening
+and parsing expensive on-disk resources, such as:
 
-High-level behavior
--------------------
+- NumPy `.npy` arrays (see :class:`aimmd.cache.npy.NpyReaderCache`)
+- MDAnalysis trajectory readers (see :class:`aimmd.cache.mda.MDAReaderCache`)
+
+These caches are created during package initialization in :mod:`aimmd._init`
+and exposed via :mod:`aimmd._config` (e.g. ``_config.NPY_CACHE`` and
+``_config.MDA_CACHE``). :contentReference[oaicite:5]{index=5}
+
+Design
+------
 The cache is a simple size-limited mapping:
 
-- Keys: file names (strings)
-- Values: loaded "instances" (e.g., numpy arrays or MDAnalysis readers)
-- Eviction: FIFO order using :class:`collections.OrderedDict` (oldest first)
-- Budget: ``total_size`` tracks approximate memory usage via ``sys.getsizeof``
+- Key: filename/path (string)
+- Value: opened/loaded instance (any object)
+- Storage: :class:`collections.OrderedDict` to preserve insertion order
+- Eviction: FIFO (oldest entry removed first)
+- Memory accounting: heuristic via :func:`sys.getsizeof`
 
-Contract for subclasses
------------------------
+Subclass contract
+-----------------
 Subclasses implement:
 
-- :meth:`_open(fname)`:
-    Actually opens/loads the resource, returning an instance or raising.
-- Optionally :meth:`_close(instance)`:
-    Cleanup hook (e.g., close file handles / readers).
-- Optionally :meth:`_extend(instance, min_length)`:
-    Used when clients ask for at least ``min_length`` items and want to extend.
+- ``_open(...)``:
+    Open/load the resource. In this codebase, `_open` is implemented as a
+    ``@staticmethod`` in subclasses, with signature ``_open(self, fname, ...)``.
+    This is a *deliberate* style choice in AIMMD: the cache calls
+    ``self._open(fname)`` and the staticmethod receives ``self`` explicitly.
 
-Notes / caveats
+- Optionally ``_close(...)``:
+    Cleanup hook. Also implemented as a ``@staticmethod`` in current subclasses.
+
+- Optionally ``_extend(...)``:
+    Extension hook used by :meth:`get` when ``extend=True``.
+
+Important notes
 ---------------
-- ``sys.getsizeof`` is used as a heuristic for memory accounting. For complex
-  objects (NumPy arrays, MDAnalysis readers), it may under/overestimate true
-  memory usage. The current logic keeps this behavior as-is.
+- Concurrency: this cache does not provide internal locking. Where file-level
+  concurrency matters (e.g., `.npy` writers/readers), the corresponding module
+  uses filesystem locks (see :mod:`aimmd.cache.npy`).
+- ``sys.getsizeof`` underestimates memory for containers / NumPy arrays; this
+  heuristic is preserved as-is.
 
-This file contains only the cache base class and avoids heavyweight imports.
 """
 
 # external
@@ -49,223 +60,234 @@ from collections.abc import Iterable
 # abstract cache
 class AbstractCache(ABC):
     """
-    Abstract size-limited cache.
+    Minimal size-limited cache base class.
 
     Attributes
     ----------
     max_size : int or None
-        Approximate cache memory budget (bytes). Subclasses typically set this.
-    _cache : OrderedDict
-        Stores cached instances; eviction is FIFO (popitem(last=False)).
+        Maximum allowed approximate cache size in bytes. Subclasses set this.
+    _cache : collections.OrderedDict
+        Cached mapping. Oldest entries are evicted first.
     total_size : int
-        Approximate total size (bytes) of cached instances.
+        Approximate total cached size computed by summing `sys.getsizeof`.
 
     Notes
     -----
-    - This cache is process-local; it is not shared across processes.
-    - It is intentionally minimal and does not implement concurrency control.
-      For filesystem-level locking, see :mod:`aimmd.cache.npy`.
+    - This cache is process-local and intentionally simple.
+    - The base class assumes that cached instances implement `__len__` because
+      :meth:`get` compares `len(instance)` against `min_length`.
     """
     max_size = None
     
     def __init__(self):
-        # OrderedDict preserves insertion order for FIFO eviction.
+        # Maintain insertion order for FIFO eviction.
         self._cache = OrderedDict()
-        # Heuristic memory accounting (sum of sys.getsizeof(instance)).
+        # Track approximate memory budget consumption.
         self.total_size = 0
     
     def __len__(self):
-        # Number of cached entries (not total frames or bytes).
+        # Number of cached entries (not bytes).
         return len(self._cache)
     
     @abstractmethod
     def _open(self, fname):
         """
-        Open/load a resource.
+        Open/load the resource.
 
         Parameters
         ----------
         fname : str
-            File name / path.
+            File path.
 
         Returns
         -------
-        object or None
-            Loaded instance. Returning None indicates failure to open.
+        object
+            The opened resource instance.
 
         Notes
         -----
-        Subclasses may raise exceptions; :meth:`open` catches them and returns None.
+        Subclasses frequently implement this as a `@staticmethod` with signature
+        `_open(self, fname, ...)`. The base class calls `self._open(fname)`.
         """
         pass
-    
+
+    @staticmethod
     def _close(self, instance):
         """
-        Cleanup hook called when removing an instance from cache.
+        Close/cleanup a cached instance.
 
         Parameters
         ----------
         instance : object
-            Cached instance previously returned by `_open`.
+            Cached instance to close.
 
         Notes
         -----
-        Default is a no-op. Subclasses can override, e.g. call `instance.close()`.
+        Default: no-op.
+        Subclasses may override (also as a `@staticmethod`) to close file handles
+        or readers.
         """
         pass
 
+    @staticmethod
     def _extend(self, instance, min_length):
         """
-        Optional hook: extend/pad an instance to at least `min_length`.
+        Optionally extend/pad an instance to satisfy a requested minimum length.
 
-        This is used when callers request `extend=True` in :meth:`get`.
+        Parameters
+        ----------
+        instance : object
+            Cached instance.
+        min_length : int
+            Desired minimum length for `len(instance)`.
 
-        Default implementation returns `instance` unchanged.
+        Returns
+        -------
+        object
+            Extended instance.
+
+        Notes
+        -----
+        Default: return the instance unchanged.
         """
         return instance
     
     def get(self, fname, min_length=0, extend=False):
         """
-        Retrieve an instance from cache, optionally ensuring a minimum length.
+        Retrieve an instance from cache, reloading if missing/too short.
 
         Parameters
         ----------
         fname : str
-            Resource identifier (typically a filepath).
+            File path used as cache key.
         min_length : int, default 0
-            If the cached instance is missing or shorter than this length,
-            the resource is reloaded via :meth:`load`.
+            If cached instance is missing or `len(instance) < min_length`,
+            reload via :meth:`load`.
         extend : bool, default False
-            If True and an instance is available, call :meth:`_extend` to ensure
-            at least `min_length`.
+            If True, run `_extend` after retrieval.
 
         Returns
         -------
         object or None
-            Cached (or reloaded) instance, possibly extended; None on failure.
+            Cached/loaded instance, or None if open/load failed.
         """
-        # Fast path: try cache first
+        # Attempt fast-path lookup
         instance = self._cache.get(fname, None)
-        # Reload if not cached or too short
+
+        # Reload if not present or insufficient length
         if instance is None or len(instance) < min_length:
             new = self.load(fname)
             if new is not None:
                 instance = new
+
         # Optional extension/padding step
         if instance is not None and extend:
             instance = self._extend(instance, min_length)
+
         return instance
 
     def open(self, fname):
         """
-        Safe open wrapper around :meth:`_open`.
+        Safe wrapper around `_open`.
 
         Returns
         -------
         object or None
-            Instance on success, None on any exception.
+            Instance on success, or None if `_open` raises.
         """
         try:
             return self._open(fname)
         except:
-            # Keep permissive behavior: any failure returns None.
+            # Preserve permissive behavior: failures yield None.
             return None
     
     def load(self, fname):
-        """
-        Load a resource and update the cache.
-
-        Behavior
-        --------
-        - Opens the resource via :meth:`open`.
-        - Removes any existing cached entry for `fname`.
-        - Evicts oldest entries until there is space for the new one.
-        - Inserts the new instance and updates `total_size`.
-
-        Returns
-        -------
-        object or None
-            The loaded instance, or None if opening failed.
-
-        Notes
-        -----
-        Uses `sys.getsizeof` for instance size estimation.
-        """
+        """Updates cache with fname"""
+        # Open resource (may return None)
         instance = self.open(fname)
         if instance is None:
             return
-        # Remove existing cached version (if any) to refresh insertion order
+
+        # Remove any existing entry for this key (refresh insertion order + size)
         self.remove(fname)
+
+        # Estimate the memory cost of the new instance
         size = sys.getsizeof(instance)
-        # Evict FIFO until there is enough budget
+
+        # Evict oldest entries until there is room
         while self.total_size + size >= self.max_size:
             self.remove()
-        # Insert and account
+
+        # Insert instance and account memory
         self._cache[fname] = instance
         self.total_size += size
         return instance
     
     def reload(self):
         """
-        Reload all currently cached file names (refresh the cache contents).
+        Reload every currently cached filename.
 
         Returns
         -------
         list
-            List of reloaded instances (may include None entries).
+            List of newly loaded instances (may include None if failures occur).
         """
         return [self.load(fname) for fname in self._cache]
     
     def pop(self, fname=None):
         """
-        Remove an entry from the cache and return the instance.
+        Remove an instance from cache and return it.
 
-        Parameters
-        ----------
-        fname : str or None
-            - If str: pop that key if present, otherwise open it without caching.
-            - If None: pop the *oldest* cached entry (FIFO).
-            - Otherwise: coerces to str and recurses.
+        Behavior
+        --------
+        - If `fname` is a string and cached: remove and return cached instance.
+        - If `fname` is a string and not cached: open it (not cached) and return it.
+        - If `fname` is None: evict and return the oldest cached instance (FIFO).
+        - Otherwise: convert `fname` to str and retry.
 
         Returns
         -------
         object or None
-            The removed (or opened) instance, or None if nothing found/opened.
+            Popped instance or opened instance, or None if nothing could be returned.
 
         Notes
         -----
-        This method updates `total_size` when removing cached entries.
+        Adjusts `total_size` only when removing a cached entry.
         """
-        # Remove a specific entry (or open it if not cached)
+        """Remove from cache if there, opens if not there.
+        Fallback: returns None."""
         if isinstance(fname, str):
             instance = self._cache.pop(fname, None)
             if instance is not None:
                 self.total_size -= sys.getsizeof(instance)
             else:
+                # Not cached: open without caching
                 instance = self.open(fname)
             return instance
-        # Pop oldest entry
+
         if fname is None:
             if len(self):
+                # Pop oldest (FIFO)
                 instance = self._cache.popitem(last=False)[1]
                 self.total_size -= sys.getsizeof(instance)
                 return instance
             return
-        # Fallback: try string conversion
+
+        # Fallback: stringify and retry
         return self.pop(str(fname))
     
     def remove(self, fname=None):
         """
-        Remove an entry from the cache and run the cleanup hook.
+        Remove an entry and call the `_close` hook.
 
         Parameters
         ----------
         fname : str or None
-            Passed to :meth:`pop`. If None, removes the oldest entry.
+            If None, removes the oldest entry; otherwise removes that key.
 
         Notes
         -----
-        Uses `try/finally` to preserve current behavior (always returns).
+        Errors in `_close` are not propagated due to the `try/finally` structure.
         """
         try:
             instance = self.pop(fname)
@@ -276,7 +298,7 @@ class AbstractCache(ABC):
 
     def clear(self):
         """
-        Clear the entire cache, calling cleanup hooks on all entries.
+        Clear the cache completely, closing all cached entries.
         """
         while self._cache:
             self.remove()
