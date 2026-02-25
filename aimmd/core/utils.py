@@ -1,6 +1,6 @@
 """
-aimmd.utils
-===========
+aimmd.core.utils
+================
 
 General-purpose helper functions used across AIMMD.
 
