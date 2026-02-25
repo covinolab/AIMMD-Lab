@@ -230,19 +230,30 @@ class PathCompute(ABC):
                 continue
             
             # different treatments to optimize loading speed
+            # source comes from "reader" or object memory
             if source in ('reader', 'frames', 'positions', 'times',
                           'coordinates', 'velocities', 'dimensions'):
                 input_data = self._extract(
                     k, source, mask, raise_if_missing=raise_if_error)
                 mask = np.flatnonzero(mask)
             else:
+
+                # source comes from npy array or object memory
                 try:
                     input_data = self._extract(
                       k, source, raise_if_missing=True)
+                
+                # if there are problems, skip computations for this file
                 except Exception as exception:
                     if raise_if_error:
                         raise exception
+                    progress.update(mask.sum())
                     continue
+
+                # input_data may be shorter than expected:
+                # in this case, update counter and crop mask
+                if verbose:
+                    progress.update(mask[len(input_data):].sum())
                 mask = np.flatnonzero(mask[:len(input_data)])
                 input_data = input_data[mask]
             
