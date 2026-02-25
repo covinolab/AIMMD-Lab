@@ -129,6 +129,10 @@ class TaskExecutor(ABC):
     def sequential(self, key=None):
         localids = np.arange(len(self))[key].flatten()
         for localid in localids:
+            target = self._targets[localid]
+            name = self._names[localid]
+            args = self._args[localid]
+            kwargs = self._kwargs[localid]
             target_wrapper(target, name, *args, **kwargs)
     
     def run(self, key=None, parallel=True, timeout=20.):
