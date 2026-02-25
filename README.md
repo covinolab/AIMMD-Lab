@@ -3,12 +3,19 @@
 # AIMMD
 **AI for Molecular Mechanism Discovery**
 
-AIMMD implements **AI-enhanced path sampling** for molecular mechanisms discovery.
+AIMMD implements **AI-enhanced path sampling** for molecular mechanism discovery.
 The core workflow is **committor-guided shooting**: short unbiased simulations
 are launched from **shooting points** selected using a learned committor model
-(typically a neural network), producing a **diverse ensemble of reactive
+(typically a neural network). This produces a **diverse ensemble of reactive
 trajectories** and, in general, **more transition events than equilibrium**
 sampling at comparable cost.
+
+The resulting path ensemble can be inspected and reweighted to obtain estimates
+of **free-energy profiles** and **transition rates** and, together with the
+learned reaction coordinate (committor model), to support mechanistic
+interpretation. For rejection-free path sampling workflows, reweighting and
+bin/density adaptation are also performed **on the fly**. AIMMD provides tools
+(and notebooks) to support this analysis.
 
 AIMMD runs:
 - locally (multi-process execution),
