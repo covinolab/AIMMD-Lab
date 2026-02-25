@@ -263,12 +263,12 @@ class ParamsHelpers(ABC):
                     path = Path(path.fname)
                     path.states = path.compute(self.states_function)
                     transition_found = False
-                    for path in path.split():
-                        if path.type in (self.states, self.states[::-1]):
+                    for path in (split := path.split()):
+                        if path.type[:3] in (self.states, self.states[::-1]):
                             transition_found = True
                             break
                     if not transition_found:
-                        types = ", ".join([t[:3] for t in split_path.types()])
+                        types = ", ".join([t[:3] for t in split.types()])
                         raise TypeError(f'the initial trajectory {path.fname!r} '
                             f'has no {self.states!r} transitions '
                             f'(path types: {types})')
