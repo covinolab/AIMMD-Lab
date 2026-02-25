@@ -111,7 +111,7 @@ class PathExtract(ABC):
         object
             Depending on `attribute`:
             - Path for 'self'
-            - numpy.ndarray for most series (filled with zeros where data are missing)
+            - numpy.ndarray for most series
             - list of timesteps for 'frames'
             - MDAnalysis trajectory slice for 'reader'
 
