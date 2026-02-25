@@ -1,4 +1,4 @@
-'''
+"""
 aimmd — AI for molecular mechanism discovery
 
 Public package entry point.
@@ -29,7 +29,7 @@ The following objects are made available at top-level:
 Versioning
 ----------
 ``__version__`` is currently a static string.
-'''
+"""
  
 # initialize once; guarded by aimmd._config._initialized
 from ._init import initialize
