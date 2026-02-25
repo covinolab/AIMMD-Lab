@@ -133,6 +133,7 @@ class PathMagic(ABC):
                     f"can't set aimmd.Path property {attribute!r}")
             # dispatch to the property setter
             path_property.fset(self, value)
+            return
       
         # reader and frames
         if attribute == 'reader':
