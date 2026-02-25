@@ -2,33 +2,39 @@
 aimmd._config
 =============
 
-Central configuration namespace for AIMMD.
+Internal runtime configuration for AIMMD.
 
-This module is intentionally lightweight and is used as a **shared state**
-container for values that are discovered or constructed during package
-initialization (see :mod:`aimmd._init`).
+This module stores global configuration values that are populated once at
+package initialization time (see :func:`aimmd._init.initialize`).
 
-Design notes
-------------
-- AIMMD performs a one-time initialization step (dependency checks, locating
-  executables, preparing caches, setting options).
-- That initialization populates attributes on this module (e.g. ``PYTHON``,
-  ``GROMACS``, cache instances, default box dimensions, etc.).
-- The flag ``_initialized`` prevents re-running initialization multiple times,
-  which is especially important with multiprocessing and repeated imports.
+Purpose
+-------
+AIMMD needs a small amount of shared, runtime-resolved state:
 
-Public API
+- paths to key resources inside the package (worker script, engine templates),
+- resolved external executables (e.g., GROMACS),
+- instantiated caches used across the package,
+- small global defaults (e.g., default unit cell dimensions),
+- a lightweight "print" wrapper for consistent flushing.
+
+The values are deliberately stored in a module rather than a class:
+- they are easy to import from anywhere,
+- they behave like a singleton without additional machinery,
+- they avoid heavy dependencies.
+
+Initialization protocol
+-----------------------
+The :func:`aimmd._init.initialize` function is responsible for setting
+configuration variables and marking the module as initialized.
+
+Do not set these variables manually unless you know why you are doing it.
+
+Attributes
 ----------
-Most attributes are added dynamically at runtime by :func:`aimmd._init.initialize`.
-Users typically access configuration via ``from aimmd import *`` or via the
-package namespace after initialization.
-
-Implementation detail
----------------------
-This file exists as a stable import target that can be safely imported by
-submodules without triggering expensive initialization on import.
+_initialized : bool
+    Sentinel flag to prevent repeated initialization. It is set to ``True``
+    at the end of :func:`aimmd._init.initialize`.
 """
 
-# Will become True once package initialization is completed.
-# Used to ensure initialization is idempotent.
+# Will become True once initialization is completed.
 _initialized = False
