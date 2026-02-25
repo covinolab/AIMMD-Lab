@@ -119,6 +119,11 @@ class PathEnsemble(
         A merged ensemble (frame collection) is used to deterministically select
         frames and repeatedly shoot from them for brute-force committor
         estimation.
+  
+    Parameters
+    ----------
+    The constructor is aliased to :meth:`PathEnsembleHelpers._init`. See that method
+    for the full signature and meaning of pathensemble initialization arguments.
 
     Notes
     -----
