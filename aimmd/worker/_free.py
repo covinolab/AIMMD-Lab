@@ -59,7 +59,7 @@ class WorkerFree(ABC):
             print(f'+++ created {folder!r}')
         
         # must have network, bins, and descriptors
-        if wait:
+        if wait and params.nbins > 1:
             print(f'\nWaiting for neural network, bins, densities {now()}')
             while True:
                 try:
