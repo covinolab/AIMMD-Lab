@@ -1,5 +1,44 @@
 """
-...
+aimmd.pathensemble.reweight
+===========================
+
+Statistical core for path-ensemble reweighting.
+
+This module provides the low-level numerical routines used by
+:class:`aimmd.pathensemble._reweight.PathEnsembleReweight`. The functions here
+implement the statistical pieces of AIMMD reweighting:
+
+- local shooting-point density estimation,
+- optional local normalization ("uniformization") of correction factors,
+- construction of a crossing-probability curve as a function of a path extreme,
+- computation of excursion weights from (shooting value, extreme, factor) data.
+
+These functions are written to be called on *arrays* collected from an ensemble.
+They do not depend on PathEnsemble directly and perform no I/O.
+
+Conventions
+-----------
+AIMMD uses special sentinel values in the arrays passed to these functions:
+
+- ``shooting_value == -inf``
+  Marks an equilibrium/free excursion with no shooting-point correction.
+  These contribute to the "equilibrium" part of the reweighting and to the
+  initial part of the crossing-probability curve.
+
+- ``extreme == +inf``
+  Marks a trajectory that certainly crossed (or is treated as such). This is
+  used to make the final normalization stable.
+
+The meaning of "shooting value" and "extreme" is defined upstream in
+:meth:`aimmd.pathensemble._reweight.PathEnsembleReweight.reweight`. In
+particular, AIMMD uses a signed convention so that "progress toward the product"
+corresponds to increasing extreme values in both directions.
+
+Notes
+-----
+- All computations here are purely numerical and operate on 1D arrays.
+- The returned weights are normalized such that transitions have weight ~1
+  (see :func:`reweight_excursions`).
 """
 
 # external
@@ -7,9 +46,51 @@ import numpy as np
 from math import inf, nan
 from scipy.special import expit
 
-# functions
+
 def compute_shooting_density(values, shooting_value, neighbors=10):
-    """n^star of values at shooting point"""
+    """
+    Estimate the local path density at the shooting value.
+
+    This function estimates a 1D density around `shooting_value` using a simple
+    nearest-neighbor window. It is used to correct the path weight at the shooting
+    interface, to restore detailed balance: paths with high density are downweighted
+    and viceversa.
+
+    The estimator is:
+
+        n* / Δ
+
+    where:
+    - n* is the number of neighbors retained in a window around `shooting_value`,
+    - Δ is the window width, defined by the midpoints to the next values outside
+      the window.
+
+    Parameters
+    ----------
+    values : array-like
+        Per-frame scalar values for a single path. The function converts to
+        float and removes NaN and inf entries. The remaining values are treated
+        as the support of the 1D distribution along that path.
+    shooting_value : float
+        Value at the shooting point. If NaN or inf, the density is undefined and
+        the function returns +inf (so the caller typically assigns factor 0 or
+        leaves the factor unchanged depending on usage).
+    neighbors : int, default=10
+        Target number of nearest neighbors retained in the window. The algorithm
+        shrinks [begin, end) until the window contains at most `neighbors` values.
+
+    Returns
+    -------
+    float
+        Estimated local density. Returns +inf when the estimate is undefined
+        (insufficient data, zero window width, or invalid shooting value).
+
+    Notes
+    -----
+    The code forces the first and last value in the sorted list to be the global
+    min/max of the path values. This stabilizes boundary handling when the
+    shooting value lies near the extremes of the sampled range.
+    """
     
     # process values
     values = values.astype(float)
@@ -44,6 +125,7 @@ def compute_shooting_density(values, shooting_value, neighbors=10):
     n_of_neighbors = end - begin
     return n_of_neighbors / delta
 
+
 def compute_crossing_probability(
     shooting_values, extremes,
     free_extremes=None,
@@ -51,10 +133,66 @@ def compute_crossing_probability(
     free_threshold=0,
     theoretical_threshold=None,
     crossing_probability_cutoff=0.):
-    """crossing_probability_cutoff:
-        if > 0 in principle more robust but less data
-        discard if shooting_value > extreme - cutoff
-        """
+    """
+    Construct a crossing-probability curve as a function of the extreme value.
+
+    This function estimates a monotonically non-increasing "survival" / crossing
+    probability curve xP(E) defined on a set of extreme values E. It is used by
+    :func:`reweight_excursions` to map each excursion extreme to a probability
+    factor.
+
+    The algorithm combines:
+    - an "equilibrium/free" part derived from `free_extremes` and their factors,
+    - a "drop" recursion for the remaining (shot) data, applied after sorting by
+      the extreme value.
+
+    Parameters
+    ----------
+    shooting_values : array-like
+        Per-trajectory shooting values for the (shot) dataset that will be used
+        in the "drop" recursion. These are filtered by the threshold logic below.
+    extremes : array-like
+        Per-trajectory extremes corresponding to `shooting_values`. The returned
+        crossing probability is computed on these extreme values (and on the
+        free extremes if provided).
+    free_extremes : array-like, optional
+        Extreme values for free excursions (equilibrium-like samples). These
+        dominate the low-extreme part of the curve up to a threshold.
+    free_extremes_factors : array-like, optional
+        Per-free-trajectory factors (weights) used when computing the equilibrium
+        part. If omitted, all free factors are 1.
+    free_threshold : int, default=0
+        If ``len(free_extremes) >= free_threshold > 0``, define the threshold
+        extreme as ``free_extremes[-free_threshold]`` after sorting. Extremes
+        below this value are treated as purely equilibrium/free.
+        Otherwise, fall back to ``extremes.min()`` (or +inf if no data).
+    theoretical_threshold : float, optional
+        If provided, once the sorted extreme exceeds this threshold the curve
+        is continued using a theoretical approximation based on ``expit(E)``.
+        If None, this is set to +inf (no theoretical continuation).
+    crossing_probability_cutoff : float, default=0.
+        Robustness cutoff for the "drop" recursion. At each step j, only
+        trajectories with ``shooting_value < extreme[j] - cutoff`` contribute to
+        the normalization. Increasing this cutoff discards near-tangent shots
+        (more robust, but uses less data).
+
+    Returns
+    -------
+    (numpy.ndarray, numpy.ndarray)
+        extremes_out : numpy.ndarray
+            Sorted extreme values on which the curve is defined. This includes
+            the included free extremes (below threshold) concatenated with the
+            remaining extremes.
+        xP : numpy.ndarray
+            Crossing probability values aligned with `extremes_out`.
+
+    Notes
+    -----
+    The "drop" recursion is a heuristic that enforces monotonic decay. It
+    propagates xP forward in sorted extreme order by applying a multiplicative
+    ratio derived from the fraction of remaining weight that can still "drop"
+    before reaching the current extreme.
+    """
 
     shooting_values = np.asarray(shooting_values)
     extremes = np.asarray(extremes)
@@ -145,6 +283,41 @@ def compute_crossing_probability(
 
 
 def uniformize_factors(factors, shooting_values, cutoff=1., norm=10):
+    """
+    Locally normalize factors as a function of the shooting value.
+
+    This function reduces large factor fluctuations by rescaling each factor by
+    the mean factor of nearby shooting values.
+
+    Parameters
+    ----------
+    factors : array-like
+        Per-trajectory correction factors (typically density corrections).
+    shooting_values : array-like
+        Per-trajectory shooting values associated with `factors`.
+    cutoff : float, default=1.
+        Width of the local window in shooting-value space. The initial mask is:
+
+            (sv > shooting_value - cutoff/2) & (sv < shooting_value + cutoff/2)
+
+    norm : int, default=10
+        Minimum number of neighbors required for the local window. If fewer than
+        `norm` values fall in the cutoff window, the `norm` closest shooting
+        values are used instead.
+
+    Returns
+    -------
+    numpy.ndarray
+        Rescaled factors. The output has the same shape as the input.
+
+    Notes
+    -----
+    The normalization is applied pointwise:
+
+        new[i] = factors[i] / mean(factors[neighbors(i)])
+
+    This does not enforce a global mean; it only smooths local variability.
+    """
     if not len(factors):
         return factors
     new = factors.copy()
@@ -165,6 +338,62 @@ def uniformize_factors(factors, shooting_values, cutoff=1., norm=10):
 
 
 def reweight_excursions(shooting_values, extremes, factors, xP_extremes, xP):
+    """
+    Compute normalized excursion weights from factors and crossing probabilities.
+
+    This function implements the final step of AIMMD excursion reweighting. It
+    assumes:
+    - each excursion is described by a shooting value, an extreme, and a factor,
+    - a crossing probability curve xP(E) has already been computed on `xP_extremes`.
+
+    The output weights are normalized such that transitions (largest extremes)
+    have weight ~1. The normalization uses the last xP point and a logistic
+    correction ``expit(xP_extremes[-1])`` exactly as in the original code.
+
+    Parameters
+    ----------
+    shooting_values : array-like
+        Per-excursion shooting values. ``-inf`` marks equilibrium/free excursions.
+    extremes : array-like
+        Per-excursion extreme values (sorted internally).
+    factors : array-like
+        Per-excursion correction factors (density correction, uniformized, etc.).
+    xP_extremes : array-like
+        Extreme values defining the crossing probability curve.
+    xP : array-like
+        Crossing probability values aligned with `xP_extremes`.
+
+    Returns
+    -------
+    (weights, order, shooting_values, extremes, xP_at_extremes, factors, m)
+        weights : numpy.ndarray
+            Excursion weights in the original input order.
+        order : numpy.ndarray
+            Indices that sort excursions by `extremes`.
+        shooting_values : numpy.ndarray
+            Shooting values sorted by extremes.
+        extremes : numpy.ndarray
+            Extremes sorted.
+        xP_at_extremes : numpy.ndarray
+            Crossing probabilities mapped to each excursion extreme.
+        factors : numpy.ndarray
+            Factors sorted by extremes.
+        m : numpy.ndarray
+            Denominator term used in the weight definition.
+
+    Notes
+    -----
+    The core quantity is `m[i]`, defined (after sorting by extremes) as a
+    weighted count of trajectories whose shooting value is not larger than the
+    current extreme. Free excursions (shooting value -inf) are treated as an
+    "equilibrium" prefix whose cumulative m is precomputed.
+
+    The final weights are:
+
+        w[i] = factors[i] * xP(extreme[i]) / m[i]
+
+    followed by a global normalization so that the final transition weight is ~1.
+    """
     shooting_values = np.asarray(shooting_values)
     extremes = np.asarray(extremes)
     factors = np.asarray(factors)
