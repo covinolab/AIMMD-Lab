@@ -4,10 +4,12 @@ aimmd.cache.mda
 
 MDAnalysis reader cache for robust trajectory opening.
 
-AIMMD frequently needs to open trajectories repeatedly. Some MDAnalysis formats
-maintain auxiliary offset and lock files (e.g. XTC/TRR offsets), which can
-become stale and lead to hangs or errors. This module mitigates that by:
+AIMMD frequently needs to open trajectories repeatedly, potentially while they
+are being written by other processes. Some MDAnalysis formats maintain
+auxiliary offset and lock files (e.g., XTC/TRR offsets), which can become stale
+and lead to hangs or errors.
 
+This module mitigates that by:
 - removing MDAnalysis-generated offset/lock files before opening,
 - opening with `refresh_offsets=True`,
 - detecting how many frames are safely readable,
@@ -18,6 +20,10 @@ Integration
 This cache is constructed during :func:`aimmd._init.initialize` and stored as
 ``aimmd._config.MDA_CACHE`` for global reuse.
 
+Notes
+-----
+This cache is process-local. It does not coordinate between processes beyond
+filesystem-level effects (offset/lock file removal).
 """
 
 # external
@@ -39,13 +45,18 @@ def remove_offset_files(fname):
     fname : str
         Trajectory file path.
 
-    Notes
-    -----
-    Offset/lock files are typically named:
+    Side Effects
+    ------------
+    Deletes auxiliary files next to the trajectory (if present), typically:
     - `.<name>_offsets.npz`
     - `.<name>_offsets.lock`
+
+    Notes
+    -----
+    The removal is performed in a loop until both files are absent. This
+    preserves the current behavior under concurrent creation/deletion.
     """
-    # Avoid MDAnalysis loading to be stuck due to offsets
+    # Avoid MDAnalysis loading to be stuck due to offsets.
     folder, name = extract_folder_and_name(fname)
     fname1 = f'{folder}/.{name}_offsets.npz'
     fname2 = f'{folder}/.{name}_offsets.lock'
@@ -58,18 +69,30 @@ def remove_offset_files(fname):
 
 def count_safe_frames(reader):
     """
-    Count how many frames are safely readable sequentially.
-    Stops at EOF or OSError.
+    Determine how many frames are safely readable from an MDAnalysis reader.
 
     Parameters
     ----------
-    reader : MDAnalysis reader
-        Opened reader supporting `__len__` and frame indexing.
+    reader : object
+        An opened MDAnalysis reader supporting `__len__` and random access
+        via `reader[i]`.
 
     Returns
     -------
     int
-        The largest `n` such that frames `[0..n-1]` are readable.
+        The largest `n` such that frames `[0 .. n-1]` are readable.
+
+    Raises
+    ------
+    RuntimeError
+        If no readable frame can be found.
+
+    Notes
+    -----
+    Algorithm (preserved):
+    - Start from `len(reader)`.
+    - Try to access the last frame.
+    - On `(StopIteration, EOFError, OSError)`, decrement and retry.
     """
     n_frames = len(reader)
     while n_frames:
@@ -88,23 +111,27 @@ class MDAReaderCache(AbstractCache):
 
     Behavior
     --------
-    - validates the file exists and extension is supported
-    - removes stale offset/lock files
-    - retries opening multiple times
-    - returns a reader sliced to only safe frames
+    - Validates file exists and extension is supported.
+    - Removes stale offset/lock files.
+    - Retries opening multiple times.
+    - Returns a reader sliced to only safe frames.
 
     Attributes
     ----------
     max_size : int
         Size budget (currently a placeholder heuristic).
+
+    Notes
+    -----
+    `max_size` is not a byte-accurate budget for readers; it is used only to
+    limit how many objects remain in the cache (heuristically).
     """
 
     max_size = 48 * 1000  # ~1000 Readers open
 
     def _open(self, fname, ntries=10):
         """
-        Open trajectories robustly and return an MDAnalysis Trajectory object
-        containing only fully readable frames.
+        Open a trajectory robustly and return a reader containing only safe frames.
 
         Parameters
         ----------
@@ -115,8 +142,8 @@ class MDAReaderCache(AbstractCache):
 
         Returns
         -------
-        MDAnalysis reader
-            A reader (potentially sliced) containing only readable frames.
+        object
+            An MDAnalysis reader (potentially sliced) containing only readable frames.
 
         Raises
         ------
@@ -126,23 +153,33 @@ class MDAReaderCache(AbstractCache):
             If the file extension is not supported.
         RuntimeError
             If opening fails after all retries.
+
+        Notes
+        -----
+        The reader is created with `refresh_offsets=True` to force MDAnalysis to
+        rebuild offsets after auxiliary files are removed.
         """
         if not os.path.exists(fname):
             raise FileNotFoundError(f"{fname!r} does not exist")
         if not fname.endswith(('.trr', '.xtc', '.gro', '.pdb', '.dcd')):
             raise TypeError(f"{fname!r} extension not supported")
 
+        # Keep last exception message for diagnostics.
         exception = ''
         for _ in range(ntries):
             try:
+                # Defensive cleanup for MDAnalysis-generated offset/lock files.
                 remove_offset_files(fname)
+                # Open reader with refreshed offsets.
                 reader = Reader(fname, refresh_offsets=True)
+                # Determine safe readable prefix.
                 n_safe = count_safe_frames(reader)
                 return reader[:n_safe]
             except Exception as exception:
                 exception = str(exception)
+                # Backoff to tolerate concurrent writes/renames.
                 time.sleep(1.0)
-        
+
         raise RuntimeError(f"Could not open {fname!r} safely ({exception})")
 
     def _close(self, instance):
@@ -151,7 +188,11 @@ class MDAReaderCache(AbstractCache):
 
         Parameters
         ----------
-        instance : MDAnalysis reader
+        instance : object
             Reader to close.
+
+        Side Effects
+        ------------
+        Releases file handles associated with the reader.
         """
         instance.close()
