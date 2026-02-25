@@ -1,5 +1,65 @@
 """
-...
+aimmd.launcher._build
+====================
+
+Build the execution plan for :class:`aimmd.launcher.Launcher`.
+
+This module defines :class:`LauncherBuild`, a mixin implementing
+:meth:`~LauncherBuild._build`, which materializes the launcher configuration into
+a concrete list of worker invocations.
+
+The output of :meth:`_build` is designed to be consumed by a process executor or
+a scheduler wrapper. It returns:
+
+- ``args``: a list of positional argument tuples to construct and run workers,
+- ``descriptions``: human-readable labels for each planned process.
+
+The build step also prepares the working directory structure for each run by:
+
+1) creating the main run directory (if missing),
+2) exporting initial paths into ``initial{sorted_states}``,
+3) exporting per-path cached arrays (e.g., states/descriptors) as `.npy` files,
+4) creating task folders for free simulations, shooting chains, sweep shooting,
+   and trainers,
+5) creating per-worker log files when multiple processes are launched.
+
+Process identifiers
+-------------------
+The build step maintains a ``process_identifiers`` list to prevent spawning
+multiple processes that would write into the same output location. This is a
+pragmatic guard against conflicting writers, which would corrupt trajectories,
+caches, or logs.
+
+Stop conditions
+---------------
+Each worker is passed stop-condition budgets as positional arguments:
+
+- ``walltime`` (seconds),
+- ``nsteps`` (total shooting chain size),
+- ``nframes`` (frames).
+
+If training is enabled for a run (``nrounds > 0``), sampling workers are given
+infinite budgets and the trainer controls the overall workflow. If no training
+is enabled but sampling workers are requested, the budgets come from the
+launcher configuration. If neither training nor sampling is requested for a run,
+the run is skipped.
+
+Sweep mode
+----------
+For reactive-region mode ``'sweep'``, the build step creates ``sweep{t}{k}``
+folders (rather than ``chain{t}{k}``) and passes ``sweep=True`` to the shooting
+task. In AIMMD, sweep shooting is typically used for brute-force committor
+validation (repeated shooting from a deterministic set of frames).
+
+Notes
+-----
+- This method writes trajectories and `.npy` arrays. It is therefore an
+  *imperative* setup step and should be considered mutating with respect to the
+  filesystem.
+- The code uses ``print`` but does not import it in this module. This is part of
+  the original code and is preserved here; ensure that the calling context
+  provides ``print`` in scope or that this module is imported where ``print`` is
+  defined (e.g., via :mod:`aimmd._config`).
 """
 
 # external
@@ -15,11 +75,46 @@ from ..cache.npy import save_npy
 from ..core.utils import remove, unique_path
 from ..path.utils import get_cache_fname
 
-# launcher build method
+
 class LauncherBuild(ABC):
 
     def _build(self):
-        """returns arguments and descriptions"""
+        """
+        Build worker argument tuples and process descriptions to start all runs
+        invoked by `self`.
+            
+        Returns
+        -------
+        tuple
+            ``(args, descriptions)`` where:
+
+            - ``args`` is a list of tuples. Each tuple contains the positional
+              arguments required to construct a :class:`aimmd.worker.Worker`
+              and immediately dispatch a task via ``Worker.run``.
+            - ``descriptions`` is a list of strings with the same length as
+              ``args`` describing each planned process for logging/UI use.
+
+        Raises
+        ------
+        RuntimeError
+            If no processes are requested, or if two planned processes would
+            initialize/overwrite the same output location (conflicting process
+            identifiers).
+        TypeError
+            If any run's Params lacks initial paths.
+
+        Side Effects
+        ------------
+        - Creates directories for each run and for each task type.
+        - Clears and rewrites ``initial{sorted_states}`` contents for each run.
+        - Writes initial trajectories and their cached attribute arrays.
+
+        Notes
+        -----
+        ``termination_timeout`` passed to workers is reduced by 1 second to
+        ensure the worker has a chance to terminate gracefully before the
+        launcher-level timeout budget is exhausted.
+        """
         offset = 0
         args = []
         descriptions = []
@@ -29,10 +124,10 @@ class LauncherBuild(ABC):
         num_processes = sum(self._num_processes)
         if num_processes == 0:
             raise RuntimeError('no processes to run')
-        
+
         # initialize worker id
         i = 0
-        
+
         for run_id in range(len(self)):
             params = self._params[run_id]
             if not params.initial_paths:
@@ -62,13 +157,13 @@ class LauncherBuild(ABC):
             if not os.path.exists(directory):
                 os.makedirs(directory)
                 print(f'+++ created {directory!r}')
-            
+
             # initial paths
             folder = f'{directory}/initial{sorted_states}'
             if not os.path.exists(folder):
                 os.makedirs(folder)
                 print(f'+++ created {folder!r}')
-            remove(f'{folder}/*') 
+            remove(f'{folder}/*')
             for path in params.initial_paths:
                 old = path.fname
                 fname = unique_path(f'{folder}/{PosixPath(old).name}', '.trr')
@@ -79,7 +174,7 @@ class LauncherBuild(ABC):
                     name = get_cache_fname(fname, attribute)
                     save_npy(name, series)
                     print(f'+++ saved {name!r}')
-            
+
             # free simulations
             for t, m in zip([r, a, b], [n, n1, n2]):
                 if not m:
@@ -102,7 +197,6 @@ class LauncherBuild(ABC):
                               f"(free {k}) in {dfolder!r} more than once")
                     process_identifiers.append(process_identifier)
 
-                    
                     localid = i % self._ntasks_per_node
                     if num_processes > 1:
                         log_file = f'{folder}/worker{k}.log'
@@ -115,7 +209,7 @@ class LauncherBuild(ABC):
                          'free', t, k, m, nrounds > 0 or n > 0))
                     descriptions.append(f'"{directory}" {folder} (worker{k})')
                     i += 1
-            
+
             # shot simulations
             for t, m in zip([r, a, b], [n, n1, n2]):
                 if t == r and reactive_region_mode == 'free':
@@ -156,7 +250,7 @@ class LauncherBuild(ABC):
                          'shoot', t, k, sweep))
                     descriptions.append(f'"{directory}" {folder}')
                     i += 1
-            
+
             # trainer
             if nrounds:
                 localid = i % self._ntasks_per_node
@@ -178,6 +272,6 @@ class LauncherBuild(ABC):
                      termination_timeout, 'train', nrounds, keep_running))
                 descriptions.append(f'"{directory}" {sorted_states} trainer')
                 i += 1
-        
+
         # combine
         return args, descriptions
