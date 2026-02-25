@@ -86,8 +86,10 @@ class LauncherRun(ABC):
             # wait for completion within walltime
             # stop all as soon as any other stops
             t0 = time.time()
-            must_stop = False
-            while time.time() - t0 < walltime and not must_stop:
+            must_stop = not self._processes.alive.all()
+            while time.time() - t0 < walltime:
+                if must_stop:
+                    break
                 for process in self._processes:
                     exitcode = process.exitcode
                     if exitcode is None:
