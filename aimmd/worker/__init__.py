@@ -19,25 +19,13 @@ responsible for a single aspect of worker behavior:
 - :class:`~aimmd.worker._simulate.WorkerSimulate`
   Engine-facing simulation loop that incrementally extends trajectories on disk.
 - :class:`~aimmd.worker._shoot.WorkerShoot`
-  **Core path-sampling task**: committor-guided shooting to enhance sampling in
-  the reactive region and produce a diverse ensemble of reactive paths.
+  Core path-sampling task (committor-guided shooting).
 - :class:`~aimmd.worker._free.WorkerFree`
-  Free simulations (typically long unbiased runs) used to support sampling and
-  statistics.
+  Free simulations.
 - :class:`~aimmd.worker._train.WorkerTrain`
-  Network training and adaptive-bin/density updates (committor model updates).
+  Network training and adaptive-bin/density updates.
 - :class:`~aimmd.worker._magic.WorkerMagic`
   Minimal magic methods (e.g., readable ``repr``).
-
-Design notes
-------------
-- The worker class is intentionally lean: task logic is split across mixins to
-  keep files small and responsibilities local.
-- ``Worker.__init__`` is aliased to :meth:`WorkerHelpers._init` to keep a single
-  authoritative initialization path.
-- Many operations intentionally mutate process-global state (stdout/stderr
-  redirection, signal handlers). This is safe because workers are meant to run
-  as dedicated subprocesses.
 
 Public API
 ----------
@@ -63,6 +51,39 @@ class Worker(
     WorkerFree,
     WorkerShoot,
     WorkerTrain):
+    """
+    Execute AIMMD tasks in an isolated worker process.
+
+    A Worker is the atomic execution unit used by AIMMD on both local machines
+    and clusters. It is designed to run as a dedicated process that:
+
+    - installs SIGINT/SIGTERM handlers and reacts cooperatively to termination,
+    - optionally binds CPU/GPU resources based on a ``localid`` and policy,
+    - redirects stdout/stderr to a per-worker log file when requested,
+    - executes exactly one task at a time via :meth:`run`.
+
+    Tasks
+    -----
+    The canonical task names dispatched by :meth:`run` are:
+
+    - ``'shoot'``: committor-guided path sampling (core enhanced sampling),
+    - ``'free'``: free simulations around a chosen state,
+    - ``'train'``: update the committor model and adaptive sampling state.
+
+    Parameters
+    ----------
+    The constructor is aliased to :meth:`WorkerHelpers._init`. See that method
+    for the full signature and meaning of worker initialization arguments
+    (params/directory/localid, resource policies, stop conditions, logging).
+
+    Notes
+    -----
+    - Workers intentionally mutate process-global state (signal handlers,
+      stdout/stderr redirection). This is safe because workers are meant to run
+      as isolated subprocesses.
+    - Cache state is cleared per task (via :class:`WorkerRun`) to avoid leaking
+      readers/arrays across tasks or directories.
+    """
 
     __init__ = WorkerHelpers._init
 
