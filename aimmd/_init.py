@@ -37,11 +37,11 @@ def initialize():
     _config.GROMACS = shutil.which('gmx') or shutil.which('gmx_mpi')
     if _config.GROMACS is None:
         raise EnvironmentError(
-            'GROMACS exec not found in PATH. Please install GROMACS and '
-            'ensure \'gmx\' or \'gmx_mpi\' is accessible in your environment.'
-        )
-    _config.WORKER = str(
-        PosixPath(__file__).resolve().parent / "worker" / "run.py")
+            "GROMACS exec not found in PATH. Please install GROMACS and "
+            "ensure 'gmx' or 'gmx_mpi' is accessible in your environment.")
+    _config.PARENT = str(PosixPath(__file__).resolve().parent)
+    _config.WORKER = f'{_config.PARENT}/worker/run.py'
+    _config.EM_MDP = f'{_config.PARENT}/engines/em.mdp'
     
     ##########
     # caches #
