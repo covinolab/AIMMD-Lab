@@ -43,9 +43,9 @@ See also
 - :meth:`aimmd.pathensemble.PathEnsemble.project`
 """
 
-# hash: public API surface for the pathensemble package
-# hash: PathEnsemble is a thin aggregator of mixins; the real implementation
-#       lives in the private modules imported below.
+# public API surface for the pathensemble package
+# PathEnsemble is a thin aggregator of mixins; the real implementation
+# lives in the private modules imported below.
 
 from ._io import PathEnsembleIO
 from ._magic import PathEnsembleMagic
@@ -70,43 +70,67 @@ class PathEnsemble(
     PathEnsembleReport
 ):
     """
-    Collection of :class:`aimmd.path.Path` objects.
+    Collection of :class:`~aimmd.path.Path` objects with vectorized operations.
 
-    This class is composed of mixins. The canonical initializer is provided by
-    :meth:`aimmd.pathensemble._helpers.PathEnsembleHelpers._init` and is aliased
-    here as `__init__`.
+    A :class:`PathEnsemble` is a container for paths used throughout AIMMD to
+    represent:
 
-    Parameters
-    ----------
-    *paths
-        Any mix of:
-        - :class:`aimmd.path.Path` instances,
-        - :class:`aimmd.pathensemble.PathEnsemble` instances,
-        - iterables of those,
-        - strings / paths pointing to files understood by
-          :func:`aimmd.path.utils.get_fnames` (e.g., a text file listing
-          trajectories or a glob-like input depending on your `Path` logic).
-    find_shooting_indices : bool, default=False
-        If True, pass ``shooting_index='find'`` into `Path` initialization
-        (see Path implementation). This is typically used when you have path
-        trajectories but shooting indices were not stored.
-    pipeline : tuple, default=()
-        Optional compute pipeline forwarded to path initialization. This is used
-        to ensure consistent descriptor/value computation across the ensemble.
+    - shooting chains (ordered sequences of sampled paths),
+    - selection pools (bounded candidate sets for shooting-point selection),
+    - free-trajectory ensembles (collections of long unbiased trajectories),
+    - merged or extracted ensembles used for analysis and training.
 
-    Attributes
-    ----------
-    _paths : list[aimmd.path.Path]
-        Underlying list of stored paths (mutated by most methods).
+    In addition to list-like behavior, PathEnsemble provides convenience methods
+    that operate *across* all member paths, often in a vectorized / batched way:
+
+    - compute per-frame quantities (states/descriptors/values) for the ensemble,
+    - project values into bins and estimate densities,
+    - reweight paths according to sampling schemes,
+    - extract subsets by path type patterns or by end-state transitions,
+    - merge paths into a single frame collection (for sweep shooting and
+      reporting).
+
+    Representation
+    -------------
+    An ensemble stores paths (typically in a list-like attribute such as
+    ``_paths``). Many performance-critical operations may operate directly on
+    this internal structure.
+
+    Each path carries segment metadata and refers to trajectory files on disk.
+    Ensemble methods therefore often interact with the global caches:
+
+    - ``aimmd._config.MDA_CACHE`` for trajectory readers,
+    - ``aimmd._config.NPY_CACHE`` for cached `.npy` arrays.
+
+    Typical usage in AIMMD
+    ----------------------
+    Shooting
+        The worker maintains a shooting chain as a PathEnsemble. New paths are
+        appended via registration utilities. A separate PathEnsemble is used as
+        the selection pool.
+
+    Training
+        A PathEnsemble assembled from current chains and free trajectories is
+        used to compute values and to fit the committor model. Projection and
+        reweighting are performed on the ensemble to produce adaptive bins and
+        densities.
+
+    Validation / sweep
+        A merged ensemble (frame collection) is used to deterministically select
+        frames and repeatedly shoot from them for brute-force committor
+        estimation.
 
     Notes
     -----
-    Many convenience attributes are exposed via `__getattr__`, which forwards to
-    a per-path `_get` routine. For bulk "vectorized" access, prefer the
-    properties in :class:`aimmd.pathensemble._properties.PathEnsembleProperties`.
+    - Many ensemble operations assume that per-path cached arrays (states,
+      descriptors, values) exist or can be computed on demand, and that their
+      frame ordering matches the path’s frame ordering.
+    - Some methods intentionally mutate paths in place (e.g., attaching weights,
+      updating cached attributes). This is acceptable in worker contexts where
+      the ensemble is treated as a live view of the filesystem-backed run state.
     """
-
-    # hash: bind the mixin initializer as the class initializer
+    
+    # bind the mixin initializer as the class initializer
     __init__ = PathEnsembleHelpers._init
 
 
