@@ -1,6 +1,6 @@
 """
 aimmd.execute.threads
-=====================
+====================
 
 Thread-based task executor implementation.
 
