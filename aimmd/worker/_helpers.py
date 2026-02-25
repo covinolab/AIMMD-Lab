@@ -54,7 +54,7 @@ class WorkerHelpers(ABC):
         if isinstance(params, Params):
             self.params = params
         else:
-            self.params = Params.load(params, initial_paths=None)
+            self.params = Params(params, initial_paths=None, save=False)
         self.directory = self._directory = directory
         self.localid = int(localid)
         self.cpus_per_task = cpus_per_task
