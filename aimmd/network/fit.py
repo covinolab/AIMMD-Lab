@@ -648,7 +648,8 @@ def fit(params,
                 d = [descriptors['data_list'][i] for i in indices]
             d = Batch.from_data_list(d).to(device).to_dict()
 
-        d = torch.flatten(d, start_dim=1)
+        if not graphs:
+            d = torch.flatten(d, start_dim=1)
         r = torch.tensor(results[indices], dtype=dtype, device=device)
         
         # define loss function
@@ -667,8 +668,8 @@ def fit(params,
                 q_bis = q[:,0].detach()
                 
                 loss = torch.sum(q_bis ** 2 *
-                    (r[:, 0] * to2_contribution +
-                    r[:, 1] * to1_contribution))
+                    (r[:, 0] * to1_contribution +
+                    r[:, 1] * to2_contribution))
                 
                 # normalize
                 loss /= torch.sum(q_bis ** 2 * (r[:, 0] + r[:, 1]) *

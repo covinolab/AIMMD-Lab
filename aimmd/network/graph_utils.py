@@ -18,7 +18,7 @@ try:
     import sqlite3
     from mlcolvar.data.dataset import DictDataset
     from mlcolvar.data.graph.utils import create_dataset_from_configurations
-    from mlcolvar.utils.io import (_configures_from_trajectory
+    from mlcolvar.utils.io import (_configures_from_trajectory,
                                    _z_table_from_top,
                                    _names_from_top)
     import multiprocessing
@@ -27,7 +27,7 @@ try:
     import MDAnalysis.transformations as transformations
 except ImportError as e:
     raise ImportError(f"Module {e.name} not found. "
-                      f"The module 'aimmd.network.graph_utils'
+                      f"The module 'aimmd.network.graph_utils'"
                       f"requires additional dependencies.") from e
 
 def atom_coordinate_descriptors_function(trajectory: mda.coordinates.timestep.Timestep, verbose=False) -> np.ndarray:
