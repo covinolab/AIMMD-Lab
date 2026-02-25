@@ -111,6 +111,8 @@ class ParamsHelpers(ABC):
             
             # initial paths (converted in real-time)
             elif name == 'initial_paths':
+                self.__dict__['_reload_initial_paths'] = \
+                    not isinstance(value, (Path, PathEnsemble))
                 initial_paths = PathEnsemble(value)
                 if value and not initial_paths:
                     raise TypeError(
