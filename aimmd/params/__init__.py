@@ -50,18 +50,27 @@ class Params(
     ParamsPaths,
     ParamsIO):
     """
-    Collect all parameters for an AIMMD run and analysis.
+    Central configuration object for AIMMD runs.
 
-    This object is the central configuration container in AIMMD. It supports:
-    - declarative parameter fields (dataclass fields),
-    - strict validation when assigning or updating fields,
-    - loading from a Python parameter script,
-    - saving back to a Python script with embedded source for callables.
+    A :class:`Params` instance is the single source of truth for a run’s
+    configuration: paths, engine settings, analysis pipeline, neural-network
+    committor model, sampling controls, and scheduler metadata.
 
-    Important required fields
-    -------------------------
-    - `states_function` must be provided by the user (no default).
-    - `initial_paths` are required for running AIMMD (to initialize the ensemble).
+    In the AIMMD architecture, Params is consumed by both:
+
+    - :class:`~aimmd.launcher.Launcher`, which uses it to build execution plans
+      and write run directory layouts, and
+    - :class:`~aimmd.worker.Worker`, which uses it to execute tasks such as
+      ``shoot``, ``free``, and ``train``.
+
+    Typical responsibilities
+    ------------------------
+    - define end states and state processing conventions,
+    - define the analysis pipeline (states/descriptors/values),
+    - provide engine integration hooks (initialize_simulation/run_simulation),
+    - hold the committor model (e.g., torch network) and training routine,
+    - persist and reload run state (paths, bins/densities, network snapshots),
+    - carry scheduler hints (e.g., ``slurm_header``).
 
     Usage
     -----
@@ -80,9 +89,9 @@ class Params(
 
     Notes
     -----
-    The actual constructor is provided by `ParamsHelpers._init` and is assigned
-    below to preserve a clean API while keeping initialization logic in the
-    helper mixin.
+    The concrete API (attributes and helper methods) is defined across the
+    Params mixins in :mod:`aimmd.params`. See the documented Params submodules
+    for attribute-level semantics.
     """
 
     # Alias mixin implementations into the final public class.
