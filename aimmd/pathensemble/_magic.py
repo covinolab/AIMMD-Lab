@@ -26,7 +26,6 @@ from collections.abc import Iterable
 from .utils import get_paths
 from ..path import Path
 from ._properties import PathEnsembleProperties
-from ..core.utils import get_local_index
 
 
 class PathEnsembleMagic(ABC):
