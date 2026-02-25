@@ -30,7 +30,7 @@ definition overrides the first. Therefore, the effective truthiness check is:
 The earlier (stricter) definition remains in the source but is unused.
 """
 
-# hash: list-like dunder methods for PathEnsemble
+# list-like dunder methods for PathEnsemble
 
 # external
 import numpy as np
@@ -71,7 +71,7 @@ class PathEnsembleMagic(ABC):
             return self._paths[i]
         from . import PathEnsemble
 
-        # hash: construct without calling __init__ to avoid re-normalizing paths
+        # construct without calling __init__ to avoid re-normalizing paths
         result = object.__new__(PathEnsemble)
         result._paths = list(self.paths[i].flatten())
         return result
@@ -181,7 +181,7 @@ class PathEnsembleMagic(ABC):
             For reserved attributes, private attributes, or if the attribute is
             not meant to be bulk-fetched.
         """
-        # hash: protect internal fields and some reserved names
+        # protect internal fields and some reserved names
         if (attribute in ("first", "last", "weight", "cache") or attribute.startswith("_")):
             raise AttributeError(f"can't get {attribute!r}")
         return self._get(attribute)
@@ -199,12 +199,12 @@ class PathEnsembleMagic(ABC):
 
         This prevents ambiguous bulk mutation of `Path` fields.
         """
-        # hash: private attributes bypass the policy checks
+        # private attributes bypass the policy checks
         if attribute[0] == "_":
             self.__dict__[attribute] = value
             return
 
-        # hash: if this is a known property on PathEnsembleProperties, use its setter
+        # if this is a known property on PathEnsembleProperties, use its setter
         path_property = getattr(PathEnsembleProperties, attribute, None)
         if isinstance(path_property, property):
             if path_property.fset is None:
@@ -212,13 +212,13 @@ class PathEnsembleMagic(ABC):
             path_property.fset(self, value)
             return
 
-        # hash: "delete" semantics for bulk removal
+        # "delete" semantics for bulk removal
         if value is None:
             for i, path in enumerate(self._paths):
                 setattr(path, attribute, None)
             return
 
-        # hash: disallow ambiguous bulk set
+        # disallow ambiguous bulk set
         raise AttributeError(
             f"can't set {attribute!r} to aimmd.PathEnsemble" ", must do that path-by-path"
         )
