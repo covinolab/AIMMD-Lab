@@ -20,10 +20,11 @@ Terminology
 `Path.type` is used extensively here. In AIMMD it appears to be a 4-character
 string describing the relationship between:
 - the path start state,
-- the region around the shooting point,
+- the path "middle" states (those inside the path excluded the margins) 
 - the path end state,
-- and an additional flag (e.g., free/shot marker),
-where '.' may indicate an unspecified state.
+- and path shooting point's state,
+where '.' indicates an unspecified state. See `PathEnsembleProperties.type`
+for details.
 
 Filtering uses :func:`aimmd.pathensemble.utils.match_patterns`.
 """
