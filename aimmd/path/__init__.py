@@ -100,6 +100,11 @@ class Path(
     - :meth:`write` exports the frames represented by the path into a new
       trajectory file.
 
+    Parameters
+    ----------
+    The constructor is aliased to :meth:`PathHelpers._init`. See that method
+    for the full signature and meaning of path initialization arguments.
+
     Notes
     -----
     - Many AIMMD workflows assume that extension operates on forward segments
