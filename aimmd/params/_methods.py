@@ -20,6 +20,13 @@ run_simulation(...)
     - for GROMACS: calls `mdrun` via `execute_command`.
     - for toy engine: uses `ToyEngine`.
 
+minimize_energy(...)
+    Energy-minimize each frame of a trajectory using GROMACS (writes back a
+    minimized trajectory).
+
+check_if_initialized(...)
+    Check presence of required output files for initialized simulations.
+
 check_engine(...)
     Lightweight end-to-end check that the engine can initialize and run,
     producing a trajectory file.
@@ -33,13 +40,6 @@ load_bins_and_densities(...)
 
 copy()
     Shallow copy of Params (copies `__dict__`).
-
-check_if_initialized(...)
-    Check presence of required output files for initialized simulations.
-
-minimize_energy(...)
-    Energy-minimize each frame of a trajectory using GROMACS (writes back a
-    minimized trajectory).
 
 Notes
 -----
