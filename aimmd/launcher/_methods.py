@@ -145,44 +145,33 @@ class LauncherMethods(ABC):
         with open(filename, 'w') as file:
             
             # slurm header
-            file.write(f'#!/bin/bash -x\n')
+            file.write('#!/bin/bash -x\n')
             file.write(f'#SBATCH --job-name={self.params[0].name}\n')
             file.write(f'{slurm_header}\n\n')
-            file.write(f"rm -f {self.directories[0]}/.terminate\n\n")
-            
-            # srun call
-            file.write(f'# srun call\n')
-            file.write(f"srun --cpus-per-task={cpus_per_task} "
-                            f"--cpu-bind=cores bash -c '\n\n")
-            
+                        
             # default names
-            file.write(f'  # default names\n')
-            file.write(f'  PYTHON="{PYTHON}"\n')
-            file.write(f'  WORKER="{WORKER}"\n\n')
+            file.write('# default names\n')
+            file.write(f'PYTHON="{PYTHON}"\n')
+            file.write(f'WORKER="{WORKER}"\n\n')
             
-            # stop condition
-            file.write(f'  # setup stop condition\n')
-            file.write(f"  START_TIME=$(date +%s)\n")
-            file.write(f"  WALLTIME={walltime}\n\n")
-            file.write(f"  {self.job_stop_condition}\n\n")
-            
-            # cases
-            file.write(f'  # srun rank by rank\n')
-            file.write(f'  case $SLURM_PROCID in\n')
-            
-            # simulators
+            # enable job control
+            file.write('# enable job control\n')
+            file.write('set -m\n')
+
+            # launch commands
+            file.write('\n# workers')
             for i, (args, description) in enumerate(zip(*self._build())):
-                file.write(f'\n  {i})  # {description}\n')
+                file.write(f'# {description}\n')
                 args = ' '.join([f'"{arg}"'
                                  if not isinstance(arg, (bool, bool_)) else
                                  '"True"' if arg else '""' for arg in args])
-                file.write(f'    "${{PYTHON}}" "${{WORKER}}" {args} &\n')
-                file.write(f'    pids+=($!)\n')
-                file.write(f'    stop_condition "${{pids[@]}}"\n')
-                file.write(f'  ;;\n')
-            
-            # end cases with possible idle processes...
-            file.write(f'\n  *)\n')
-            file.write(f'    echo "[Worker $i] No task assigned."\n')
-            file.write(f'    ;;\n')
-            file.write(f'  esac\n\'\n')
+                file.write(f'srun --exclusive --ntasks=1 '
+                           f'--cpus-per-task={cpus_per_task} '
+                           f'--gpus-per-task={gpus_per_task} \\\n')
+                file.write(f'  "${{PYTHON}}" "${{WORKER}}" {args} &\n')
+
+            # wait until any process exits
+            file.write('\n# wait until any process exits\n')
+            file.write('wait -n\n')
+            file.write('scancel ${SLURM_JOB_ID}\n')
+            file.write('wait\n')
