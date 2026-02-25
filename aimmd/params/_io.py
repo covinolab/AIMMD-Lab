@@ -51,7 +51,6 @@ class ParamsIO(ABC):
         
         # in case of problems: restore modules and params fields
         backup_modules = sys.modules.copy()
-        backup_params = {}
         updated_fields = []
         
         try:
@@ -59,16 +58,18 @@ class ParamsIO(ABC):
             from . import Params
             if isinstance(self_or_cls, Params):
                 self = self_or_cls
+                backup_dict = self.__dict__.copy()
                 if filename and self.parent != folder:
                     raise TypeError(
-                        f"New params' filename \"{path}\" must be "
-                        f"in the same folder associated to this"
-                        f"aimmd.Params object: \"{self.parent}\"")
+                        f"new params' filename '{path}' must be "
+                        f"in '{self.parent}', the same folder "
+                        f"associated to this aimmd.Params object")
             else:
                 self = object.__new__(Params)
                 self.__dict__['_universe'] = None
                 self.__dict__['_default_values_function'] = False
                 self.__dict__['_reload_initial_paths'] = True
+                backup_dict = {}
             
             # fields with already present values or their default
             fields = {name:
@@ -100,26 +101,8 @@ class ParamsIO(ABC):
             # update fields with kwargs
             for name, value in kwargs.items():
                 if name in fields:
-                    
-                    # backup old values
-                    if hasattr(self, name):
-                        backup_params[name] = fields[name]
-                    
-                    # get new values
                     fields[name] = value
                     updated_fields.append(name)
-                
-                # special fields
-                if name == 'initial_paths':
-                    if isinstance(value, Path):
-                        fields[name] = [value]
-                        self.__dict__['_reload_initial_paths'] = False
-                    elif isinstance(value, PathEnsemble):
-                        fields[name] = value._paths
-                        self.__dict__['_reload_initial_paths'] = False
-                    else:
-                        fields[name] = get_paths(value)
-                        self.__dict__['_reload_initial_paths'] = True
             
             # execute the file and extract fields...
             num_fields_from_filename = 0
@@ -194,10 +177,6 @@ class ParamsIO(ABC):
                     # ...only if not assigned already
                     if name in fields and name not in kwargs:
                         
-                        # backup old values
-                        if hasattr(self, name):
-                            backup_params[name] = fields[name]
-                        
                         # get new values
                         fields[name] = module.__dict__[name]
                         updated_fields.append(name)
@@ -259,8 +238,7 @@ class ParamsIO(ABC):
             sys.modules = backup_modules
             
             # restore attributes
-            for name, value in backup_params.items():
-                self.__dict__[name] = value
+            self.__dict__.update(backup_dict)
             
             raise exception
         
