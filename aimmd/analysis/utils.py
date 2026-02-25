@@ -1,5 +1,54 @@
 """
-...
+aimmd.analysis.utils
+===================
+
+Numerical analysis helpers for AIMMD.
+
+This module contains standalone functions used by trainer and pathensemble
+analysis code. The functions here are intentionally lightweight and operate
+on NumPy arrays and PathEnsemble-like objects.
+
+Main groups of utilities
+------------------------
+Bins and grid helpers
+    - :func:`compute_bins` constructs 1D bin edges (optionally including
+      marginal bins at ``-inf`` and/or ``+inf``).
+    - :func:`bin_centers` returns bin centers and supports bins including
+      ``±inf``.
+    - :func:`merge_marginal_bins` merges low-occupancy marginal bins.
+
+Extremes used to define bins
+    - :func:`find_extremes_with_free_simulations` finds left/right extremes
+      using free excursions.
+    - :func:`find_extremes_with_transitions` finds left/right extremes using
+      transition paths.
+
+Simple statistics
+    - :func:`binomial_mean_and_confidence_interval` computes a binomial mean
+      and a two-sided confidence interval using the Beta distribution.
+
+2D committor solver
+    - :func:`solve_committor_by_relaxation` solves a committor field on a 2D
+      grid by relaxation (finite-difference discretization).
+
+Dependencies and expectations
+-----------------------------
+- These functions assume the AIMMD PathEnsemble conventions:
+  `pathensemble.types()` returns per-path type strings and `pathensemble[...]`
+  supports boolean mask selection.
+- Pattern matching on types is delegated to
+  :func:`aimmd.pathensemble.utils.match_patterns`.
+- :func:`solve_committor_by_relaxation` uses ``tqdm`` but this module does not
+  import it. The function will raise ``NameError`` unless ``tqdm`` is available
+  in the calling scope. This behavior is preserved by design (documentation-only
+  pass).
+
+Notes
+-----
+The bin construction functions assume that the reaction coordinate values
+order states consistently (as in AIMMD training). They produce bins that are
+robust to outliers by using explicit cutoffs and by falling back from free
+excursion statistics to transition statistics when needed.
 """
 
 # external
@@ -15,6 +64,51 @@ from ..pathensemble.utils import match_patterns
 def find_extremes_with_free_simulations(pathensemble,
                                         states='ARB',
                                         source='values'):
+    """
+    Estimate bin extremes using free excursions.
+
+    This helper is used by :func:`compute_bins` to obtain left/right limits for
+    a bin range using only *free* excursions originating from each terminal state.
+
+    It extracts two subsets:
+
+    - free excursions originating from `a` and returning to `a`
+      (pattern ``f'{a}{r}.{a}'``)
+    - free excursions originating from `b` and returning to `b`
+      (pattern ``f'{b}{r}.{b}'``)
+
+    From these, it computes:
+    - `e1`: sorted per-path maxima (descending) from `a`-side free excursions
+    - `e2`: sorted per-path minima (ascending) from `b`-side free excursions
+
+    The index used is `n_transitions + 1`, where `n_transitions` counts paths
+    matching either direction of the requested transition.
+
+    Parameters
+    ----------
+    pathensemble : PathEnsemble-like
+        Ensemble supporting:
+        - ``types()`` returning per-path type strings
+        - boolean-mask selection ``pathensemble[mask]``
+        - per-path extrema selectors ``max`` and ``min``.
+    states : str, default='ARB'
+        Triplet of state labels `(a, r, b)`:
+        - `a`: left terminal state
+        - `r`: reactive region label
+        - `b`: right terminal state
+    source : str, default='values'
+        Name of the per-frame stream used when computing per-path extrema.
+
+    Returns
+    -------
+    (float, float)
+        (begin, end) suggested extremes for binning.
+
+    Notes
+    -----
+    If no free excursions are present on a side, the corresponding list is
+    replaced with ``[-inf]`` or ``[+inf]`` to keep the selection logic stable.
+    """
     """begin, end used for computing bins"""
     
     # get types and states
@@ -42,7 +136,46 @@ def find_extremes_with_free_simulations(pathensemble,
 def find_extremes_with_transitions(pathensemble,
                                    states='ARB',
                                    source='values'):
-    """begin, end used for computing bins"""
+    """
+    Estimate bin extremes using transition trajectories.
+
+    This helper is used by :func:`compute_bins` when free excursions do not give
+    reasonable bounds (or when explicitly requested via `find_extremes_with`).
+
+    It identifies transition paths in either direction (A→B or B→A) using
+    type-pattern matching and then collects representative boundary-adjacent
+    values from those paths:
+
+    - For paths with type prefix equal to `states` (A→R→B):
+        - begin uses ``_position(1, source)`` (near the start, excluding boundary)
+        - end   uses ``_position(-2, source)`` (near the end, excluding boundary)
+
+    - For the reverse direction:
+        - begin/end are swapped accordingly.
+
+    The returned extremes are the medians over the collected values.
+
+    Parameters
+    ----------
+    pathensemble : PathEnsemble-like
+        Ensemble supporting:
+        - ``types()`` returning per-path type strings
+        - integer indexing returning Path objects
+        - Path method ``_position(i, source)``.
+    states : str, default='ARB'
+        Triplet `(a, r, b)` defining which transitions are considered.
+    source : str, default='values'
+        Stream name passed to ``_position``.
+
+    Returns
+    -------
+    (float, float)
+        (begin, end) suggested extremes for binning.
+
+    Notes
+    -----
+    If no transition trajectories are present, returns ``(0., 0.)``.
+    """
     
     # get types and states
     types = pathensemble.types()
@@ -64,7 +197,7 @@ def find_extremes_with_transitions(pathensemble,
     
     return np.median(begin), np.median(end)
     
-# functions
+
 def compute_bins(pathensemble,
                  nbins,
                  cutoff_max=20.,
@@ -74,10 +207,66 @@ def compute_bins(pathensemble,
                  states='ARB',
                  marginal_bins='all'):
     """
-    nbins including marginal
-    find_extremes_with: str, either "free" or "transitions"
-    Cut bins only in case of "transitions" being used.
-    Assumes "states" are ordered.
+    Construct 1D bin boundaries for projection/analysis.
+
+    This function returns a 1D array of bin *boundaries* of length ``nbins + 1``.
+    The finite (non plus or minus inf) part of the grid spans the interval
+    ``[begin, end]``, where (begin, end) are inferred from the ensemble using one
+    of the extreme estimators:
+
+    - :func:`find_extremes_with_free_simulations` (default)
+    - :func:`find_extremes_with_transitions` (fallback or explicit)
+
+    The returned boundaries are then optionally given *marginal* outer bins by
+    replacing the first and/or last boundary with ``-inf`` and/or ``+inf``.
+    The finite interior boundaries are still uniformly spaced between `begin`
+    and `end`.
+
+    Parameters
+    ----------
+    pathensemble : PathEnsemble-like
+        Ensemble used to infer the finite interval.
+    nbins : int
+        Number of bins (including marginal bins if requested).
+        The returned array has length ``nbins + 1``. If ``nbins <= 0``,
+        returns an empty array.
+    cutoff_max : float, default=20.
+        Hard clip for the finite interval. If the free-based extremes exceed
+        this range, transition-based extremes are used and clipped.
+    cutoff_min : float, default=0.5
+        Inner clip to keep the finite interval away from zero:
+        `begin <= -cutoff_min` and `end >= +cutoff_min` when possible.
+    find_extremes_with : {'free', 'transitions'}, default='free'
+        Preferred heuristic for obtaining (begin, end). Even when 'free' is
+        requested, transition-based extremes are used if the free-based bounds
+        fall outside the configured cutoffs.
+    source : str, default='values'
+        Passed to the extreme estimators.
+    states : str, default='ARB'
+        Triplet `(a, r, b)` used by the extreme estimators.
+    marginal_bins : {'all'} or str, default='all'
+        Which marginal bins to include by replacing outer boundaries:
+
+        - 'all' : replace both ends (first boundary = -inf, last boundary = +inf)
+        - string containing `a` : replace the left boundary with -inf
+        - string containing `b` : replace the right boundary with +inf
+
+        The replacement changes the *outermost* bin to be unbounded. The finite
+        interior bins still span [begin, end].
+
+    Returns
+    -------
+    numpy.ndarray
+        1D array of bin boundaries. If marginal bins are enabled, the first and/or
+        last element is ±inf. Otherwise all boundaries are finite.
+
+    Notes
+    -----
+    Implementation detail:
+    - The number of *finite* boundaries generated by ``np.linspace`` is
+      ``nbins + 1 - left - right`` where `left/right` indicate marginal bins.
+    - If marginal bins are requested, `-inf` and/or `+inf` are then inserted as
+      the first/last boundary, replacing the corresponding finite boundary.
     """
     
     if nbins <= 0:
@@ -95,7 +284,7 @@ def compute_bins(pathensemble,
     elif b in marginal_bins:
         right = True
 
-    # ===reactive region
+    # reactive region
     if nbins == 1 and left and right:
         return np.array([-inf, +inf])
 
@@ -126,12 +315,6 @@ def compute_bins(pathensemble,
     else:
         end = np.clip(end2, +cutoff_min, +cutoff_max)
     
-    # # further correction (try to avoid empty bins)
-    # if e1[-1] > begin:
-    #     begin = np.clip(e1[-1], -cutoff_max, -cutoff_min)
-    # if e2[-1] < end:
-    #     end = np.clip(e2[-1], +cutoff_min, +cutoff_max)
-
     bins = np.linspace(begin, end, nbins + 1 - left - right)
     if left:
         bins = np.append([-inf], bins)
@@ -143,7 +326,24 @@ def compute_bins(pathensemble,
 
 
 def bin_centers(bins):
-    """Also with +- inf"""
+    """
+    Return bin centers, supporting `±inf` marginal bins.
+
+    Parameters
+    ----------
+    bins : array-like
+        1D array of bin boundaries of length >= 2. Bin i spans [bins[i], bins[i+1]).
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of length ``len(bins) - 1`` with one center per bin.
+
+    Notes
+    -----
+    For bins with infinite boundaries, finite extrapolated centers are produced
+    using linear extrapolation from the nearest finite bins.
+    """
     bins = np.asarray(bins)
     length = len(bins)
     if length < 2:
@@ -172,33 +372,39 @@ def bin_centers(bins):
 
 def merge_marginal_bins(bins, *values, min_values=3):
     """
-    Merge marginal histogram bins containing fewer than
-    `min_values` data points, for each data set "values"
-    
+    Merge low-occupancy marginal bins.
+
+    This helper is used to stabilize analysis when the outermost bins are too
+    sparse. The merging is conservative: it only merges from the *left edge*
+    and from the *right edge* until every marginal bin contains at least
+    `min_values` counts for all datasets provided.
+
+    The occupancy criterion is computed from the per-dataset histograms:
+    ``np.histogram(v, bins=bins)[0]`` and then taking the minimum over datasets.
+
     Parameters
     ----------
     bins : np.ndarray
-        Array of shape (k+1,) containing bin boundaries.
-        Bin i spans [bins[i], bins[i+1]).
-    values : list of np.ndarray
-        list of 1D array of raw data points.
-    min_n_values : int
-        Minimum number of values for each data list required for a bin
-        to remain independent.
-    
-    Merging rule
-    ------------
-    From left and from right, up until there are enough data.
-    
+        1D array of bin boundaries of shape (k+1,). Bin i spans [bins[i], bins[i+1]).
+    *values : np.ndarray
+        One or more 1D arrays of raw samples. Each provided dataset contributes
+        its histogram to the "minimum occupancy" decision.
+    min_values : int, default=3
+        Minimum required histogram count in each marginal bin.
+
     Returns
     -------
     new_bins : np.ndarray
         Updated bin boundaries after merging.
     merged_bin_counts : np.ndarray
-        Number of original bins merged into each new bin.
-        Such that you can give right selection weight.
+        Number of original bins merged into each new bin. This can be used to
+        scale selections consistently when downstream code depends on the
+        original binning density.
+
+    Notes
+    -----
+    The function always preserves the first and last boundary of `bins`.
     """
-    
     histograms = np.array([np.histogram(v, bins=bins)[0]
                            for v in values]).min(axis=0)
 
@@ -221,6 +427,32 @@ def merge_marginal_bins(bins, *values, min_values=3):
 
 
 def binomial_mean_and_confidence_interval(r1, r2, alpha=0.95):
+    """
+    Binomial mean and two-sided confidence interval.
+
+    Parameters
+    ----------
+    r1, r2 : int
+        Two outcome counts. The code interprets:
+        - n = r1 + r2
+        - k = r2
+        and computes the confidence interval for p = k/n.
+    alpha : float, default=0.95
+        Confidence level.
+
+    Returns
+    -------
+    (float, float, float)
+        (p, lower, upper), where p = k/n and (lower, upper) is a two-sided
+        beta-based confidence interval.
+
+    Notes
+    -----
+    This uses the standard Beta quantile construction:
+    - lower = Beta(a/2; k, n-k+1)
+    - upper = Beta(1-a/2; k+1, n-k)
+    with special-case handling for k=0 and k=n.
+    """
     n = r1 + r2
     if not n:
         return nan, nan, nan
@@ -244,22 +476,44 @@ def binomial_mean_and_confidence_interval(r1, r2, alpha=0.95):
 def solve_committor_by_relaxation(
         X, Y, Fx, Fy, A, B, P0, progress=[5, 4, 2, 1]):
     """
-    Compute committor in 2D with relaxation method (Brownian dynamics).
+    Compute committor in 2D with a relaxation method.
+
+    This routine solves the steady-state committor equation on a 2D grid using
+    a finite-difference discretization and iterative relaxation.
+
+    The method enforces:
+    - P=0 on region A
+    - P=1 on region B
+    - reflecting (zero-gradient) boundary conditions at the grid edges
 
     Parameters
     ----------
-    X: x-coordinates on a 2D grid
-    Y: y-coordinates on a 2D grid
-    Fx: force's x component on a 2D grid
-    Fy: force's y component on a 2D grid
-    A: points in A on a 2D grid
-    B: points in B on a 2D grid
-    P0: initial guess for committor on a 2D grid
-    progress: iteratively increase the resolution based on the vector's values
+    X, Y : np.ndarray
+        2D arrays defining the grid coordinates. Shapes must match.
+    Fx, Fy : np.ndarray
+        2D arrays of drift/force components on the same grid.
+    A, B : np.ndarray of bool
+        Boolean masks on the grid indicating the A and B regions.
+    P0 : np.ndarray
+        Initial guess for the committor field. Updated in-place by coarse-to-fine
+        passes.
+    progress : list[int], default=[5, 4, 2, 1]
+        Coarsening schedule. For each `split`, the solver runs on the subgrid
+        ``[::split, ::split]`` and, if `split>1`, interpolates back to the full
+        grid before continuing at higher resolution.
 
     Returns
     -------
-    P0: committor estimate
+    np.ndarray
+        Final committor estimate on the full grid.
+
+    Notes
+    -----
+    - This function uses ``tqdm(progress)`` but does not import tqdm.
+      The caller must ensure that `tqdm` is available in scope.
+    - The update rule clamps P to [0,1] each iteration and enforces boundary
+      conditions after each sweep.
+    - When refining, interpolation uses :class:`scipy.interpolate.RegularGridInterpolator`.
     """
     for split in tqdm(progress):
         X1 = X[::split, ::split]
