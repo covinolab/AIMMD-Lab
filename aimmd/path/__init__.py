@@ -50,6 +50,66 @@ class Path(
     PathPositions,
     PathCompute,
     PathIO):
+    """
+    Trajectory-backed path object with segment-aware frame indexing.
+
+    A :class:`Path` represents a sequence of frames assembled from one or more
+    (possibly not contiguous) trajectory *segments* on disk. It is the basic
+    unit manipulated by AIMMD path sampling:
+
+    - workers incrementally extend it while a simulation is running,
+    - shooting tasks slice and concatenate it to assemble new paths,
+    - analysis tasks compute and cache per-frame series (states, descriptors,
+      values) aligned with the path frames.
+
+    Storage model
+    -------------
+    A Path stores an ordered list of trajectory segments:
+
+    - ``_fnames`` : list[str]
+      One filename per segment (trajectory file path).
+    - ``_first`` / ``_last`` : list[int]
+      Per-segment local frame bounds (inclusive). A segment may be forward
+      (``first <= last``) or backward (``first > last``).
+
+    The global path frame index space is the concatenation of per-segment
+    intervals in the order stored in ``_fnames``. Most operations treat the path
+    as a linear sequence of frames, hiding the segment structure from callers.
+
+    Caching and derived series
+    --------------------------
+    Per-frame quantities associated with a path (e.g., ``states``,
+    ``descriptors``, ``values``) are commonly cached in `.npy` files derived
+    from the trajectory filename. These cached arrays are assumed to be aligned
+    with trajectory *frames* and are subset/concatenated according to the path’s
+    segment slices.
+
+    In AIMMD, trajectory readers are obtained through a global MDAnalysis reader
+    cache (``aimmd._config.MDA_CACHE``). Methods that mutate the underlying
+    trajectory files should evict affected entries from that cache.
+
+    Key operations and semantics
+    ----------------------------
+    - Slicing returns a new Path describing the corresponding subsequence of
+      frames, preserving segment semantics and direction.
+    - Concatenation (``p + q``) returns a new Path that is the frame-wise
+      concatenation of the two paths (typically used to join backward and
+      forward segments in shooting).
+    - :meth:`extend` mutates the path by appending frames discovered on disk,
+      and is the core primitive used while a simulation is running.
+    - :meth:`write` exports the frames represented by the path into a new
+      trajectory file.
+
+    Notes
+    -----
+    - Many AIMMD workflows assume that extension operates on forward segments
+      only (monotonic frame growth within each segment). Backward segments may
+      exist as a *representation* (e.g., reversed slices) but are typically not
+      extended in place.
+    - The path object is intentionally lightweight: it stores indexing metadata
+      and filenames, while heavy data access is delegated to cached readers and
+      computed arrays.
+    """
     
     __init__ = PathHelpers._init
 
