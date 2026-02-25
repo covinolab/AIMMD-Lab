@@ -262,15 +262,16 @@ class ParamsHelpers(ABC):
                 if self._reload_initial_paths:
                     path = Path(path.fname)
                     path.states = path.compute(self.states_function)
-                    split_path = path.split()
-                    transitions = np.flatnonzero(
-                        split_path.types(self.states, self.states[::-1]))
-                    if not len(transitions):
+                    transition_found = False
+                    for path in path.split():
+                        if path.type in (self.states, self.states[::-1]):
+                            transition_found = True
+                            break
+                    if not transition_found:
                         types = ", ".join([t[:3] for t in split_path.types()])
                         raise TypeError(f'the initial trajectory {path.fname!r} '
                             f'has no {self.states!r} transitions '
                             f'(path types: {types})')
-                    path = split_path[transitions[0]]
                 elif not path.type[:3] in (self.states, self.states[::-1]):
                     raise TypeError(f'the initial trajectory {path.fname!r} '
                             f'is not an {self.states!r} transition '
