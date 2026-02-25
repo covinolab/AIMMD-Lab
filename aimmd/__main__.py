@@ -1,34 +1,40 @@
 """
 AIMMD multiprocessing entry point.
 
-This module exists so that ``python -m aimmd`` is a valid invocation and, more
-importantly, so that ``multiprocessing.spawn`` can safely re-execute the main
-module without accidentally triggering heavy side effects or user code.
+This module exists so that Python's multiprocessing "spawn" start method can
+safely re-execute the package entry point.
 
-Context
--------
-On platforms and configurations that use the "spawn" start method, Python starts
-a fresh interpreter and imports the main module. Providing a minimal, stable
-``aimmd.__main__`` helps avoid import-time surprises.
+Why this file exists
+--------------------
+On some platforms and configurations, multiprocessing uses the "spawn" method
+to start child processes. In that case, Python imports the main module in the
+new interpreter. Having a lightweight, import-safe entry point avoids:
 
-Current behavior
-----------------
-The entry point intentionally does nothing. AIMMD's functional entry points are
-expected to live elsewhere (e.g., CLI wrappers or higher-level launchers).
+- executing heavyweight AIMMD imports at spawn time,
+- side effects during interpreter bootstrap,
+- accidental re-initialization of global state.
+
+Design
+------
+- `main()` intentionally does nothing.
+- Real work is expected to be triggered from other modules (e.g., Worker,
+  Launcher, scripts) that are explicitly invoked by the user.
+
+Notes
+-----
+If you ever need a CLI in the future, this file is a safe place to parse
+arguments and dispatch, provided it remains spawn-friendly (minimal imports
+at module scope).
 """
 
 def main():
     """
     Minimal entry point for ``python -m aimmd``.
-
-    Notes
-    -----
-    This is intentionally a no-op. Its primary purpose is compatibility with
-    multiprocessing spawn semantics.
+    Intentionally empty: keep multiprocessing spawn re-import cheap and safe.
+    Real execution is orchestrated by AIMMD components invoked elsewhere.
     """
-    # nothing to do here – real work happens elsewhere
     pass
 
 if __name__ == "__main__":
-    # Standard module execution guard: required for multiprocessing spawn safety.
+    # Standard guard: prevents accidental execution on import.
     main()
