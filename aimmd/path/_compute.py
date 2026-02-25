@@ -1,5 +1,72 @@
 """
-...
+aimmd.path._compute
+==================
+
+Batch computation and caching utilities for :class:`aimmd.path.Path`.
+
+This module defines :class:`~aimmd.path._compute.PathCompute`, a mixin that
+implements the high-level `Path.compute(...)` method.
+
+Core responsibilities
+---------------------
+- Evaluate a user-supplied `function` on per-frame data extracted from a Path.
+- Optionally write computed results into per-trajectory `.npy` cache files
+  (one file per `(trajectory file, target)` pair).
+- Support incremental computation:
+  - skip frames that already have cached target values,
+  - optionally skip frames based on `conditions`.
+- Support chunked evaluation (`batch_size`) to reduce Python overhead and
+  control memory usage.
+
+Terminology
+-----------
+- **source**:
+  Name of the time series used as input to `function`.
+  Common sources include:
+  - 'reader' (MDAnalysis reader slice; function is called per-timestep),
+  - 'frames' (list of timesteps),
+  - 'positions', 'coordinates', 'velocities', 'times', 'dimensions',
+  - any other cached attribute stored as `.npy` (loaded via NPY_CACHE).
+
+- **target**:
+  Name of the time series that will be written to cache (e.g. 'states',
+  'values', 'descriptors', ...). If empty, no cache file is written and the
+  computed values are returned.
+
+- **conditions**:
+  Mapping `{reference_name: predicate}` where `predicate(series)` returns a
+  boolean mask. Masks are applied per file-segment `k` and combined to decide
+  which frames actually need computing.
+
+Caching model
+-------------
+Cache files are per-trajectory-file (per `fname`) and per target. The cache file
+name is produced by `get_cache_fname(fname, target)`.
+
+Skipping behavior (important)
+-----------------------------
+If `target` is provided and `overwrite=False`, this method attempts to load
+existing cached target values and skips frames that are already filled.
+
+The "filled" test depends on the target type:
+- If cached array is multidimensional: frame is considered filled if any
+  element is non-zero (`~old.any(axis=1)`).
+- If 1D and target != 'states': frame is considered filled if non-zero/True.
+- If target == 'states': frame is considered filled if the string is not ''.
+
+This convention allows sparse/incremental population of caches.
+
+Notes on termination
+--------------------
+If `worker` is provided and has a truthy attribute `termination_signal`,
+computation stops early and returns the partial result.
+
+See also
+--------
+aimmd.path._extract.PathExtract._extract
+    Low-level per-file extraction used by `compute`.
+aimmd.path.utils.compute_batch
+    Batch executor responsible for calling `function` and writing to cache.
 """
 
 # external
@@ -24,6 +91,75 @@ class PathCompute(ABC):
                 overwrite=False, mtime=None, batch_size=4096,
                 return_result=False, raise_if_error=False,
                 verbose=False, worker=None):
+        """
+        Compute a time series on this Path, optionally caching the results.
+
+        Parameters
+        ----------
+        function : callable or None, optional
+            Computation function. Its expected calling convention depends on
+            `source`:
+            - If `source == 'reader'`, `compute_batch` will feed a reader slice
+              (or timesteps) and `function` typically iterates over timesteps.
+            - Otherwise, `function` is applied to numpy-like batches of the
+              extracted source series.
+            If `function is None`, no computation is performed and the method
+            returns either `None` (if returning results) or 0 (if only updating).
+        target : str, optional
+            Name of the cache target series to write.
+            - If non-empty: results are written to a `.npy` cache file per input
+              trajectory file.
+            - If empty: nothing is written and results are returned.
+        source : str, optional
+            Input series name used to generate inputs for `function`.
+            Common values: 'reader', 'frames', 'positions', 'coordinates',
+            'velocities', 'times', 'dimensions', or the name of an existing cached
+            attribute.
+        conditions : dict, optional
+            Mapping `{reference_name: predicate}`. For each file-segment `k`,
+            the method attempts to load `reference_name` via `_extract(k, ...)`
+            and applies `predicate(...)` to obtain a boolean mask. Masks are
+            multiplied together.
+        overwrite : bool, optional
+            If False (default), try to skip frames already present in the target
+            cache file (if it exists and is recent enough).
+        mtime : float or None, optional
+            If provided, cached target files with modification time >= `mtime`
+            are considered valid for skipping. At the end, the method sets the
+            mtime of all touched target cache files to this value (via `os.utime`).
+        batch_size : int, optional
+            Maximum number of frames passed to `compute_batch` at once.
+            Controls memory usage and amortizes Python overhead.
+        return_result : bool, optional
+            If True, return computed values as a numpy array.
+            If False, return the number of computed frames (or another scalar
+            summary returned by `compute_batch`).
+            This is forced to True if `target` is empty.
+        raise_if_error : bool, optional
+            If True, propagate errors encountered when extracting condition
+            references or sources. If False, missing references simply do not
+            affect the mask (conditions are best-effort).
+        verbose : bool, optional
+            If True, show a tqdm progress bar indicating how many frames are
+            processed/skipped/computed.
+        worker : object, optional
+            Optional worker/controller object. If it has a truthy attribute
+            `termination_signal`, the method returns early.
+
+        Returns
+        -------
+        numpy.ndarray or int
+            - If `return_result` is True: numpy array of computed results
+              (concatenated over all files and selected frames).
+            - Otherwise: integer-like count accumulated from `compute_batch`.
+
+        Notes
+        -----
+        - This method operates per underlying trajectory file (`self._fnames`),
+          applying per-file masks and updating per-file cache targets.
+        - When `target` is provided, this method removes the relevant entry from
+          `NPY_CACHE` before writing to ensure subsequent reads see updates.
+        """
 
         # process "return_result"
         return_result = return_result or not target
@@ -47,6 +183,7 @@ class PathCompute(ABC):
         progress = tqdm(total=len(self), disable=not verbose)
         for k, fname in enumerate(self._fnames):
                         
+            # Cooperative termination: return partial results.
             if getattr(worker, 'termination_signal', False):
                 if return_result:
                     return np.array(result)
@@ -85,6 +222,7 @@ class PathCompute(ABC):
                         raise exception
                         
             if verbose:
+                # Frames skipped by mask are "already done" for the purpose of progress.
                 progress.update((~mask).sum())
             
             # how much do you need to compute?
