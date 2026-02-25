@@ -1,5 +1,78 @@
 """
-...
+aimmd.pathensemble._project
+===========================
+
+Histogram-based projection utilities for :class:`aimmd.pathensemble.PathEnsemble`.
+
+This module defines :class:`PathEnsembleProject`, a mixin that implements an
+ensemble-level *projection* operator:
+
+- gather per-frame data from a set of paths,
+- optionally transform it with a user function,
+- accumulate weighted counts into an N-dimensional histogram (``np.histogramdd``).
+
+The implementation is optimized for large ensembles by processing data in
+fixed-size batches. This avoids concatenating all frames into a single array.
+
+What “project” means here
+-------------------------
+Given a per-frame data stream ``x`` (for example, CV values, descriptors,
+or coordinates), ``project`` computes:
+
+    H[b0, b1, ...] = Σ_frame w(frame) * 1[ x(frame) in bin(b0,b1,...) ]
+
+where binning is defined by ``bins`` and weights are derived from:
+
+- ensemble weights (``self.weights``), optionally overridden by the caller,
+- multiplicity induced by selecting paths via ``key`` (counts of repeats),
+- optional value-range filtering (``vmin`` / ``vmax``) applied per frame.
+
+Data sources
+------------
+Per-frame input is obtained by calling the private Path extractor
+``path._extract(k, source)`` for each trajectory segment ``k``.
+
+Two common cases are supported:
+
+- ``source != 'reader'``:
+    Per-segment data are arrays and are concatenated before being passed
+    through ``function``.
+
+- ``source == 'reader'``:
+    Per-segment data are timesteps/readers and are wrapped with
+    :class:`aimmd.path.chainreader.ChainReader` so that ``function`` sees a
+    single reader-like object for the current batch.
+
+Portions of a path
+------------------
+The ``where`` argument restricts which frames of each path contribute:
+
+- ``'all'``:
+    Use the entire stored trajectory.
+
+- ``'forward'`` and ``'backward'``:
+    Use only the portion from the shooting point to an end state.
+    The shooting frame is included. Concretely, on the segment containing the
+    shooting point:
+      - forward keeps indices ``[shooting_i, ...]``
+      - backward keeps indices ``[..., shooting_i]`` (implemented as stop
+        at ``shooting_i + 1`` to include it)
+    Segments strictly “on the other side” of the shooting segment are skipped.
+
+- other values (commonly ``'internal'`` in this code base):
+    Use the portion excluding boundary frames that correspond to the end states,
+    if the path changes state at the beginning/end. This is implemented via
+    the ``start`` / ``stop`` corrections based on ``path.type``.
+
+The exact semantics of state boundaries and shooting indices are delegated to
+Path. This module only applies consistent slicing rules across segments.
+
+Notes
+-----
+- The public API returns a histogram of raw counts (``density=False``).
+- If after filtering there are no paths, the returned histogram is all zeros.
+- Errors extracting per-segment data are silently skipped (``try/except``),
+  because not all sources may be available for all paths/segments.
 """
 
 # external
@@ -12,10 +85,55 @@ from collections.abc import Iterable
 # aimmd imports
 from ..path.chainreader import ChainReader
 
+
 # project
 class PathEnsembleProject(ABC):
+    """
+    Projection operator for a PathEnsemble.
+
+    This mixin assumes the host class provides:
+    - ``__len__`` and ``__getitem__`` compatible with the `key` selection below
+    - ``self._paths`` : list[Path]
+    - ``self.weights`` : array-like of per-path weights
+    - ``self.accepted`` : boolean array-like marking accepted paths
+    """
+
     def _project_batch(self, bins, function, source,
                        batch_input, batch_weight):
+        """
+        Compute one histogram contribution from the currently buffered batch.
+
+        Parameters
+        ----------
+        bins : list[array_like]
+            Bin edges for each projected dimension (as required by
+            ``np.histogramdd``).
+        function : callable
+            Transformation applied to the batch data before binning.
+            It must accept either:
+            - a concatenated NumPy array (if ``source != 'reader'``), or
+            - a ChainReader (if ``source == 'reader'``),
+            and return an array-like object with one row per frame.
+        source : str
+            Source stream name used to decide how to assemble batch data.
+        batch_input : list
+            Buffered per-frame data chunks (arrays or timesteps/readers).
+        batch_weight : list
+            Buffered per-frame weight chunks. Each element must be 1D and
+            match the length of the corresponding element in `batch_input`.
+
+        Returns
+        -------
+        numpy.ndarray
+            Histogram counts for this batch, with shape
+            ``(len(bins[0])-1, len(bins[1])-1, ...)``.
+
+        Notes
+        -----
+        - The output of `function` is coerced to ``np.asarray`` and reshaped
+          to ``(n_frames, -1)`` to match ``np.histogramdd`` input format.
+        - Only the histogram counts are returned (index 0 of histogramdd).
+        """
         if source == 'reader':
             data = ChainReader(*batch_input)
         else:
@@ -32,6 +150,73 @@ class PathEnsembleProject(ABC):
                 where='internal', values_source='values',
                 vmin=None, vmax=None,
                 batch_size=4096, verbose=False):
+        """
+        Project per-frame data from an ensemble into an N-dimensional histogram.
+
+        Parameters
+        ----------
+        bins : array_like or list[array_like], default=[-inf, +inf]
+            Bin edges for histogramming. If a single 1D iterable is provided,
+            it is treated as one-dimensional bins. If a list of iterables is
+            provided, each element defines the bin edges for one dimension.
+        key : object, optional
+            Selection applied as ``np.arange(len(self))[key]`` to choose which
+            paths contribute. Repeated indices are allowed and are accounted
+            for by multiplying weights by their multiplicity.
+        weights : array_like, optional
+            Per-path weights overriding ``self.weights[indices]``. If not
+            provided, ensemble weights are used.
+        function : callable, default=lambda x: x
+            Transformation applied to the raw per-frame data before binning.
+            It must produce an array-like object with one row per frame.
+        source : str, default='values'
+            Name of the per-frame stream extracted from Path via
+            ``path._extract(k, source)``. If ``source == 'reader'``, per-segment
+            inputs are wrapped with :class:`ChainReader` before calling
+            ``function``.
+        where : str, default='internal'
+            Portion of each path to include. The slicing rules are described in
+            the module docstring. Typical values are 'all', 'internal',
+            'forward', 'backward'.
+        values_source : str, default='values'
+            Stream used to compute the value-range mask when ``vmin``/``vmax``
+            are provided. If it equals ``source``, the already-extracted data
+            are reused; otherwise the mask is computed from an independent
+            extraction.
+        vmin, vmax : float, optional
+            If provided, apply an inclusion mask per frame:
+
+            - both provided: keep frames with ``vmin <= values < vmax``
+            - only vmin:     keep frames with ``values >= vmin`` (vmax = +inf)
+            - only vmax:     keep frames with ``values < vmax`` (vmin = -inf)
+
+            The mask is applied to the weights (frames outside range get weight 0).
+        batch_size : int, default=4096
+            Maximum number of frames buffered before computing a partial
+            histogram contribution. Larger values reduce overhead but increase
+            memory usage.
+        verbose : bool, default=False
+            If True, show a tqdm progress bar. The progress bar tracks the
+            number of frames processed (including frames skipped due to slicing).
+
+        Returns
+        -------
+        numpy.ndarray
+            N-dimensional histogram of weighted counts.
+
+        Notes
+        -----
+        Path selection and weighting:
+        - Paths are selected via `key`, then unique indices and their counts
+          (multiplicity) are computed.
+        - Only accepted paths are kept (``self.accepted``).
+        - Paths with NaN weights or zero weights are dropped.
+        - The final per-path weight is multiplied by its multiplicity.
+
+        Missing data handling:
+        - If ``path._extract(k, source)`` fails for a segment, that segment
+          is skipped.
+        """
         
         # process bins
         if isinstance(bins, Iterable):
