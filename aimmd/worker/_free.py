@@ -1,5 +1,79 @@
 """
-...
+aimmd.worker._free
+=================
+
+"Free" simulation task for AIMMD workers.
+
+This module defines :class:`WorkerFree`, a mixin implementing the ``free`` task
+executed by :meth:`aimmd.worker.Worker.run`. Free simulations are long(er)
+unbiased trajectories started from short initial configurations and run until a
+stop criterion is met (typically reaching a target state, leaving an allowed
+state set, or exceeding a maximum length).
+
+In AIMMD terminology (as used here), a free simulation is organized as a set of
+trajectory segments written under a folder:
+
+- ``{directory}/free{t}/traj??????...``
+
+where ``t`` is a chosen "target" state label (string) and ``??????`` is a 6-digits
+trajectory index that is stepped by ``total`` to support multiple workers
+writing non-overlapping trajectory names.
+
+The core loop proceeds as follows:
+
+1) Maintain a :class:`~aimmd.path.Path` object (``trajectory``) representing the
+   current free trajectory being written by the simulation engine.
+
+2) Incrementally extend ``trajectory`` from on-disk trajectory files by calling
+   :meth:`WorkerSimulate._simulate` in ``mode='free'``. This method both ingests
+   new frames and decides whether a stop event has been reached.
+
+3) If the engine has not yet been initialized for the current ``deffnm``,
+   choose suitable *initial frames* (two frames defining a starting direction)
+   and call :meth:`~aimmd.params.Params.initialize_simulation`.
+
+4) When a stop event is detected, select initial frames from the last valid
+   crossing and advance to the next trajectory name.
+
+State conventions
+-----------------
+Let ``states = params.states`` and ``r = states[1]`` denote the "reactive"
+region/state label used by the broader AIMMD workflow.
+
+- The caller passes ``target_state`` as either:
+  - an integer index into ``params.states``, or
+  - a string state label.
+
+The helper :func:`~aimmd.core.utils.process_state` normalizes this to the string
+label ``t``.
+
+For free simulations, the allowed state set used by :meth:`_simulate` is
+constructed as ``f'{t}{r}'`` (i.e., the trajectory is allowed to visit the
+target state and the reactive state).
+
+Waiting mode
+------------
+When ``wait=True`` and the model uses more than one bin (``params.nbins > 1``),
+the worker can block until the network and the current ``bins``/``densities``
+artifacts are available on disk. This supports workflows where free simulations
+depend on a trained network / adaptive sampling state.
+
+Expected collaborators
+----------------------
+This mixin assumes:
+
+- :meth:`run` dispatch exists (from :class:`~aimmd.worker._run.WorkerRun`),
+- :meth:`_simulate` exists (from :class:`~aimmd.worker._simulate.WorkerSimulate`),
+- :attr:`initial_paths` exists (from :class:`~aimmd.worker._properties.WorkerProperties`),
+- cooperative stop checks via :attr:`must_stop` / :attr:`termination_signal`.
+
+Notes
+-----
+- The worker writes to a folder per target state (``free{t}``). This prevents
+  different target-state free runs from intermixing and simplifies downstream
+  analysis.
+- Initialization uses two frames (a minimal "direction") so engines that require
+  velocities or a previous frame can be seeded consistently.
 """
 
 # exteral
@@ -18,20 +92,67 @@ from ..pathensemble import PathEnsemble
 from ..execute.threads import ThreadExecutor
 from ..pathensemble.utils import assemble_pathensemble
 
-# worker "free" run method
+
 class WorkerFree(ABC):
 
     def free(self, target_state=0, k=0, total=1, wait=False):
         """
-        Run free simulations.
-        total: total number of simulations.
-        state: if int, params.states[i], if str: state
-        free R -> free excursions (usually from one single state)
+        Public convenience wrapper for the free-simulation task.
+
+        Parameters
+        ----------
+        target_state : int or str, optional
+            Target state for free simulations.
+
+            - If int, it is interpreted as an index into ``params.states``.
+            - If str, it is used directly as the state label.
+
+            Default is ``0``.
+        k : int, optional
+            Worker slot index within a group of ``total`` free simulations.
+            Used to compute the starting trajectory number and to select initial
+            paths deterministically when needed. Default is ``0``.
+        total : int, optional
+            Total number of concurrent free simulations across workers. The
+            current worker advances trajectory indices by ``total`` so that each
+            worker writes a disjoint subsequence of trajectory names. Default is
+            ``1``.
+        wait : bool, optional
+            If ``True`` and ``params.nbins > 1``, wait until the network and
+            current bins/densities can be loaded before starting. Default is
+            ``False``.
+
+        Returns
+        -------
+        object
+            Whatever :meth:`Worker.run` returns for the ``'free'`` task.
         """
         return self.run('free', target_state, k, total, wait)
-    
+
     def _free(self, target_state=0, k=0, total=1, wait=False):
-        
+        """
+        Internal implementation of the ``'free'`` worker task.
+
+        Parameters
+        ----------
+        target_state : int or str, optional
+            See :meth:`free`.
+        k : int, optional
+            See :meth:`free`.
+        total : int, optional
+            See :meth:`free`.
+        wait : bool, optional
+            See :meth:`free`.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        The method exits cooperatively when :attr:`must_stop` becomes ``True`` or
+        when :attr:`termination_signal` is set by the worker.
+        """
         # get/process params
         k = int(k)
         total = int(total)
@@ -52,12 +173,12 @@ class WorkerFree(ABC):
             params.restart_free_simulations_with_transitions == 'all' or
             t in params.restart_free_simulations_with_transitions)
         initial_paths = self.initial_paths
-        
+
         # create folder if not existing
         if not os.path.exists(folder):
             os.mkdir(folder)
             print(f'+++ created {folder!r}')
-        
+
         # must have network, bins, and descriptors
         if wait and params.nbins > 1:
             print(f'\nWaiting for neural network, bins, densities {now()}')
@@ -71,7 +192,7 @@ class WorkerFree(ABC):
                 except:
                     if self.termination_signal:
                         return
-        
+
         # initialize
         chains = []
         initial_frames = None
@@ -80,25 +201,25 @@ class WorkerFree(ABC):
         deffnm = f'{folder}/{name}'
         trajectory = Path()
         old_nframes = 0
-        
+
         # main cycle
         print(f"\nCurrent trajectory: {deffnm} {now()}")
         while not self.must_stop:
-            
+
             # update old trajectories while it is possible
             (stop_frame, nframes, last_state, last_length) = \
                 self._simulate(deffnm, trajectory, t, 'free', 0, extra_frames)
             simulation_completed = stop_frame is not None
-            
+
             # check mid cycle
             if self.must_stop:
                 return
-            
+
             # initialize only when necessary
             if (nframes == old_nframes and
                 not simulation_completed and
                 not params.check_if_initialized(deffnm)):
-                
+
                 # need to find initial_frames
                 if restart_with_transition or not initial_frames:
 
@@ -115,7 +236,7 @@ class WorkerFree(ABC):
 
                         # take initial_frames from initial paths (in order)
                         path = initial_paths[k % len(initial_paths)]
-                    
+
                     if t == r:
                         if np.random.random() > .5:
                             initial_frames = path[:+2]
@@ -125,10 +246,10 @@ class WorkerFree(ABC):
                         initial_frames = path[1::-1]
                     else:
                         initial_frames = path[-2:]
-                
+
                 # wipe out garbage
                 remove(f'{folder}/*{name}*')
-                                
+
                 # report
                 fnames = initial_frames.filenames
                 locs = initial_frames.locs
@@ -139,7 +260,7 @@ class WorkerFree(ABC):
                     print(f'\nUsing {fnames[0]} {locs[0]} -> '
                           f'{fnames[-1]} {locs[-1]} '
                           f'for initializing {deffnm}')
-                
+
                 # last frame (initialize simulation)
                 # already divide in parts if more than one frame
                 params.initialize_simulation(initial_frames, deffnm)
@@ -150,7 +271,7 @@ class WorkerFree(ABC):
             # simulation is completed! go forward
             if simulation_completed:
                 self._total_steps += 1
-                
+
                 # take initial frames from last valid crossing
                 if t == r:
                     stop_frame += last_length - 2
@@ -162,7 +283,7 @@ class WorkerFree(ABC):
                 else:
                     initial_frames = None  # this should never happen
                     # but it allows to recover from "corrupted" data
-                
+
                 # go to next trajectory
                 num += total
                 name = f'traj{num:06g}'
