@@ -161,7 +161,7 @@ class LauncherMethods(ABC):
             # launch commands
             file.write('\n# workers')
             for i, (args, description) in enumerate(zip(*self._build())):
-                file.write(f'# {description}\n')
+                file.write(f'\n# {description}\n')
                 args = ' '.join([f'"{arg}"'
                                  if not isinstance(arg, (bool, bool_)) else
                                  '"True"' if arg else '""' for arg in args])
@@ -169,7 +169,7 @@ class LauncherMethods(ABC):
                            f'--cpus-per-task={cpus_per_task} '
                            f'--gpus-per-task={gpus_per_task} \\\n')
                 file.write(f'  "${{PYTHON}}" "${{WORKER}}" {args} &\n')
-
+            
             # wait until any process exits
             file.write('\n# wait until any process exits\n')
             file.write('wait -n\n')
