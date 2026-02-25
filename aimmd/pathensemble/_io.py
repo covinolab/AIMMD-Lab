@@ -1,4 +1,3 @@
-# pathensemble/_io.py
 """
 aimmd.pathensemble._io
 =====================
@@ -25,9 +24,6 @@ from pathlib import PosixPath
 from ..core.decorators import class_or_instancemethod
 
 
-# -----------------------------------------------------------------------------
-# I/O mixin
-# -----------------------------------------------------------------------------
 class PathEnsembleIO(ABC):
     def save(self, fname):
         """
