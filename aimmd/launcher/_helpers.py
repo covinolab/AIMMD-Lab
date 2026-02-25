@@ -171,9 +171,6 @@ class LauncherHelpers(ABC):
                 self._cpus_per_task = num_cpus_avail
             else:
                 self._cpus_per_task = int(cpus_per_task)
-            if self._cpus_per_task * total_num_processes > num_cpus_avail:
-                print(f'Warning: oversubscribing CPUs '
-                      f'({num_cpus_avail} available on this machine)')
         
         # determine number of GPUs per task
         self._gpus_per_task = gpus_per_task
@@ -186,9 +183,6 @@ class LauncherHelpers(ABC):
                 self._gpus_per_task = num_gpus_avail
             else:
                 self._gpus_per_task = int(gpus_per_task)
-            if self._gpus_per_task * total_num_processes > num_gpus_avail:
-                print(f'Warning: oversubscribing GPUs '
-                      f'({num_gpus_avail} available on this machine)')
         
         if ntasks_per_node:
             self._ntasks_per_node = int(ntasks_per_node)
