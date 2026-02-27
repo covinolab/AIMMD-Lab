@@ -248,7 +248,7 @@ class LauncherHelpers(ABC):
                 state2_mode='free',
                 nsteps=inf,
                 nframes=inf,
-                nrounds=inf,
+                nrounds=None,
                 walltime=inf,
                 cpus_per_task='share',
                 gpus_per_task='share',
@@ -279,12 +279,27 @@ class LauncherHelpers(ABC):
         state2_mode : {'free', 'shoot'} or iterable, optional
             Mode used for state 2 processes for each run. Default is ``'free'``.
         nsteps : float or iterable of float, optional
-            Step budget used by workers as a stop condition. Default is ``inf``.
+            Maximum number of simulated independent trajectories (worker stop
+            condition). Default is ``inf``. Attention! If "train" runs, then
+            nsteps refers to the total number of steps across all workers.
+            Otherwise, it refers to the number of steps of each single worker
+            in the launcher run. The first worker reaching nsteps stops all
+            the others.
         nframes : float or iterable of float, optional
-            Frame budget used by workers as a stop condition. Default is ``inf``.
+            Maximum number of simulated frames (worker stop condition). Default
+            is ``inf``. Attention! If "train" runs, then
+            nframes refers to the total number of frames across all workers.
+            Otherwise, it refers to the number of nframes of each single worker
+            in the launcher run. The first worker reaching nsteps stops all
+            the others..
         nrounds : float or iterable of float, optional
-            Training-round budget. A > 0 value contributes one additional
-            process per run (see :attr:`_num_processes`). Default is ``inf``.
+            If `None` and new simulations are requested, add a new process that
+            trains the model and computes selection bins and densities 
+            indefinitely. If `None` and no new simulations are requested, just
+            does one round before exiting. If != 0, the process does training
+            rounds up until reaching `nrounds`, from that point on it just
+            updates selection bins and densities.
+            Forced to zero when `reactive_region_mode = 'sweep'`.
         walltime : float, optional
             Walltime limit in seconds (shared scalar across runs). Default is
             ``inf``.
@@ -313,17 +328,29 @@ class LauncherHelpers(ABC):
         n = self._process_input('n', n, int)
         n1 = self._process_input('n1', n1, int)
         n2 = self._process_input('n2', n2, int)
-        reactive = self._process_input(
+        reactive_region_mode = self._process_input(
             'reactive_region_mode', reactive_region_mode, str)
         state1_mode = self._process_input('state1_mode', state1_mode, str)
         state2_mode = self._process_input('state2_mode', state2_mode, str)
         nsteps = self._process_input('nsteps', nsteps, float)
         nframes = self._process_input('nframes', nframes, float)
-        nrounds = self._process_input('nrounds', nrounds, float)
+        nrounds = self._process_input('nrounds', nrounds, object)
         walltime = float(walltime)
 
-        # check and assign
-        for mode in reactive:
+        # process nrounds according to specification
+        for i in range(len(self)):
+            # force to zero if mode is sweep
+            if reactive_region_mode[i] == 'sweep':
+                nrounds[i] = 0
+            if nrounds[i] is None:
+                if n[i] + n1[i] + n2[i]:
+                    nrounds[i] = inf
+                else:
+                    nrounds[i] = 1
+        nrounds = nrounds.astype(float)
+        
+        # modes check
+        for mode in reactive_region_mode:
             if mode not in ('chain', 'free', 'sweep'):
                 raise TypeError("'reactive_region_mode' must be either "
                                 f"'chain', 'free', or 'sweep', got {mode!r}")
@@ -335,10 +362,12 @@ class LauncherHelpers(ABC):
             if mode not in ('free', 'shoot'):
                 raise TypeError("'state2_mode' must be either "
                                 f"'free' or 'shoot', got {mode!r}")
+
+        # assign fields
         self._n = n
         self._n1 = n1
         self._n2 = n2
-        self._reactive_region_mode = reactive
+        self._reactive_region_mode = reactive_region_mode
         self._state1_mode = state1_mode
         self._state2_mode = state2_mode
         self._nsteps = nsteps
