@@ -153,16 +153,19 @@ def test_params():
                 if params.values_function == identity:
                     raise RuntimeError('values function should not be identity')
                 pass  # success
-            
-            print('Test 14: trying to assign bad initial_paths throws an error '
-                  'and leaves the corresponding field unchanged')
-            try:
-                params.initial_paths = 'run.gro'
-                raise RuntimeError('bad initial paths did not result in failure')
-            except TypeError:
-                if len(initial_paths[0]) == 1:
-                    raise RuntimeError('"params.initial_paths" changed')
-                pass  # success
+
+            # THIS IS NOT A THING ANYMORE, it just throws a warning, error
+            # if running with reactive_region_mode = 'shoot'
+            #
+            # print('Test 14: trying to assign bad initial_paths throws an error '
+            #       'and leaves the corresponding field unchanged')
+            # try:
+            #     params.initial_paths = 'run.gro'
+            #     raise RuntimeError('bad initial paths did not result in failure')
+            # except TypeError:
+            #     if len(initial_paths[0]) == 1:
+            #         raise RuntimeError('"params.initial_paths" changed')
+            #     pass  # success
             
             print('Test 15: creating a new "Network" class with the required '
                   'methods missing, initializing it on __main__, and then '
