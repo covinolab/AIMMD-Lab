@@ -112,7 +112,7 @@ class LauncherRun(ABC):
     def run(self, n=1, n1=0, n2=0,
             reactive_region_mode='chain',
             state1_mode='free', state2_mode='free',
-            nsteps=inf, nframes=inf, nrounds=inf, walltime=inf,
+            nsteps=inf, nframes=inf, nrounds=None, walltime=inf,
             cpus_per_task='share', gpus_per_task='share'):
         """
         Launch AIMMD runs locally by spawning multiple worker processes.
@@ -130,25 +130,39 @@ class LauncherRun(ABC):
             state (``params.states[2]``). Default is ``0``.
         reactive_region_mode : {'chain', 'free', 'sweep'} or iterable, optional
             Mode for reactive-region replicas:
-
+            
             - ``'chain'``: committor-guided shooting chain (TPS/RFPS-like),
             - ``'sweep'``: sweep shooting for brute-force committor validation,
             - ``'free'``: free simulations in place of shooting.
-
+            
             Default is ``'chain'``.
         state1_mode : {'free', 'shoot'} or iterable, optional
             Mode for state-1 replicas. Default is ``'free'``.
         state2_mode : {'free', 'shoot'} or iterable, optional
             Mode for state-2 replicas. Default is ``'free'``.
         nsteps : float or iterable of float, optional
-            Maximum number of sampling steps (worker stop condition). Default is
-            ``inf``.
+            Maximum number of simulated independent trajectories (worker stop
+            condition). Default is ``inf``. Attention! If "train" runs, then
+            nsteps refers to the total number of steps across the shooting
+            simulations only.
+            Otherwise, it refers to the number of steps of each single worker
+            in the launcher run. The first worker reaching nsteps stops all
+            the others.
         nframes : float or iterable of float, optional
             Maximum number of simulated frames (worker stop condition). Default
-            is ``inf``.
+            is ``inf``. Attention! If "train" runs, then
+            nframes refers to the total number of frames across all workers.
+            Otherwise, it refers to the number of nframes of each single worker
+            in the launcher run. The first worker reaching nsteps stops all
+            the others.
         nrounds : float or iterable of float, optional
-            Training-round budget (spawns trainer when truthy). Default is
-            ``inf`` (as used by the original code).
+            If `None` and new simulations are requested, add a new process that
+            trains the model and computes selection bins and densities 
+            indefinitely. If `None` and no new simulations are requested, just
+            does one round before exiting. If != 0, the process does training
+            rounds up until reaching `nrounds`, from that point on it just
+            updates selection bins and densities.
+            Forced to zero when `reactive_region_mode = 'sweep'`.
         walltime : float, optional
             Maximum walltime for the launcher monitoring loop (seconds). Also
             passed to workers as a stop condition when training is not enabled.
