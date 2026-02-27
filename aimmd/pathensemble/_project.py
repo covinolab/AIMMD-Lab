@@ -85,7 +85,6 @@ from collections.abc import Iterable
 
 # aimmd imports
 from .utils import project_batch
-from ..path.chainreader import ChainReader
 
 
 # project
