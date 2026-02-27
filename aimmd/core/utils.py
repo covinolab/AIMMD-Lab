@@ -78,6 +78,7 @@ from glob import glob
 from numbers import Integral
 from pathlib import PosixPath
 from scipy.special import logit, expit
+from MDAnalysis.coordinates.base import Timestep
 
 # -----------------------------------------------------------------------------------
 # Time formatting
