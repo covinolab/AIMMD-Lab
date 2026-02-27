@@ -48,7 +48,7 @@ from dataclasses import MISSING
 # aimmd imports
 from .utils import create_default_values_function
 from ..core.utils import guess_masses
-from ..network.fit import placeholder as placeholder_fit
+from ..network.fit import default as default_fit
 from ..core.decorators import classproperty
 
 
@@ -95,14 +95,14 @@ class ParamsProperties(ABC):
         # Internal caches/flags expected by other Params mixins.
         self.__dict__['_universe'] = None
         self.__dict__['_default_values_function'] = True
-
+        
         # Minimal functional configuration.
         self.__dict__['states_function'] = lambda x: np.full(len(x), 'R')
         self.__dict__['values_function'] = create_default_values_function(
             self.network, None)
-        self.__dict__['fit'] = placeholder_fit
+        self.__dict__['fit'] = default_fit
         self.__dict__['topology'] = ''
-
+        
         return self
 
     @property
