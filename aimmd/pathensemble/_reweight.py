@@ -394,7 +394,7 @@ class PathEnsembleReweight(ABC):
         shooting_values[free_from_o] = +inf
         extremes[free_from_o] = +inf
         
-        # we are only left with shot paths (forw/back)
+        # we are only left with shot paths (split in forw/back)
         xP_extremes = []
         xP_shooting_values = []
         for i in np.flatnonzero(shot):
@@ -408,26 +408,29 @@ class PathEnsembleReweight(ABC):
                 continue
             if to_s[i] or to_o[i]:
                 values = values[1:-1]
-            else:
+            else:  # for sure it must start in a state
                 values = values[1:]
-            extremes[i] = extreme_function(values)
             shooting_index = path.shooting_index - 1
             # backward part
             if to_s[i]:
                 if from_o[i]:
                     xP_extremes.append(+inf)
-                else:  # for sure from initial state
+                    extremes[i] = +inf  # a transition
+                else:  # an excursion
                     # no "+1" because already internal values
                     v = values[:shooting_index + 1]
                     xP_extremes.append(extreme_function(v))
+                    extremes[i] = extreme_function(values)
                 xP_shooting_values.append(shooting_value)
             # forward part
             if from_s[i]:
                 if to_o[i]:
                     xP_extremes.append(+inf)
+                    extremes[i] = +inf  # a transition
                 else:
                     v = values[shooting_index:]
                     xP_extremes.append(extreme_function(v))
+                    extremes[i] = extreme_function(values)
                 xP_shooting_values.append(shooting_value)
         
         # uniformize factors among shot excursions
@@ -439,8 +442,12 @@ class PathEnsembleReweight(ABC):
         
         # final processing
         shot_transitions = shot & to_s & from_o
-        factors[shot_transitions] /= 2  # otw counting them double
+        factors[shot_transitions] /= 2  # we need to downweight transitions
+        # by a factor 2, otherwise we count them double
+        # that is because we assign an ARB transition to both
+        # ARB and BRA reweighting (the latter with inverted velocities)
         mask = factors > 0
+        # avoid too many imbalances by clipping the factor
         factors[mask] = np.clip(factors[mask], 1e-3, 1000.)
         
         # just factors
