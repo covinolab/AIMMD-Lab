@@ -460,19 +460,16 @@ class PathMethods(ABC):
         result[1] += states[2] == b
         return result
 
-    def sample(self, n_samples, state='internal'):
-        """Randomly sample frames and return them as a new single-frame-segment Path.
+    def sample(self, n_samples, source='values', vmin=None, vmax=None):
+        """Randomly sample internal frames and return them as a
+        new single-frame-segment Path.
 
         Parameters
         ----------
         n_samples : int
             Number of frames to sample. If 0 or the Path is empty, an empty Path is
             returned.
-        state : str, default='internal'
-            Sampling mode:
-            - ``'internal'``: sample among indices returned by ``self.internal('indices')``.
-            - otherwise: treat ``state`` as a one-letter state label and sample among
-              frames where ``self.states == state``.
+        source  : limit to source vmin to vmax
 
         Returns
         -------
@@ -486,9 +483,20 @@ class PathMethods(ABC):
         fnames = []
         first = []
         last = []
-        for i in np.random.choice(
-            self.internal('indices') if state == 'internal' else
-            np.flatnonzero(self.states == state), n_samples):
+        indices = self.internal('indices')
+        
+        # restrict between vmin and vmax
+        if vmin is not None or vmax is not None:
+            values = self.internal(source)
+            mask = np.ones(len(values), dtype=bool)
+            if vmin is not None:
+                mask &= values >= vmin
+            if vmax is not None:
+                mask &= values < vmax
+            indices = indices[mask]
+        
+        # sample
+        for i in np.random.choice(indices, n_samples):
             k, i = self._get_local_index(i)
             fnames.append(self._fnames[k])
             first.append(i)
