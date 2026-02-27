@@ -161,11 +161,11 @@ class WorkerRun(ABC):
             # update stop condition and remove from kwargs
             self._update_stop_condition(**kwargs)
 
-            # reset time, total steps, total frames
+            # reset time, total steps, total frames progress bars
             self._t0 = time.time()
-            self._total_steps = 0
-            self._total_frames = 0
-
+            self.total_steps = None
+            self.total_frames = None
+          
             # execute task
             if task == 'shoot':
                 return self._shoot(*args, **kwargs)
