@@ -78,6 +78,7 @@ from MDAnalysis.coordinates.timestep import Timestep
 # aimmd imports
 from ..path import Path
 from ..path.utils import get_fnames
+from ..path.chainreader import ChainReader
 
 
 # match patterns
