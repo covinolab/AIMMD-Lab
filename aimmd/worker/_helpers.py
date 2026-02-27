@@ -34,7 +34,7 @@ import time
 import signal
 from abc import ABC
 from math import inf
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 # aimmd imports
 from ..params import Params
@@ -268,7 +268,7 @@ class WorkerHelpers(ABC):
                 setattr(self, name, float(kwargs.pop(name)))
     
     def _set_progress_bar(self, pbar, n, unit="steps", offset=0):
-        """Create, update, or close a progress reporter (terminal + Jupyter-safe).
+           """Create, update, or close a progress reporter (terminal + Jupyter-safe).
     
         This helper centralizes progress reporting for long-running loops that track
         a monotonically increasing counter `n` (e.g., integrated steps, emitted frames,
@@ -335,39 +335,44 @@ class WorkerHelpers(ABC):
     
         """
         
-        # Detect whether we can safely use terminal cursor control.
+        # 1. Detect TTY status (False in Pytest/Notebooks)
         tty = getattr(self.original_stdout, "isatty", lambda: False)()
     
-        # Choose tqdm backend:
-        # - terminal tqdm for TTY streams
-        # - notebook tqdm for non-TTY to avoid newline-per-update behavior
-        if tty:
-            from tqdm import tqdm
-        else:
-            from tqdm.notebook import tqdm
-    
-        # Close operation: n is None means "terminate this progress bar".
+        # 2. CLOSE: If n is None, shut down the bar
         if n is None:
             if pbar is not None:
                 pbar.close()
             return None
     
-        # Create operation: build a new progress bar when none exists yet.
+        # 3. CREATE: If no pbar exists, initialize one
         if pbar is None:
             total = int(self.nsteps) if self.nsteps < inf else None
-            return tqdm(
-                desc=self._folder,
-                unit=unit,
-                initial=int(n),
-                total=total,
-                # specific positions are meaningful only on terminal
-                position=(self.localid * 2 + offset) * tty,
-                leave=True,                    
-                dynamic_ncols=tty,
-                file=self.original_stdout,
-            )
+            
+            # Base settings safe for all backends
+            kwargs = {
+                "desc": str(self._folder),
+                "unit": unit,
+                "initial": int(n),
+                "total": total,
+                "leave": True,
+            }
     
-        # Update operation: convert absolute progress `n` to an incremental update.
+            if tty:
+                # Add terminal-specific positioning and stream routing
+                kwargs.update({
+                    "position": (self.localid * 2 + offset),
+                    "dynamic_ncols": True,
+                    "file": self.original_stdout,
+                })
+            else:
+                # In non-TTY (Pytest/Jupyter), we let tqdm.auto manage the 'file' 
+                # and 'display' logic to avoid the 'disp' AttributeError.
+                pass
+    
+            return tqdm(**kwargs)
+    
+        # 4. UPDATE: Calculate delta and advance
+        # tqdm.update() requires a relative increment (dn)
         dn = int(n) - int(pbar.n)
         if dn:
             pbar.update(dn)
