@@ -215,10 +215,6 @@ def extract_indices_and_series(paths, key, *names):
     -----
     - The function is intentionally tolerant to missing/failed series loads: it
       simply skips problematic paths.
-    - The local shooting index is computed as
-      ``si = path.shooting_index - path.indices[0]`` and used directly for slicing.
-      This assumes consistency between `path.shooting_index`, `path.indices[0]`,
-      and the ordering/spacing of `path.internal('indices')`.
 
     """
     # normalize path selection into an iterable of integer indices
@@ -246,8 +242,8 @@ def extract_indices_and_series(paths, key, *names):
         path_forw = np.zeros(len(path_indices), dtype=bool)
 
         # compute local shooting index relative to the first global index
-        si = path.shooting_index - path.indices[0]
-
+        si = path.shooting_index - path_indices[0]
+        
         # backward: include shooting point
         path_back[:si + 1] = True
 
