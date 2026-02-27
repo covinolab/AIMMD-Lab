@@ -185,15 +185,28 @@ class LauncherMethods(ABC):
         state2_mode : {'free', 'shoot'} or iterable, optional
             Mode for state-2 replicas. Default is ``'free'``.
         nsteps : float or iterable of float, optional
-            Maximum number of logical sampling steps (worker stop condition).
-            Default is ``inf``.
+            Maximum number of simulated independent trajectories (worker stop
+            condition). Default is ``inf``. Attention! If "train" runs, then
+            nsteps refers to the total number of steps across the shooting
+            simulations only.
+            Otherwise, it refers to the number of steps of each single worker
+            in the launcher run. The first worker reaching nsteps stops all
+            the others.
         nframes : float or iterable of float, optional
-            Maximum number of simulated frames (worker stop condition).
-            Has priority over ``nsteps`` at worker level. Default is ``inf``.
+            Maximum number of simulated frames (worker stop condition). Default
+            is ``inf``. Attention! If "train" runs, then
+            nframes refers to the total number of frames across all workers.
+            Otherwise, it refers to the number of nframes of each single worker
+            in the launcher run. The first worker reaching nsteps stops all
+            the others.
         nrounds : float or iterable of float, optional
-            Number of training rounds (trainer stop condition). A truthy value
-            typically results in spawning a trainer process per run. Default is
-            ``inf`` (as used by the original code).
+            If `None` and new simulations are requested, add a new process that
+            trains the model and computes selection bins and densities 
+            indefinitely. If `None` and no new simulations are requested, just
+            does one round before exiting. If != 0, the process does training
+            rounds up until reaching `nrounds`, from that point on it just
+            updates selection bins and densities.
+            Forced to zero when `reactive_region_mode = 'sweep'`.
         walltime : float, optional
             Job walltime in seconds, written as ``#SBATCH --time=HH:MM:SS``.
             Default is ``24*3600`` (24 hours).
