@@ -124,6 +124,28 @@ class WorkerProperties(ABC):
         self._log_file = log_file
 
     @property
+    def total_steps(self):
+        if self._total_steps is None:
+            return 0
+        return self._total_steps.n
+
+    @total_steps.setter
+    def total_steps(self, total_steps):
+        self._total_steps = self._set_progress_bar(
+            self._total_steps, total_steps, ' trajs', 0)
+
+    @property
+    def total_frames(self):
+        if self._total_frames is None:
+            return 0
+        return self._total_frames.n
+
+    @total_frames.setter
+    def total_frames(self, total_frames):
+        self._total_frames = self._set_progress_bar(
+            self._total_frames, total_frames, ' frames', 1)
+    
+    @property
     def must_stop(self):
         """
         Whether the current task should stop.
@@ -156,17 +178,18 @@ class WorkerProperties(ABC):
         :attr:`_total_frames`, :attr:`_total_steps` and the task start time
         :attr:`_t0` (seconds since epoch).
         """
+        
         if self.termination_signal:
             return True
-
+        
         if (time.time() - self._t0 >= self.walltime or
-            self._total_frames >= self.nframes or
-            self._total_steps >= self.nsteps):
+            self.total_frames >= self.nframes or
+            self.total_steps >= self.nsteps):
             self.termination_signal = 2  # sigint
             return True
-
+        
         return False
-
+    
     @property
     def initial_paths(self):
         """
