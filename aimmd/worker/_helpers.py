@@ -268,7 +268,7 @@ class WorkerHelpers(ABC):
                 setattr(self, name, float(kwargs.pop(name)))
     
     def _set_progress_bar(self, pbar, n, unit="steps", offset=0):
-           """Create, update, or close a progress reporter (terminal + Jupyter-safe).
+        """Create, update, or close a progress reporter (terminal + Jupyter-safe).
     
         This helper centralizes progress reporting for long-running loops that track
         a monotonically increasing counter `n` (e.g., integrated steps, emitted frames,
@@ -337,7 +337,7 @@ class WorkerHelpers(ABC):
         
         # 1. Detect TTY status (False in Pytest/Notebooks)
         tty = getattr(self.original_stdout, "isatty", lambda: False)()
-    
+        
         # 2. CLOSE: If n is None, shut down the bar
         if n is None:
             if pbar is not None:
