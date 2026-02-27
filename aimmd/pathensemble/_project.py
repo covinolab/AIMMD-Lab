@@ -84,6 +84,7 @@ from tqdm import tqdm
 from collections.abc import Iterable
 
 # aimmd imports
+from .utils import project_batch
 from ..path.chainreader import ChainReader
 
 
@@ -98,52 +99,6 @@ class PathEnsembleProject(ABC):
     - ``self.weights`` : array-like of per-path weights
     - ``self.accepted`` : boolean array-like marking accepted paths
     """
-
-    def _project_batch(self, bins, function, source,
-                       batch_input, batch_weight):
-        """
-        Compute one histogram contribution from the currently buffered batch.
-
-        Parameters
-        ----------
-        bins : list[array_like]
-            Bin edges for each projected dimension (as required by
-            ``np.histogramdd``).
-        function : callable
-            Transformation applied to the batch data before binning.
-            It must accept either:
-            - a concatenated NumPy array (if ``source != 'reader'``), or
-            - a ChainReader (if ``source == 'reader'``),
-            and return an array-like object with one row per frame.
-        source : str
-            Source stream name used to decide how to assemble batch data.
-        batch_input : list
-            Buffered per-frame data chunks (arrays or timesteps/readers).
-        batch_weight : list
-            Buffered per-frame weight chunks. Each element must be 1D and
-            match the length of the corresponding element in `batch_input`.
-
-        Returns
-        -------
-        numpy.ndarray
-            Histogram counts for this batch, with shape
-            ``(len(bins[0])-1, len(bins[1])-1, ...)``.
-
-        Notes
-        -----
-        - The output of `function` is coerced to ``np.asarray`` and reshaped
-          to ``(n_frames, -1)`` to match ``np.histogramdd`` input format.
-        - Only the histogram counts are returned (index 0 of histogramdd).
-        """
-        if source == 'reader':
-            data = ChainReader(*batch_input)
-        else:
-            data = np.concatenate(batch_input, axis=0)
-        weights = np.concatenate(batch_weight)
-        data = np.asarray(function(data))
-        data = data.reshape((len(data), -1))
-        return np.histogramdd(data, bins,
-            density=False, weights=weights)[0]
     
     def project(self, bins=[-inf, +inf],
                 key=None, weights=None,
@@ -316,7 +271,7 @@ class PathEnsembleProject(ABC):
                     current_size += delta
                     remaining -= delta
                     if current_size >= batch_size:
-                        result += self._project_batch(
+                        result += project_batch(
                             bins, function, source, batch_input, batch_weight)
                         if verbose:
                             progress.update(current_size)
@@ -326,7 +281,7 @@ class PathEnsembleProject(ABC):
         
         # last computation and return
         if current_size:
-            result += self._project_batch(
+            result += project_batch(
                 bins, function, source, batch_input, batch_weight)
         progress.update(progress.total - progress.n)
         progress.close()
