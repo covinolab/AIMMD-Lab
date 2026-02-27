@@ -50,7 +50,6 @@ and that the worker instance provides:
 
 - :attr:`params` (a :class:`~aimmd.params.Params` instance),
 - :attr:`must_stop` and :attr:`termination_timeout`,
-- counters :attr:`_total_frames` (updated here).
 
 Notes
 -----
@@ -177,7 +176,6 @@ class WorkerSimulate(ABC):
                     pattern, batch_size,
                     remove_overlapping_frames=True,
                     pipeline=pipeline)
-                self._total_frames += added_frames
 
                 # stop extending because...
                 condition1 = time.time() - t0 > 10.0  # too long
