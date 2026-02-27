@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 # aimmd imports
 from .._config import GROMACS
-from ..network.fit import fit
+from ..network.fit import default as default_fit
 from ..network.utils import placeholder as placeholder_network
 
 
@@ -174,7 +174,7 @@ Set to an empty string to disable energy file merging/saving."""
 """Toy-engine integrator step function.
 Callable that advances the system by one step for the toy engine.
 It is expected to take an MDAnalysis Timestep (or equivalent) as input
-and return an updated version of it, depending on your toy setup."""
+and evolve it in-place, based on the chosen law of motion."""
                  })
 
     toy_slowdown: float = field(
@@ -419,12 +419,12 @@ state, but continue for `extra_free_frames` additional frames."""
     # ------------------------------------------------------------------
 
     fit: Callable = field(
-        default=staticmethod(fit),
+        default=staticmethod(default_fit),
         metadata={'description':
 """Callable that fits network parameters to PathEnsemble data.
 Expected signature (conceptually):
 - positional: (network, pathensemble)
-- optional keyword args: initial_paths, verbose, worker
+- optional keyword args: verbose, worker
 This callable is invoked by AIMMD training logic to update `params.network`."""
                  })
 
