@@ -368,17 +368,18 @@ class ParamsIO(ABC):
 
         # copy main modules
         modules = vars(sys.modules['__main__'])
-        text.append(f'# packages\n')
+        text.append(f'# packages')
         for name in modules:
             if type(modules[name]) is not type(sys):
                 continue
-            text.append(f'import {modules[name].__name__} as {name}\n')
-
+            text.append(f'import {modules[name].__name__} as {name}')
+        text.append('')
+        
         # copy params
         body = self.__str__(filename.parent)
         text.append(body)
-        text = "".join(text)
-
+        text = "\n".join(text)
+        
         # was there? then use it
         writing = True
         if seek_existing_file:
