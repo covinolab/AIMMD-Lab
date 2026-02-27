@@ -125,23 +125,58 @@ class WorkerProperties(ABC):
 
     @property
     def total_steps(self):
+        """Total number of completed trajectory *steps* reported by this worker.
+
+        This is a convenience accessor around the internal tqdm counter
+        :attr:`_total_steps` created/updated by :meth:`_set_progress_bar`.
+
+        Returns
+        -------
+        int
+            Current progress value. Returns 0 if the progress bar is not
+            initialized.
+        """
         if self._total_steps is None:
             return 0
         return self._total_steps.n
 
     @total_steps.setter
     def total_steps(self, total_steps):
+        """Set/update the trajectory-steps progress counter.
+
+        Parameters
+        ----------
+        total_steps : int or None
+            Absolute step counter. If ``None``, the progress bar is closed.
+        """
         self._total_steps = self._set_progress_bar(
             self._total_steps, total_steps, ' trajs', 0)
 
     @property
     def total_frames(self):
+        """Total number of frames ingested/produced so far.
+
+        This wraps the internal tqdm counter :attr:`_total_frames`.
+
+        Returns
+        -------
+        int
+            Current frame counter. Returns 0 if the progress bar is not
+            initialized.
+        """
         if self._total_frames is None:
             return 0
         return self._total_frames.n
 
     @total_frames.setter
     def total_frames(self, total_frames):
+        """Set/update the frames progress counter.
+
+        Parameters
+        ----------
+        total_frames : int or None
+            Absolute frame counter. If ``None``, the progress bar is closed.
+        """
         self._total_frames = self._set_progress_bar(
             self._total_frames, total_frames, ' frames', 1)
     
