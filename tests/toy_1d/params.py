@@ -67,7 +67,6 @@ network = Network()
 """It must be of these inputs"""
 def fit(params,
         pathensemble,
-        key=None,
         verbose=False,
         worker=None):
     return _fit(params,
