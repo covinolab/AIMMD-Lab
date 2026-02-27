@@ -98,7 +98,6 @@ Fit
 from aimmd.network import fit as _fit
 def fit(params,
         pathensemble,
-        key=None,
         verbose=False,
         worker=None):
     return _fit(params,
