@@ -70,6 +70,7 @@ import numpy as np
 from abc import ABC
 
 # aimmd imports
+from .utils import process_path_position_result
 from ..core.utils import memory_reader_from_timesteps
 
 
@@ -89,11 +90,8 @@ class PathEnsemblePositions(ABC):
         per path. Container normalization follows the module-level policy.
         """
         result = [path.initial(attribute) for path in self._paths]
-        if attribute == 'frames':
-            return result
-        if attribute == 'reader':
-            return memory_reader_from_timesteps(result)
-        return np.array(result)
+        return process_path_position_result(result, attribute)
+
 
     def shooting(self, attribute):
         """
@@ -103,11 +101,7 @@ class PathEnsemblePositions(ABC):
         per path. Container normalization follows the module-level policy.
         """
         result = [path.shooting(attribute) for path in self._paths]
-        if attribute == 'frames':
-            return result
-        if attribute == 'reader':
-            return memory_reader_from_timesteps(result)
-        return np.array(result)
+        return process_path_position_result(result, attribute)
 
     def final(self, attribute):
         """
@@ -117,11 +111,7 @@ class PathEnsemblePositions(ABC):
         per path. Container normalization follows the module-level policy.
         """
         result = [path.final(attribute) for path in self._paths]
-        if attribute == 'frames':
-            return result
-        if attribute == 'reader':
-            return memory_reader_from_timesteps(result)
-        return np.array(result)
+        return process_path_position_result(result, attribute)
 
     def middle(self, attribute):
         """
@@ -131,11 +121,7 @@ class PathEnsemblePositions(ABC):
         "middle" is delegated entirely to Path.
         """
         result = [path.middle(attribute) for path in self._paths]
-        if attribute == 'frames':
-            return result
-        if attribute == 'reader':
-            return memory_reader_from_timesteps(result)
-        return np.array(result)
+        return process_path_position_result(result, attribute)
 
     def min(self, attribute, source='values'):
         """
@@ -154,11 +140,7 @@ class PathEnsemblePositions(ABC):
         Container normalization follows the module-level policy.
         """
         result = [path.min(attribute, source) for path in self._paths]
-        if attribute == 'frames':
-            return result
-        if attribute == 'reader':
-            return memory_reader_from_timesteps(result)
-        return np.array(result)
+        return process_path_position_result(result, attribute)
 
     def max(self, attribute, source='values'):
         """
@@ -168,15 +150,12 @@ class PathEnsemblePositions(ABC):
         :meth:`min` for the meaning of `attribute` and `source`.
         """
         result = [path.max(attribute, source) for path in self._paths]
-        if attribute == 'frames':
-            return result
-        if attribute == 'reader':
-            return memory_reader_from_timesteps(result)
-        return np.array(result)
+        return process_path_position_result(result, attribute)
 
     def min_backward(self, attribute, source='values'):
         """
-        Return `attribute` at the backward-portion minimum of `source`, per path.
+        Return `attribute` at the backward-portion minimum of `source`,
+        per path.
 
         The backward portion is the part of the path running from the shooting
         point back to the initial end, with the shooting frame included. The
@@ -185,30 +164,24 @@ class PathEnsemblePositions(ABC):
         Delegates to ``path.min_backward(attribute, source)``.
         """
         result = [path.min_backward(attribute, source) for path in self._paths]
-        if attribute == 'frames':
-            return result
-        if attribute == 'reader':
-            return memory_reader_from_timesteps(result)
-        return np.array(result)
+        return process_path_position_result(result, attribute)
 
     def max_backward(self, attribute, source='values'):
         """
-        Return `attribute` at the backward-portion maximum of `source`, per path.
+        Return `attribute` at the backward-portion maximum of `source`,
+        per path.
 
         See :meth:`min_backward` for the meaning of the backward portion.
 
         Delegates to ``path.max_backward(attribute, source)``.
         """
         result = [path.max_backward(attribute, source) for path in self._paths]
-        if attribute == 'frames':
-            return result
-        if attribute == 'reader':
-            return memory_reader_from_timesteps(result)
-        return np.array(result)
+        return process_path_position_result(result, attribute)
 
     def min_forward(self, attribute, source='values'):
         """
-        Return `attribute` at the forward-portion minimum of `source`, per path.
+        Return `attribute` at the forward-portion minimum of `source`,
+        per path.
 
         The forward portion is the part of the path running from the shooting
         point to the final end, with the shooting frame included. The exact
@@ -217,63 +190,65 @@ class PathEnsemblePositions(ABC):
         Delegates to ``path.min_forward(attribute, source)``.
         """
         result = [path.min_forward(attribute, source) for path in self._paths]
-        if attribute == 'frames':
-            return result
-        if attribute == 'reader':
-            return memory_reader_from_timesteps(result)
-        return np.array(result)
+        return process_path_position_result(result, attribute)
 
     def max_forward(self, attribute, source='values'):
         """
-        Return `attribute` at the forward-portion maximum of `source`, per path.
+        Return `attribute` at the forward-portion maximum of `source`,
+        per path.
 
         See :meth:`min_forward` for the meaning of the forward portion.
 
         Delegates to ``path.max_forward(attribute, source)``.
         """
         result = [path.max_forward(attribute, source) for path in self._paths]
-        if attribute == 'frames':
-            return result
-        if attribute == 'reader':
-            return memory_reader_from_timesteps(result)
-        return np.array(result)
+        return process_path_position_result(result, attribute)
 
     def backward(self, attribute):
         """
-        Return the backward portion for each path.
+        Return the backward portion for each path in a PathEnsemble object.
 
         The backward portion is the segment from the shooting point back to
         the initial end, with the shooting frame included. This method calls
         ``path.backward(attribute)`` for each path and returns the list of
         per-path results.
         """
-        return [path.backward(attribute) for path in self._paths]
+        result = [path.backward(attribute) for path in self._paths]
+        if attribute == 'self':
+            result = PathEnsemble(result)
+        return result
 
     def forward(self, attribute):
         """
-        Return the forward portion for each path.
+        Return the forward portion for each path in a PathEnsemble object.
 
         The forward portion is the segment from the shooting point to the
         final end, with the shooting frame included. This method calls
         ``path.forward(attribute)`` for each path and returns the list of
         per-path results.
         """
-        return [path.forward(attribute) for path in self._paths]
-
+        result = [path.forward(attribute) for path in self._paths]
+        if attribute == 'self':
+            result = PathEnsemble(result)
+        return result
+        
     def all(self, attribute):
         """
-        Return the full path for each path.
-
-        Calls ``path.all(attribute)`` for each path and returns the list of
-        per-path results.
+        Return a copy of `self`.
         """
-        return [path.all(attribute) for path in self._paths]
-
+        result = [path.all(attribute) for path in self._paths]
+        if attribute == 'self':
+            result = PathEnsemble(result)
+        return result
+        
     def internal(self, attribute):
         """
-        Return the internal portion for each path.
+        Return the internal portion for each path in a PathEnsemble object.
 
         Calls ``path.internal(attribute)`` for each path and returns the list
         of per-path results. The definition of "internal" is delegated to Path.
         """
-        return [path.internal(attribute) for path in self._paths]
+        result = [path.internal(attribute) for path in self._paths]
+        if attribute == 'self':
+            result = PathEnsemble(result)
+        return result 
