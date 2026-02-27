@@ -68,12 +68,11 @@ def update_source(instance, name):
     - Lambda functions are handled by rewriting their source into an assignment:
       `name = lambda ...`.
     """
-    # In order to import functions and classes correctly, `Params.__str__`
-    # needs a stable representation for each callable/class.
-    if hasattr(instance, '__source__'):
-        return
 
     cls = instance.__class__
+
+    # In order to import functions and classes correctly, `Params.__str__`
+    # needs a stable representation for each callable/class.
 
     # Not a function: cannot be retrieved from main.
     # The object's *class* must be importable and defined in the same file too.
@@ -84,23 +83,29 @@ def update_source(instance, name):
 
     # Function defined not in "__main__": represent by import statement.
     elif instance.__module__ != '__main__':
+        if hasattr(instance, '__source__'):
+            return
         module = instance.__module__.split("/")[-1]
         if instance.__name__ == name:
             instance.__source__ = f'from {module} import {name}\n'
         else:
             instance.__source__ = (f'from {module} import '
                                    f'{instance.__name__} as {name}\n')
-
+    
+    # Function defined in "__main__": check name is correct.
+    elif instance.__name__ != name:
+        raise TypeError(f'please rename function '
+                        f'{instance.__name__!r} to {name!r}')
+    
     # Function defined in "__main__": embed its full source code.
     else:
-        instance.__source__ = getsource(instance).lstrip()
-
+        instance.__source__ = getsource(instance).lstrip()            
+        
         # Process lambda functions: represent as an assignment to preserve name.
         if (not instance.__source__.startswith('def ')
             and 'lambda' in instance.__source__):
             instance.__source__ = f'{name} = lambda' + (
-                'lambda'.join(instance.__source__.split('lambda')[1:])
-            )
+                'lambda'.join(instance.__source__.split('lambda')[1]))
 
 
 def create_default_values_function(network, descriptor_transform=None):
@@ -139,8 +144,9 @@ def create_default_values_function(network, descriptor_transform=None):
     """
     device = next(network.parameters()).device
     dtype = next(network.parameters()).dtype
-    descriptor_transform = descriptor_transform or (lambda x: x)
-
+    if descriptor_transform is None:
+        descriptor_transform = lambda x: x
+    
     def values_function(input_data):
         """
         Compute values from numpy-like input using the provided network.
@@ -163,7 +169,7 @@ def create_default_values_function(network, descriptor_transform=None):
         network.eval()  # disables dropout, batchnorm training behavior
         with torch.inference_mode():  # faster than no_grad()
             input_data = descriptor_transform(np.asarray(input_data))
-            input_data = torch.as_tensor(
+            input_data = torch.tensor(
                 input_data, dtype=dtype, device=device)
             input_data = torch.flatten(input_data, start_dim=1)
             output = network(input_data)
