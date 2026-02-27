@@ -215,5 +215,5 @@ class PathProperties(ABC):
     
     @property
     def n_frames(self):
-        """Alias for `len(self)`."""
-        return len(self)
+        """Number of *internal* frames."""
+        return len(self.internal('indices'))
