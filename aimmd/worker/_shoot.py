@@ -43,13 +43,14 @@ Two execution modes are supported:
    - initializes a backward and a forward simulation from that point,
    - incrementally runs/extends those simulations until completion,
    - merges the backward and forward pieces into a single path,
-   - registers the path into the chain (and optionally applies TPS acceptance).
+   - registers the path into the chain (and optionally applies TPS acceptance),
+   - updates tqdm progress bar *always* printed in original `stdout`.
 
 2) **Sweep mode for committor validation** (``sweep=True``)
    Sweep mode serves *model validation* rather than adaptive sampling. It
    deterministically cycles through a predefined set of frames (taken from the
-   merged ``initial_paths`` ensemble) and repeatedly shoots from them to obtain
-   brute-force committor estimates.
+   concatenated ``initial_paths`` ensemble) and repeatedly shoots from them
+   to obtain brute-force committor estimates.
 
    Over many shots from the same starting frame, the empirical committor to end
    state 1 is estimated as:
@@ -123,6 +124,7 @@ import time
 import numpy as np
 from abc import ABC
 from math import inf
+from tqdm import tqdm
 from numbers import Integral
 
 # aimmd imports
@@ -214,23 +216,35 @@ class WorkerShoot(ABC):
             at_least_one = ''
         t = process_state(target_state, states)
         if not sweep:
+            self._folder = f'{self.directory}/chain{t}{k}'
             folder = f'{directory}/chain{t}{k}'
         else:
             folder = f'{directory}/sweep{t}{k}'
-        initial_paths = self.initial_paths
-        initial_paths._paths = cycle(initial_paths._paths, int(k))
+            self._folder = f'{self.directory}/sweep{t}{k}'
+        initial_paths = self.initial_paths  # right order
+        initial_paths._paths = cycle(initial_paths._paths, int(k))  
         nbins = params.nbins
         max_length = params.max_length
         free_overriding_states = params.free_overriding_states
-
+        
         # sweep
         if sweep:
-            sweep_frames = initial_paths.merge()
-            sweep_indices = sweep_frames.indices[sweep_frames.states == t]
-            sweep_size = len(sweep_indices)
-        elif t != states[1]:
-            initial_paths = PathEnsemble([
-                path.sample(1, t) for path in initial_paths])
+            sweep_frames = initial_paths.join()
+            sweep_size = len(sweep_frames)
+            if not (sweep_frames.states == t).all():
+                raise RuntimeError(f'all initial paths frames must be in {t}')
+        else:
+            # only transitions
+            initial_paths = initial_paths.extract(states, states[::-1])
+            if not initial_paths:
+                raise RuntimeError('some initial paths must be transitions')
+            if t != states[1]:
+                # just the frame in state for every path
+                for i, path in enumerate(initial_paths):
+                    if path.states[0] == t:
+                        initial_paths._paths[i] = path[:+1]
+                    else:
+                        initial_paths._paths[i] = path[-1:]
         pool_size = params.selection_pool_size
 
         # eneconv
@@ -265,10 +279,10 @@ class WorkerShoot(ABC):
             print(f'\nReport after {len(chain)} paths')
             chain.report_shooting_results(states, sweep_size)
             print()
-
+        
         # update total frames and steps
-        self._total_frames = sum(chain.n_frames)
-        self._total_steps = len(chain)
+        self.total_frames = sum(chain.n_frames)
+        self.total_steps = len(chain)
 
         # must have network, bins, and descriptors
         # only if it makes sense
@@ -315,11 +329,11 @@ class WorkerShoot(ABC):
                         target_state=t)
 
                 else:  # sweep
-                    index = sweep_indices[len(chain) % len(sweep_indices)]
+                    index = len(chain) % len(sweep_frames)
                     fname_index, loc = sweep_frames._get_local_loc(index)
                     print(f'=== selecting frame '
                           f'{sweep_frames._fnames[fname_index]}, {loc}')
-                    shooting_point = sweep_frames[index]
+                    shooting_point = sweep_frames[index:index + 1]
 
                 # clean
                 remove(f'{folder}/*back*', f'{folder}/*forw*')
@@ -365,8 +379,9 @@ class WorkerShoot(ABC):
                 # save path and add it to chain
                 # (zero weight in case of "bad" path)
                 register_path(path, chain, eneconv)
-                self._total_steps += 1
-
+                self.total_steps += 1
+                self.total_frames += path.n_frames
+                
                 # clean and reset
                 remove(f'{folder}/*back*', f'{folder}/*forw*')
                 back_simulation_completed = False
@@ -388,6 +403,14 @@ class WorkerShoot(ABC):
                               'it in selection pool')
                         path.weight = 0.
 
+                    if not path.weight:
+                        # manually compute shooting point value
+                        # otherwise the value will never be updated
+                        # if not training, since will never feature
+                        # in the selection pool
+                        si = path.shooting_index
+                        path[si:si + 1].compute(*params.compute_values_args, return_result=True)
+                
                 else:  # print sweep summary
                     print(f'\nReport after {len(chain)} paths')
                     chain.report_shooting_results(states, sweep_size)
