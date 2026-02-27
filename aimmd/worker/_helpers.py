@@ -34,6 +34,7 @@ import time
 import signal
 from abc import ABC
 from math import inf
+from tqdm import tqdm
 
 # aimmd imports
 from ..params import Params
@@ -121,7 +122,11 @@ class WorkerHelpers(ABC):
         else:
             self.params = Params(params, initial_paths=None, save=False)
 
-        self.directory = self._directory = directory
+        # will then potentially be different at execution time
+        # directory is user provided
+        # _directory is the directory with respect to the params file location
+        # _folder is where simulations actually run (if any)
+        self.directory = self._folder = self._directory = directory
         self.localid = int(localid)
         self.cpus_per_task = cpus_per_task
         self.gpus_per_task = gpus_per_task
@@ -136,6 +141,10 @@ class WorkerHelpers(ABC):
         self._log_file = None
         self.t0 = inf  # when worker started
         self.termination_signal = None
+
+        # for reporting (will create progress bars)
+        self._total_steps = None
+        self._total_frames = None
 
         # Register signal handlers for all future tasks.
         # This assumes the worker installs handlers in its main thread.
@@ -180,6 +189,8 @@ class WorkerHelpers(ABC):
 
         This method executes cleanup that is safe outside the signal handler:
 
+        - closes progress bars (if present, by assigning :attr:`total_nsteps`
+        and :attr:`total_nframes` to ``None``);
         - closes the current log file (by assigning :attr:`log_file` to ``None``;
           actual behavior is defined by the concrete worker),
         - resets :attr:`termination_signal`.
@@ -188,6 +199,8 @@ class WorkerHelpers(ABC):
         -------
         None
         """
+        self.total_nsteps = None
+        self.total_nframes = None
         self.log_file = None
         self.termination_signal = None
 
@@ -253,3 +266,110 @@ class WorkerHelpers(ABC):
         for name in ('nsteps', 'nframes', 'walltime'):
             if name in kwargs:
                 setattr(self, name, float(kwargs.pop(name)))
+    
+    def _set_progress_bar(self, pbar, n, unit="steps", offset=0):
+        """Create, update, or close a progress reporter (terminal + Jupyter-safe).
+    
+        This helper centralizes progress reporting for long-running loops that track
+        a monotonically increasing counter `n` (e.g., integrated steps, emitted frames,
+        completed trajectories). The function supports three operations:
+    
+        1) **Create** a new progress bar if `pbar is None` and `n` is not None.
+        2) **Update** an existing progress bar to reflect the new absolute progress `n`.
+        3) **Close** the progress bar if `n is None`.
+    
+        Backend selection
+        -----------------
+        Progress rendering depends on whether the output stream behaves like a real
+        terminal (TTY):
+    
+        - **TTY output** (typical CLI runs): use the standard terminal tqdm backend
+          which updates bars in place using carriage return and cursor control.
+        - **Non-TTY output** (Jupyter, captured output, redirected logs): terminal
+          cursor control is not supported and would degrade into "one bar line per
+          update". In that case this function uses the *notebook* tqdm backend
+          (`tqdm.notebook.tqdm`), which renders a widget-like bar that updates in place.
+    
+        Important: for the notebook backend, `file=` must not be overridden; display
+        is handled by the notebook frontend.
+    
+        Parameters
+        ----------
+        pbar : tqdm instance or None
+            Existing progress bar object (returned by a previous call), or None to
+            create a new one.
+    
+        n : int or None
+            Absolute progress value. If `n` is an integer, the bar is created/updated
+            to match `n`. If `n` is None, the progress bar is closed.
+    
+            This function treats `n` as an absolute counter, not a delta. The delta
+            is computed internally as `dn = n - pbar.n`.
+    
+        unit : str, optional
+            Unit label displayed by tqdm (e.g., "step", "frame", "traj"). The string
+            is stripped to avoid formatting artifacts such as "s/ trajs" caused by
+            leading spaces.
+    
+        offset : int, optional
+            Additional position offset used to place multiple bars on separate lines.
+            The actual tqdm `position` is computed as `self.localid * 2 + offset`,
+            which reserves multiple lines per worker (e.g., one for trajectories and
+            one for frames). Considered only when printing on terminal.
+    
+        Returns
+        -------
+        pbar : tqdm instance or None
+            A progress bar object (terminal or notebook backend) when `n` is not None.
+            Returns None when closing (`n is None`).
+    
+        Notes
+        -----
+        - This function intentionally keeps the progress bar state outside the object
+          (via the `pbar` argument) to allow the caller to manage multiple bars.
+        - The total is set to `int(self.nsteps)` when finite; otherwise tqdm is used
+          in "unknown total" mode (`total=None`).
+        - In non-TTY environments, the notebook backend requires Jupyter widget support
+          (commonly provided by `ipywidgets`). If widget support is missing, the
+          notebook backend may fall back to a text representation.
+    
+        """
+        
+        # Detect whether we can safely use terminal cursor control.
+        tty = getattr(self.original_stdout, "isatty", lambda: False)()
+    
+        # Choose tqdm backend:
+        # - terminal tqdm for TTY streams
+        # - notebook tqdm for non-TTY to avoid newline-per-update behavior
+        if tty:
+            from tqdm import tqdm
+        else:
+            from tqdm.notebook import tqdm
+    
+        # Close operation: n is None means "terminate this progress bar".
+        if n is None:
+            if pbar is not None:
+                pbar.close()
+            return None
+    
+        # Create operation: build a new progress bar when none exists yet.
+        if pbar is None:
+            total = int(self.nsteps) if self.nsteps < inf else None
+            return tqdm(
+                desc=self._folder,
+                unit=unit,
+                initial=int(n),
+                total=total,
+                # specific positions are meaningful only on terminal
+                position=(self.localid * 2 + offset) * tty,
+                leave=True,                    
+                dynamic_ncols=tty,
+                file=self.original_stdout,
+            )
+    
+        # Update operation: convert absolute progress `n` to an incremental update.
+        dn = int(n) - int(pbar.n)
+        if dn:
+            pbar.update(dn)
+    
+        return pbar
