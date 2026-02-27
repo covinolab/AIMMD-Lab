@@ -5,11 +5,14 @@ aimmd.pathensemble.utils
 Small utilities for :mod:`aimmd.pathensemble`.
 
 This module provides helper functions used by the PathEnsemble implementation
-and its mixins. The utilities here focus on two tasks:
+and its mixins. The utilities here focus on three tasks:
 
 1) Pattern matching on Path type labels.
 2) Normalization of heterogeneous inputs into a flat list of Path objects
    (or, optionally, just trajectory filenames), and assembly of a PathEnsemble.
+3) Processing the results from `PathPosition` methods for evaluating
+   `PathEnsemblePositions` methods.
+4) Projecting a batch of values from pathensemble.
 
 Path type patterns
 ------------------
@@ -44,6 +47,17 @@ Ensemble assembly
 `assemble_pathensemble` merges multiple Path / PathEnsemble / iterable inputs
 into a single PathEnsemble. When a Path is provided, it is first split into its
 segments and the resulting sub-paths are appended.
+
+PathPosition methods processing
+-------------------------------
+
+`process_pathpositions_result` combinse the output of a `PathPosition` method
+called on each Path in `self` to yield the output the associated
+`PathEnsemblePosition` method.
+
+- In most cases, it returns an NumPy array.
+- If requesting "frames", it returns a MDAnalysis Reader.
+- If requesting "self", it returns a PathEnsemble object.
 
 Notes
 -----
@@ -233,3 +247,93 @@ def assemble_pathensemble(*paths_or_pathensembles):
         elif isinstance(item, Iterable):
             pathensemble += assemble_pathensemble(*item)
     return pathensemble
+
+
+def process_path_position_result(result, attribute):
+    """
+
+    Take the list of results from a `PathPosition` methods and process it
+    depending on the requested attribute.
+    
+    Used to combine the output of a `PathPosition` method called on each
+    Path in `self` inside the associated `PathEnsemblePosition` position
+    method.
+
+    Parameters
+    ----------
+
+    result : list
+        The `PathPosition` method evaluated on each Path in `self`
+
+    attribute : str
+        The 'attribute' parameter in the  `PathPosition` method 
+
+    Returns
+    -------
+    array | MDAnalysis.core.trajectory.Reader | PathEnsemble
+    
+    Notes
+    -----
+    - If requesting "frames", it returns a MDAnalysis Reader.
+    - If requesting "self", it returns a PathEnsemble object.
+    - In all other cases, it returns an NumPy array.
+    """
+    if attribute == 'frames':
+        return result
+    if attribute == 'reader':
+        return memory_reader_from_timesteps(result)
+    if attribute == 'self':
+        from . import PathEnsemble
+        return PathEnsemble(result)
+    if not len(result):
+        if attribute == 'states':
+            return np.zeros(0, dtype='<U1')
+        else:
+            return np.zeros(0, dtype=np.float32)
+    return np.array(result)
+
+
+def project_batch(bins, function, source,
+                   batch_input, batch_weight):
+    """
+    Compute one histogram contribution from the currently buffered batch.
+
+    Parameters
+    ----------
+    bins : list[array_like]
+        Bin edges for each projected dimension (as required by
+        ``np.histogramdd``).
+    function : callable
+        Transformation applied to the batch data before binning.
+        It must accept either:
+        - a concatenated NumPy array (if ``source != 'reader'``), or
+        - a ChainReader (if ``source == 'reader'``),
+        and return an array-like object with one row per frame.
+    source : str
+        Source stream name used to decide how to assemble batch data.
+    batch_input : list
+        Buffered per-frame data chunks (arrays or timesteps/readers).
+    batch_weight : list
+        Buffered per-frame weight chunks. Each element must be 1D and
+        match the length of the corresponding element in `batch_input`.
+
+    Returns
+    -------
+    numpy.ndarray
+        Histogram counts for this batch, with shape
+        ``(len(bins[0])-1, len(bins[1])-1, ...)``.
+
+    Notes
+    -----
+    - The output of `function` is coerced to ``np.asarray`` and reshaped
+      to ``(n_frames, -1)`` to match ``np.histogramdd`` input format.
+    - Only the histogram counts are returned (index 0 of histogramdd).
+    """
+    if source == 'reader':
+        data = ChainReader(*batch_input)
+    else:
+        data = np.concatenate(batch_input, axis=0)
+    weights = np.concatenate(batch_weight)
+    data = np.asarray(function(data))
+    data = data.reshape((len(data), -1))
+    return np.histogramdd(data, bins, density=False, weights=weights)[0]
