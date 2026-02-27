@@ -416,7 +416,7 @@ def reweight_excursions(shooting_values, extremes, factors, xP_extremes, xP):
     n = np.count_nonzero(mask)
     m[:n] = np.cumsum(factors[mask][::-1])[::-1]
     threshold = -inf
-    if not mask.any():
+    if not mask.any():  # up to this point, no point in computing
         threshold = np.min(shooting_values[~mask])
     
     # actual computation
@@ -429,23 +429,30 @@ def reweight_excursions(shooting_values, extremes, factors, xP_extremes, xP):
                 current_m = m[i]
                 continue  # precomputed value
             else:
+                # since we order by extremes, we now that from i onward,
+                # all extremes > current_extreme
                 current_m = (factors[i:] * 
                     (shooting_values[i:] <= current_extreme)).sum()
         m[i] = current_m
+        # the remaining values are all the same
         if current_extreme == +inf:
             m[i:] = current_m
             break
+
+    # initialize weights
+    weights = np.zeros(len(m))
     
     # crossing probability at the extremes
-    xP = xP[np.clip(np.searchsorted(xP_extremes, extremes, 'left'),
-                    0, len(xP) - 1)]
-    
-    # weights of excursions (normalized such that transitions = 1)
-    weights = np.zeros(len(m))
-    mask = m > 0
-    weights[mask] = factors[mask] * xP[mask] / m[mask]
-    if len(xP) and (norm := xP[-1] * expit(xP_extremes[-1])):
-        weights /= norm
+    if len(xP_extremes) and len(extremes):
+        xP = xP[np.clip(np.searchsorted(xP_extremes, extremes, 'left'),
+                        0, len(xP) - 1)]
+        # weights of excursions (normalized such that transitions = 1)
+        mask = m > 0
+        weights[mask] = factors[mask] * xP[mask] / m[mask]
+        if norm := xP[-1] * expit(xP_extremes[-1]):
+            weights /= norm
+    else:  # fallback case due to a BUG
+        xP = np.zeros(len(extremes))
     
     # return with right order
     invert_order = np.empty_like(order)
