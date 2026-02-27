@@ -4,56 +4,72 @@ aimmd.analysis.utils
 
 Numerical analysis helpers for AIMMD.
 
-This module contains standalone functions used by trainer and pathensemble
-analysis code. The functions here are intentionally lightweight and operate
-on NumPy arrays and PathEnsemble-like objects.
+This module collects lightweight, standalone routines used by the trainer and by
+analysis workflows. Functions operate on NumPy arrays and on PathEnsemble-like
+objects (AIMMD’s path-sampling convention), without depending on high-level
+AIMMD classes.
 
-Main groups of utilities
-------------------------
+Overview
+--------
 Bins and grid helpers
-    - :func:`compute_bins` constructs 1D bin edges (optionally including
-      marginal bins at ``-inf`` and/or ``+inf``).
+    - :func:`compute_bins` constructs 1D bin boundaries (optionally including
+      marginal outer bins at ``-inf`` and/or ``+inf``).
     - :func:`bin_centers` returns bin centers and supports bins including
-      ``±inf``.
+      plus and minus infinity.
     - :func:`merge_marginal_bins` merges low-occupancy marginal bins.
 
 Extremes used to define bins
-    - :func:`find_extremes_with_free_simulations` finds left/right extremes
-      using free excursions.
-    - :func:`find_extremes_with_transitions` finds left/right extremes using
-      transition paths.
+    - :func:`find_extremes_with_free_simulations` estimates left/right extremes
+      from free excursions started from each terminal state.
+    - :func:`find_extremes_with_transitions` estimates left/right extremes from
+      transition paths by sampling values adjacent to the endpoints.
 
 Simple statistics
-    - :func:`binomial_mean_and_confidence_interval` computes a binomial mean
-      and a two-sided confidence interval using the Beta distribution.
+    - :func:`binomial_mean_and_confidence_interval` computes a binomial mean and
+      a two-sided confidence interval using Beta quantiles.
+
+Rate-estimate extraction
+    - :func:`extract_rate_estimates_from_log_file` parses AIMMD training
+      logs and returns the time series of forward/backward rate estimates.
+
+      The parser is tailored to AIMMD ``train*.log`` files. It scans the file in
+      order and recognizes a three-line pattern:
+
+      - a line containing ``"k12 estimate"``: extracts the forward estimate
+        following ``"estimate:"`` (up to the next ``"["`` token),
+      - the next relevant line: extracts the backward estimate in the same way,
+      - the next relevant line: extracts the time coordinate as the number
+        preceding the token ``"frames"``.
+
+      The returned arrays ``(t, k12, k21)`` therefore reflect the sequence of
+      estimates printed by the training logger and the corresponding cumulative
+      simulated time/frames at which they were reported.
 
 2D committor solver
-    - :func:`solve_committor_by_relaxation` solves a committor field on a 2D
-      grid by relaxation (finite-difference discretization).
+    - :func:`solve_committor_by_relaxation` solves a committor field on a 2D grid
+      by relaxation (finite-difference discretization) with coarse-to-fine
+      refinement.
 
 Dependencies and expectations
 -----------------------------
-- These functions assume the AIMMD PathEnsemble conventions:
-  `pathensemble.types()` returns per-path type strings and `pathensemble[...]`
+- PathEnsemble conventions:
+  ``pathensemble.types()`` returns per-path type strings and ``pathensemble[...]``
   supports boolean mask selection.
-- Pattern matching on types is delegated to
+- Type-pattern matching is delegated to
   :func:`aimmd.pathensemble.utils.match_patterns`.
-- :func:`solve_committor_by_relaxation` uses ``tqdm`` but this module does not
-  import it. The function will raise ``NameError`` unless ``tqdm`` is available
-  in the calling scope. This behavior is preserved by design (documentation-only
-  pass).
 
 Notes
 -----
-The bin construction functions assume that the reaction coordinate values
-order states consistently (as in AIMMD training). They produce bins that are
-robust to outliers by using explicit cutoffs and by falling back from free
-excursion statistics to transition statistics when needed.
+The bin construction functions assume that the projected reaction-coordinate
+values order terminal states consistently (as in AIMMD training). Bounds are
+made robust by explicit cutoffs and by falling back from free-excursion
+statistics to transition statistics when required.
 """
 
 # external
 import numpy as np
 from math import inf, nan
+from tqdm import tqdm
 from scipy.stats import beta
 from scipy.interpolate import RegularGridInterpolator
 
@@ -405,6 +421,12 @@ def merge_marginal_bins(bins, *values, min_values=3):
     -----
     The function always preserves the first and last boundary of `bins`.
     """
+
+    # trivial case
+    if len(bins) < 2:
+        return bins, np.array([1])
+
+    # compute histogram
     histograms = np.array([np.histogram(v, bins=bins)[0]
                            for v in values]).min(axis=0)
 
@@ -471,6 +493,81 @@ def binomial_mean_and_confidence_interval(r1, r2, alpha=0.95):
         upper = beta.ppf(1 - a/2, k + 1, n - k)
 
     return k / n, lower, upper
+
+
+def extract_rate_estimates_from_log_file(fname):
+    """
+    Parse rate estimates from an AIMMD training log.
+
+    This helper reads AIMMD ``train*.log`` files produced during training and
+    extracts the time series of rate-constant estimates printed in the log.
+
+    Parsed quantities
+    -----------------
+    The function returns three arrays:
+
+    - ``t``   : cumulative simulated time (as printed by the logger)
+    - ``k12`` : rate constant estimate for the state 1 to state 2 transition
+    - ``k21`` : rate constant estimate for the state 2 to state 1 transition
+
+    Parameters
+    ----------
+    fname : str or path-like
+        Path to a training log file (e.g., ``trainARB.log``).
+
+    Returns
+    -------
+    (np.ndarray, np.ndarray, np.ndarray)
+        ``(t, k12, k21)`` as NumPy arrays of dtype float.
+
+    Notes
+    -----
+    This parser assumes the log format where:
+    - a line containing ``'k12 estimate'`` holds the k12 value after ``'estimate:'``
+    - the next relevant line holds the k21 value in the same format
+    - the subsequent relevant line begins with the number of frames followed by
+      the token ``'frames'`` (used as the time coordinate)
+
+    The parsing logic is intentionally minimal and matches the existing logger
+    output exactly.
+    """
+
+    # initialize output
+    k12 = []
+    k21 = []
+    t = []
+    with open(fname, 'r') as file:
+        step = -1
+        for line in file:
+            if 'k12 estimate' in line:
+                k12.append(float(line.split('estimate:')[1].split('[')[0]))
+                step = 1
+            elif step == 1:
+                k21.append(float(line.split('estimate:')[1].split('[')[0]))
+                step = 2
+            elif step == 2:
+                t.append(float(line.split('frames')[0]))
+                step = 0
+    return np.array(t), np.array(k12), np.array(k21)
+
+    # initialize output
+    k12 = []
+    k21 = []
+    t = []
+    with open(fname, 'r') as file:
+        step = -1
+        for line in file:
+            if 'k12 estimate' in line:
+                k12.append(float(line.split('estimate:')[1].split('[')[0]))
+                step = 1
+            elif step == 1:
+                k21.append(float(line.split('estimate:')[1].split('[')[0]))
+                step = 2
+            elif step == 2:
+                t.append(float(line.split('frames')[0]))
+                step = 0
+    return np.array(t), np.array(k12), np.array(k21)
+
 
 
 def solve_committor_by_relaxation(
