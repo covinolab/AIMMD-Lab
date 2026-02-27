@@ -69,7 +69,7 @@ def test_params():
                   'additional  fields (fit function and initial paths)')
             
             # as if you defined "identity" directly on terminal
-            def fit(params, pathensemble, key, verbose, worker):
+            def fit(params, pathensemble, verbose, worker):
                 return 1
 
             def identity(x):
