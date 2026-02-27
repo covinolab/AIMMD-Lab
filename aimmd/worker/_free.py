@@ -168,11 +168,16 @@ class WorkerFree(ABC):
         t = process_state(target_state, states)
         r = states[1]
         tr = f'{t}{r}'  # allowed states: target & reactive
+        self._folder = f'{self.directory}/free{t}'
         folder = f'{directory}/free{t}'
         restart_with_transition = (
             params.restart_free_simulations_with_transitions == 'all' or
             t in params.restart_free_simulations_with_transitions)
         initial_paths = self.initial_paths
+        # only transitions
+        initial_paths = initial_paths.extract(states, states[::-1])
+        if not initial_paths:
+            raise RuntimeError('some initial paths must be transitions')
 
         # create folder if not existing
         if not os.path.exists(folder):
@@ -201,6 +206,7 @@ class WorkerFree(ABC):
         deffnm = f'{folder}/{name}'
         trajectory = Path()
         old_nframes = 0
+        total_frames = [0]
 
         # main cycle
         print(f"\nCurrent trajectory: {deffnm} {now()}")
@@ -211,10 +217,17 @@ class WorkerFree(ABC):
                 self._simulate(deffnm, trajectory, t, 'free', 0, extra_frames)
             simulation_completed = stop_frame is not None
 
+            # handle total frames progress bar
+            if simulation_completed:
+                total_frames[-1] = stop_frame + last_length
+            else:
+                total_frames[-1] = nframes
+                self.total_frames = sum(total_frames)
+            
             # check mid cycle
             if self.must_stop:
                 return
-
+            
             # initialize only when necessary
             if (nframes == old_nframes and
                 not simulation_completed and
@@ -236,7 +249,7 @@ class WorkerFree(ABC):
 
                         # take initial_frames from initial paths (in order)
                         path = initial_paths[k % len(initial_paths)]
-
+                    
                     if t == r:
                         if np.random.random() > .5:
                             initial_frames = path[:+2]
@@ -245,8 +258,8 @@ class WorkerFree(ABC):
                     elif path.initial('states') == t:
                         initial_frames = path[1::-1]
                     else:
-                        initial_frames = path[-2:]
-
+                        initial_frames = path[-2:]                
+                
                 # wipe out garbage
                 remove(f'{folder}/*{name}*')
 
@@ -270,7 +283,8 @@ class WorkerFree(ABC):
 
             # simulation is completed! go forward
             if simulation_completed:
-                self._total_steps += 1
+                self.total_steps += 1
+                total_frames.append(0)
 
                 # take initial frames from last valid crossing
                 if t == r:
