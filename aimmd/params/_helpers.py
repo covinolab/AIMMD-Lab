@@ -26,6 +26,7 @@ Notes
 """
 
 # external
+import os
 import numpy as np
 import torch
 import inspect
@@ -84,23 +85,23 @@ class ParamsHelpers(ABC):
         `__dict__` so the dataclass fields appear initialized in the correct
         order (and so that post-init checks can run coherently).
         """
-
-        # determine whether loading from file
-        try:
-            filename = PosixPath(args[0]).resolve()
-            if not filename.exists():
-                raise FileNotFoundError
-            args = args[1:]
-        except (IndexError, TypeError, FileNotFoundError):
+        
+        # determine "filename": the file where to take the parameters from
+        if not (args or kwargs):
             filename = 'params.py'
-
+        elif args and os.path.exists(args[0]):
+            filename = args[0]
+            args = args[1:]
+        else:
+            filename = kwargs.pop('filename', None)
+        
         # create separate instance
-        # NOTE: importing here avoids import-order circularities.
+        # NOTE: importing here avoids circular imports
         from . import Params
-        instance = Params.load(filename, *args, **kwargs).__dict__
-
-        # assign instance's fields to self (in right order)
-        self.__dict__.update(instance)
+        instance = Params.load(filename, *args, **kwargs)
+        
+        # update state dict with that of instance
+        self.__dict__.update(instance.__dict__)
 
     def _setattr(self, name, value, process_and_check=True):
         """
@@ -135,7 +136,7 @@ class ParamsHelpers(ABC):
           `__source__`.
         - `states`: normalized to uppercase letters and validated.
         - `topology`: attempts to build an MDAnalysis Universe to cache masses.
-        - `initial_paths`: coerced into a PathEnsemble immediately.
+        - `initial_paths`: immediately coerced into a PathEnsemble.
         """
         # assign fields
         if name in self.__dataclass_fields__:
@@ -167,8 +168,7 @@ class ParamsHelpers(ABC):
                     update_source(value, name)
 
                 # Special validation for the `fit` callable signature.
-                fit_args = ('params', 'pathensemble',
-                            'key', 'verbose', 'worker')
+                fit_args = 'params', 'pathensemble', 'verbose', 'worker'
                 if name == 'fit':
                     args = tuple(inspect.signature(value).parameters)
                     if args != fit_args:
@@ -222,13 +222,13 @@ class ParamsHelpers(ABC):
 
             # network
             elif name == 'network':
-                # Minimal interface checks expected by AIMMD training/runtime code.
+                # check that methods required at AIMMD runtime are present
                 for attribute in ('forward', 'state_dict',
                                   'load_state_dict', 'parameters'):
                     if not hasattr(value, attribute) or not callable(
                         getattr(value, attribute)):
                         raise TypeError(
-                            f'{name} must have method "{attribute}"')
+                            f'{name} must have method {attribute!r}')
                 update_source(value, name)
 
             # chain type
@@ -254,7 +254,7 @@ class ParamsHelpers(ABC):
             # path
             elif name == 'path':
                 if not PosixPath(value).exists():
-                    raise TypeError(f'Source path {value} does not exist.')
+                    raise TypeError(f'Source path {value!r} does not exist.')
 
             # all the rest
             elif not isinstance(value, expected_type):
@@ -338,7 +338,8 @@ class ParamsHelpers(ABC):
         # redefine values function
         default_values_function = self._default_values_function
         if self.values_function is None or (
-            'network' in fields and default_values_function):
+            ('network' in fields or 'descriptor_transform' in fields)
+             and default_values_function):
             default_values_function = True
             self.__dict__['values_function'] = create_default_values_function(
                 self.network, self.descriptor_transform)
@@ -386,25 +387,25 @@ class ParamsHelpers(ABC):
                         f'{self.topology!r} has {len(universe.atoms)} atoms')
 
             if check_states:
-                # Either recompute states (reload path), or validate the cached type.
+                # reload path if required
                 if self._reload_initial_paths:
                     path = Path(path.fname)
-                    path.states = path.compute(self.states_function)
-                    transition_found = False
-                    for path in (split := path.split()):
-                        if path.type[:3] in (self.states, self.states[::-1]):
-                            transition_found = True
-                            break
-                    if not transition_found:
-                        types = ", ".join([t[:3] for t in split.types()])
-                        raise TypeError(f'the initial trajectory {path.fname!r} '
-                            f'has no {self.states!r} transitions '
-                            f'(path types: {types})')
-                elif not path.type[:3] in (self.states, self.states[::-1]):
-                    raise TypeError(f'the initial trajectory {path.fname!r} '
-                            f'is not an {self.states!r} transition '
-                            f'(path type: {path.type})')
-
+                # recompute states
+                path.states = path.compute(self.states_function)
+                # throw a warning if no transition is found
+                transition_found = False 
+                for split_path in (split_paths := path.split()):
+                    if split_path.type[:3] in (self.states, self.states[::-1]):
+                        path = split_path
+                        transition_found = True
+                        break
+                if not transition_found:
+                    types = ", ".join([t[:3] for t in split_paths.types()])
+                    print(f'Warning: the initial trajectory {path.fname!r} '
+                        f'has no {self.states!r} transitions '
+                        f'(path types: {types}), taking it as it is.\n'
+                         'Perhaps you are using it for brute-force shooting?')
+            
             if check_descrs:
                 # Cache descriptors on the Path object.
                 path.descriptors = path.compute(self.descriptors_function)
