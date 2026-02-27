@@ -23,8 +23,9 @@ worker:
 
 Stop-condition handling is cooperative: the task periodically calls a local
 ``must_stop()`` helper, which consults :attr:`must_stop` and updates the worker's
-internal counters (:attr:`_total_steps`, :attr:`_total_frames`). The loop exits
-by setting :attr:`termination_signal` to a SIGINT-like marker.
+internal counters (:attr:`total_steps`, :attr:`total_frames`) with the associated
+progress bars. The loop exits by setting :attr:`termination_signal` to a
+SIGINT-like marker.
 
 Key inputs come from :class:`~aimmd.params.Params`, notably:
 
@@ -50,7 +51,7 @@ directory:
 Notes
 -----
 - The internal helper ``must_stop()`` is expected to be called frequently. It
-  updates progress reporting and counters by scanning chains/trajectories on
+  updates counters an report progress bars by scanning chains/trajectories on
   disk through :class:`~aimmd.params.Params` helper methods.
 - When ``keep_running=True`` and ``nrounds`` rounds are already completed, the
   worker continues to monitor the filesystem and refresh densities/bins whenever
@@ -146,6 +147,7 @@ class WorkerTrain(ABC):
 
         # get/process params
         directory = self._directory
+        self._folder = self.directory
         params = self.params
         states = params.sorted_states
         r = states[1]
@@ -171,51 +173,55 @@ class WorkerTrain(ABC):
         # initalize everywhere; compute just on the reactive region
         save_interval = params.network_save_interval
         initial_paths = self.initial_paths
+        # only transitions
+        initial_paths = initial_paths.extract(states, states[::-1])
         margins = PathEnsemble([path[1::-1] for path in initial_paths] +
                                [path[-2::1] for path in initial_paths])
 
-        # total steps counter
-        counter = tqdm(total=int(self.nsteps) if self.nsteps < inf else None,
-                       position=0, file=self.original_stdout)
+        steps_counter = None
+        frames_counter = None
 
-        # check wether you have to stop; updates pathensembles
-        def must_stop():
+        # routin checking wether you have to stop; it updates pathensembles
+        def must_stop(): 
+            nonlocal steps_counter, frames_counter
+            
             if self.must_stop:
                 return True
 
             # reset
-            self._total_steps = 0
-            self._total_frames = 0
+            total_steps = 0
+            total_frames = 0
 
             # get chains
             self._shot_chains = params.shot_chains(
                 directory, None, getattr(self, '_shot_chains', []))
             for chain in self._shot_chains:
-                self._total_frames += sum(chain.n_frames)
-                self._total_steps += len(chain)
-
-            n = max(self._total_steps - counter.n, 0)
-            if n:
-                counter.update(n)
-
+                total_frames += sum(chain.n_frames)
+                total_steps += len(chain)
+            
             # react fast when stop requested
             if self.must_stop:
                 return True
-
+            
             # get free trajectories
             self._free_trajectories = params.free_trajectories(directory)
             for trajectory in self._free_trajectories:
-                self._total_frames = trajectory.n_frames
-
+                total_frames += trajectory.n_frames
+            
+            # assign (will update progress bars)
+            self.total_steps = total_steps
+            self.total_frames = total_frames
+        
         # one cycle
         if must_stop():
             self.termination_signal = 2
             return
-
+        
         # to fit function
         kwargs['worker'] = self
-
+        
         # load the network if it is already possible
+        print(f'\nLoading pre-existing network parameters {now()}')
         network_fname = f'{directory}/network{states}.h5'
         params.update_network(directory, timeout=0, raise_if_failure=False)
 
@@ -313,83 +319,94 @@ class WorkerTrain(ABC):
             if self.termination_signal:
                 return
 
+            # get TPE weights
+            if do_tps:
+                weights = (pathensemble.weights *
+                           pathensemble.are_transitions(states))
+            
+            # reweight pathensemble
             print(f'\nReweighting the full path ensemble {now()}')
-            if not do_tps:  # if doing tps, already the right weights
-                rw_p = reweight_parameters.copy()
+            
+            # will update reweighting parameters
+            rw_p = reweight_parameters.copy()
+            
+            # find sp_cutoff_min and sp_cutoff_max
+            sp_cutoff_min = bins[+0]
+            sp_cutoff_max = bins[-1]
+            if sp_cutoff_min == -inf and bins[+1] < +inf:
+                sp_cutoff_min = bins[+1]
+            if sp_cutoff_max == +inf and bins[-2] > -inf:
+                sp_cutoff_max = bins[-2]
+            if 'sp_cutoff_min' not in rw_p:
+                rw_p['sp_cutoff_min'] = sp_cutoff_min
+            if 'sp_cutoff_max' not in rw_p:
+                rw_p['sp_cutoff_max'] = sp_cutoff_max
 
-                # find sp_cutoff_min and sp_cutoff_max
-                sp_cutoff_min = bins[+0]
-                sp_cutoff_max = bins[-1]
-                if sp_cutoff_min == -inf and bins[+1] < +inf:
-                    sp_cutoff_min = bins[+1]
-                if sp_cutoff_max == +inf and bins[-2] > -inf:
-                    sp_cutoff_max = bins[-2]
-                if 'sp_cutoff_min' not in rw_p:
-                    rw_p['sp_cutoff_min'] = sp_cutoff_min
-                if 'sp_cutoff_max' not in rw_p:
-                    rw_p['sp_cutoff_max'] = sp_cutoff_max
+            # reweight
+            result1 = pathensemble.reweight(
+                states, **rw_p, source=source)
+            result2 = pathensemble.reweight(
+                states[::-1], **rw_p, source=source)
+            w1, extremes1, xP1 = result1[0], result1[4], result1[5]
+            w2, extremes2, xP2 = result2[0], result2[4], result2[5]
 
-                # reweight
-                result1 = pathensemble.reweight(
-                    states, **rw_p, source=source)
-                result2 = pathensemble.reweight(
-                    states[::-1], **rw_p, source=source)
-                w1, extremes1, xP1 = result1[0], result1[4], result1[5]
-                w2, extremes2, xP2 = result2[0], result2[4], result2[5]
-                # assign weights only to excursions
-                excursions_mask = pathensemble.types(f'.{r}..')
-                pathensemble.weights = (w1 + w2) * excursions_mask
+            # bonus track: estimate rates
+            lengths = pathensemble.n_frames
+            k12 = np.sum(w1 * lengths)
+            k12 = 1 / k12 if k12 else nan
+            k21 = np.sum(w2 * lengths)
+            k21 = 1 / k21 if k21 else nan
+            print(f'    k12 estimate: {k12:.3e} [1/dt]')
+            print(f'    k21 estimate: {k21:.3e} [1/dt]')
+            print(f'    {pathensemble.n_frames.sum()} frames')
+            
+            # only after one training round: rescale committor
+            # TODO in the future you may want to adjust it
+            # after every reweighting
+            if rescale_committor and source == 'new':
+                print(f'\nRescaling committor to match '
+                      f'the crossing probability {now()}')
+                knots, values = find_knots_and_values(
+                    extremes1, extremes2, xP1, xP2)
+                if not len(knots):
+                    print(f'*** rescaling is not possible (yet)')
+                else:
+                    print(f'***     knot       value')
+                for knot, value in zip(knots, values):
+                    print(f'    {knot:+7.3f} -> {value:+7.3f}')
 
-                # bonus track: estimate rates
-                lengths = pathensemble.n_frames
-                k12 = np.sum(w1 * lengths)
-                k12 = 1 / k12 if k12 else nan
-                k21 = np.sum(w2 * lengths)
-                k21 = 1 / k21 if k21 else nan
-                print(f'    k12 estimate: {k12:.3e} [1/dt]')
-                print(f'    k21 estimate: {k21:.3e} [1/dt]')
+                # load interpolation in network
+                network.set_knots_and_values(knots, values)
 
-                # only after one training round: rescale committor
-                # TODO in the future you may want to adjust it
-                # after every reweighting
-                if rescale_committor and source == 'new':
-                    print(f'\nRescaling committor to match '
-                          f'the crossing probability {now()}')
-                    knots, values = find_knots_and_values(
-                        extremes1, extremes2, xP1, xP2)
-                    if not len(knots):
-                        print(f'*** rescaling is not possible (yet)')
-                    else:
-                        print(f'***     knot       value')
-                    for knot, value in zip(knots, values):
-                        print(f'    {knot:+7.3f} -> {value:+7.3f}')
+                # rescale bins in place
+                rescale_bins(bins, knots, values)
+                print(f'    rescaled bins: {bins}')
 
-                    # load interpolation in network
-                    network.set_knots_and_values(knots, values)
-
-                    # rescale bins in place
-                    rescale_bins(bins, knots, values)
-                    print(f'    rescaled bins: {bins}')
-
-                    # rescale all of temp values
-                    if len(knots):
-                        pathensemble.compute(
-                            lambda x: rescale(x, knots, values),
-                            'new', 'new', compute_condition,
-                            overwrite=True, worker=self)
-                        time.sleep(.1)  # stability
+                # rescale all of temp values
+                if len(knots):
+                    pathensemble.compute(
+                        lambda x: rescale(x, knots, values),
+                        'new', 'new', compute_condition,
+                        overwrite=True, worker=self)
+                    time.sleep(.1)  # stability
 
             # check mid-cycle
             if self.termination_signal:
                 break
 
-            print(f'\nProjecting the {"T" if do_tps else ""}PE '
-                  f'density {now()}')
+            # assign weights
+            if not do_tps:  # PE weights in reactive region
+                excursions_mask = pathensemble.types(f'.{r}..')
+                pathensemble.weights = (w1 + w2) * excursions_mask
+            else:  # TPE weights
+                pathensemble.weights *= pathensemble.are_transitions(states)
+            
+            print(f'\nProjecting the {"T" * do_tps}PE density {now()}')
             densities = pathensemble.project(bins, source=source)
             densities[densities == 0.] = 1e-15
             densities /= densities.sum()
             print(f'    densities: {densities}')
-
+            
             if source == 'new':
                 # replace values (as much as possible) all at once
                 print(f'\nSubstituting \'...values.npy\' files '
@@ -408,8 +425,8 @@ class WorkerTrain(ABC):
             save_npy(f'{directory}/densities{states}.npy', densities)
 
             # backup network
-            n = (counter.n // save_interval) * save_interval
+            n = (self.total_steps // save_interval) * save_interval
             backup = f'{network_fname[:-3]}.step{n:06g}.h5'
-            if counter.n and not os.path.exists(backup):
+            if self.total_steps and not os.path.exists(backup):
                 shutil.copyfile(network_fname, backup)
                 print(f'*** copied {network_fname!r} to {backup!r}')
