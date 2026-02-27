@@ -4,30 +4,37 @@ aimmd.network.fit
 
 Training utilities for AIMMD committor networks.
 
-This module provides the high-level :func:`fit` routine used to train
-``params.network`` (a `torch.nn.Module`) to predict the *logit committor* from
-AIMMD path-sampling data stored in a :class:`~aimmd.pathensemble.PathEnsemble`.
+This module provides :func:`fit`, the routine that trains/updates the
+neural-network model stored in ``params.network`` (a `torch.nn.Module`) to
+predict the *logit committor* from AIMMD path-sampling data stored in a
+:class:`~aimmd.pathensemble.PathEnsemble`.
+
+In an AIMMD run, workers generate trajectories and accumulate them in a
+:class:`~aimmd.pathensemble.PathEnsemble`. Periodically, AIMMD calls a *training
+hook* to improve the model that guides subsequent sampling. By default (when
+``Params.fit`` is not set), AIMMD uses :func:`aimmd.network.fit.default`, which
+forwards directly to :func:`fit`.
 
 Core idea
 ---------
-Training data are assembled from multiple categories of paths/frames (internal
-state frames, free trajectories, and shooting trajectories). Each frame is
-associated with a 2-component "result" vector ``r = (r_to_state1, r_to_state2)``
-representing fractional contributions towards reaching each end state. A
-selection probability is also assigned to each frame to control how batches are
-drawn.
+Training examples are assembled from multiple categories of paths/frames
+(internal state frames, free trajectories, and shooting trajectories). Each
+frame is assigned:
 
-The training objective is a log-binomial loss (optionally modified by a Bayesian
-quadratic penalty close to the end states) with optional smoothness and L1
+- a 2-component outcome vector ``r = (r_to_state1, r_to_state2)`` encoding
+  fractional contributions towards reaching each end state, and
+- a selection probability that controls how batches are drawn.
+
+The training objective is a log-binomial loss (optionally modified near the end
+states by a Bayesian-like quadratic penalty), with optional smoothness and L1
 regularization terms.
 
 Side effects
 ------------
-:func:`fit` **modifies the network in-place** by calling
-``network.reset_parameters()`` and then training with Adam. Depending on stop
-criteria and early stopping settings, the function may restore a previously saved
-state dict.
-
+:func:`fit` **modifies the network in-place**. Training begins after calling
+``params.network.reset_parameters()`` and proceeds with Adam. Depending on stop
+criteria and early stopping settings, the function may restore a previously
+saved state dict.
 """
 
 # external imports
@@ -47,7 +54,6 @@ from ..analysis.utils import compute_bins, merge_marginal_bins
 
 def fit(params,
         pathensemble,
-        keys=None,
         
         # values binning
         nbins=0,
@@ -63,7 +69,7 @@ def fit(params,
         augment='no',
         
         # learning
-        lr=1e-3,
+        lr=2e-4,
         loss_bayesian_factor=0,
         loss_smoothening_weight=0,
         loss_regularization_weight=0,
@@ -72,14 +78,14 @@ def fit(params,
         batching_strategy='draw-replace',
         
         # stopping
-        stop=50.,
+        stop=80.,
         train_validation_early_stopping=False,
         early_stopping_patience=10,
         early_stopping_min_samples=1000,
         early_stopping_split=0.1,
         
         # processing
-        in_memory=False,
+        in_memory=True,
         graphs=False,
 
         # misc
@@ -126,12 +132,6 @@ def fit(params,
         - Path access compatible with :func:`aimmd.network.utils.extract_indices_and_series`,
           i.e. supports indexing and provides the necessary per-path interface
           (`type`, `internal('indices')`, `indices`, `shooting_index`, `get(...)`).
-
-    keys : None or array-like, optional
-        Selector for which paths to use for training.
-        **Note:** in the current implementation this argument is not used
-        directly (path selection is performed via internal masks built from
-        ``pathensemble.types()``). It is retained for API compatibility.
 
     nbins : int, default=0
         If > 0, define committor-space bins (via :func:`compute_bins`) and build
@@ -228,7 +228,7 @@ def fit(params,
     early_stopping_split : float, default=0.1
         Fraction of the dataset used as validation set when early stopping is on.
 
-    in_memory : bool, default=False
+    in_memory : bool, default=True
         Descriptor loading strategy:
         - If True, transform all descriptors up-front and keep them in memory.
         - If False, apply `descriptor_transform` per batch.
@@ -262,7 +262,6 @@ def fit(params,
     results : numpy.ndarray, shape (N, 2)
         Per-sample fractional outcomes to each end state. These are adjusted
         in bins for imbalance and may include augmented contributions.
-
     """
     # Input consistency checks (fail fast)
     if batching_strategy not in ('draw-replace', 'loop-all'):
@@ -292,8 +291,10 @@ def fit(params,
 
     # choose where descriptors are sourced from in Path storage
     descriptors_source = ('descriptors' if params.descriptors_function else
-                          'positions')
-    descriptor_transform = params.descriptor_transform or (lambda x:x)
+                          'coordinates')
+    descriptor_transform = params.descriptor_transform
+    if params.descriptor_transform is None:
+        descriptor_transform = lambda x: x
     
     # legacy placeholders (kept as-is; only set when `augment` is falsy)
     if not augment:
@@ -316,7 +317,7 @@ def fit(params,
     (in1, in1_back, in1_forw, in1_descriptors,
      npaths_in1) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == r) & (t == a)), descriptors_source)
-    if must_stop():
+    if must_stop():  # responsiveness
         return [], [], [], [], []
     (in2, in2_back, in2_forw, in2_descriptors,
      npaths_in2) = extract_indices_and_series(pathensemble,
@@ -423,6 +424,7 @@ def fit(params,
     shot2to1_results = np.zeros((lengths[9], 2))
 
     # Deterministic labels for end-state frames
+    # (will put them to zero if required)
     # in 1
     in1_results[:, 0] = 1.
     
@@ -502,7 +504,7 @@ def fit(params,
     # in 1, in 2 data
     n_internal_frames = lengths[0] + lengths[1]
     if lengths[0]:
-        selection_probabilities[:lengths[0]] = end_state_factor / lengths[0] 
+        selection_probabilities[:lengths[0]] = end_state_factor / lengths[0]
     if lengths[1]:
         selection_probabilities[lengths[0]:n_internal_frames
             ] = end_state_factor / lengths[1]
@@ -518,7 +520,7 @@ def fit(params,
     
     # Assign selection probabilities and adjust results within each bin
     indices = np.digitize(values, bins) - 1
-    present = results[n_internal_frames:].sum(axis=1).astype(bool)    
+    present = results[n_internal_frames:].sum(axis=1).astype(bool)
     for i, bin_counts in enumerate(counts):
         # which data are we talking about?
         mask = n_internal_frames + np.flatnonzero((indices == i) & present)
@@ -561,19 +563,18 @@ def fit(params,
         print(f'    ... {len(mask):<9} frames')
         print(f'    ... {r1:.3e} average result to {a}')
         print(f'    ... {r2:.3e} average result to {b}')
-        print(f'    ... {adjust0 if mask0.size else 0:.3e} ∝sel prob of [a,b]')
-        print(f'    ... {adjust1 if mask1.size else 0:.3e} ∝sel prob of [a,0]')
-        print(f'    ... {adjust2 if mask2.size else 0:.3e} ∝sel prob of [0,b]')
+        print(f'    ... {adjust0 if mask0.size else 0:.3e} ∝sel prob of [x,y]')
+        print(f'    ... {adjust1 if mask1.size else 0:.3e} ∝sel prob of [x,0]')
+        print(f'    ... {adjust2 if mask2.size else 0:.3e} ∝sel prob of [0,y]')
     
-    # keep in a or in b only if required or truly necessary
-    if (a not in state_bins and state_bins != 'all' and
-        (results[n_internal_frames:, 0] >
-         results[n_internal_frames:, 1]).any()):
-        selection_probabilities[:lengths[0]] = 0.
-    if (b not in state_bins and state_bins != 'all' and
-        (results[n_internal_frames:, 1] >
-         results[n_internal_frames:, 0]).any()):
-        selection_probabilities[lengths[0]:n_internal_frames] = 0.
+    # remove training set in A and B only if required
+    # and if there is enough sampling
+    r1, r2 = results[n_internal_frames:].T
+    if state_bins != 'all' and (r1 > r2).any() and (r2 > r1).any():
+        if a not in state_bins:
+            selection_probabilities[:lengths[0]] = 0.
+        if b not in state_bins:
+            selection_probabilities[lengths[0]:n_internal_frames] = 0.
     
     # modulate selection probabilities for transition paths
     cumsum_lengths = np.cumsum(lengths)
@@ -588,6 +589,7 @@ def fit(params,
     values = values[keepers[n_internal_frames:]]
     descriptors = descriptors[keepers]
     results = results[keepers]
+    k = results[:, 0] > 0
     training_set_size = len(selection_probabilities)
     if not keepers.any() or must_stop():
         return [], [], [], [], []
@@ -868,31 +870,46 @@ def fit(params,
     return losses, scales, values, selection_probabilities, results#, D, R
 
 
-def placeholder(params, pathensemble, key, verbose, worker):
-    """Compatibility wrapper around :func:`fit`.
+def default(params, pathensemble, verbose=True, worker=None):
+    """Default training hook used when `Params.fit` is not set.
+
+    AIMMD keeps the full run configuration in :class:`~aimmd.Params`. This
+    includes the neural-network model to be trained and all settings needed to
+    run the simulation (system, engines, sampling, I/O).
+
+    If `Params` does not specify a custom training callable, AIMMD calls this
+    function. It is a thin wrapper that forwards its arguments to :func:`fit`
+    unchanged, so the training uses **all default hyperparameters of**
+    :func:`fit` (e.g. learning rate, batch size, number of epochs, binning and
+    augmentation settings) unless a custom training function is provided.
 
     Parameters
     ----------
     params : aimmd.Params
-        Passed through to :func:`fit`.
+        Complete AIMMD configuration, including the network model.
     pathensemble : PathEnsemble
-        Passed through to :func:`fit`.
-    key : Any
-        Passed as `key` to :func:`fit` **as written** (note that :func:`fit`
-        defines `keys`, not `key`; this wrapper preserves current behavior).
-    verbose : bool
-        Passed through to :func:`fit`.
-    worker : aimmd.Worker or None
-        Passed through to :func:`fit`.
+        The trajectories generated so far; used by :func:`fit` to assemble the
+        training set.
+    verbose : bool, optional
+        Controls training log/progress output. If True (default), :func:`fit`
+        may print progress information; if False, it should run quietly.
+    worker : aimmd.Worker or None, optional
+        Worker context for this run. If provided, :func:`fit` may use it for
+        coordinating with other workers. If None (default), :func:`fit` runs
+        without a worker context.
 
     Returns
     -------
     tuple
         Exactly the return value of :func:`fit`.
 
+    See Also
+    --------
+    fit
+        Train/update the AIMMD model from the current
+        :class:`~aimmd.pathensemble.PathEnsemble`.
     """
     return fit(params=params,
                pathensemble=pathensemble,
-               key=key,
                verbose=verbose,
                worker=worker)
