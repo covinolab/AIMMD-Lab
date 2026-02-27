@@ -102,7 +102,6 @@ def fit(params,
         worker=None):
     return _fit(params,
         pathensemble,
-        key,
         nbins=10,
         cutoff_min=0.5,
         cutoff_max=20.,
