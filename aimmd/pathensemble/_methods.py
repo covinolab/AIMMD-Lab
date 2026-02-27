@@ -11,8 +11,8 @@ all paths in the ensemble:
 - filtering by *type* patterns (transition/excursion/internal),
 - extracting frames across the ensemble,
 - copying/splitting,
-- merging all paths into a single :class:`aimmd.path.Path`,
-- sampling frames uniformly from selected regions,
+- merging/concatenating all paths into a single :class:`aimmd.path.Path`,
+- sampling frames according to path ensemble weights from selected regions,
 - producing aggregated shooting results over sweeps.
 
 Terminology
@@ -35,6 +35,7 @@ Filtering uses :func:`aimmd.pathensemble.utils.match_patterns`.
 import numpy as np
 from abc import ABC
 from tqdm import tqdm
+from numbers import Integral
 
 # aimmd imports
 from .utils import match_patterns
@@ -291,6 +292,52 @@ class PathEnsembleMethods(ABC):
         """
         return np.array([path.in_memory(attribute) for path in self._paths])
 
+    def join(self):
+        """
+        Merge all paths into a single `Path` composed of concatenated file
+        ranges.
+        
+        Returns
+        -------
+        aimmd.path.Path
+            A new Path with `_fnames`, `_first`, `_last` representing the
+            concatenation of all trajectory segments across all paths.
+            In-memory data will not be copied.
+
+        Warnings
+        --------
+        - Only the first path's `shooting_index` is propagated (if any paths exist).
+        - Exclusion logic is simplified: if not all paths are accepted, the merged
+          path uses `exclude_from = 0` (see code comment).
+        """
+
+        fnames = []
+        first = []
+        last = []
+        for path in self._paths:
+            fnames.extend(path._fnames)
+            first.extend(path._first)
+            last.extend(path._last)
+        
+        # simplify acceptance/exclusion propagation
+        if not self.accepted.all():
+            exclude_from = 0
+        else:
+            exclude_from = -1
+        
+        # build a Path instance without calling its initializer
+        result = object.__new__(Path)
+        result._fnames = fnames
+        result._first = first
+        result._last = last
+        result._exclude_from = exclude_from
+        if len(self):
+            result._shooting_index = self._paths[0]._shooting_index
+        else:
+            result._shooting_index = 0
+        return result
+        
+
     def merge(self):
         """
         Merge all paths into a single `Path` composed of merged file ranges.
@@ -305,7 +352,7 @@ class PathEnsembleMethods(ABC):
         --------
         - Only the first path's `shooting_index` is propagated (if any paths exist).
         - Backward segments are converted to forward ranges.
-        - "Info in memory" is lost because a new Path object is built manually.
+        - In-memory data is lost because a new Path object is built manually.
         - Exclusion logic is simplified: if not all paths are accepted, the merged
           path uses `exclude_from = 0` (see code comment).
 
@@ -369,18 +416,26 @@ class PathEnsembleMethods(ABC):
         """
         return self.merge().compute(*args, **kwargs)
 
-    def sample(self, n_samples, state="internal"):
+    def sample(self, n_samples, weights=None,
+               source='values', vmin=None, vmax=None):
         """
-        Sample individual frames from the ensemble and return them as a Path.
+        Sample individual frames from the ensemble and return them as a Path,
+        according to the path weights.
 
         Parameters
         ----------
         n_samples : int
             Number of frames to sample (with replacement).
-        state : str, default="internal"
-            - If "internal": sample among `path.internal('indices')`.
-            - Else: sample among indices where `path.states == state`.
-
+        weights : array_like, optional
+            Per-path weights overriding ``self.weights[indices]``. If not
+            provided, path ensemble weights are used (`self.weights[key]`).
+        source : str, default='values'
+            Considered for getting frames between vmin and vmax
+        vmin : float, default=None
+            If specified, do not get frames with value below vmin
+        vmax : float, default=None
+            If specified, do not get frames with value above vmax
+        
         Returns
         -------
         aimmd.path.Path
@@ -398,24 +453,44 @@ class PathEnsembleMethods(ABC):
         if not n_samples or not len(self):
             return result
 
+        # process weights
+        if isinstance(weights, Integral):
+            weights = np.ones(len(self))  # all weights scaled the same
+        else:
+            weights = weights or self.weights
+
         # build a "flat" index over all eligible frames across all paths
         paths = []
         indices = []
-        for path in self._paths:
-            if state == "internal":
-                this = path.internal("indices")
-            else:
-                this = np.flatnonzero(path.states == state)
+        p = []  # selection probabilities
+        for path, weight in zip(self._paths, weights):
+            # restrict between vmin and vmax
+            this = path.internal('indices')
+            if vmin is not None or vmax is not None:
+                values = path.internal(source)
+                mask = np.ones(len(values), dtype=bool)
+                if vmin is not None:
+                    mask &= values >= vmin
+                if vmax is not None:
+                    mask &= values < vmax
+                this = this[mask]
             indices.extend(this)
             paths.extend([path] * len(this))
-
+            p.extend([weight] * len(this))
+        
         if not indices:
             return result
+
+        # process selection probabilities
+        p = np.array(p)
+        if not (norm := p.sum()):
+            raise RuntimeError('cannot sample: each frame has nonzero weight')
+        p /= norm
 
         fnames = []
         first = []
         last = []
-        for i in np.random.choice(len(indices), n_samples):
+        for i in np.random.choice(len(indices), n_samples, p=p):
             path, i = paths[i], indices[i]
             k, i = path._get_local_loc(i)
             fnames.append(path._fnames[k])
