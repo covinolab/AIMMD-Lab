@@ -529,7 +529,7 @@ class ParamsMethods(ABC):
 
     def copy(self):
         """
-        Shallow-copy this Params object.
+        *Shallow*-copy this Params object. Only force reload of inital paths.
 
         Returns
         -------
@@ -543,4 +543,5 @@ class ParamsMethods(ABC):
         from . import Params
         copy = object.__new__(Params)
         copy.__dict__.update(self.__dict__)
+        copy.initial_paths = self.initial_paths  # force reload
         return copy
