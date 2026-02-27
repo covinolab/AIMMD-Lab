@@ -544,7 +544,7 @@ def select_shooting_point(pool, params, folder,
     densities *= populations + 1.
     if lorentzian < inf:
         centers = bin_centers(bins)
-        densities *= 1 / (centers ** 2 + lorentzian ** 2)
+        densities *= centers ** 2 + lorentzian ** 2
 
     # weights
     mask = histogram > 0
