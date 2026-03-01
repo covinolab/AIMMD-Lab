@@ -225,8 +225,8 @@ class ParamsHelpers(ABC):
                 # check that methods required at AIMMD runtime are present
                 for attribute in ('forward', 'state_dict',
                                   'load_state_dict', 'parameters'):
-                    if not hasattr(value, attribute) or not callable(
-                        getattr(value, attribute)):
+                    if (not hasattr(value, attribute) or
+                        not callable(getattr(value, attribute)):
                         raise TypeError(
                             f'{name} must have method {attribute!r}')
                 update_source(value, name)
@@ -337,9 +337,9 @@ class ParamsHelpers(ABC):
 
         # redefine values function
         default_values_function = self._default_values_function
-        if self.values_function is None or (
-            ('network' in fields or 'descriptor_transform' in fields)
-             and default_values_function):
+        if (self.values_function is None or
+           ('network' in fields or 'descriptor_transform' in fields) and
+            default_values_function):
             default_values_function = True
             self.__dict__['values_function'] = create_default_values_function(
                 self.network, self.descriptor_transform)
@@ -360,12 +360,10 @@ class ParamsHelpers(ABC):
         check_states = ('states' in fields or
                         'states_function' in fields or
                         check_paths)
-        check_descrs = self.descriptors_function is not None and (
-                        'descriptors_function' in fields or
-                        check_paths)
+        check_descrs = (self.descriptors_function is not None and
+                       ('descriptors_function' in fields or check_paths))
         if self.descriptors_function is None:
-            check_values = ('values_function' in fields or
-                            check_paths)
+            check_values = 'values_function' in fields or check_paths
         else:
             check_values = ('values_function' in fields or
                             'descriptors_function' in fields or
