@@ -263,7 +263,7 @@ class ParamsIO(ABC):
                         # update __module__ of callables/classes originating
                         # from the now-renamed local module
                         for name, obj in local_module.__dict__.items():
-                            if (callable(obj) or isinstance(obj, type)) and (
+                            if ((callable(obj) or isinstance(obj, type)) and
                                 hasattr(obj, '__module__') and
                                 obj.__module__ == original_name):
                                 obj.__module__ = local_name
