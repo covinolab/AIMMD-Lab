@@ -226,7 +226,7 @@ class ParamsHelpers(ABC):
                 for attribute in ('forward', 'state_dict',
                                   'load_state_dict', 'parameters'):
                     if (not hasattr(value, attribute) or
-                        not callable(getattr(value, attribute)):
+                        not callable(getattr(value, attribute))):
                         raise TypeError(
                             f'{name} must have method {attribute!r}')
                 update_source(value, name)
