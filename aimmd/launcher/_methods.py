@@ -241,7 +241,7 @@ class LauncherMethods(ABC):
           ``ceil(total_processes / ntasks_per_node)``
 
           and written as ``#SBATCH --nodes=...``.
-        - The script uses ``srun --exclusive --nnodes=1 --ntasks=1`` for each
+        - The script uses ``srun --exclusive --nodes=1 --ntasks=1`` for each
           worker to ensure processes do not share a task allocation.
         """
         # retrieve run information: slurm header
@@ -328,7 +328,7 @@ class LauncherMethods(ABC):
                 args = ' '.join([f'"{arg}"'
                                  if not isinstance(arg, (bool, bool_)) else
                                  '"True"' if arg else '""' for arg in args])
-                file.write(f'srun --exclusive --nnodes=1 --ntasks=1 '
+                file.write(f'srun --exclusive --nodes=1 --ntasks=1 '
                            f'--cpus-per-task={cpus_per_task} '
                            f'--gpus-per-task={gpus_per_task} \\\n')
                 file.write(f'  "${{PYTHON}}" "${{WORKER}}" {args} &\n')
