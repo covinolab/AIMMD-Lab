@@ -116,7 +116,7 @@ class WorkerProperties(ABC):
         # Convert a filename into an open file handle
         # (create folders if not existing).
         if isinstance(log_file, (str, PosixPath)):
-             path = Path(self.directory) / log_file
+             path = PosixPath(self.directory) / log_file
              path.parent.mkdir(parents=True, exist_ok=True)
              log_file = open(path, 'a+', buffering=1)
 
