@@ -36,6 +36,7 @@ import sys
 import time
 from abc import ABC
 from math import inf
+from pathlib import PosixPath
 
 # aimmd imports
 from ..pathensemble import PathEnsemble
@@ -112,9 +113,12 @@ class WorkerProperties(ABC):
         sys.stdout = self.original_stdout
         sys.stderr = self.original_stderr
 
-        # Convert a filename into an open file handle.
-        if isinstance(log_file, str):
-            log_file = open(f'{self.directory}/{log_file}', 'a+', buffering=1)
+        # Convert a filename into an open file handle
+        # (create folders if not existing).
+        if isinstance(log_file, (str, PosixPath)):
+             path = Path(self.directory) / log_file
+             path.parent.mkdir(parents=True, exist_ok=True)
+             log_file = open(path, 'a+', buffering=1)
 
         # Redirect output if a target is provided.
         if log_file:
