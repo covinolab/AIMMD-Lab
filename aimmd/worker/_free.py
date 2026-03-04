@@ -156,7 +156,6 @@ class WorkerFree(ABC):
         # get/process params
         k = int(k)
         total = int(total)
-        directory = self._directory
         params = self.params
         ext = params.trajectory_extension
         len_ext = len(ext)
@@ -168,8 +167,7 @@ class WorkerFree(ABC):
         t = process_state(target_state, states)
         r = states[1]
         tr = f'{t}{r}'  # allowed states: target & reactive
-        self._folder = f'{self.directory}/free{t}'
-        folder = f'{directory}/free{t}'
+        
         restart_with_transition = (
             params.restart_free_simulations_with_transitions == 'all' or
             t in params.restart_free_simulations_with_transitions)
@@ -178,12 +176,17 @@ class WorkerFree(ABC):
         initial_paths = initial_paths.extract(states, states[::-1])
         if not initial_paths:
             raise RuntimeError('some initial paths must be transitions')
-
-        # create folder if not existing
-        if not os.path.exists(folder):
-            os.mkdir(folder)
-            print(f'+++ created {folder!r}')
-
+        
+        # create folder if not existing (along with all intermediate paths)
+        directory = self._directory
+        folder = f'{directory}/free{t}'
+        os.system(f'mkdir -p {folder}')
+        
+        # exclusively for progress bar
+        # location can be different from folder if the params file does not live
+        # in the current working directory
+        self._location = f'{self.directory}/free{t}'
+        
         # must have network, bins, and descriptors
         if wait and params.nbins > 1:
             print(f'\nWaiting for neural network, bins, densities {now()}')
