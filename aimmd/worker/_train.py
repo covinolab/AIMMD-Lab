@@ -147,7 +147,6 @@ class WorkerTrain(ABC):
 
         # get/process params
         directory = self._directory
-        self._folder = self.directory
         params = self.params
         states = params.sorted_states
         r = states[1]
