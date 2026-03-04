@@ -176,16 +176,16 @@ class WorkerFree(ABC):
         initial_paths = initial_paths.extract(states, states[::-1])
         if not initial_paths:
             raise RuntimeError('some initial paths must be transitions')
+
+        # exclusively for progress bar
+        # location can be different from folder if the params file does not live
+        # in the current working directory
+        self._location = f'{self.directory}/free{t}'
         
         # create folder if not existing (along with all intermediate paths)
         directory = self._directory
         folder = f'{directory}/free{t}'
         os.system(f'mkdir -p {folder}')
-        
-        # exclusively for progress bar
-        # location can be different from folder if the params file does not live
-        # in the current working directory
-        self._location = f'{self.directory}/free{t}'
         
         # must have network, bins, and descriptors
         if wait and params.nbins > 1:
