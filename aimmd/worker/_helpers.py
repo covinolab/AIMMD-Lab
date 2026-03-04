@@ -121,12 +121,14 @@ class WorkerHelpers(ABC):
             self.params = params
         else:
             self.params = Params(params, initial_paths=None, save=False)
-
-        # will then potentially be different at execution time
-        # directory is user provided
-        # _directory is the directory with respect to the params file location
-        # _folder is where simulations actually run (if any)
-        self.directory = self._folder = self._directory = directory
+        
+        # "directory" is where AIMMD runs
+        # "_directory" is the path of "directory" with respect to "params.path"
+        # "_location" is what features in the progress bars:
+        #   if simulating, that's where simulations actually run
+        #   if training, that's the same path as "_directory"
+        # "_directory" and "_location" will be updated when the worker "runs"
+        self.directory = self._location = self._directory = directory
         self.localid = int(localid)
         self.cpus_per_task = cpus_per_task
         self.gpus_per_task = gpus_per_task
@@ -350,7 +352,7 @@ class WorkerHelpers(ABC):
             
             # Base settings safe for all backends
             kwargs = {
-                "desc": str(self._folder),
+                "desc": str(self._location),
                 "unit": unit,
                 "initial": int(n),
                 "total": total,
