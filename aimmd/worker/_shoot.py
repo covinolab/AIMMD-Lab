@@ -205,7 +205,6 @@ class WorkerShoot(ABC):
         """
         # get/process params
         mode = 'shoot'
-        directory = self._directory
         params = self.params
         do_tps = params.chain_type == 'tps'
         # which state are we talking about?
@@ -215,12 +214,6 @@ class WorkerShoot(ABC):
         else:
             at_least_one = ''
         t = process_state(target_state, states)
-        if not sweep:
-            self._folder = f'{self.directory}/chain{t}{k}'
-            folder = f'{directory}/chain{t}{k}'
-        else:
-            folder = f'{directory}/sweep{t}{k}'
-            self._folder = f'{self.directory}/sweep{t}{k}'
         initial_paths = self.initial_paths  # right order
         initial_paths._paths = cycle(initial_paths._paths, int(k))  
         nbins = params.nbins
@@ -253,11 +246,22 @@ class WorkerShoot(ABC):
         else:
             eneconv = None
 
-        # create folder if not existing
-        if not os.path.exists(folder):
-            os.mkdir(folder)
-            print(f'+++ created {folder!r}')
+        # (temporary) folder: will be updated with directory
+        if not sweep:
+            folder = f'chain{t}{k}'
+        else:
+            folder = f'sweep{t}{k}'
 
+        # exclusively for progress bar
+        # location can be different from folder if the params file does not live
+        # in the current working directory
+        self._location = f'{self.directory}/{folder}'
+        
+        # create folder if not existing (along with all intermediate paths)
+        directory = self._directory
+        folder = f'{directory}/{folder}'
+        os.system(f'mkdir -p {folder}')
+        
         # load chain and pool
         if not sweep:
             if t == states[1] and not do_tps:
