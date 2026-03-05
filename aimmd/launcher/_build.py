@@ -247,7 +247,7 @@ class LauncherBuild(ABC):
                         (params_path, directory, localid,
                          self._cpus_per_task, self._gpus_per_task,
                          log_file, *conditions, termination_timeout,
-                         'shoot', k, t, sweep))
+                         'shoot', t, k, sweep))
                     descriptions.append(f'"{directory}" {folder}')
                     i += 1
 
