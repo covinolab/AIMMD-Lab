@@ -388,8 +388,9 @@ class ParamsHelpers(ABC):
                 # reload path if required
                 if self._reload_initial_paths:
                     path = Path(path.fname)
-                # recompute states
-                path.states = path.compute(self.states_function)
+                # recompute states (only if not manually overwritten)
+                if 'states' not in path.__dict__:
+                    path.states = path.compute(self.states_function)
                 # throw a warning if no transition is found
                 transition_found = False 
                 for split_path in (split_paths := path.split()):
