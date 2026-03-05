@@ -143,7 +143,7 @@ from ..execute.threads import ThreadExecutor
 # worker "shoot" run method
 class WorkerShoot(ABC):
 
-    def shoot(self, target_state=1, k=0, sweep=False):
+    def shoot(self, k=0, target_state=1, sweep=False):
         """
         Public convenience wrapper for the shooting task.
         
@@ -151,18 +151,18 @@ class WorkerShoot(ABC):
 
         Parameters
         ----------
+        k : int, optional
+            Worker index used to disambiguate output folders (e.g., ``chainR{k}``)
+            and to offset cycling of initial paths. Default is ``0``.
         target_state : int or str, optional
             Target state used to select shooting points and to name output
             folders.
 
-            - If int, interpreted as an index into ``params.states``.
+            - If int, interpreted as an index into ``params.states`` (a, r, b).
             - If str, interpreted as the state label directly.
 
             The common convention is: ``a (0)``, ``r (1)``, ``b (2)``, but any
             label supported by ``params.states`` is accepted. Default is ``1``.
-        k : int, optional
-            Worker index used to disambiguate output folders (e.g., ``chain{t}{k}``)
-            and to offset cycling of initial paths. Default is ``0``.
         sweep : bool, optional
             If ``False``, run committor-guided shooting with a selection pool
             (enhanced sampling in the reactive region).
@@ -178,9 +178,9 @@ class WorkerShoot(ABC):
         object
             Whatever :meth:`Worker.run` returns for the ``'shoot'`` task.
         """
-        return self.run('shoot', target_state, k, sweep)
+        return self.run('shoot', k, target_state, sweep)
 
-    def _shoot(self, target_state=1, k=0, sweep=False):
+    def _shoot(self, k=0, target_state=1, sweep=False):
         """
         Internal implementation of the ``'shoot'`` worker task.
 
