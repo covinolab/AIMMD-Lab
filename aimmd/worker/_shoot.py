@@ -178,7 +178,7 @@ class WorkerShoot(ABC):
         object
             Whatever :meth:`Worker.run` returns for the ``'shoot'`` task.
         """
-        return self.run('shoot', k, target_state, sweep)
+        return self.run('shoot', target_state, k, sweep)
 
     def _shoot(self, target_state=1, k=0, sweep=False):
         """
