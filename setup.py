@@ -29,13 +29,24 @@ setup(
         'tqdm',
         'numpy',
         'scipy',
-        'torch',
         'mdtraj',
         'psutil',
+        'torch',
         'filelock',
         'matplotlib',
         'MDAnalysis',
     ],
+    extras_require={
+            "graphs": [
+                "torch-geometric",
+                "torch-cluster",
+            ],
+            "tests": [
+                "pytest",
+                "pytest-cov",
+                "mlcolvar",
+            ],
+        },
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Science/Research',
