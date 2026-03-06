@@ -309,13 +309,13 @@ approximately `[-cutoff_max, +cutoff_max]` (with optional ±inf bins)."""
                  })
 
     marginal_bins: str = field(
-        default='all',
+        default='',
         metadata={'description':
 """Add marginal bins at the state interfaces (±inf boundaries).
 This can increase exploration by explicitly treating state-adjacent regions as
-separate bins, at the cost of slightly reduced exploitation.
+separate bins, at the cost of reduced exploitation.
 Intended mainly for `selection_pool_size > 1`.
-Common values: 'all', '' (disable), or other package-specific selectors."""
+Common values: 'all', '' (disable), or the state names ('A', 'B', ...)."""
                  })
 
     lorentzian: float = field(
