@@ -510,19 +510,12 @@ def select_shooting_point(pool, params, folder,
     print(f'Selection pool\n{report}')
     if nbins > 1:
         print(f'*** current pool shooting interfaces: {pool_shooting_values}')
-
-    # prune if nothing
-    norms = histograms.sum(axis=1)
-    keepers = norms.astype(bool)
-    if keepers.any() and not keepers.all():
-        pool._paths = list(pool.paths[keepers])
-        histograms = histograms[keepers]
-        print(f'xxx removed {np.flatnonzero(~keepers)} paths from pool')
-
+    
     # normalize histograms, average in "combined" histogram
+    norms = np.maximum(histograms.sum(axis=1), 1.0)
     histograms /= norms[:, None]
     combined = histograms.mean(axis=0)
-
+    
     # choose path
     pool_index = np.random.choice(len(pool))
     path = pool[pool_index]
