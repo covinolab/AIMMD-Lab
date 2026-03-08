@@ -169,7 +169,10 @@ class ParamsPaths(ABC):
         - For TPS (`self.chain_type == 'tps'`) it may load `tps_weights.npy` and
           assign weights to newly loaded paths, zeroing weights for non-transitions.
         """
-
+        
+        # process "old"
+        old = PathEnsemble(old)
+        
         # which state are we talking about?
         states = self.states
 
