@@ -512,12 +512,11 @@ class PathMethods(ABC):
         #   t(index) = t0 + index * dt = 0
         #   index = -t0 / dt
         #
-        # Because dt is negative here, the result is positive. Using floor division
-        # keeps the result integral after rounding of the times.
+        # Because dt is negative here, the result is positive. Must cast to int.
         #
         # Finally, clamp the value to len(self) - 1 so that small numerical or
         # formatting inconsistencies cannot produce an out-of-bounds index.
-        return min(-t0 // dt, len(self) - 1)
+        return min(int(-t0 / dt), len(self) - 1)
     
     def shooting_result(self, states='ARB'):
         """Return a 2-element outcome count derived from the 3-letter path type.
