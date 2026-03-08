@@ -176,7 +176,6 @@ class ParamsPaths(ABC):
         # load all of them
         if target_state is None:
             result = []
-            old = old or []
             for t in states:
                 this = self.shot_paths(directory, prefix, t, None, old)
                 old = old[len(this):]
@@ -254,7 +253,9 @@ class ParamsPaths(ABC):
                         directory, prefix, t, k, result[k])
         return result
 
-    def shot_chains(self, directory, target_state=None, k=None, old=PathEnsemble()):
+    def shot_chains(self, directory,
+                    target_state=None, k=None,
+                    old=PathEnsemble()):
         """
         Convenience wrapper for `shot_paths(..., prefix='chain', ...)`.
         """
