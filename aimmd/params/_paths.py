@@ -235,7 +235,7 @@ class ParamsPaths(ABC):
             return shot_paths
 
         # for each k
-        result = old or []
+        result = []
         if k is None:
             folders = sorted(glob(f'{directory}/{prefix}{t}*'))
         elif isinstance(k, Iterable):
