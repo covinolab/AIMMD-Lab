@@ -241,7 +241,8 @@ class WorkerFree(ABC):
 
                     # take initial_frames from a list of transitions
                     if restart_with_transition:
-                        chains = params.shot_chains(directory, r, old=chains)
+                        chains = params.shot_chains(
+                           directory, r, old=PathEnsemble(chains))
                         transitions = assemble_pathensemble(chains).extract(
                             states, states[::-1])
                         if not transitions:
