@@ -194,7 +194,7 @@ class WorkerTrain(ABC):
             # get chains
             self._shot_chains = params.shot_chains(
                 directory, None,
-                old=PathEnsemble(getattr(self, '_shot_chains', [])))
+                old=getattr(self, '_shot_chains', []))
             for chain in self._shot_chains:
                 total_frames += sum(chain.n_frames)
                 total_steps += len(chain)
