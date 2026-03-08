@@ -209,6 +209,7 @@ class ParamsPaths(ABC):
                 for old_path in old._paths:
                     if old_path.fname == fname:
                         path = old_path
+                        break
 
                 # must create new
                 if path is None:
