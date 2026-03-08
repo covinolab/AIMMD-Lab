@@ -426,32 +426,98 @@ class PathMethods(ABC):
         return result
     
     def find_shooting_index(self):
-        """Return the shooting index inferred from trajectory times.
+        """
+        Return the frame index corresponding to the shooting point.
+    
+        The shooting point is inferred purely from the trajectory time stamps.
+        In AIMMD paths, frames before the shooting point are typically stored in
+        reverse time order, while frames after the shooting point are stored in
+        forward time order. This means that the sign of the time increment between
+        the first two frames tells us whether the path starts by moving forward or
+        backward away from the shooting point:
+    
+        - ``dt >= 0``: the trajectory already starts at the shooting point, so the
+          shooting index is ``0``.
+        - ``dt < 0``: the first frames belong to the backward branch, so the
+          shooting point lies later in the path and can be reconstructed from the
+          time grid.
+    
+        The method assumes that the trajectory times are approximately equally
+        spaced around the shooting point and that the shooting frame corresponds to
+        time zero.
     
         Returns
         -------
         int
-            Index of the first entry in ``self.times`` that is effectively zero.
-            Times are rounded to 6 decimal places, so values within about
-            ``1e-6 ps`` of zero are treated as zero.
+            Index of the shooting frame.
     
-        Raises
-        ------
-        ValueError
-            If no frame time close to zero is found.
+        Notes
+        -----
+        The computation uses times rounded to 6 decimal places to suppress tiny
+        floating-point noise from trajectory readers.
+    
+        For paths with fewer than two frames, the only sensible answer is ``0``.
         """
-        
+    
+        # Degenerate case: with 0 or 1 frame there is no time direction to inspect.
+        # In that situation we conventionally treat the only available frame
+        # as the shooting point.
+        if len(self) < 2:
+            return 0
+    
+        # Read the first two time values, since they are sufficient to determine
+        # whether the stored path initially moves forward or backward in time.
+        #
+        # Prefer the cached in-memory array if it already exists:
+        # - avoids advancing / reopening the trajectory reader,
+        # - is faster,
+        # - keeps the logic independent of reader side effects.
         if 'times' in self.__dict__:  # value is in memory
-            times = self.__dict__['times']
-        else:  # iterate directly: avoids building the full array
-            times = (frame.time for frame in self.reader)
-        
-        for i, time in enumerate(times):
-            if round(time, 6) == 0.0:
-                return i
-        
-        # fallback: first frame (if any)
-        return 0
+            t0, t1 = np.round(self.__dict__['times'][:2], 6)
+    
+        # Otherwise, pull only the first two times directly from the reader.
+        # We do not build the full time array, because only two values are needed.
+        else:
+            for i, ts in enumerate(self.reader):
+                if i == 0:
+                    # Time of the first stored frame.
+                    t0 = round(ts.time, 6)
+                else:
+                    # Time of the second stored frame; once obtained, we can stop.
+                    t1 = round(ts.time, 6)
+                    break
+    
+        # Effective timestep between the first two stored frames.
+        # Its sign encodes the ordering of the beginning of the path:
+        # - positive or zero: forward in time
+        # - negative: backward in time
+        dt = t1 - t0
+    
+        # If time increases from the first to the second frame, then the first frame
+        # is already the shooting frame. This is the simple "forward branch first"
+        # layout.
+        if dt >= 0:
+            return 0
+    
+        # If dt < 0, the path begins on the backward branch.
+        #
+        # Example:
+        #   times = [3, 2, 1, 0, 1, 2]
+        #   t0 = 3, dt = -1
+        #   shooting index = 3
+        #
+        # Since the shooting frame is defined by time 0, and times are assumed to
+        # follow a regular spacing dt, its index can be reconstructed from:
+        #
+        #   t(index) = t0 + index * dt = 0
+        #   index = -t0 / dt
+        #
+        # Because dt is negative here, the result is positive. Using floor division
+        # keeps the result integral after rounding of the times.
+        #
+        # Finally, clamp the value to len(self) - 1 so that small numerical or
+        # formatting inconsistencies cannot produce an out-of-bounds index.
+        return min(-t0 // dt, len(self) - 1)
     
     def shooting_result(self, states='ARB'):
         """Return a 2-element outcome count derived from the 3-letter path type.
