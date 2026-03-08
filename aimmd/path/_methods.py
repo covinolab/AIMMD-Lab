@@ -424,17 +424,35 @@ class PathMethods(ABC):
             self.__dict__.items(), 6, None):
             result.__dict__[attribute] = value.copy()
         return result
-
+    
     def find_shooting_index(self):
-        """Return the shooting index inferred from cached times.
-
+        """Return the shooting index inferred from trajectory times.
+    
         Returns
         -------
         int
-            Index of the minimum value in ``self.times`` (via ``numpy.argmin``).
+            Index of the first entry in ``self.times`` that is effectively zero.
+            Times are rounded to 6 decimal places, so values within about
+            ``1e-6 ps`` of zero are treated as zero.
+    
+        Raises
+        ------
+        ValueError
+            If no frame time close to zero is found.
         """
-        return np.argmin(self.times)
-
+        
+        if 'times' in self.__dict__:  # value is in memory
+            times = self.__dict__['times']
+        else:  # iterate directly: avoids building the full array
+            times = (frame.time for frame in self.reader)
+        
+        for i, time in enumerate(times):
+            if round(time, 6) == 0.0:
+                return i
+        
+        # fallback: first frame (if any)
+        return 0
+    
     def shooting_result(self, states='ARB'):
         """Return a 2-element outcome count derived from the 3-letter path type.
 
