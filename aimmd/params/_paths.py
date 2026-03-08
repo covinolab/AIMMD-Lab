@@ -254,7 +254,7 @@ class ParamsPaths(ABC):
                         directory, prefix, t, k, result[k])
         return result
 
-    def shot_chains(self, directory, target_state=None, k=None, old=None):
+    def shot_chains(self, directory, target_state=None, k=None, old=PathEnsemble()):
         """
         Convenience wrapper for `shot_paths(..., prefix='chain', ...)`.
         """
