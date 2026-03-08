@@ -135,7 +135,7 @@ class ParamsPaths(ABC):
         return result
 
     def shot_paths(self, directory, prefix='chain',
-                   target_state=None, k=None, old=None):
+                   target_state=None, k=None, old=PathEnsemble()):
         """
         Load shot paths (shooting trajectories) from a run directory.
 
@@ -153,11 +153,9 @@ class ParamsPaths(ABC):
             - int/str: load exactly that chain.
             - iterable: load those chains.
             - None: scan all matching folders and load all chains found.
-        old : optional
+        old : `PathEnsemble`, optional
             Previously loaded data used for incremental updates.
-            May be a `PathEnsemble`, a list of `PathEnsemble`, or compatible
-            iterable depending on call mode.
-
+        
         Returns
         -------
         aimmd.pathensemble.PathEnsemble or list
@@ -198,32 +196,25 @@ class ParamsPaths(ABC):
             folder = f'{directory}/{prefix}{t}{k}'
             ext = self.trajectory_extension
 
-            # initialize with "old"
-            old_part = PathEnsemble()
-            if isinstance(old, PathEnsemble):
-                old_part = old[:-1]
-            elif isinstance(old, Iterable) and len(old):
-                if isinstance(old[0], PathEnsemble):
-                    old_part = old[0][:-1]
+            # initialize shot paths
+            shot_paths = PathEnsemble()
 
-            # keep what we already have
-            fnames = []
-            # except for the last one that may still change
-            for path in old_part._paths[:-1]:
-                fname = path.fname
-                if fname not in fnames:
-                    fnames.append(fname)
-
-            # new part
-            new_part = PathEnsemble()
+            # iterate through matches
             for fname in sorted(glob(f'{folder}/path??????{ext}')):
-                if fname not in fnames:
+                path = None
+
+                # get if from "old" (will not create copies)
+                for old_path in old._paths:
+                    if old_path.fname == fname:
+                        path = old_path
+
+                # must create new
+                if path is None:
                     path = Path(fname, shooting_index='find')
                     path.weight = path.is_complete(t, states)
-                    new_part._paths.append(path)
 
-            # finally: add (do not copy paths)
-            shot_paths = old_part + new_part
+                # add to shot_paths
+                shot_paths.append(path)
 
             # get weights in case of tps
             if 'sweep' not in prefix and self.chain_type == 'tps':
