@@ -181,7 +181,6 @@ class ParamsPaths(ABC):
             result = []
             for t in states:
                 this = self.shot_paths(directory, prefix, t, None, old)
-                old = old[len(this):]
                 result.extend(this)
             return result
 
@@ -253,8 +252,7 @@ class ParamsPaths(ABC):
                     k = int(k)
                     if len(result) <= k:
                         result.append(None)
-                    result[k] = self.shot_paths(
-                        directory, prefix, t, k, result[k])
+                    result[k] = self.shot_paths(directory, prefix, t, k, old)
         return result
 
     def shot_chains(self, directory,
