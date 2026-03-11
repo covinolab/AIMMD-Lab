@@ -217,7 +217,7 @@ class ParamsPaths(ABC):
                     if self.chain_type != 'tps':
                         path.weight = path.is_complete(t, states)
                     else:
-                        path.weight =   # will fill later
+                        path.weight = nan  # will fill later
                 
                 # add to shot_paths
                 shot_paths.append(path)
