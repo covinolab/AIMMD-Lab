@@ -37,6 +37,7 @@ import os
 import numpy as np
 from abc import ABC
 from glob import glob
+from math import nan
 from numbers import Integral
 from collections.abc import Iterable
 
@@ -199,7 +200,7 @@ class ParamsPaths(ABC):
 
             # initialize shot paths
             shot_paths = PathEnsemble()
-
+            
             # iterate through matches
             for fname in sorted(glob(f'{folder}/path??????{ext}')):
                 path = None
@@ -213,26 +214,26 @@ class ParamsPaths(ABC):
                 # must create new
                 if path is None:
                     path = Path(fname, shooting_index='find')
-                    path.weight = path.is_complete(t, states)
-
+                    if self.chain_type != 'tps':
+                        path.weight = path.is_complete(t, states)
+                    else:
+                        path.weight =   # will fill later
+                
                 # add to shot_paths
                 shot_paths.append(path)
-
+            
             # get weights in case of tps
             if 'sweep' not in prefix and self.chain_type == 'tps':
-                new_weights = np.zeros(len(new_part))
                 try:
                     saved_weights = load_npy(f'{folder}/tps_weights.npy')
-                    begin = len(old_part)
-                    end = begin + len(new_part)
-                    new_weights[:len(saved_weights) - begin
-                        ] = saved_weights[begin:end]
-                    # ensure only transitions have nonzero weigths
-                    new_weights[~new_part.are_transitions(states)] = 0.
+                    mask = np.flatnonzero(np.isnan(shot_paths.weights))
+                    new_weights = saved_weights[mask]
+                    # ensure only (new) transitions have nonzero weigths
+                    new_weights[~shot_paths[mask].are_transitions(states)] = 0.
+                    shot_paths.weights[mask] = new_weights
                 except:
                     pass
-                new_part.weights = new_weights
-
+            
             # return
             return shot_paths
 
