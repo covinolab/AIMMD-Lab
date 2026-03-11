@@ -694,7 +694,8 @@ def accept_or_reject_last_path(chain, params):
     # get bin weights at the time of selection
     # (population, lorentzian corrections were already incorporated
     #  in f'{folder}/density.npy')
-    bin_weights = 1 / densities
+    bin_weights = np.array(list(1 / densities) + [0.])
+    # the last bin is for handling special cases outside of bin range
 
     # get (internal) values
     source = 'descriptors' if params.descriptors_function else 'reader'
@@ -711,19 +712,19 @@ def accept_or_reject_last_path(chain, params):
     # selection biases
     current_selection_biases = bin_weights[current_bin_indices]
     leading_selection_biases = bin_weights[leading_bin_indices]
-    current_selection_biases /= current_selection_biases.sum()
-    leading_selection_biases /= leading_selection_biases.sum()
-
+    current_selection_biases /= (current_selection_biases.sum() or 1.0)
+    leading_selection_biases /= (leading_selection_biases.sum() or 1.0)
+    
     # of shooting point
-    current_shooting_point_bias = current_selection_biases[
-        current.shooting_index - 1]
-    leading_shooting_point_bias = leading_selection_biases[
-        leading.shooting_index - 1]
-
+    current_shooting_point_bias = (current_selection_biases[
+        current.shooting_index - 1] or 1.0)
+    leading_shooting_point_bias = (leading_selection_biases[
+        leading.shooting_index - 1] or 1.0)
+    
     # compute acceptance probability
     acceptance = current_shooting_point_bias / leading_shooting_point_bias
     print(f'=== acceptance probability: {acceptance:.3f}')
-
+    
     # finally run acceptance/rejection
     if np.random.random() < acceptance:
         current.weight = 1.
