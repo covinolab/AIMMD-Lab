@@ -321,12 +321,13 @@ Common values: 'all', '' (disable), or the state names ('A', 'B', ...)."""
     density_adjustment: int = field(
         default=1,
         metadata={'description':
-"""Apply a correction to the density during selection.
-For each shooting chain, in each bin: multiply the density
-by the number of points already selected in the neighboring bins.
+"""Apply a correction to the density during selection to accelerate convergence.
+For each shooting chain, in each bin: multiply the density by the number of
+points already selected in the neighboring bins.
 Neighboring bins are at least `density_adjustment - 1` distant. Hence, when
 `density_adjustment=1`: consider only the population inside the current bin.
-When `density_adjustment <= 0`: do nothing."""
+When `density_adjustment <= 0`: do nothing. `density_adjustment=1` is usually
+fine. Increase it in case of a rarer transition."""
                  })
     
     selection_adjustment: bool = field(
