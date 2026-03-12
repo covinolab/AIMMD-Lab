@@ -494,7 +494,7 @@ class PathIO(ABC):
                 else:
                     velocities = frame._velocities
                     if velocities.any():
-                        velocities = velocities[indices] * direction
+                        velocities = velocities[indices] * directions[i]
                     else:
                         velocities = np.zeros((n_atoms, 3))
 
