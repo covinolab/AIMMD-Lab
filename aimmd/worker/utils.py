@@ -535,7 +535,7 @@ def select_shooting_point(pool, params, folder,
                 k0 + k + density_adjustment]
             adjustment[k] = associated_populations.sum()
             adjustment[k] *= associated_nbins / len(associated_populations)
-        print(f'*** adjustment   {populations}')
+        print(f'*** adjustment   {adjustment}')
     else:
         adjustment = 1.
     
