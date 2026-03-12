@@ -427,8 +427,8 @@ class PathEnsembleMethods(ABC):
         n_samples : int
             Number of frames to sample (with replacement).
         weights : array_like, optional
-            Per-path weights overriding ``self.weights[indices]``. If not
-            provided, path ensemble weights are used (`self.weights[key]`).
+            Per-path weights. If not provided, path ensemble weights
+            are used (`self.weights`).
         source : str, default='values'
             Considered for getting frames between vmin and vmax
         vmin : float, default=None
@@ -456,8 +456,8 @@ class PathEnsembleMethods(ABC):
         # process weights
         if isinstance(weights, Integral):
             weights = np.ones(len(self))  # all weights scaled the same
-        else:
-            weights = weights or self.weights
+        elif weights is None:
+            weights = self.weights
 
         # build a "flat" index over all eligible frames across all paths
         paths = []
