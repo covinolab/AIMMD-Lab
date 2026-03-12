@@ -318,15 +318,15 @@ Intended mainly for `selection_pool_size > 1`.
 Common values: 'all', '' (disable), or the state names ('A', 'B', ...)."""
                  })
     
-    density_adjustment: str = field(
-        default='populations',
+    density_adjustment: int = field(
+        default=1,
         metadata={'description':
 """Apply a correction to the density during selection.
-If '': do nothing.
-If 'populations', for each shooting chain, in each bin: multiply the density
-by the number of points already selected in the bin.
-If 'cumulative', for each shooting chain, in each bin: multiply the density
-by the total population from that bin towards the transition state bin."""
+For each shooting chain, in each bin: multiply the density
+by the number of points already selected in the neighboring bins.
+Neighboring bins are at least `density_adjustment - 1` distant. Hence, when
+`density_adjustment=1`: consider only the population inside the current bin.
+When `density_adjustment <= 0`: do nothing."""
                  })
     
     selection_adjustment: bool = field(
