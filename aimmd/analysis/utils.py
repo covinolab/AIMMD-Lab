@@ -16,6 +16,8 @@ Bins and grid helpers
       marginal outer bins at ``-inf`` and/or ``+inf``).
     - :func:`bin_centers` returns bin centers and supports bins including
       plus and minus infinity.
+    - :func:`merge_empty_bins` merges low-occupancy bins with the closest
+      ones moving away from the transition state.
     - :func:`merge_marginal_bins` merges low-occupancy marginal bins.
 
 Extremes used to define bins
@@ -345,17 +347,17 @@ def compute_bins(pathensemble,
 def bin_centers(bins):
     """
     Return bin centers, supporting `±inf` marginal bins.
-
+    
     Parameters
     ----------
     bins : array-like
         1D array of bin boundaries of length >= 2. Bin i spans [bins[i], bins[i+1]).
-
+    
     Returns
     -------
     numpy.ndarray
         Array of length ``len(bins) - 1`` with one center per bin.
-
+    
     Notes
     -----
     For bins with infinite boundaries, finite extrapolated centers are produced
@@ -385,6 +387,78 @@ def bin_centers(bins):
         result[-1] = (bins[-1] + bins[-2]) / 2
     result[1:-1] = (bins[1:-2] + bins[2:-1]) / 2
     return result
+
+
+def merge_empty_bins(bins, keepers, *histograms, center=0):
+    """
+    Merge low-occupancy bins with the closest ones moving away from
+    the "center" (the transtion state). Additionally merge the provided
+    histograms.
+    
+    Will not merge an empty bin if there are no occupied bins which are
+    more external.
+    
+    Parameters
+    ----------
+    bins : np.ndarray
+        1D array of bin boundaries of shape (k+1,). Bin i spans [bins[i], bins[i+1]).
+    keepers : np.ndarray
+        Identifies which bins are not empty (the others will be merged).
+    histograms : tuple of np.ndarray, shape `len(bins) - 1`
+        Histograms to be merged to correspond to `merged_bins`.
+    
+    Returns
+    -------
+    merged_bins : np.ndarray
+        Updated bin boundaries after merging.
+    merged_histograms : tuple of np.ndarray, shape `len(merged_bins) - 1`
+        Updated histograms after merging.
+    """
+    
+    # convert keepers to mask
+    mask = np.zeros(len(bins) - 1, dtype=bool)
+    mask[keepers] = True
+    
+    # trivial case: nothing to do
+    if mask.all():
+        return (bins, ) + tuple(histograms)
+    
+    # need to merge
+    centers = bin_centers(bins)
+    
+    # initialize conversion: each bin maps to itself unless merged
+    bins_to_merged_bins = np.arange(len(bins) - 1)
+    
+    for i in np.flatnonzero(~mask):
+        
+        # look for more external bins
+        if centers[i] <= center:  # going left
+            j = i - 1
+            while j >= 0 and not mask[j]:
+                j -= 1
+            if j >= 0:
+                bins_to_merged_bins[i] = j
+        
+        else:  # going right
+            j = i + 1
+            while j < len(mask) and not mask[j]:
+                j += 1
+            if j < len(mask):
+                bins_to_merged_bins[i] = j
+    
+    # build merged_bins based on bins_to_merged_bins
+    starts = np.r_[0, 1 + np.flatnonzero(np.diff(bins_to_merged_bins))]
+    ends = np.r_[starts[1:], len(mask)]
+    merged_bins = np.r_[bins[starts], bins[ends[-1]]]
+    
+    # collapse histograms based on bins_to_merged_bins
+    merged_histograms = [
+        np.add.reduceat(histogram, starts)
+        for histogram in histograms
+    ]
+    
+    # return
+    return (merged_bins, ) + tuple(merged_histograms)
 
 
 def merge_marginal_bins(bins, *values, min_values=3):
@@ -443,31 +517,31 @@ def merge_marginal_bins(bins, *values, min_values=3):
     condition = histograms >= min_values
     
     # find maximum contiguous segment
-b, e = longest_true_segment(condition)
-    
-if b == 0:
-    if e == nbins:
-        # nothing to do: bins and counts are already ok
-        merged_bins = bins
-        merged_bin_counts = bin_counts
+    b, e = longest_true_segment(condition)
+        
+    if b == 0:
+        if e == nbins:
+            # nothing to do: bins and counts are already ok
+            merged_bins = bins
+            merged_bin_counts = bin_counts
+        else:
+            # merge on the right
+            merged_bins = np.append(bins[:e + 1], [bins[-1]])
+            merged_bin_counts = bin_counts[:e + 1]
+            merged_bin_counts[-1] = nbins - e
+    elif e == nbins:
+        # merge on the left
+        merged_bins = np.append([bins[0]], bins[b:])
+        merged_bin_counts = bin_counts[b - 1:]
+        merged_bin_counts[0] = b
     else:
-        # merge on the right
-        merged_bins = np.append(bins[:e + 1], [bins[-1]])
-        merged_bin_counts = bin_counts[:e + 1]
+        # merge on both sides
+        merged_bins = np.concatenate([[bins[0]], bins[b:e + 1], [bins[-1]]])
+        merged_bin_counts = bin_counts[b - 1:e + 1]
+        merged_bin_counts[0] = b
         merged_bin_counts[-1] = nbins - e
-elif e == nbins:
-    # merge on the left
-    merged_bins = np.append([bins[0]], bins[b:])
-    merged_bin_counts = bin_counts[b - 1:]
-    merged_bin_counts[0] = b
-else:
-    # merge on both sides
-    merged_bins = np.concatenate([[bins[0]], bins[b:e + 1], [bins[-1]]])
-    merged_bin_counts = bin_counts[b - 1:e + 1]
-    merged_bin_counts[0] = b
-    merged_bin_counts[-1] = nbins - e
-    
-    return merged_bins, merged_bin_counts
+        
+        return merged_bins, merged_bin_counts
 
 
 def binomial_mean_and_confidence_interval(r1, r2, alpha=0.95):
