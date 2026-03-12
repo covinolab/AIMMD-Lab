@@ -517,9 +517,9 @@ def select_shooting_point(pool, params, folder,
     i = np.argmin(np.abs(centers))
     for k in range(len(bins) - 1):
         if k <= i:  # before center
-            combined_populations[k] = populations[k:i + 1].sum()
+            combined_populations[k] = populations[k:i + 1].mean()
         else:  # after center
-            combined_populations[k] = populations[i:k + 1].sum()
+            combined_populations[k] = populations[i:k + 1].mean()
     # add what not in bin to margins
     combined_populations[0] += population_before
     combined_populations[-1] += population_after
