@@ -511,7 +511,7 @@ def select_shooting_point(pool, params, folder,
     populations = np.histogram(chain_shooting_values, bins)[0]
     population_before = (chain_shooting_values < bins[0]).sum()
     population_after = (chain_shooting_values > bins[-1]).sum()
-    combined_populations = np.zeros(len(populations))
+    combined_populations = np.zeros(len(populations), dtype=int)
     # index of center bin
     centers = bin_centers(bins)
     i = np.argmin(np.abs(centers))
