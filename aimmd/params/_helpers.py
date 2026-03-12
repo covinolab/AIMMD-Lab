@@ -199,17 +199,6 @@ class ParamsHelpers(ABC):
                 except:
                     universe = None
                 self.__dict__['_universe'] = universe
-
-            # density adjustment
-            elif name == 'density_adjustment':
-                value = str(value).lower()
-                if value.startswith('population'):
-                    value = 'populations'
-                elif value.startswith('cumulative'):
-                    value = 'cumulative'
-                elif value:
-                    raise TypeError("density_adjustment must be either "
-                                    "'', 'populations', or 'cumulative'")
             
             # initial paths (converted in real-time)
             elif name == 'initial_paths':
