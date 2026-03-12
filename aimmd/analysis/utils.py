@@ -74,6 +74,7 @@ from scipy.stats import beta
 from scipy.interpolate import RegularGridInterpolator
 
 # aimmd imports
+from ..core.utils import longest_true_segment
 from ..pathensemble.utils import match_patterns
 
 
@@ -389,15 +390,19 @@ def bin_centers(bins):
 def merge_marginal_bins(bins, *values, min_values=3):
     """
     Merge low-occupancy marginal bins.
-
+    
     This helper is used to stabilize analysis when the outermost bins are too
-    sparse. The merging is conservative: it only merges from the *left edge*
-    and from the *right edge* until every marginal bin contains at least
-    `min_values` counts for all datasets provided.
-
+    sparse. It merges bins from the *left edge* and from the *right edge*
+    such that:
+    1) all bins from the second to the second-to-last are a contiguous
+       subset of the original bins;
+    2) the above bins contain at least `min_values` counts for all the
+       datasets provided;
+    3) given the above conditions, the number of bins is maximum.
+    
     The occupancy criterion is computed from the per-dataset histograms:
     ``np.histogram(v, bins=bins)[0]`` and then taking the minimum over datasets.
-
+    
     Parameters
     ----------
     bins : np.ndarray
@@ -407,45 +412,62 @@ def merge_marginal_bins(bins, *values, min_values=3):
         its histogram to the "minimum occupancy" decision.
     min_values : int, default=3
         Minimum required histogram count in each marginal bin.
-
+    
     Returns
     -------
-    new_bins : np.ndarray
+    merged_bins : np.ndarray
         Updated bin boundaries after merging.
     merged_bin_counts : np.ndarray
         Number of original bins merged into each new bin. This can be used to
         scale selections consistently when downstream code depends on the
         original binning density.
-
+    
     Notes
     -----
     The function always preserves the first and last boundary of `bins`.
     """
-
-    # trivial case
-    if len(bins) < 2:
-        return bins, np.array([1])
-
-    # compute histogram
-    histograms = np.array([np.histogram(v, bins=bins)[0]
-                           for v in values]).min(axis=0)
-
-    i = 0
-    for i, h in enumerate(histograms[1:]):
-        if h >= min_values:
-            break
-    j = 0
-    for j, h in enumerate(histograms[::-1][1:]):
-        if h >= min_values:
-            break
     
-    bins = np.concatenate([[bins[0]], bins[i+1:len(bins)-j-1], [bins[-1]]])
-    counts = np.ones(len(bins) - 1, dtype=int)
-    counts[+0] = i + 1
-    counts[-1] = j + 1
-    if len(counts) == 1:
-        counts += 1
-    return bins, counts
+    # how many bins to start with?
+    nbins = len(bins) - 1
+    bin_counts = np.ones(nbins, dtype=int)
+    
+    # trivial case
+    if nbins <= 1:
+        return bins, bin_counts
+    
+    # compute histogram
+    histograms = np.array(
+        [np.histogram(v, bins=bins)[0] for v in values]).min(axis=0)
+    
+    # where is the occupacy condition respected
+    condition = histograms >= min_values
+    
+    # find maximum contiguous segment
+b, e = longest_true_segment(condition)
+    
+if b == 0:
+    if e == nbins:
+        # nothing to do: bins and counts are already ok
+        merged_bins = bins
+        merged_bin_counts = bin_counts
+    else:
+        # merge on the right
+        merged_bins = np.append(bins[:e + 1], [bins[-1]])
+        merged_bin_counts = bin_counts[:e + 1]
+        merged_bin_counts[-1] = nbins - e
+elif e == nbins:
+    # merge on the left
+    merged_bins = np.append([bins[0]], bins[b:])
+    merged_bin_counts = bin_counts[b - 1:]
+    merged_bin_counts[0] = b
+else:
+    # merge on both sides
+    merged_bins = np.concatenate([[bins[0]], bins[b:e + 1], [bins[-1]]])
+    merged_bin_counts = bin_counts[b - 1:e + 1]
+    merged_bin_counts[0] = b
+    merged_bin_counts[-1] = nbins - e
+    
+    return merged_bins, merged_bin_counts
 
 
 def binomial_mean_and_confidence_interval(r1, r2, alpha=0.95):
