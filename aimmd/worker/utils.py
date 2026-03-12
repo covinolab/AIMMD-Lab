@@ -543,7 +543,7 @@ def select_shooting_point(pool, params, folder,
     densities /= densities.sum()
     print(f'*** densities    {densities}')
     if density_adjustment:
-        densities *= ajustment + 0.1
+        densities *= adjustment + 0.1
         densities /= densities.sum()
         print(f'    after adjust {densities}')
     if lorentzian < inf:
