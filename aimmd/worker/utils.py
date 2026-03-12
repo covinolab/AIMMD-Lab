@@ -509,21 +509,19 @@ def select_shooting_point(pool, params, folder,
 
     # compute populations and combined populations
     populations = np.histogram(chain_shooting_values, bins)[0]
-    population_before = (chain_shooting_values < bins[0]).sum()
-    population_after = (chain_shooting_values > bins[-1]).sum()
+    populations_with_margins = populations.copy()
+    populations_with_margins[+0] += (chain_shooting_values < bins[0]).sum()
+    populations_with_margins[-1] += (chain_shooting_values > bins[-1]).sum()
     combined_populations = np.zeros(len(populations), dtype=int)
     # index of center bin
     centers = bin_centers(bins)
     i = np.argmin(np.abs(centers))
     for k in range(len(bins) - 1):
         if k <= i:  # before center
-            combined_populations[k] = populations[k:i + 1].mean()
+            combined_populations[k] = populations_with_margins[k:i + 1].mean()
         else:  # after center
-            combined_populations[k] = populations[i:k + 1].mean()
-    # add what not in bin to margins
-    combined_populations[0] += population_before
-    combined_populations[-1] += population_after
-
+            combined_populations[k] = populations_with_margins[i:k + 1].mean()
+    
     # report
     print(f'*** bins         {bins}')
     print(f'*** populations  {populations}')
