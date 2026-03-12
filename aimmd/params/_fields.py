@@ -317,7 +317,27 @@ separate bins, at the cost of reduced exploitation.
 Intended mainly for `selection_pool_size > 1`.
 Common values: 'all', '' (disable), or the state names ('A', 'B', ...)."""
                  })
-
+    
+    density_adjustment: str = field(
+        default='populations',
+        metadata={'description':
+"""Apply a correction to the density during selection.
+If '': do nothing.
+If 'populations', for each shooting chain, in each bin: multiply the density
+by the number of points already selected in the bin.
+If 'cumulative', for each shooting chain, in each bin: multiply the density
+by the total population from that bin towards the transition state bin."""
+                 })
+    
+    selection_adjustment: bool = field(
+        default=True,
+        metadata={'description':
+"""Apply a further correction to the selection probabilities propto 1 / densities,
+based on the current selection pool, to reduce over-selection of already overrepresented
+bins while preserving detailed balance (effective only when
+`selection_pool_size > 1`)."""
+                 })
+    
     lorentzian: float = field(
         default=inf,
         metadata={'description':
@@ -326,15 +346,6 @@ If finite, shooting points are biased toward the center of the distribution
 according to a Lorentzian in logit/value space.
 If `inf`, shooting points are sampled approximately uniformly between the first
 and last finite bin boundaries."""
-                 })
-
-    adjust_selection_in_bins: bool = field(
-        default=True,
-        metadata={'description':
-"""Apply a bin-population correction during selection.
-If True, AIMMD attempts to reduce over-selection of already overrepresented
-bins while preserving detailed balance (effective only when
-`selection_pool_size > 1`)."""
                  })
 
     free_overriding_states: str = field(
