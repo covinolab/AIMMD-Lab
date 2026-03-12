@@ -454,7 +454,8 @@ def select_shooting_point(pool, params, folder,
     overriding_attempts = params.free_overriding_attempts
     overriding_rate = params.free_overriding_recovery_rate
     compute_values_args = params.compute_values_args
-    adjust_selection = params.adjust_selection_in_bins
+    density_adjustment = params.density_adjustment
+    selection_adjustment = params.selection_adjustment
     pool_size = params.selection_pool_size
     len_ext = len(params.trajectory_extension)
     nbins = params.nbins
@@ -503,18 +504,56 @@ def select_shooting_point(pool, params, folder,
     pool_values = pool.values
     pool_shooting_values = pool.shooting('values')
     overriding_values = overriding.values
-    populations = np.histogram(chain.shooting('values'), bins)[0]
+    chain_shooting_values = chain.shooting('values')
     # shooting values have all been computed at this point
 
+    # compute populations and combined populations
+    populations = np.histogram(chain_shooting_values, bins)[0]
+    population_before = (chain_shooting_values < bins[0]).sum()
+    population_after = (chain_shooting_values > bins[-1]).sum()
+    combined_populations = np.zeros(len(populations))
+    # index of center bin
+    centers = bin_centers(bins)
+    i = np.argmin(np.abs(centers))
+    for k in range(len(bins) - 1):
+        if k <= i:  # before center
+            combined_populations[k] = populations[k:i + 1].sum()
+        else:  # after center
+            combined_populations[k] = populations[i:k + 1].sum()
+    # add what not in bin to margins
+    combined_populations[0] += population_before
+    combined_populations[-1] += population_after
+
+    # report
+    print(f'*** bins         {bins}')
+    print(f'*** populations  {populations}')
+    print(f'*** combined pop {combined_populations}')
+    print(f'*** densities    {densities}')
+    
+    # adjust densities
+    if density_adjustment == 'populations':
+        densities *= populations + 0.1
+        densities /= densities.sum()
+        print(f'    after adjust {densities}')
+    elif density_adjustment == 'cumulative':
+        densities *= combined_populations + 0.1
+        densities /= densities.sum()
+        print(f'    after adjust {densities}')
+    if lorentzian < inf:
+        densities *= centers ** 2 + lorentzian ** 2
+        densities /= densities.sum()
+        print(f'    after loren. {densities}')
+    
+    # report selection pool
     report, histograms = pool.report(bins=bins, values=pool_values)
-    print(f'Selection pool\n{report}')
+    print(f'\nSelection pool\n{report}')
     if nbins > 1:
         print(f'*** current pool shooting interfaces: {pool_shooting_values}')
     
     # normalize histograms, average in "combined" histogram
     norms = np.maximum(histograms.sum(axis=1), 1.0)
     histograms /= norms[:, None]
-    combined = histograms.mean(axis=0)
+    combined_histograms = histograms.mean(axis=0)
     
     # choose path
     pool_index = np.random.choice(len(pool))
@@ -524,33 +563,20 @@ def select_shooting_point(pool, params, folder,
     locs = path.internal('locs')
     fname = path.fname
     print(f'=== selecting path {fname!r}')
-
-    # assign selection probabilities
+    
+    # assign selection probabilities (weights)
     histogram = histograms[pool_index]
-
-    # report
-    print(f'*** bins        {bins}')
-    print(f'*** densities   {densities}')
-    print(f'*** populations {populations}')
-
-    # corrections
-    densities *= populations + 1.
-    if lorentzian < inf:
-        centers = bin_centers(bins)
-        densities *= centers ** 2 + lorentzian ** 2
-
-    # weights
     mask = histogram > 0
     if mask.any():
         bin_weights = np.zeros(len(histogram))
         bin_weights[mask] = 1 / densities[mask]
         bin_weights /= bin_weights.sum()
-        print(f'*** sel weights {bin_weights}')
-        if adjust_selection:
-            bin_weights[mask] *= combined[mask] / histogram[mask]
+        print(f'*** sel weights  {bin_weights}')
+        if selection_adjustment:
+            bin_weights[mask] *= combined_histograms[mask] / histogram[mask]
             bin_weights /= bin_weights.sum()
-            print(f'   after adjust {bin_weights}')
-
+            print(f'    after adjust {bin_weights}')
+        
         # select bin
         k = np.random.choice(len(bin_weights), p=bin_weights)
         print(f'=== selecting bin {k}: {bins[k:k+2]}')
@@ -572,14 +598,7 @@ def select_shooting_point(pool, params, folder,
         print(f'=== selecting frame {loc} (value: {value:.3f})')
     else:
         print(f'=== selecting frame {loc}')
-
-    # save params for TPS
-    if params.chain_type == 'tps':
-        torch.save(params.network.state_dict(),
-                   f'{folder}/network{states}.h5')
-        save_npy(f'{folder}/bins{states}.npy', bins)
-        save_npy(f'{folder}/densities{states}.npy', densities)
-
+    
     if overriding_types and k is not None:
         if np.digitize(pool_shooting_values[pool_index], bins) - 1 == k:
             if np.random.random() > overriding_rate:
@@ -615,6 +634,13 @@ def select_shooting_point(pool, params, folder,
         print(f'xxx removed {fname} from pool')
         pool.pop(pool_index)
 
+    # save params for TPS
+    if params.chain_type == 'tps':
+        torch.save(params.network.state_dict(),
+                   f'{folder}/network{states}.h5')
+        save_npy(f'{folder}/bins{states}.npy', bins)
+        save_npy(f'{folder}/densities{states}.npy', densities)
+    
     print(f'Shooting initialization completed {now()}\n')
     return shooting_point
 
