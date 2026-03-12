@@ -516,7 +516,7 @@ def select_shooting_point(pool, params, folder,
     else:
         k0 = 0
     if bins[-1] < +inf:
-        bins_with_margins = np.append([+inf], bins_with_margins)
+        bins_with_margins = np.append(bins_with_margins, [+inf])
     populations_with_margins = np.histogram(
         chain_shooting_values, bins_with_margins)[0]
     
