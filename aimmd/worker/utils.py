@@ -509,35 +509,45 @@ def select_shooting_point(pool, params, folder,
 
     # compute populations and combined populations
     populations = np.histogram(chain_shooting_values, bins)[0]
-    populations_with_margins = populations.copy()
-    populations_with_margins[+0] += (chain_shooting_values < bins[0]).sum()
-    populations_with_margins[-1] += (chain_shooting_values > bins[-1]).sum()
-    combined_populations = np.zeros(len(populations), dtype=int)
-    # index of center bin
-    centers = bin_centers(bins)
-    i = np.argmin(np.abs(centers))
-    for k in range(len(bins) - 1):
-        if k <= i:  # before center
-            combined_populations[k] = populations_with_margins[k:i + 1].mean()
-        else:  # after center
-            combined_populations[k] = populations_with_margins[i:k + 1].mean()
+    bins_with_margins = bins
+    if bins[+0] > -inf:
+        bins_with_margins = np.append([-inf], bins_with_margins)
+        k0 = 1   # bins = bins_with_margins[k0:k0 + len(bins)]
+    else:
+        k0 = 0
+    if bins[-1] < +inf:
+        bins_with_margins = np.append([+inf], bins_with_margins)
+    populations_with_margins = np.histogram(
+        chain_shooting_values, bins_with_margins)[0]
     
-    # report
+    # report bins and populations
     print(f'*** bins         {bins}')
     print(f'*** populations  {populations}')
-    print(f'*** combined pop {combined_populations}')
-    print(f'*** densities    {densities}')
+        
+    # calculate adjustment: multiply densities by
+    # the sum of populations within associated bins
+    if density_adjustment > 0:
+        associated_nbins = 2 * density_adjustment + 1
+        adjustment = np.zeros(len(populations))
+        for k in range(len(densities)):
+            associated_populations = populations_with_margins[
+                k0 + k + 1 - density_adjustment:
+                k0 + k + density_adjustment]
+            adjustment[k] = associated_populations.sum()
+            ajustment[k] *= associated_nbins / len(associated_populations)
+        print(f'*** adjustment   {populations}')
+    else:
+        adjustment = 1.
     
-    # adjust densities
-    if density_adjustment == 'populations':
-        densities *= populations + 0.1
-        densities /= densities.sum()
-        print(f'    after adjust {densities}')
-    elif density_adjustment == 'cumulative':
-        densities *= combined_populations + 0.1
+    # report and adjust densities
+    densities /= densities.sum()
+    print(f'*** densities    {densities}')
+    if density_adjustment:
+        densities *= ajustment + 0.1
         densities /= densities.sum()
         print(f'    after adjust {densities}')
     if lorentzian < inf:
+        centers = bin_centers(bins)
         densities *= centers ** 2 + lorentzian ** 2
         densities /= densities.sum()
         print(f'    after loren. {densities}')
