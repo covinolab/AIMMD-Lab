@@ -16,6 +16,7 @@ The utilities here cover:
 - indexing helpers for block-structured data,
 - lightweight time formatting for logs,
 - common list/array operations,
+- boolean array inspection,
 - filesystem convenience utilities,
 - small simulation helpers (e.g., random velocity initialization),
 - cache-related filename replacement,
@@ -42,6 +43,9 @@ List/array helpers
 - cycle: rotate a list by n.
 - concatenate: concatenate non-empty arrays.
 - merge_ranges: merge overlapping integer ranges.
+
+Boolean array inspection
+- longest_true_segment: find the longest continuous portion which is true
 
 Filesystem helpers
 - remove: remove files matched by patterns (supports wildcards).
@@ -287,6 +291,47 @@ def merge_ranges(ranges):
             out.append((b, e))
     return out
 
+
+# -----------------------------------------------------------------------------------
+# Boolean array inspection
+# -----------------------------------------------------------------------------------
+
+def longest_true_segment(mask, left=True):
+    """
+    Return the half-open interval [b, e) of the longest contiguous True segment.
+    
+    Parameters
+    ----------
+    mask : array-like of bool
+        Input boolean array.
+    left : bool, default=True
+        If multiple segments have the same maximal length:
+        - True  -> return the first one
+        - False -> return the last one
+    
+    Returns
+    -------
+    b, e : int, int
+        Start and end indices of the longest True segment, with `e` excluded.
+    
+    Notes
+    -----
+    If no element is True, returns (0, 0).
+    """
+    mask = np.asarray(mask, dtype=bool)
+    
+    if mask.size == 0 or not mask.any():
+        return 0, 0
+    
+    x = np.concatenate(([False], mask, [False])).astype(int)
+    d = np.diff(x)
+    
+    starts = np.flatnonzero(d == 1)
+    ends = np.flatnonzero(d == -1)
+    lengths = ends - starts
+    
+    idx = np.argmax(lengths) if left else len(lengths) - 1 - np.argmax(lengths[::-1])
+    return starts[idx], ends[idx]
 
 # -----------------------------------------------------------------------------------
 # Filesystem helpers
