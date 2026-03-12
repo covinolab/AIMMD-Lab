@@ -494,7 +494,7 @@ class PathIO(ABC):
                 else:
                     velocities = frame._velocities
                     if velocities.any():
-                        velocities = velocities[indices]
+                        velocities = velocities[indices].copy()
                     else:
                         velocities = np.zeros((n_atoms, 3))
 
@@ -506,7 +506,7 @@ class PathIO(ABC):
                     if dim is None:
                         dimensions = DEFAULT_DIMENSIONS
                     else:
-                        dimensions = dim
+                        dimensions = dim.copy()
                 
                 # update and write frame
                 ts.positions = positions
