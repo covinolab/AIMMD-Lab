@@ -204,7 +204,7 @@ class WorkerTrain(ABC):
                 return True
             
             # get free trajectories
-            self._free_trajectories = params.free_trajectories(directory).split()
+            self._free_trajectories = params.free_trajectories(directory)
             for trajectory in self._free_trajectories:
                 total_frames += trajectory.n_frames
             
