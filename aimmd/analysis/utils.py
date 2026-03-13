@@ -389,45 +389,48 @@ def bin_centers(bins):
     return result
 
 
-def merge_empty_bins(bins, keepers,
-                     histograms_to_average=None,
-                     histograms_to_sum=None,
-                     center=0):
+def merge_empty_bins(bins, keepers, *histograms, center=0):
     """
-    Merge low-occupancy bins with the closest ones moving away from
-    the "center" (the transition state). Additionally merge the provided
-    histograms.
+    Merge low-occupancy bins into the closest occupied bins moving away
+    from the reference ``center``. Any additional histograms are merged
+    accordingly by summation.
 
-    Will not merge an empty bin if there are no occupied bins which are
-    more external.
+    An empty bin is merged only if there is an occupied bin further
+    outward on the same side of ``center``. Thus, bins left of or at
+    ``center`` merge leftward, while bins right of ``center`` merge
+    rightward. Empty edge bins with no occupied bin further outward are
+    left unchanged.
 
     Parameters
     ----------
     bins : np.ndarray
-        1D array of bin boundaries of shape (k+1,). Bin i spans
-        [bins[i], bins[i+1]).
+        One-dimensional array of bin boundaries with shape ``(k + 1,)``.
+        Bin ``i`` spans ``[bins[i], bins[i + 1])``.
     keepers : np.ndarray
-        Indices or boolean mask identifying bins to keep as occupied.
-    histograms_to_average : list of np.ndarray, optional
-        Histograms to be merged to correspond to `merged_bins` by taking,
-        for each merged bin, the average of the original bins that were merged.
-    histograms_to_sum : list of np.ndarray, optional
-        Histograms to be merged to correspond to `merged_bins` by taking,
-        for each merged bin, the sum of the original bins that were merged.
+        Indices or boolean mask identifying bins that are occupied and
+        therefore kept as merge targets.
+    *histograms : np.ndarray
+        One or more one-dimensional histograms of shape ``(len(bins) - 1,)``
+        defined on the original bins. Each histogram is merged to match
+        the returned ``merged_bins`` by summing the values of all original
+        bins contributing to each merged bin.
+    center : float, default=0
+        Reference value defining the outward merge direction. Bins whose
+        centers are less than or equal to ``center`` merge toward smaller
+        values; bins whose centers are greater than ``center`` merge
+        toward larger values.
 
     Returns
     -------
     merged_bins : np.ndarray
         Updated bin boundaries after merging.
-    averaged_histograms : tuple of np.ndarray
-        Updated `histograms_to_average` after merging.
-    summed_histograms : tuple of np.ndarray
-        Updated `histograms_to_sum` after merging.
+    merged_bin_counts : np.ndarray
+        Number of original bins contributing to each merged bin.
+    *merged_histograms : np.ndarray
+        The input histograms after merging by summation, returned in the
+        same order as provided.
+
     """
-    if histograms_to_average is None:
-        histograms_to_average = []
-    if histograms_to_sum is None:
-        histograms_to_sum = []
 
     # convert keepers to mask
     mask = np.zeros(len(bins) - 1, dtype=bool)
@@ -435,53 +438,47 @@ def merge_empty_bins(bins, keepers,
 
     # trivial case: nothing to do
     if mask.all():
-        return (
-            bins,
-            tuple(histograms_to_average),
-            tuple(histograms_to_sum),
-        )
+        return bins, tuple(histograms), np.ones(len(mask), dtype=int)
 
-    # need to merge
+    # bin centers determine whether a bin is left or right of the center
     centers = bin_centers(bins)
 
-    # initialize conversion: each bin maps to itself unless merged
-    bins_to_merged_bins = np.arange(len(bins) - 1)
+    # each bin initially maps to itself; empty bins may be reassigned
+    bins_to_merged_bins = np.arange(len(mask))
 
     for i in np.flatnonzero(~mask):
 
-        # look for more external bins
-        if centers[i] <= center:  # going left
+        # empty bins on the left side merge into the closest occupied bin
+        # further to the left (more external)
+        if centers[i] <= center:
             j = i - 1
             while j >= 0 and not mask[j]:
                 j -= 1
             if j >= 0:
                 bins_to_merged_bins[i] = j
 
-        else:  # going right
+        # empty bins on the right side merge into the closest occupied bin
+        # further to the right (more external)
+        else:
             j = i + 1
             while j < len(mask) and not mask[j]:
                 j += 1
             if j < len(mask):
                 bins_to_merged_bins[i] = j
 
-    # build merged bins from consecutive groups with same target
+    # consecutive bins with the same target define one merged bin
     starts = np.r_[0, 1 + np.flatnonzero(np.diff(bins_to_merged_bins))]
-    ends = np.r_[starts[1:], len(mask)]
-    merged_bins = np.r_[bins[starts], bins[ends[-1]]]
+    merged_bins = np.r_[bins[starts], bins[-1]]
 
-    # counts per merged bin, needed for averages
-    counts = np.diff(np.r_[starts, len(mask)])
+    # number of original bins contributing to each merged bin
+    merged_bin_counts = np.diff(np.r_[starts, len(mask)])
 
-    averaged_histograms = tuple(
-        np.add.reduceat(histogram, starts) / counts
-        for histogram in histograms_to_average
-    )
-    summed_histograms = tuple(
-        np.add.reduceat(histogram, starts)
-        for histogram in histograms_to_sum
+    # merge all histograms by summation
+    merged_histograms = tuple(
+        np.add.reduceat(histogram, starts) for histogram in histograms
     )
 
-    return merged_bins, averaged_histograms, summed_histograms
+    return merged_bins, merged_bin_counts, *merged_histograms
 
 
 def merge_marginal_bins(bins, *values, min_values=3):
