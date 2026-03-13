@@ -184,7 +184,7 @@ class ParamsPaths(ABC):
                 this = self.shot_paths(directory, prefix, t, k, old)
                 if isinstance(this, list):
                     result.extend(this)
-                else:
+                elif this:
                     result.append(this)
             return result
 
