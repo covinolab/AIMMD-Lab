@@ -170,8 +170,8 @@ class ParamsPaths(ABC):
           assign weights to newly loaded paths, zeroing weights for non-transitions.
         """
         
-        # process "old"
-        old = PathEnsemble(old)
+        # process "old" (do not copy paths)
+        old = assemble_pathensemble(old)
         
         # which state are we talking about?
         states = self.states
