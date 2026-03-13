@@ -170,31 +170,30 @@ def get_paths(*instances, initialize=True, **kwargs):
         Keyword arguments forwarded to Path initialization:
 
             Path(fname, **kwargs)
-            Path(existing_path, **kwargs)
 
         This is used to copy/initialize paths with consistent settings.
-
+        Only when calling on fname, not on a preexisting path!
+    
     Returns
     -------
     list
         Flat list of Path objects if `initialize=True`, otherwise a flat list
         of filenames (strings).
-
+    
     Notes
     -----
-    - When a Path instance is provided, it is copied via ``Path(instance, **kwargs)``.
+    - When a Path instance is provided, it is copied.
     - When a PathEnsemble is provided, each stored path is copied similarly.
     - Nested iterables are handled recursively.
     """
-    """kwargs are passed to path initialization"""
     from . import PathEnsemble
     from ..path import Path
     result = []
     for instance in instances:
         if isinstance(instance, Path):
-            result.append(Path(instance, **kwargs))
+            result.append(instance.copy())
         elif isinstance(instance, PathEnsemble):
-            result += [Path(path, **kwargs) for path in instance._paths]
+            result += [path.copy() for path in instance._paths]
         elif isinstance(instance, (str, PosixPath)):
             fnames = get_fnames(str(instance))
             if initialize:
