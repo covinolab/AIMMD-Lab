@@ -526,30 +526,31 @@ def select_shooting_point(pool, params, folder,
         centers = bin_centers(bins)
         densities *= centers ** 2 + lorentzian ** 2
         densities /= densities.sum()
-        print(f'    after loren. {densities}')
-
+        print(f'    (aft loren.) {densities}')
+    
     # merge empty bins, update histograms and densities
     keepers = combined_histograms > 0
     if not keepers.all():
-        bins, averaged_histograms, summed_histograms = merge_empty_bins(
+        bins, counts, merged_histograms = merge_empty_bins(
             bins, keepers,
-            histograms_to_average=[densities],
-            histogram_to_sum=[histograms, combined_histograms, populations]
+            histograms, combined_histograms, densities, populations
         )
-        densities = averaged_histograms[0]
-        histograms = summed_histograms[:len(histograms)]
-        combined_histograms, populations = summed_histograms[-2:]
+        histograms = merged_histograms[:len(histograms)]
+        combined_histograms, densities, populations = merged_histograms[-3:]
         if len(bins) - 1 < nbins:
             print(f'*** merged {nbins - len(bins) + 1} internal empty bins:')
             print(f'    bins         {bins}')
             print(f'    populations  {populations}')
             print(f'    densities    {densities}')
+
+        # to preserve target distribution: divide densities by merged bin counts
+        densities /= counts
     
     # density adjustment (populations)
     if density_adjustment:
         densities *= populations + 0.1
         densities /= densities.sum()
-        print(f'    after adjust {densities}')
+    print(f'    (aft adjust) {densities}')
     
     # choose path
     pool_index = np.random.choice(len(pool))
