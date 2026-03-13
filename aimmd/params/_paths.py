@@ -181,7 +181,7 @@ class ParamsPaths(ABC):
         if target_state is None:
             result = []
             for t in states:
-                this = self.shot_paths(directory, prefix, t, None, old)
+                this = self.shot_paths(directory, prefix, t, k, old)
                 result.extend(this)
             return result
 
