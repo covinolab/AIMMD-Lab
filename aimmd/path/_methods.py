@@ -416,7 +416,7 @@ class PathMethods(ABC):
         result = object.__new__(Path)        
         result._fnames = self._fnames[:]
         result._first = self._first[:]
-        result._end = self._end[:]
+        result._last = self._last[:]
         result._weight = self._weight
         result._exclude_from = self._exclude_from
         result._shooting_index = self._shooting_index
