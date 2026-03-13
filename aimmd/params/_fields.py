@@ -326,15 +326,6 @@ convergence. For each shooting chain, in each bin: multiply the density by
 the number of points already selected in the bin."""
                  })
     
-    selection_adjustment: bool = field(
-        default=True,
-        metadata={'description':
-"""Apply a further correction to the selection probabilities propto 1 / densities,
-based on the current selection pool, to reduce over-selection of already overrepresented
-bins while preserving detailed balance (effective only when
-`selection_pool_size > 1`)."""
-                 })
-    
     lorentzian: float = field(
         default=inf,
         metadata={'description':
