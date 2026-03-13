@@ -499,54 +499,53 @@ def select_shooting_point(pool, params, folder,
         bins = np.array([-inf, +inf])
         densities = np.array([1.])
 
-    # immediately get all values
+    # immediately get all values & populations histogram
     # (such that there is a lower risk of desync)
     pool_values = pool.values
     pool_shooting_values = pool.shooting('values')
     overriding_values = overriding.values
     chain_shooting_values = chain.shooting('values')
-    # shooting values have all been computed at this point
-    
-    # report bins and populations
     populations = np.histogram(chain_shooting_values, bins)[0]
-    print(f'*** bins         {bins}')
-    print(f'*** populations  {populations}')
-    
-    # report and adjust densities
-    densities /= densities.sum()
-    print(f'*** densities    {densities}')
-    if density_adjustment:
-        densities *= populations + 0.1
-        densities /= densities.sum()
-        print(f'    after adjust {densities}')
-    if lorentzian < inf:
-        centers = bin_centers(bins)
-        densities *= centers ** 2 + lorentzian ** 2
-        densities /= densities.sum()
-        print(f'    after loren. {densities}')
-    
+
     # report selection pool
     report, histograms = pool.report(bins=bins, values=pool_values)
     print(f'\nSelection pool\n{report}')
     if nbins > 1:
         print(f'*** current pool shooting interfaces: {pool_shooting_values}')
+        print(f'*** populations  {populations}')
     
     # normalize histograms, average in "combined" histogram
     norms = np.maximum(histograms.sum(axis=1), 1.0)
     histograms /= norms[:, None]
     combined_histograms = histograms.mean(axis=0)
+    
+    # density adjustment (lorentzian)
+    densities /= densities.sum()
+    print(f'*** densities    {densities}')
+    if lorentzian < inf:
+        centers = bin_centers(bins)
+        densities *= centers ** 2 + lorentzian ** 2
+        densities /= densities.sum()
+        print(f'    after loren. {densities}')
 
     # merge empty bins, update histograms and densities
     keepers = combined_histograms > 0
     if not keepers.all():
         bins, *merged_result = merge_empty_bins(
-            bins, keepers, *histograms, combined_histograms, densities)
+            bins, keepers, *histograms, combined_histograms, densities, populations)
         histograms = merged_result[:len(histograms)]
-        combined_histograms, densities = merged_result[-2:]
+        combined_histograms, densities, populations = merged_result[-2:]
         if len(bins) - 1 < nbins:
             print(f'*** merged {nbins - len(bins) + 1} internal empty bins:')
-            print(f'    bins      {bins}')
-            print(f'    densities {densities}')
+            print(f'    bins         {bins}')
+            print(f'    populations  {densities}')
+            print(f'    densities    {densities}')
+    
+    # density adjustment (populations)
+    if density_adjustment:
+        densities *= populations + 0.1
+        densities /= densities.sum()
+        print(f'    after adjust {densities}')
     
     # choose path
     pool_index = np.random.choice(len(pool))
