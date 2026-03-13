@@ -544,7 +544,7 @@ def select_shooting_point(pool, params, folder,
         histograms = merged_result[:len(histograms)]
         combined_histograms, densities = merged_result[-2:]
         if len(bins) - 1 < nbins:
-            print(f'*** merged empty bins:')
+            print(f'*** merged {nbins - len(bins) + 1} internal empty bins:')
             print(f'    bins      {bins}')
             print(f'    densities {densities}')
     
