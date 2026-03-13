@@ -95,7 +95,7 @@ from ..core.utils import now, process_state
 from ..path.utils import get_cache_fname
 from ..pathensemble import PathEnsemble
 from ..execute.utils import execute_command
-from ..analysis.utils import bin_centers
+from ..analysis.utils import bin_centers, merge_empty_bins
 from ..pathensemble.utils import match_patterns, assemble_pathensemble
 from ..network.rescale_utils import rescale
 
@@ -506,44 +506,17 @@ def select_shooting_point(pool, params, folder,
     overriding_values = overriding.values
     chain_shooting_values = chain.shooting('values')
     # shooting values have all been computed at this point
-
-    # compute populations and combined populations
-    populations = np.histogram(chain_shooting_values, bins)[0]
-    bins_with_margins = bins
-    if bins[+0] > -inf:
-        bins_with_margins = np.append([-inf], bins_with_margins)
-        k0 = 1   # bins = bins_with_margins[k0:k0 + len(bins)]
-    else:
-        k0 = 0
-    if bins[-1] < +inf:
-        bins_with_margins = np.append(bins_with_margins, [+inf])
-    populations_with_margins = np.histogram(
-        chain_shooting_values, bins_with_margins)[0]
     
     # report bins and populations
+    populations = np.histogram(chain_shooting_values, bins)[0]
     print(f'*** bins         {bins}')
     print(f'*** populations  {populations}')
-        
-    # calculate adjustment: multiply densities by
-    # the sum of populations within associated bins
-    if density_adjustment > 0:
-        associated_nbins = 2 * density_adjustment + 1
-        adjustment = np.zeros(len(populations))
-        for k in range(len(densities)):
-            associated_populations = populations_with_margins[
-                k0 + k + 1 - density_adjustment:
-                k0 + k + density_adjustment]
-            adjustment[k] = associated_populations.sum()
-            adjustment[k] *= associated_nbins / len(associated_populations)
-        print(f'*** adjustment   {adjustment}')
-    else:
-        adjustment = 1.
     
     # report and adjust densities
     densities /= densities.sum()
     print(f'*** densities    {densities}')
     if density_adjustment:
-        densities *= adjustment + 0.1
+        densities *= populations + 0.1
         densities /= densities.sum()
         print(f'    after adjust {densities}')
     if lorentzian < inf:
@@ -562,6 +535,16 @@ def select_shooting_point(pool, params, folder,
     norms = np.maximum(histograms.sum(axis=1), 1.0)
     histograms /= norms[:, None]
     combined_histograms = histograms.mean(axis=0)
+
+    # merge empty bins, update histograms and densities
+    keepers = combined_histograms > 0
+    if not keepers.all():
+        bins, merged_result = merge_empty_bins(
+            bins, keepers, *histograms, combined_histograms, densities)
+        histograms = merged_result[:len(histograms)]
+        combined_histogram, densities = merged_result[-2:]
+        print(f'*** merged bins      {bins}')
+        print(f'    merged densities {densities}')
     
     # choose path
     pool_index = np.random.choice(len(pool))
