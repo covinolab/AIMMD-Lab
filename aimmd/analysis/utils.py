@@ -389,48 +389,66 @@ def bin_centers(bins):
     return result
 
 
-def merge_empty_bins(bins, keepers, *histograms, center=0):
+def merge_empty_bins(bins, keepers,
+                     histograms_to_average=None,
+                     histograms_to_sum=None,
+                     center=0):
     """
     Merge low-occupancy bins with the closest ones moving away from
-    the "center" (the transtion state). Additionally merge the provided
+    the "center" (the transition state). Additionally merge the provided
     histograms.
-    
+
     Will not merge an empty bin if there are no occupied bins which are
     more external.
-    
+
     Parameters
     ----------
     bins : np.ndarray
-        1D array of bin boundaries of shape (k+1,). Bin i spans [bins[i], bins[i+1]).
+        1D array of bin boundaries of shape (k+1,). Bin i spans
+        [bins[i], bins[i+1]).
     keepers : np.ndarray
-        Identifies which bins are not empty (the others will be merged).
-    histograms : tuple of np.ndarray, shape `len(bins) - 1`
-        Histograms to be merged to correspond to `merged_bins`.
-    
+        Indices or boolean mask identifying bins to keep as occupied.
+    histograms_to_average : list of np.ndarray, optional
+        Histograms to be merged to correspond to `merged_bins` by taking,
+        for each merged bin, the average of the original bins that were merged.
+    histograms_to_sum : list of np.ndarray, optional
+        Histograms to be merged to correspond to `merged_bins` by taking,
+        for each merged bin, the sum of the original bins that were merged.
+
     Returns
     -------
     merged_bins : np.ndarray
         Updated bin boundaries after merging.
-    merged_histograms : tuple of np.ndarray, shape `len(merged_bins) - 1`
-        Updated histograms after merging.
+    averaged_histograms : tuple of np.ndarray
+        Updated `histograms_to_average` after merging.
+    summed_histograms : tuple of np.ndarray
+        Updated `histograms_to_sum` after merging.
     """
-    
+    if histograms_to_average is None:
+        histograms_to_average = []
+    if histograms_to_sum is None:
+        histograms_to_sum = []
+
     # convert keepers to mask
     mask = np.zeros(len(bins) - 1, dtype=bool)
     mask[keepers] = True
-    
+
     # trivial case: nothing to do
     if mask.all():
-        return (bins, ) + tuple(histograms)
-    
+        return (
+            bins,
+            tuple(histograms_to_average),
+            tuple(histograms_to_sum),
+        )
+
     # need to merge
     centers = bin_centers(bins)
-    
+
     # initialize conversion: each bin maps to itself unless merged
     bins_to_merged_bins = np.arange(len(bins) - 1)
-    
+
     for i in np.flatnonzero(~mask):
-        
+
         # look for more external bins
         if centers[i] <= center:  # going left
             j = i - 1
@@ -438,27 +456,32 @@ def merge_empty_bins(bins, keepers, *histograms, center=0):
                 j -= 1
             if j >= 0:
                 bins_to_merged_bins[i] = j
-        
+
         else:  # going right
             j = i + 1
             while j < len(mask) and not mask[j]:
                 j += 1
             if j < len(mask):
                 bins_to_merged_bins[i] = j
-    
-    # build merged_bins based on bins_to_merged_bins
+
+    # build merged bins from consecutive groups with same target
     starts = np.r_[0, 1 + np.flatnonzero(np.diff(bins_to_merged_bins))]
     ends = np.r_[starts[1:], len(mask)]
     merged_bins = np.r_[bins[starts], bins[ends[-1]]]
-    
-    # collapse histograms based on bins_to_merged_bins
-    merged_histograms = [
+
+    # counts per merged bin, needed for averages
+    counts = np.diff(np.r_[starts, len(mask)])
+
+    averaged_histograms = tuple(
+        np.add.reduceat(histogram, starts) / counts
+        for histogram in histograms_to_average
+    )
+    summed_histograms = tuple(
         np.add.reduceat(histogram, starts)
-        for histogram in histograms
-    ]
-    
-    # return
-    return (merged_bins, ) + tuple(merged_histograms)
+        for histogram in histograms_to_sum
+    )
+
+    return merged_bins, averaged_histograms, summed_histograms
 
 
 def merge_marginal_bins(bins, *values, min_values=3):
