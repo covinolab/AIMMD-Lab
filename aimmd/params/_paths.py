@@ -235,7 +235,9 @@ class ParamsPaths(ABC):
                     pass
             
             # return
-            return shot_paths
+            result = PathEnsemble()
+            result._paths = shot_paths
+            return result
 
         # for each k
         result = []
