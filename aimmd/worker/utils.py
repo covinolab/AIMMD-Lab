@@ -538,7 +538,7 @@ def select_shooting_point(pool, params, folder,
         if len(bins) - 1 < nbins:
             print(f'*** merged {nbins - len(bins) + 1} internal empty bins:')
             print(f'    bins         {bins}')
-            print(f'    populations  {densities}')
+            print(f'    populations  {populations}')
             print(f'    densities    {densities}')
     
     # density adjustment (populations)
