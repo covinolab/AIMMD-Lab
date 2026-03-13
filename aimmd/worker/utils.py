@@ -526,7 +526,7 @@ def select_shooting_point(pool, params, folder,
         centers = bin_centers(bins)
         densities *= centers ** 2 + lorentzian ** 2
         densities /= densities.sum()
-        print(f'    (aft loren.) {densities}')
+        print(f'    (after applying the Loretzian) {densities}')
     
     # merge empty bins, update histograms and densities
     keepers = combined_histograms > 0
@@ -550,7 +550,7 @@ def select_shooting_point(pool, params, folder,
     if density_adjustment:
         densities *= populations + 0.1
     densities /= densities.sum()
-    print(f'    (aft adjust) {densities}')
+    print(f'    (adjusted)   {densities}')
     
     # choose path
     pool_index = np.random.choice(len(pool))
