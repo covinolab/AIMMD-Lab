@@ -567,7 +567,7 @@ def select_shooting_point(pool, params, folder,
     mask = histogram > 0
     if mask.any():
         bin_weights = np.zeros(len(histogram))
-        bin_weights[mask] = 1 / densities[mask]
+        bin_weights[mask] = histogram[mask] / densities[mask]
         bin_weights /= bin_weights.sum()
         print(f'*** sel weights  {bin_weights}')
         if selection_adjustment:
