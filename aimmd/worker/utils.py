@@ -531,7 +531,7 @@ def select_shooting_point(pool, params, folder,
     # merge empty bins, update histograms and densities
     keepers = combined_histograms > 0
     if not keepers.all():
-        bins, counts, *merged_histograms = merge_empty_bins(
+        bins, merged_bin_counts, *merged_histograms = merge_empty_bins(
             bins, keepers,
             *histograms, combined_histograms, densities, populations
         )
@@ -540,11 +540,12 @@ def select_shooting_point(pool, params, folder,
         if len(bins) - 1 < nbins:
             print(f'*** merged {nbins - len(bins) + 1} internal empty bins:')
             print(f'    bins         {bins}')
+            print(f'    merged count {merged_bin_counts}')
             print(f'    populations  {populations}')
             print(f'    densities    {densities}')
-
+        
         # to preserve target distribution: divide densities by merged bin counts
-        densities /= counts
+        densities /= merged_bin_counts
     
     # density adjustment (populations)
     if density_adjustment:
@@ -572,7 +573,7 @@ def select_shooting_point(pool, params, folder,
         if selection_adjustment:
             bin_weights[mask] *= combined_histograms[mask] / histogram[mask]
             bin_weights /= bin_weights.sum()
-            print(f'    after adjust {bin_weights}')
+            print(f'    (adjusted)   {bin_weights}')
         
         # select bin
         k = np.random.choice(len(bin_weights), p=bin_weights)
