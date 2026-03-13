@@ -72,7 +72,7 @@ class PathHelpers(ABC):
             If >= 0, mark the path as rejected from this frame onward.
         shooting_index : int or any, optional
             Shooting point index in global Path coordinates. If not an integer,
-            the property setter may infer it.
+            the property setter "finds" it (frame with time = 0 or first frame).
 
         Notes
         -----
