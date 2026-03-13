@@ -539,7 +539,7 @@ def select_shooting_point(pool, params, folder,
     # merge empty bins, update histograms and densities
     keepers = combined_histograms > 0
     if not keepers.all():
-        bins, merged_result = merge_empty_bins(
+        bins, *merged_result = merge_empty_bins(
             bins, keepers, *histograms, combined_histograms, densities)
         histograms = merged_result[:len(histograms)]
         combined_histogram, densities = merged_result[-2:]
