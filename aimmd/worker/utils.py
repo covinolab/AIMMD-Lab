@@ -542,10 +542,11 @@ def select_shooting_point(pool, params, folder,
         bins, *merged_result = merge_empty_bins(
             bins, keepers, *histograms, combined_histograms, densities)
         histograms = merged_result[:len(histograms)]
-        combined_histogram, densities = merged_result[-2:]
-        print(f'*** merged bins      {bins}')
-        print(f'    merged densities {densities}')
-        print(histograms)  # TEMP
+        combined_histograms, densities = merged_result[-2:]
+        if len(bins) - 1 < nbins:
+            print(f'*** merged empty bins:')
+            print(f'    bins      {bins}')
+            print(f'    densities {densities}')
     
     # choose path
     pool_index = np.random.choice(len(pool))
