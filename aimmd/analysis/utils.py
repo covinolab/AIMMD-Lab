@@ -541,7 +541,7 @@ def merge_marginal_bins(bins, *values, min_values=3):
         merged_bin_counts[0] = b
         merged_bin_counts[-1] = nbins - e
         
-        return merged_bins, merged_bin_counts
+    return merged_bins, merged_bin_counts
 
 
 def binomial_mean_and_confidence_interval(r1, r2, alpha=0.95):
