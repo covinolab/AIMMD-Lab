@@ -77,7 +77,6 @@ from ..core.utils import now, replace_in_cache
 from ..pathensemble import PathEnsemble
 from ..execute.threads import ThreadExecutor
 from ..analysis.utils import compute_bins
-from ..pathensemble.utils import assemble_pathensemble
 from ..network.rescale_utils import find_knots_and_values, rescale
 
 
