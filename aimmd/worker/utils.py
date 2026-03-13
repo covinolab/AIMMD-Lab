@@ -455,7 +455,6 @@ def select_shooting_point(pool, params, folder,
     overriding_rate = params.free_overriding_recovery_rate
     compute_values_args = params.compute_values_args
     density_adjustment = params.density_adjustment
-    selection_adjustment = params.selection_adjustment
     pool_size = params.selection_pool_size
     len_ext = len(params.trajectory_extension)
     nbins = params.nbins
@@ -567,13 +566,9 @@ def select_shooting_point(pool, params, folder,
     mask = histogram > 0
     if mask.any():
         bin_weights = np.zeros(len(histogram))
-        bin_weights[mask] = histogram[mask] / densities[mask]
+        bin_weights[mask] = combined_histograms[mask] / densities[mask]
         bin_weights /= bin_weights.sum()
         print(f'*** sel weights  {bin_weights}')
-        if selection_adjustment:
-            bin_weights[mask] *= combined_histograms[mask] / histogram[mask]
-            bin_weights /= bin_weights.sum()
-            print(f'    (adjusted)   {bin_weights}')
         
         # select bin
         k = np.random.choice(len(bin_weights), p=bin_weights)
