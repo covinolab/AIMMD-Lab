@@ -545,6 +545,7 @@ def select_shooting_point(pool, params, folder,
         combined_histogram, densities = merged_result[-2:]
         print(f'*** merged bins      {bins}')
         print(f'    merged densities {densities}')
+        print(histograms)  # TEMP
     
     # choose path
     pool_index = np.random.choice(len(pool))
