@@ -65,6 +65,7 @@ class ParamsPaths(ABC):
         -------
         list of aimmd.path.Path
             List of reconstructed free trajectories as `Path` objects.
+            NOT a `PathEnsemble` object.
         
         Notes
         -----
@@ -130,10 +131,8 @@ class ParamsPaths(ABC):
                 except:
                     continue
 
-        # all together, categorized
-        pathensemble = PathEnsemble()
-        pathensemble._paths = result  # directly assign to be faster
-        return pathensemble
+        # all together, as a list
+        return result
 
     def shot_paths(self, directory, prefix='chain',
                    target_state=None, k=None, old=PathEnsemble()):
