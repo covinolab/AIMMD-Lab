@@ -50,8 +50,6 @@ from .._config import print
 from ..core.utils import unique_path
 from ..pathensemble import PathEnsemble
 from ..core.decorators import class_or_instancemethod
-from ..pathensemble.utils import get_paths
-
 
 # params' methods
 class ParamsIO(ABC):
