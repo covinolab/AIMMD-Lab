@@ -133,7 +133,7 @@ class ParamsPaths(ABC):
         # all together, categorized
         pathensemble = PathEnsemble()
         pathensemble._paths = result  # directly assign to be faster
-        return result
+        return pathensemble
 
     def shot_paths(self, directory, prefix='chain',
                    target_state=None, k=None, old=PathEnsemble()):
@@ -182,7 +182,10 @@ class ParamsPaths(ABC):
             result = []
             for t in states:
                 this = self.shot_paths(directory, prefix, t, k, old)
-                result.extend(this)
+                if isinstance(this, list):
+                    result.extend(this)
+                else:
+                    result.append(this)
             return result
 
         t = process_state(target_state, states)
@@ -235,9 +238,7 @@ class ParamsPaths(ABC):
                     pass
             
             # return
-            result = PathEnsemble()
-            result._paths = shot_paths
-            return result
+            return shot_paths
 
         # for each k
         result = []
@@ -252,10 +253,7 @@ class ParamsPaths(ABC):
             if os.path.isdir(folder):
                 k = folder.split(f'{prefix}{t}')[-1]
                 if k.isdigit():
-                    k = int(k)
-                    if len(result) <= k:
-                        result.append(None)
-                    result[k] = self.shot_paths(directory, prefix, t, k, old)
+                    result.append(self.shot_paths(directory, prefix, t, k, old))
         return result
 
     def shot_chains(self, directory,
