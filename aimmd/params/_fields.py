@@ -144,15 +144,13 @@ and `-nobackup` handling)."""
     gmx_mdrun: str = field(
         default=f'{GROMACS} mdrun -v -maxh 4',
         metadata={'description':
-"""Base `mdrun` command used to run dynamics.
-You may tune performance flags here (MPI/OMP/GPU), but do NOT include flags that
-AIMMD injects automatically (e.g., `-deffnm`, `-nobackup`, and `-noappend` where
-needed).
-Performance note:
-AIMMD typically dedicates one CPU core per worker to the Python control loop
-(stop-condition checks and bookkeeping). If you request `cpus_per_task = 12`,
-a common choice is to run GROMACS with `-ntmpi 11` (or equivalent) to avoid
-oversubscription."""
+"""Base `mdrun` command used to run dynamics. You may tune performance flags
+here (MPI/OMP/GPU), but do no include `-deffnm`, `-nobackup`, and `-noappend`,
+as those are add automatically by AIMMD.
+Performance note: to prevent CPU oversubscription and ensure smooth
+communication between GROMACS and AIMMD, set `-ntmpi` to `(cpus_per_task - 1)`.
+This reserves the final CPU core exclusively for computing CVs and orchestrating
+the simulation logic."""
                  })
 
     gmx_eneconv: str = field(
@@ -459,9 +457,13 @@ including free-simulation data and regularization choices."""
         metadata={'description':
 """Number of frames registered/processed per update batch.
 Controls how many frames are appended or indexed per internal update step.
-Reduce this if memory spikes while loading and analyzing trajectories."""
+During an AIMMD production run, the simulations stop if states and descriptors
+computations are not catching up, and getting behind by `trajectory_update_batch_size`
+or more. Reduce this when the simulation engine produces new frames much faster than
+you can analyze them or if memory spikes while loading and analyzing trajectories.
+"""
                  })
-
+    
     network_save_interval: int = field(
         default=10,
         metadata={'description':
