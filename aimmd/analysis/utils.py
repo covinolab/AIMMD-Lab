@@ -4,8 +4,8 @@ aimmd.analysis.utils
 
 Numerical analysis helpers for AIMMD.
 
-This module collects lightweight, standalone routines used by the trainer and by
-analysis workflows. Functions operate on NumPy arrays and on PathEnsemble-like
+This module collects standalone routines used by the trainer and by analysis
+workflows. Functions operate on NumPy arrays and on PathEnsemble-like
 objects (AIMMD’s path-sampling convention), without depending on high-level
 AIMMD classes.
 
@@ -52,6 +52,12 @@ Rate-estimate extraction
       by relaxation (finite-difference discretization) with coarse-to-fine
       refinement.
 
+Track and plot paths lineage
+    - :func:`find_path_lineages` reconstructs path lineages by parsing the specific
+      worker.log file produced by AIMMD for each shooting chain.
+    - :func:`plot_path_lineages` visualizes path lineages in a compact way with nice
+      graphics.
+
 Dependencies and expectations
 -----------------------------
 - PathEnsemble conventions:
@@ -69,7 +75,10 @@ statistics to transition statistics when required.
 """
 
 # external
+import os
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches
 from math import inf, nan
 from tqdm import tqdm
 from scipy.stats import beta
@@ -777,3 +786,276 @@ def solve_committor_by_relaxation(
         else:
             P0 = P1.copy()
     return P0
+
+
+def find_path_lineages(*shooting_chains, verbose=False):
+    """
+    Reconstructs path lineages by parsing the specific worker.log for each chain.
+    
+    This function attaches a `._previous` attribute to path objects. 
+    It dynamically identifies the correct log file for every path by looking 
+    at its directory.
+    
+    Parameters:
+    -----------
+    *shooting_chains : list of PathChain objects
+        One or more chains containing path objects to be linked.
+    verbose : bool, default=False
+        If True, displays a progress bar for the parsing process.
+    """
+    
+    # --- 1. PRE-PROCESSING ---
+    # Flatten all paths from all chains into a single lookup map
+    for chain in shooting_chains:
+        fnames = [path.fname for path in chain._paths]
+        
+        if not fnames:
+            return
+        
+        # current folder
+        folder = '/'.join(fnames[-1].split('/')[:-1])
+        suffix = '.' + fnames[-1].split('.')[-1]
+        
+        # --- 2. LOG PARSING HELPER ---
+        def extract_name(line, prefix, add_suffix=''):
+            """Extracts and cleans a path name from a log line."""
+            if prefix in line:
+                # Splits by prefix, takes name before '(', removes quotes
+                part = line.split(prefix)[1].split('(')[0]
+                clean_name = part.strip().replace("'", "").replace('"', "")
+                return f"{clean_name}{add_suffix}"
+            return None
+        
+        # --- 3. MULTI-LOG TRAVERSAL ---
+        done_fnames = set()
+        pbar = tqdm(total=len(fnames), disable=not verbose, desc=folder)
+            
+        # Iterate through folders (and their respective logs)
+        log_path = os.path.join(folder, 'worker.log')
+        if not os.path.exists(log_path):
+            if verbose:
+                print(f"\nWarning: Log not found in {folder}")
+            continue
+        
+        # State trackers for the current log file
+        current_path = None
+        parent_path = None
+        
+        with open(log_path, 'r') as log_file:
+            for line in log_file:
+                # Identify the 'child' being created
+                current_path = extract_name(
+                    line, 'Selecting shooting point for', suffix
+                ) or current_path
+                
+                # Identify the 'parent' being shot
+                parent_path = (
+                    extract_name(line, '=== selecting path') or 
+                    extract_name(line, '=== overriding with')
+                ) or parent_path
+                
+                # Commit the link when initialization is logged as complete
+                if line.startswith('Shooting initialization completed'):
+                    # Only process if the child is in our provided chains
+                    
+                    if current_path in fnames:
+                        path = chain._paths[fnames.index(current_path)]
+                        
+                        # Link to parent object if found in chains, else store string
+                        if parent_path in fnames:
+                            path._previous = chain._paths[
+                                fnames.index(parent_path)]
+                        else:
+                            path._previous = parent_path
+                        
+                        if current_path not in done_fnames:
+                            pbar.update(1)
+                            done_fnames.add(current_path)
+        pbar.close()
+
+
+def plot_path_lineages(*shooting_chains, out='path_tree.pdf',
+                       states='ARB', source='values', 
+                       vmin=-20, vmax=20, fields=None, show=False):
+    """
+    Visualizes the genealogical history of AIMMD path sampling results
+    ensembles using an independently-packed grid layout. 
+    
+    Each lineage is treated as an autonomous vertical unit, allowing 
+    columns to stack tightly without being constrained by the length 
+    of chains in adjacent tiles. Labels are centered relative to the 
+    data axis of each column.
+    
+    Parameters:
+    -----------
+    *shooting_chains : list
+        Collection of PathChain objects.
+    out : str
+        Output filename.
+    states : str
+        Boundary state labels.
+    source : str
+        Data key for coordinate extraction.
+    vmin, vmax : float
+        Initial plot boundaries.
+    fields : list, optional
+        Metadata attributes to display.
+    show : bool, optional
+        Wether to show the plot or directly close it.
+    """
+    
+    # --- 1. CONFIGURATION & STATE NORMALIZATION ---
+    states = sorted([states[0], states[-1]])
+    s_A, s_B = states[0], states[-1]
+    done, fnames, values = [], [], []
+    
+    color_map = {
+        'AA': '#EE8866', 'BB': '#77AADD', 
+        'AB': '#44AA99', 'incomplete': '#BBBBBB'
+    }
+    
+    # --- 2. LINEAGE EXTRACTION ---
+    for chain in shooting_chains:
+        i = len(chain) - 1
+        while i >= 0:
+            path = chain[i]
+            if path in done:
+                i -= 1
+                continue
+                        
+            curr_fnames, curr_vals = [], []
+            while True:
+                done.append(path)
+                s_val = path.shooting(source)
+                min_v = -inf if s_A in path.type else path.min(source)
+                max_v = inf if s_B in path.type else path.max(source)
+                
+                is_A, is_B = (min_v == -inf), (max_v == inf)
+                if is_A and not is_B: p_type = 'AA'
+                elif is_B and not is_A: p_type = 'BB'
+                elif is_A and is_B: p_type = 'AB'
+                else: p_type = 'incomplete'
+                
+                extra_info = ""
+                if fields:
+                    info_bits = [f"{f}:{getattr(path, f)}" 
+                                 for f in fields if hasattr(path, f)]
+                    extra_info = " | ".join(info_bits)
+                                
+                curr_vals.insert(0, (min_v, s_val, max_v, p_type, extra_info))
+                # Restore full path by removing the split logic
+                curr_fnames.insert(0, path.fname)
+                
+                if not hasattr(path, '_previous'):
+                    i -= 1
+                    break
+                
+                prev = path._previous
+                if isinstance(prev, str):
+                    if 'initial' in prev: 
+                        curr_vals.insert(0, (-inf, s_val, inf, 'AB', ""))
+                    elif f'free{s_A}' in prev: 
+                        curr_vals.insert(0, (-inf, s_val, s_val, 'AA', ""))
+                    elif f'free{s_B}' in prev: 
+                        curr_vals.insert(0, (s_val, s_val, inf, 'BB', ""))
+                    curr_fnames.insert(0, prev)
+                    i -= 1
+                    break
+                path = prev
+            
+            fnames.append(curr_fnames)
+            values.append(curr_vals)
+    
+    # --- 3. DYNAMIC BOUNDARY CALCULATION ---
+    flat_coords = []
+    for col in values:
+        for p in col:
+            flat_coords.extend([p[0], p[1], p[2]])
+    flat_coords = np.array(flat_coords)
+    real_coords = flat_coords[~np.isinf(flat_coords)]
+    
+    p_min = min(vmin, np.min(real_coords)) if real_coords.size > 0 else vmin
+    p_max = max(vmax, np.max(real_coords)) if real_coords.size > 0 else vmax
+    plot_width = p_max - p_min
+    
+    # --- 4. TILING GEOMETRY (INDEPENDENT MASONRY PACKING) ---
+    num_total_chains = len(values)
+    max_cols = int(np.ceil(np.sqrt(num_total_chains))) \
+               if num_total_chains > 3 else num_total_chains
+    
+    col_heights = [0.0] * max_cols
+    v_buffer = 2.5 
+    col_width = plot_width * 1.3
+    
+    positions = []
+    for idx, col_v in enumerate(values):
+        tile_c = idx % max_cols
+        chain_len = len(col_v)
+        y_start = col_heights[tile_c]
+        positions.append((tile_c, y_start))
+        col_heights[tile_c] += (chain_len + v_buffer)
+        
+    total_max_height = max(col_heights)
+    fig, ax = plt.subplots(figsize=(max_cols * 4.5, total_max_height * 0.35 + 1))
+    
+    # --- 5. RENDERING ---
+    for idx, (col_f, col_v, (tile_c, y_base)) in enumerate(zip(fnames, values, positions)):
+        x_off = tile_c * col_width
+        y_top = total_max_height - y_base
+        chain_len = len(col_v)
+        
+        if tile_c < max_cols - 1:
+            sep_x = x_off + p_max + (col_width - plot_width) / 2
+            ax.vlines(sep_x, y_top - chain_len - 1, y_top + 1, 
+                      color='#EEEEEE', lw=1.0, zorder=0)
+
+        for r_idx, (v_min, v_s, v_max, p_type, extra) in enumerate(col_v):
+            y = y_top - r_idx
+            color = color_map[p_type]
+            d_min = p_min if v_min == -inf else v_min
+            d_max = p_max if v_max == inf else v_max
+            
+            ax.plot([d_min + x_off, d_max + x_off], [y, y], 
+                    color=color, lw=3.0, zorder=2)
+            
+            if v_min == -inf:
+                ax.text(d_min + x_off - 0.1, y, 'A', ha='right', 
+                        va='center', weight='bold', color=color, fontsize=6)
+            if v_max == inf:
+                ax.text(d_max + x_off + 0.1, y, 'B', ha='left', 
+                        va='center', weight='bold', color=color, fontsize=6)
+            
+            ax.text(d_min + x_off, y - 0.22, f"{v_min:.2f}" if v_min != -inf else "A", 
+                    fontsize=5, ha='left', color='#666666', va='top')
+            ax.text(d_max + x_off, y - 0.22, f"{v_max:.2f}" if v_max != inf else "B", 
+                    fontsize=5, ha='right', color='#666666', va='top')
+            ax.text(v_s + x_off, y + 0.1, f"{v_s:.2f}", 
+                    fontsize=5, ha='center', weight='bold', va='bottom')
+            
+            ax.scatter(v_s + x_off, y, color='white', ec='#333333', s=25, zorder=4)
+            
+            # Change 1: Dotted lineage connector from below to above row
+            if r_idx > 0: 
+                ax.vlines(v_s + x_off, y, y + 1, color='#BBBBBB', ls=':', lw=0.8, zorder=1)
+            
+            full_label = f"{col_f[r_idx]}  {extra}" if extra else col_f[r_idx]
+            center_x = x_off + (p_min + p_max) / 2
+            ax.text(center_x, y + 0.25, full_label, fontsize=6.5, 
+                    ha='center', va='bottom', alpha=0.9, family='monospace')
+    
+    # --- 6. CLEANUP ---
+    ax.axis('off')
+    ax.set_xlim(p_min - 2, max_cols * col_width)
+    ax.set_ylim(-1, total_max_height + 1)
+    
+    leg = [matplotlib.patches.Patch(color=c, label=k) for k, c in color_map.items()]
+    ax.legend(handles=leg, loc='upper center', bbox_to_anchor=(0.5, -0.05), 
+              ncol=4, frameon=False, fontsize=8)
+    
+    plt.tight_layout()
+    plt.savefig(out, bbox_inches='tight')
+    if show:
+        plt.show()
+    else:
+        plt.close()
+
