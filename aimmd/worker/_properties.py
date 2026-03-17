@@ -154,7 +154,7 @@ class WorkerProperties(ABC):
             Absolute step counter. If ``None``, the progress bar is closed.
         """
         self._total_steps = self._set_progress_bar(
-            self._total_steps, total_steps, ' trajs', 0)
+            self._total_steps, total_steps, ' paths', 0)
 
     @property
     def total_frames(self):
