@@ -206,7 +206,6 @@ def rescale_bins(bins, knots, values):
     -------
     None
     """
-    """in place"""
     if not len(bins):
         return
     i = 0
