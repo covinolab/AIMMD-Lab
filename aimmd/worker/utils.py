@@ -18,7 +18,6 @@ mechanics needed to:
   (typically a neural network) and by adaptive density targets,
 - register newly generated paths on disk and in memory,
 - (optionally) apply TPS-style acceptance/rejection steps,
-- assemble and update the in-memory view of the current path ensemble.
 
 Importantly, the objective is not simply to generate equilibrium transition
 events, but to produce a **diverse set of reactive trajectories** and enrich
@@ -750,54 +749,3 @@ def accept_or_reject_last_path(chain, params):
     else:
         leading.weight += 1.
         print(f'*** rejected')
-
-
-def update_pathensemble(worker, *compute_args, **compute_kwargs):
-    """
-    Assemble and optionally update the current path ensemble view for a worker.
-
-    This helper builds a :class:`~aimmd.pathensemble.PathEnsemble` from the
-    worker's currently known shooting chains and free trajectories, and then
-    computes per-frame quantities (e.g., values, states, descriptors) only if
-    new frames have appeared since the last call.
-
-    Parameters
-    ----------
-    worker : object
-        Worker-like object exposing:
-
-        - ``_shot_chains``: list of chains
-        - ``_free_trajectories``: list of free trajectories
-        - ``_nframes`` (optional): previously observed total number of frames
-
-    *compute_args
-        Positional arguments forwarded to :meth:`PathEnsemble.compute`.
-    **compute_kwargs
-        Keyword arguments forwarded to :meth:`PathEnsemble.compute`. The key
-        ``worker`` (if present) is removed to avoid passing it twice when the
-        calling code already supplies it elsewhere.
-
-    Returns
-    -------
-    tuple
-        ``(pathensemble, added_frames)`` where:
-
-        - ``pathensemble`` is the assembled ensemble,
-        - ``added_frames`` is the number of frames newly observed since the last
-          invocation (based on total frame count).
-
-    Notes
-    -----
-    The function stores the current total frame count in ``worker._nframes``.
-    """
-    compute_kwargs.pop('worker', None)
-    pathensemble = assemble_pathensemble(
-        worker._shot_chains,
-        worker._free_trajectories)
-    n_frames = pathensemble.n_frames.sum()
-    old_frames = getattr(worker, '_nframes', 0)
-    if n_frames > old_frames and (
-        compute_args or compute_kwargs):
-        pathensemble.compute(*compute_args, **compute_kwargs)
-    worker._nframes = n_frames
-    return pathensemble, n_frames - old_frames
