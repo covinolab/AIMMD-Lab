@@ -70,7 +70,7 @@ from math import inf, nan
 from tqdm import tqdm
 
 # aimmd imports
-from .utils import rescale_bins, update_pathensemble
+from .utils import rescale_bins
 from .._config import NPY_CACHE, print
 from ..cache.npy import save_npy
 from ..core.utils import now, replace_in_cache
@@ -175,20 +175,40 @@ class WorkerTrain(ABC):
         initial_paths = initial_paths.extract(states, states[::-1])
         margins = PathEnsemble([path[1::-1] for path in initial_paths] +
                                [path[-2::1] for path in initial_paths])
+        
+        # update kwargs to fit function
+        kwargs['worker'] = self
+        
+        # load the network if it is already possible
+        print(f'\nLoading pre-existing network parameters {now()}')
+        network_fname = f'{directory}/network{states}.h5'
+        params.update_network(directory, timeout=0, raise_if_failure=False)
 
-        steps_counter = None
-        frames_counter = None
+        # do you need to stop already?
+        if self.must_stop:
+            self.termination_signal = 2
+            return
 
-        # routin checking wether you have to stop; it updates pathensembles
-        def must_stop(): 
-            nonlocal steps_counter, frames_counter
+        # routine checking wether you have to stop
+        # while doing so, it updates the loaded path ensemble
+        pathensemble = None
+        added_frames = 0  # keep counting until reset
+        def must_stop():
+            nonlocal pathensemble, added_frames
             
             if self.must_stop:
+                self.termination_signal = 2
                 return True
+            
+            # get current number of frames
+            old_total_frames = self.total_frames.n
 
             # reset
             total_steps = 0
             total_frames = 0
+
+            # report
+            print(f'\nLoading current path ensemble {now()}')
 
             # get chains
             self._shot_chains = params.shot_chains(
@@ -200,57 +220,62 @@ class WorkerTrain(ABC):
             
             # react fast when stop requested
             if self.must_stop:
+                self.termination_signal = 2
                 return True
             
             # get free trajectories
             self._free_trajectories = params.free_trajectories(directory)
             for trajectory in self._free_trajectories:
                 total_frames += trajectory.n_frames
+
+            # update path ensemble
+            pathensemble = assemble_pathensemble(
+                self._shot_chains,
+                self._free_trajectories)
+
+            # report added frames
+            new_frames = total_frames - old_total_frames
+            if new_frames > 0:
+                print(f'... {new_frames} new frames (excluded margins)')
+                added_frames += new_frames
             
-            # assign (will update progress bars)
+            # update progress bars
             self.total_steps = total_steps
             self.total_frames = total_frames
-        
-        # one cycle
-        if must_stop():
-            self.termination_signal = 2
-            return
-        
-        # to fit function
-        kwargs['worker'] = self
-        
-        # load the network if it is already possible
-        print(f'\nLoading pre-existing network parameters {now()}')
-        network_fname = f'{directory}/network{states}.h5'
-        params.update_network(directory, timeout=0, raise_if_failure=False)
+            
+            # react fast when stop requested
+            if self.must_stop:
+                self.termination_signal = 2
+                return True
 
         # main cycle
         rounds_done = 0
         while not self.termination_signal:
 
-            # will also update paths loaded in worker
+            # reset added frames counter
+            added_frames = 0
+
+            # update current path ensemble and check stop condition
             if must_stop():
-                self.termination_signal = 2
                 return
 
-            # assemble pathensemble
-            print(f'\nLoading current path ensemble {now()}')
-            pathensemble, added_frames = update_pathensemble(
-                self, **compute_kwargs('values'))
-            print(f'... {added_frames} new frames')
-
-            # check mid-cycle
+            print(f'\nComputing the committor values of '
+                  f'the new reactive {r} frames {now()}')
+            n = pathensemble.compute(**compute_kwargs('values'))
+            print(f'... computed {n} values')
+            
+            # check mid-cycle (do not update path ensemble)
             if self.termination_signal:
                 return
-
+            
             if rounds_done >= nrounds:
-
+                
                 # nothing else to do
                 if not keep_running:
                     self.termination_signal = 2
                     return
 
-                # not changin source
+                # not changing source
                 source = 'values'
 
             # train only in this case
@@ -276,34 +301,31 @@ class WorkerTrain(ABC):
                         directory, timeout=0, raise_if_failure=False)
                     source = 'values'
 
-                # will also update paths loaded in worker
+                # update current path ensemble and check stop condition
                 if must_stop():
-                    self.termination_signal = 2
                     return
 
-                # assemble pathensemble (with margins)
-                print(f'\nLoading current path ensemble {now()}')
-                pathensemble, added_frames2 = update_pathensemble(
-                    self, **compute_kwargs('values'))
-                print(f'... {added_frames2} new frames')
-                added_frames += added_frames2
-
-                print(f'\nUpdating the values of '
-                      f'all reactive {r} frames {now()}')
-                n = pathensemble.compute(
-                    **compute_kwargs(source), overwrite=source == 'new')
-                time.sleep(.1)  # stability
+                # (re)compute committor values
+                if source == 'new':
+                    print(f'\nUpdating the committor values of all '
+                          f'the reactive {r} frames {now()}')
+                    n = pathensemble.compute(**compute_kwargs('new'), overwrite=True)
+                else:
+                    print(f'\nComputing the committor values of '
+                      f'the new reactive {r} frames {now()}')
+                    # will fill temp files ("...new.npy") and replace "values.npy" later
+                    # in this way, we minimize the risk of i/o issues
+                    n = pathensemble.compute(**compute_kwargs('values'))
                 print(f'... computed {n} values')
-                # will fill temp files, replaced later
-
-                # check mid-cycle
+                
+                # check mid-cycle (do not update path ensemble)
                 if self.termination_signal:
                     return
-
+            
             if source != 'new' and not added_frames:
-                # wait for next cycle
+                # nothing chanced: can wait for the next cycle
                 continue
-
+            
             print(f'\nObtaining the adaptation bins {now()}')
             bins = compute_bins(pathensemble, nbins,
                                 cutoff_max=cutoff_max,
@@ -313,11 +335,11 @@ class WorkerTrain(ABC):
                                 states=states,
                                 marginal_bins=marginal_bins)
             print(f'    bins: {bins}')
-
+            
             # check mid-cycle
             if self.termination_signal:
                 return
-
+            
             # get TPE weights
             if do_tps:
                 weights = (pathensemble.weights *
@@ -357,7 +379,7 @@ class WorkerTrain(ABC):
             k21 = 1 / k21 if k21 else nan
             print(f'    k12 estimate: {k12:.3e} [1/dt]')
             print(f'    k21 estimate: {k21:.3e} [1/dt]')
-            print(f'    {pathensemble.n_frames.sum()} frames')
+            print(f'    {length.sum()} frames (excluded margins)')
             
             # only after one training round: rescale committor
             # TODO in the future you may want to adjust it
