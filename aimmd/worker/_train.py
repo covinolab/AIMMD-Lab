@@ -201,8 +201,8 @@ class WorkerTrain(ABC):
                 return True
             
             # get current number of frames
-            old_total_frames = self.total_frames.n
-
+            old_total_frames = self.total_frames
+            
             # reset
             total_steps = 0
             total_frames = 0
