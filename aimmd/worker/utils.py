@@ -546,7 +546,7 @@ def select_shooting_point(pool, params, folder,
     
     # density adjustment (populations)
     if density_adjustment:
-        densities *= populations + 0.1
+        densities *= populations + 1
     densities /= densities.sum()
     print(f'    (adjusted)   {densities}')
     
