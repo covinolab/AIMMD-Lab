@@ -788,6 +788,92 @@ def solve_committor_by_relaxation(
     return P0
 
 
+def find_path_lineages(*shooting_chains, verbose=False):
+    """
+    Reconstructs path lineages by parsing the specific worker.log for each chain.
+    
+    This function attaches a `._previous` attribute to path objects. 
+    It dynamically identifies the correct log file for every path by looking 
+    at its directory.
+    
+    Parameters:
+    -----------
+    *shooting_chains : list of PathChain objects
+        One or more chains containing path objects to be linked.
+    verbose : bool, default=False
+        If True, displays a progress bar for the parsing process.
+    """
+    
+    # --- 1. PRE-PROCESSING ---
+    # Flatten all paths from all chains into a single lookup map
+    for chain in shooting_chains:
+        fnames = [path.fname for path in chain._paths]
+        
+        if not fnames:
+            return
+        
+        # current folder
+        folder = '/'.join(fnames[-1].split('/')[:-1])
+        suffix = '.' + fnames[-1].split('.')[-1]
+        
+        # --- 2. LOG PARSING HELPER ---
+        def extract_name(line, prefix, add_suffix=''):
+            """Extracts and cleans a path name from a log line."""
+            if prefix in line:
+                # Splits by prefix, takes name before '(', removes quotes
+                part = line.split(prefix)[1].split('(')[0]
+                clean_name = part.strip().replace("'", "").replace('"', "")
+                return f"{clean_name}{add_suffix}"
+            return None
+        
+        # --- 3. MULTI-LOG TRAVERSAL ---
+        done_fnames = set()
+        pbar = tqdm(total=len(fnames), disable=not verbose, desc=folder)
+            
+        # Iterate through folders (and their respective logs)
+        log_path = os.path.join(folder, 'worker.log')
+        if not os.path.exists(log_path):
+            if verbose:
+                print(f"\nWarning: Log not found in {folder}")
+            continue
+        
+        # State trackers for the current log file
+        current_path = None
+        parent_path = None
+        
+        with open(log_path, 'r') as log_file:
+            for line in log_file:
+                # Identify the 'child' being created
+                current_path = extract_name(
+                    line, 'Selecting shooting point for', suffix
+                ) or current_path
+                
+                # Identify the 'parent' being shot
+                parent_path = (
+                    extract_name(line, '=== selecting path') or 
+                    extract_name(line, '=== overriding with')
+                ) or parent_path
+                
+                # Commit the link when initialization is logged as complete
+                if line.startswith('Shooting initialization completed'):
+                    # Only process if the child is in our provided chains
+                    
+                    if current_path in fnames:
+                        path = chain._paths[fnames.index(current_path)]
+                        
+                        # Link to parent object if found in chains, else store string
+                        if parent_path in fnames:
+                            path._previous = chain._paths[
+                                fnames.index(parent_path)]
+                        else:
+                            path._previous = parent_path
+                        
+                        if current_path not in done_fnames:
+                            pbar.update(1)
+                            done_fnames.add(current_path)
+        pbar.close()
+
+
 def plot_path_lineages(*shooting_chains, out='path_tree.pdf',
                        states='ARB', source='values', 
                        vmin=-20, vmax=20, fields=None, show=False):
