@@ -90,13 +90,25 @@ def save_npy(fname, array):
     -----
     This function is intended for complete rewrites of a file. For sparse
     row updates, use :func:`update_npy`.
+    
+    To avoid I/O error, it tries saving at most ten time, waiting 0.1 seconds
+    before each successive attempt.
     """
     folder, name = extract_folder_and_name(fname)
     temp = f'{folder}/.{name}'
     lock = f'{folder}/.{name}.lock'
-    with FileLock(lock):
-        np.save(temp, array)
-        os.replace(temp, fname)
+    error_message = None
+    for _ in range(10):
+        try:
+            with FileLock(lock):
+                np.save(temp, array)
+                os.replace(temp, fname)
+                return
+        except Exception as exception:
+            error_message = str(exception)
+            time.sleep(0.1)
+    if error_message is not None:
+        raise RuntimeError(error_message)
 
 
 def load_npy(fname, timeout=5.):
