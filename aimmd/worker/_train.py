@@ -380,7 +380,7 @@ class WorkerTrain(ABC):
             k21 = 1 / k21 if k21 else nan
             print(f'    k12 estimate: {k12:.3e} [1/dt]')
             print(f'    k21 estimate: {k21:.3e} [1/dt]')
-            print(f'    {length.sum()} frames (excluded margins)')
+            print(f'    {lengths.sum()} frames (excluded margins)')
             
             # only after one training round: rescale committor
             # TODO in the future you may want to adjust it
