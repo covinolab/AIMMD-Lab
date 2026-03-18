@@ -4,7 +4,8 @@ Examples and Tests
 Tests as Executable Documentation
 ---------------------------------
 
-The tests are a good way to understand how the repository is intended
+The repository includes both unit tests and integrations.
+The integration tests are a good way to understand how the repository is intended
 to be used because they exercise realistic workflows instead of only unit-level
 helpers.
 

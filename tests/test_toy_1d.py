@@ -1,9 +1,5 @@
 """
-This script tests virtually all function of AIMMD sampling/analysis
-on a molecular model defined in the "retinal" folder.
-It runs with GROMACS in under five minutes.
-However, there is still the polishing left to do, and compatibility
-on different machines is not guaranteed.
+This is a test of the whole AIMMD workflow on a toy 1D system, which is simple enough to run in a few minutes on a CPU. It is not meant to be a test of the accuracy of the method, but rather of the functionality of the code. It can be run with pytest or as a script in the main folder. It assumes that Gromacs is installed and available in the PATH, and that the "retinal/params.py" file is present and correctly configured for this test.
 """
 import pytest
 
