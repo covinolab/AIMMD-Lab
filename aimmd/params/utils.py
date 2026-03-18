@@ -9,6 +9,7 @@ serialization of callable objects.
 
 Provided utilities
 ------------------
+
 update_source(instance, name)
     Attach a `__source__` string to a function/class instance so that
     `Params.__str__` / `Params.save` can reproduce or import it.
@@ -62,6 +63,7 @@ def update_source(instance, name):
     Notes
     -----
     - If `instance` already has `__source__`, nothing is done.
+
     - For local module handling, module paths are reduced to their basename
       by splitting on "/". This matches the loader’s “local module name”
       remapping strategy implemented in `ParamsIO.load`.
@@ -115,6 +117,7 @@ def create_default_values_function(network, descriptor_transform=None):
     can update its weights after training the desired reaction coordinate.
 
     The returned function:
+
     - accepts numpy-like input (coordinates or descriptors),
     - optionally applies `descriptor_transform`,
     - converts to a torch tensor on the network's device/dtype,

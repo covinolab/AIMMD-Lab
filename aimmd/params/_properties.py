@@ -227,9 +227,9 @@ class ParamsProperties(ABC):
         Returns
         -------
         tuple
-            `(values_function, 'values', source)` where `source` is:
-            - `'coordinates'` if descriptors are disabled,
-            - `'descriptors'` if descriptors are enabled.
+            ``(values_function, 'values', source)`` where ``source`` is
+            ``'coordinates'`` if descriptors are disabled and
+            ``'descriptors'`` if descriptors are enabled.
 
         Examples
         --------
@@ -254,11 +254,10 @@ class ParamsProperties(ABC):
         tuple
             Ordered tuple of compute-argument tuples, suitable for driving
             repeated `Path.compute(...)` and `PathEnsemble.compute(...)` calls.
-
-            - If descriptors are disabled:
-              `(compute_states_args, compute_values_args)`
-            - If descriptors are enabled:
-              `(compute_descriptors_args, compute_states_args, compute_values_args)`
+            If descriptors are disabled, the tuple is
+            ``(compute_states_args, compute_values_args)``. If descriptors are
+            enabled, it is
+            ``(compute_descriptors_args, compute_states_args, compute_values_args)``.
 
         Examples
         --------

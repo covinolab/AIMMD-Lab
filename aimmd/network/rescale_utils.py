@@ -16,6 +16,7 @@ The two main operations are:
 - :func:`rescale`: apply that remapping to an array/tensor of `q` values
   (performed in-place).
 
+
 Conventions
 -----------
 - `q`, `extremes1`, `extremes2`, `knots`, and `values` are in *logit-committor*
@@ -98,8 +99,10 @@ def find_knots_and_values(extremes1, extremes2, xP1, xP2):
     Notes
     -----
     - Several “nothing to do” checks return empty arrays:
+
       - codomain interval invalid (``vmin >= vmax``),
       - action domain invalid (``kmin >= kmax``).
+
     - `np.isinf(extremes*)` entries are removed before computing the domain of
       action and interpolation.
     - The printed diagnostics include the estimated transition-state shift `ts`

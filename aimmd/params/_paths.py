@@ -22,6 +22,7 @@ shot_chains(directory, ...)
 
 pathensemble(directory, shot_chains=[])
     Assemble a complete PathEnsemble containing:
+
     - shot chains (ordered and optionally reusable),
     - free trajectories.
 
@@ -70,6 +71,7 @@ class ParamsPaths(ABC):
         Notes
         -----
         - Free trajectories are stored split into parts:
+
           `traj??????.part????{ext}`.
           This method groups by `traj??????` index and assembles each into a
           `Path(fnames, remove_overlapping_frames=True)`.
@@ -150,6 +152,7 @@ class ParamsPaths(ABC):
             Otherwise interpreted via `process_state(target_state, self.states)`.
         k : int, str, iterable, or None, optional
             Shooting chain index/indices to load.
+
             - int/str: load exactly that chain.
             - iterable: load those chains.
             - None: scan all matching folders and load all chains found.
@@ -166,6 +169,7 @@ class ParamsPaths(ABC):
         -----
         - This function tries to reuse already-loaded paths and only append new
           ones (except the last path which may still be changing on disk).
+
         - For TPS (`self.chain_type == 'tps'`) it may load `tps_weights.npy` and
           assign weights to newly loaded paths, zeroing weights for non-transitions.
         """

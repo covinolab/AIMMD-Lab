@@ -55,8 +55,7 @@ def atom_coordinate_descriptors_function(trajectory: mda.coordinates.timestep.Ti
     return np.array(result)
 
 def init_db(db_path: str = "graphs_cache.sqlite") -> sqlite3.Connection:
-    """ Initialize the SQLite database for graph caching.
-    """
+    """Initialize the SQLite database for graph caching."""
     conn = sqlite3.connect(db_path)
     conn.execute("CREATE TABLE IF NOT EXISTS graphs_cache"
                 "(key TEXT PRIMARY KEY, data BLOB)")
@@ -79,6 +78,7 @@ def load_from_sqlite(key: str, conn: sqlite3.Connection, compression_lib = "gzip
     compression_lib : str, optional
         The compression library to use, by default "gzip".
         Supported: "gzip", "lz4", "none".
+
     Returns
     -------
     torch_geometric.data.Data | None

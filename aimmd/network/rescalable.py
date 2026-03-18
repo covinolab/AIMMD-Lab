@@ -52,6 +52,7 @@ class Rescalable(ABC, nn.Module):
        and values.
 
     Rescaling parameters are stored as **buffers** so they are:
+
     - moved with the module across devices (`.to(...)`),
     - included in module state (unless explicitly filtered),
     - not treated as trainable parameters.

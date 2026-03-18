@@ -796,8 +796,8 @@ def find_path_lineages(*shooting_chains, verbose=False):
     It dynamically identifies the correct log file for every path by looking 
     at its directory.
     
-    Parameters:
-    -----------
+    Parameters
+    ----------
     *shooting_chains : list of PathChain objects
         One or more chains containing path objects to be linked.
     verbose : bool, default=False

@@ -25,6 +25,7 @@ frame is assigned:
   fractional contributions towards reaching each end state, and
 - a selection probability that controls how batches are drawn.
 
+
 The training objective is a log-binomial loss (optionally modified near the end
 states by a Bayesian-like quadratic penalty), with optional smoothness and L1
 regularization terms.
@@ -111,7 +112,8 @@ def fit(params,
     Parameters
     ----------
     params : aimmd.Params
-        AIMMD parameter container. This function uses (at least):
+        AIMMD parameter container. This function uses at least the following
+        attributes:
 
         - ``params.network`` : torch.nn.Module
             The network to train. Must have parameters so that
@@ -126,8 +128,10 @@ def fit(params,
             Optional transformation applied to raw descriptors to obtain network
             inputs. If None, an identity transform is used.
 
+
     pathensemble : PathEnsemble
-        Collection of sampled paths providing:
+        Collection of sampled paths providing the following interface:
+
         - ``pathensemble.types()`` returning an array-like where each entry
           encodes the path type as 4 characters (initial, internal, final, shoot).
         - Path access compatible with :func:`aimmd.network.utils.extract_indices_and_series`,
@@ -149,9 +153,11 @@ def fit(params,
 
     state_bins : str, default=''
         Controls inclusion of end-state bins. Examples:
+
         - ``'AB'`` includes both end-state bins (where `A` and `B` are the end
           state labels in `params.sorted_states`).
         - ``'all'`` includes all state bins.
+
         When state bins are excluded, the corresponding end-state frames may be
         set to zero selection probability depending on data presence.
 
@@ -173,6 +179,7 @@ def fit(params,
 
     augment : {'no', 'yes', 'experimental'}, default='no'
         Data augmentation mode.
+
         - ``'no'``: train only on shooting-point outcomes (using the intersection
           of backward and forward masks around the shooting point).
         - ``'yes'``: include free-trajectory frames and use backward/forward
@@ -210,6 +217,7 @@ def fit(params,
 
     batching_strategy : {'draw-replace', 'loop-all'}, default='draw-replace'
         Strategy for building batches.
+
         - ``'draw-replace'`` draws with replacement according to selection
           probabilities.
         - ``'loop-all'`` is declared but not implemented (raises NotImplementedError).
@@ -234,6 +242,7 @@ def fit(params,
 
     in_memory : bool, default=True
         Descriptor loading strategy:
+
         - If True, transform all descriptors up-front and keep them in memory.
         - If False, apply `descriptor_transform` per batch.
 
@@ -907,11 +916,10 @@ def default(params, pathensemble, verbose=True, worker=None):
     tuple
         Exactly the return value of :func:`fit`.
 
-    See Also
-    --------
-    fit
-        Train/update the AIMMD model from the current
-        :class:`~aimmd.pathensemble.PathEnsemble`.
+    Notes
+    -----
+    This is a thin wrapper around :func:`fit`, which trains or updates the
+    AIMMD model from the current :class:`~aimmd.pathensemble.PathEnsemble`.
     """
     return fit(params=params,
                pathensemble=pathensemble,

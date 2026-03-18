@@ -17,6 +17,7 @@ This module provides:
 
 Design constraints
 ------------------
+
 - The placeholder network is intentionally **stateless**: it serializes to an
   empty state dict and ignores state loading.
 - `extract_indices_and_series` is written against a *Path-like* interface and
@@ -41,6 +42,7 @@ class PlaceholderNetwork(nn.Module):
 
     Behavior
     --------
+
     - Forward pass returns only the first channel/feature: ``x[:, :1]``.
     - The model is **stateless** with respect to serialization:
       :meth:`state_dict` returns ``{}`` and :meth:`load_state_dict` does nothing.
@@ -130,12 +132,15 @@ def extract_indices_and_series(paths, key, *names):
     it:
 
     1) obtains the internal frame indices via ``path.internal('indices')``;
+
     2) builds two boolean masks (backward/forward) in the local index space:
        - backward: frames from path start through the shooting frame (inclusive);
        - forward: frames from the shooting frame through the end (inclusive),
          but only if the path actually transitions (see below);
+
     3) loads each requested series `name` via ``path.get`` over the global index
        window defined by the first/last internal index;
+
     4) appends indices, masks, and series to global outputs.
 
     A path is skipped entirely if loading any requested series fails or if a

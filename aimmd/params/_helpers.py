@@ -9,6 +9,7 @@ the *actual constructor* and the *type/consistency enforcement* logic for Params
 
 Key responsibilities
 --------------------
+
 - `_init`: constructor logic (supports loading from a params file, applying
   overrides, and populating defaults).
 - `_setattr`: validated assignment for dataclass fields (type checking,
@@ -52,10 +53,12 @@ class ParamsHelpers(ABC):
         This initializer supports two usage patterns:
 
         1) Load from file (preferred for reproducibility):
+
            - If `args[0]` is a valid path to an existing file, it is treated as
              a params file and loaded via `Params.load(...)`.
 
         2) No file provided:
+
            - If no valid file is provided, defaults are loaded from `'params.py'`
              (if present), otherwise initialization proceeds using defaults and
              provided keyword arguments.
@@ -71,6 +74,7 @@ class ParamsHelpers(ABC):
             Field overrides applied with higher priority than file values.
 
             Special behavior:
+
             - If `filename` is in `kwargs`, it is treated as a params file
               (handled upstream in `ParamsIO.load`).
 
@@ -132,6 +136,7 @@ class ParamsHelpers(ABC):
         Notes
         -----
         Many fields require special handling:
+
         - callable fields: disallow lambdas, unwrap bound methods, attach
           `__source__`.
         - `states`: normalized to uppercase letters and validated.

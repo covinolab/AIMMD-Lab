@@ -13,16 +13,19 @@ This module defines :class:`~aimmd.params._io.ParamsIO`, which provides:
 - `save`: write a reproducible `params.py` (including module imports and
   callable sources) into the working directory.
 
+
 Key idea: "local modules" namespace rewriting
 ---------------------------------------------
 When loading a params file, AIMMD temporarily rewrites module naming so that:
 
 - local `*.py` files in the params directory can be imported consistently,
   whether:
+
   - the params file is executed standalone in a fresh interpreter, or
   - it is loaded via `Params.load(...)` within an existing AIMMD session.
 
 This requires:
+
 - temporary removal of local modules from `sys.modules`,
 - swapping names to avoid conflicts with already-imported modules,
 - updating `__module__` attributes of callables/classes so saving (`__str__`)
@@ -66,6 +69,7 @@ class ParamsIO(ABC):
         Behavior
         --------
         - If `filename` is a path to a file:
+
             * switch to its folder,
             * execute it in a fresh `ModuleType` namespace,
             * populate known dataclass fields from module globals,
@@ -74,6 +78,7 @@ class ParamsIO(ABC):
             * optionally save a canonical params file in the same folder.
 
         - If `filename` is falsy/None:
+
             * do not execute a file; treat the current working directory as the
               params folder and only apply overrides.
 
@@ -89,6 +94,7 @@ class ParamsIO(ABC):
             Keyword overrides for dataclass fields.
 
             Special keys:
+
             save : bool, optional
                 If False, do not call `self.save()` after successful load.
 
@@ -106,9 +112,11 @@ class ParamsIO(ABC):
         Notes
         -----
         This function temporarily mutates:
+
         - current working directory,
         - `sys.path`,
         - `sys.modules`.
+
         It attempts to restore them in `finally` / `except` blocks.
         """
 
@@ -345,6 +353,7 @@ class ParamsIO(ABC):
         Notes
         -----
         The saved file contains:
+
         - imports for modules present in `__main__`,
         - the verbose parameters body produced by `Params.__str__`, including
           callable bodies/imports and per-field descriptions.

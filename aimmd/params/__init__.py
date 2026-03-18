@@ -13,6 +13,7 @@ object that:
 - validates types and internal consistency on assignment,
 - provides convenience accessors (properties) and path-ensemble loaders.
 
+
 Implementation overview
 -----------------------
 The public :class:`~aimmd.params.Params` class is built via multiple mixins:
@@ -24,6 +25,7 @@ The public :class:`~aimmd.params.Params` class is built via multiple mixins:
 - ParamsMethods     : engine-dependent simulation operations
 - ParamsPaths       : loading trajectories/chains into PathEnsemble
 - ParamsIO          : load/save from/to a Python file
+
 
 Notes
 -----
@@ -63,8 +65,10 @@ class Params(
     - :class:`~aimmd.worker.Worker`, which uses it to execute tasks such as
       ``shoot``, ``free``, and ``train``.
 
+
     Typical responsibilities
     ------------------------
+
     - define end states and state processing conventions,
     - define the analysis pipeline (states/descriptors/values),
     - provide engine integration hooks (initialize_simulation/run_simulation),

@@ -11,12 +11,14 @@ Provided functionality
 ----------------------
 initialize_simulation(...)
     Create engine-specific input files for a given starting frame:
+
     - for GROMACS: write a temporary trajectory frame and run `grompp` to build
       a `.tpr`.
     - for toy engine: write a trajectory file directly.
 
 run_simulation(...)
     Run a configured engine simulation segment:
+
     - for GROMACS: calls `mdrun` via `execute_command`.
     - for toy engine: uses `ToyEngine`.
 
@@ -106,11 +108,13 @@ class ParamsMethods(ABC):
         Notes
         -----
         - Velocity generation:
+
           * if `params.gen_temperature < 0` and velocities are present: reuse them
             (with a sign flip for the first branch).
           * else randomize from `params.masses` if available.
           * else set zeros (with a warning).
         - For GROMACS:
+
           * writes a temporary `.trr` file to pass velocities to `grompp` via `-t`.
           * uses `params.topology` for both `-r` and `-c`.
         """
@@ -271,8 +275,10 @@ class ParamsMethods(ABC):
         Notes
         -----
         Implementation strategy:
+
         - Load positions into memory.
         - For each frame:
+
           * initialize a temporary run (`initialize_simulation`),
           * run the minimization (`run_simulation`),
           * read minimized coordinates from `<temp>.trr`,
@@ -375,6 +381,7 @@ class ParamsMethods(ABC):
         Notes
         -----
         This method:
+
         - switches to `params.parent`,
         - removes old `deffnm*` files,
         - initializes and runs a short segment,
@@ -495,6 +502,7 @@ class ParamsMethods(ABC):
         Notes
         -----
         This function validates:
+
         - bins and densities are both 1D,
         - `len(densities) == len(bins) - 1`.
         """

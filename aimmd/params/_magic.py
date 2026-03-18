@@ -5,6 +5,7 @@ aimmd.params._magic
 Magic methods for :class:`aimmd.params.Params`.
 
 This mixin centralizes:
+
 - user-facing representations (`__repr__`, `__str__`),
 - controlled attribute assignment (`__setattr__`),
 - mapping-like access (`__getitem__`, `__setitem__`),
@@ -12,11 +13,13 @@ This mixin centralizes:
 
 Key behavior
 ------------
+
 - `__setattr__` routes assignments through `ParamsHelpers._setattr`, enforcing
   type checks and triggering post-validation.
 - Properties defined in `ParamsProperties` are read-only at runtime; attempts
   to assign them raise `AttributeError`.
 - `__str__` generates a reproducible parameters script body, including:
+
   - callable source/import blocks (`__source__`),
   - special handling of paths relative to a target directory,
   - field descriptions from `metadata['description']`.
@@ -71,6 +74,7 @@ class ParamsMagic(ABC):
         Notes
         -----
         This method:
+
         - forbids assignment to derived properties,
         - delegates field validation to `self._setattr`,
         - restores the old value if validation fails.
@@ -124,6 +128,7 @@ class ParamsMagic(ABC):
         -------
         bool
             True if both objects:
+
             - belong to the same parent folder, and
             - serialize to identical `__str__` output.
         """
@@ -148,6 +153,7 @@ class ParamsMagic(ABC):
         -------
         str
             Python source text representing the params fields, including:
+
             - callable source/import stubs,
             - values (with special casing for inf),
             - per-field description docstrings.

@@ -132,7 +132,12 @@ def bind_resources(localid, cpus_per_task='skip', gpus_per_task='skip'):
                              resources_available,
                              resources_name):
         """Standardized operations for CPUs/GPUs.
-        Returns: resources list (to bind)."""
+
+        Returns
+        -------
+        list
+            Resource identifiers selected for binding.
+        """
 
         num_resources_available = len(resources_available)
 
