@@ -73,6 +73,7 @@ def fit(params,
         loss_bayesian_factor=0,
         loss_smoothening_weight=0,
         loss_regularization_weight=0,
+        loss_regularization_exponent=1,
         epochs=500,
         batch_size=4096,
         batching_strategy='draw-replace',
@@ -193,7 +194,10 @@ def fit(params,
         network output w.r.t. the input descriptors (requires `d.requires_grad`).
 
     loss_regularization_weight : float, default=0
-        If non-zero, add L1 regularization over network parameters.
+        If non-zero, add Ln regularization over network parameters, where n is given by `loss_regularization_exponent` (default: L1).
+
+    loss_regularization_exponent : float, default=1
+        Exponent n for the Ln regularization term (see `loss_regularization_weight`).
 
     epochs : int, default=500
         Target number of epochs. The loop may extend up to 1.5× epochs while
@@ -738,12 +742,12 @@ def fit(params,
                 smoothness_loss = (torch.abs(q_grad) ** 2).mean()
                 loss += loss_smoothening_weight * smoothness_loss
             
-            # Calculate L1 regularization
+            # Calculate Ln regularization
             if loss_regularization_weight:
-                l1_norm = sum(p.abs().sum() for p in network.parameters())
-                
-                # Combine original loss with L1 regularization term
-                loss += loss_regularization_weight * l1_norm
+                ln_norm = sum(p.abs().pow(loss_regularization_exponent).sum() for p in network.parameters())
+
+                # Combine original loss with Ln regularization termls
+                loss += loss_regularization_weight * ln_norm
             return loss
 
         def closure():
