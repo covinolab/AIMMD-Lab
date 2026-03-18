@@ -1,20 +1,40 @@
-.. AIMMD documentation master file, created by
-   sphinx-quickstart on Wed Oct 29 14:23:01 2025.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
-
-AIMMD documentation
+AIMMD Documentation
 ===================
 
-Add your content using ``reStructuredText`` syntax. See the
-`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
-documentation for details.
+.. rst-class:: hero
 
+AIMMD implements AI-enhanced path sampling for rare-event molecular dynamics.
+The repository combines simulation orchestration, path data structures,
+committor-model training, and reweighting utilities so that one workflow can
+produce transition paths, update the learned reaction coordinate, and recover
+mechanistic and thermodynamic observables.
+
+This documentation is organized around how the codebase may be used in scientific practice:
+
+- what the method is trying to compute,
+- how the repository is structured,
+- how runs are configured and launched,
+- how outputs are analyzed and reweighted,
+- and where the main APIs live.
+
+.. rst-class:: quicklinks
+
+Start here:
+
+- :doc:`overview`
+- :doc:`installation`
+- :doc:`workflow`
+- :doc:`api/index`
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: User Guide
 
-   modules
-   aimmd
-
+   overview
+   installation
+   scientific_background
+   workflow
+   parameters
+   examples
+   developer_guide
+   api/index
