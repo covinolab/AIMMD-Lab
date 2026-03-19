@@ -127,7 +127,7 @@ class MDAReaderCache(AbstractCache):
     limit how many objects remain in the cache (heuristically).
     """
 
-    max_size = 48 * 1000  # ~1000 Readers open
+    max_size = 48 * 500  # ~500 Readers open
 
     def _open(self, fname, ntries=10):
         """
