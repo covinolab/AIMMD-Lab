@@ -456,8 +456,8 @@ def fit(params,
     else:
         free1to1_results[:, 0] += 1.0
         free2to2_results[:, 1] += 1.0
-        free1to2_results[:, 0] += 1.0
-        free2to1_results[:, 1] += 1.0        
+        free1to2_results[:, 1] += 1.0
+        free2to1_results[:, 0] += 1.0        
         shot1to1_results[shot1to1_back, 0] += 1.0
         shot1to1_results[shot1to1_forw, 0] += 1.0
         shot2to2_results[shot2to2_back, 1] += 1.0
