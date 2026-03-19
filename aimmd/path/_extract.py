@@ -29,6 +29,8 @@ Extraction modes
 3) File-based cached series
    For other attribute names, `_extract` attempts to load a `.npy` array from
    `NPY_CACHE` at the file produced by `get_cache_fname(fname, attribute)`.
+   In case `attribute='values'`, will directly load the `.npy` array as
+   values may be updated along with the committor model.
 
 Special attributes
 ------------------
@@ -251,8 +253,14 @@ class PathExtract(ABC):
             return np.repeat(os.path.getmtime(fname), length)
 
         # file based (already extended up to element)
-        data = NPY_CACHE.get(get_cache_fname(fname, attribute),
-                             min_length=min_length)
+        if attribute == 'values':
+            # force reload because values can change
+            # (along with the committor model)
+            data = NPY_CACHE.load(get_cache_fname(fname, attribute))
+        else:
+            # use cached data if present
+            data = NPY_CACHE.get(get_cache_fname(fname, attribute),
+                                 min_length=min_length)
         if data is not None:
             return data[locs]
         
