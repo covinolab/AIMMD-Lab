@@ -303,7 +303,7 @@ def compute_bins(pathensemble,
     # check cutoffs
     if cutoff_min < 0:
         raise TypeError(f'cutoff_min must be > 0, got {cutoff_min}')
-    if cutoff_max <= cutoff_min:
+    if cutoff_max < cutoff_min:
         raise TypeError(f'cutoff_max must be >= cutoff_min ({cutoff_min}), got {cutoff_max}')
     
     # extension to states
