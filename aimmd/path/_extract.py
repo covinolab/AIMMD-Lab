@@ -29,8 +29,8 @@ Extraction modes
 3) File-based cached series
    For other attribute names, `_extract` attempts to load a `.npy` array from
    `NPY_CACHE` at the file produced by `get_cache_fname(fname, attribute)`.
-   In case `attribute='values'`, will directly load the `.npy` array as
-   values may be updated along with the committor model.
+   In case `attribute` is not 'descriptors' or 'states', will directly load the
+   `.npy` array as the values may be updated.
 
 Special attributes
 ------------------
@@ -92,9 +92,12 @@ class PathExtract(ABC):
               * 'reader', 'frames', 'positions', 'times', 'coordinates',
                 'velocities', 'dimensions'
 
-            - Cached array (from `NPY_CACHE`):
+            - .npy array
               * any other string, interpreted as a `.npy` series stored under
                 `get_cache_fname(fname, attribute)`
+              * in case `attribute` is 'descriptors' or 'states' and the
+                array is already loaded in `NPY_CACHE` with the expected length,
+                will get it from there
 
             - Modification times:
               * '<name>_mtimes' returns an array filled with the mtime of the
@@ -251,16 +254,16 @@ class PathExtract(ABC):
         if attribute.endswith('_mtimes'):
             fname = get_cache_fname(fname, attribute[:-7])
             return np.repeat(os.path.getmtime(fname), length)
-
-        # file based (already extended up to element)
-        if attribute == 'values':
-            # force reload because values can change
-            # (along with the committor model)
-            data = NPY_CACHE.load(get_cache_fname(fname, attribute))
-        else:
+        
+        # data are in .npy file
+        if attribute == 'descriptors' or attribute == 'states':
             # use cached data if present
             data = NPY_CACHE.get(get_cache_fname(fname, attribute),
                                  min_length=min_length)
+        else:
+            # force reload because values can change
+            data = NPY_CACHE.load(get_cache_fname(fname, attribute))
+        
         if data is not None:
             return data[locs]
         
