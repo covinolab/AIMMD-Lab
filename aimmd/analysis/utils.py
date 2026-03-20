@@ -300,6 +300,12 @@ def compute_bins(pathensemble,
     if nbins <= 0:
         return np.array([])
 
+    # check cutoffs
+    if cutoff_min < 0:
+        raise TypeError(f'cutoff_min must be > 0, got {cutoff_min}')
+    if cutoff_max <= cutoff_min:
+        raise TypeError(f'cutoff_max must be >= cutoff_min ({cutoff_min}), got {cutoff_max}')
+    
     # extension to states
     a, r, b = states
     left = False
@@ -320,20 +326,30 @@ def compute_bins(pathensemble,
     begin1, end1 = -inf, +inf
     if find_extremes_with == 'free':
         begin1, end1 = find_extremes_with_free_simulations(
-            pathensemble, states)        
-
+            pathensemble, states)
+        # ensure no nans
+        if np.isnan(begin1):
+            begin1 = -cutoff_min
+        if np.isnan(end1):
+            end1 = +cutoff_min
+    
     begin2, end2 = -inf, +inf
     if (find_extremes_with == 'transitions' or
         begin1 < -cutoff_min or
         end1 > +cutoff_max):
         begin2, end2 = find_extremes_with_transitions(
             pathensemble, states)
+        # ensure no nans
+        if np.isnan(begin2):
+            begin2 = -cutoff_min
+        if np.isnan(end2):
+            end2 = +cutoff_min
         delta = (end2 - begin2) / (nbins + 1)
         if left:
             begin2 += delta
         if right:
             end2 -= delta
-
+    
     if begin1 > -cutoff_max:
         begin = min(begin1, -cutoff_min)
     else:
