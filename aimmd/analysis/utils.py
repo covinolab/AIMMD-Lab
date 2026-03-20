@@ -326,7 +326,7 @@ def compute_bins(pathensemble,
     begin1, end1 = -inf, +inf
     if find_extremes_with == 'free':
         begin1, end1 = find_extremes_with_free_simulations(
-            pathensemble, states)
+            pathensemble, states, source=source)
         # ensure no nans
         if np.isnan(begin1):
             begin1 = -cutoff_min
@@ -338,7 +338,7 @@ def compute_bins(pathensemble,
         begin1 < -cutoff_min or
         end1 > +cutoff_max):
         begin2, end2 = find_extremes_with_transitions(
-            pathensemble, states)
+            pathensemble, states, source=source)
         # ensure no nans
         if np.isnan(begin2):
             begin2 = -cutoff_min
