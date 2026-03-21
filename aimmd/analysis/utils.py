@@ -856,6 +856,7 @@ def find_path_lineages(*shooting_chains, verbose=False):
         # State trackers for the current log file
         current_path = None
         parent_path = None
+        selected_path = None
         
         with open(log_path, 'r') as log_file:
             for line in log_file:
@@ -865,10 +866,11 @@ def find_path_lineages(*shooting_chains, verbose=False):
                 ) or current_path
                 
                 # Identify the 'parent' being shot
-                parent_path = (
-                    extract_name(line, '=== selecting path') or 
-                    extract_name(line, '=== overriding with')
-                ) or parent_path
+                selecting_path = extract_name(line, '=== selecting path')
+                selected_path = selecting_path or selected_path
+                parent_path = (selecting_path or
+                               extract_name(line, '=== overriding with')
+                              ) or parent_path
                 
                 # Commit the link when initialization is logged as complete
                 if line.startswith('Shooting initialization completed'):
@@ -883,6 +885,10 @@ def find_path_lineages(*shooting_chains, verbose=False):
                                 fnames.index(parent_path)]
                         else:
                             path._previous = parent_path
+                            if 'free' in parent_path and selected_path in fnames:
+                                path = chain._paths[fnames.index(selected_path)]
+                                path._last_in_chain = True
+                            selected_path = None  # reset
                         
                         if current_path not in done_fnames:
                             pbar.update(1)
@@ -942,7 +948,11 @@ def plot_path_lineages(*shooting_chains, out='path_tree.pdf',
                     info_bits = [f"{f}:{getattr(path, f)}" 
                                  for f in fields if hasattr(path, f)]
                     extra_info = " | ".join(info_bits)
-                                
+
+                if not len(curr_vals) and getattr(path, '_last_in_chain', False):
+                    curr_vals.insert(0, (-inf, 0., +inf, None, None))
+                    curr_fnames.insert(0, '')
+                
                 curr_vals.insert(0, (min_v, s_val, max_v, p_type, extra_info))
                 curr_fnames.insert(0, path.fname)
                 
@@ -982,7 +992,10 @@ def plot_path_lineages(*shooting_chains, out='path_tree.pdf',
     
     # --- 4. TILING GEOMETRY ---
     num_total_chains = len(values)
-    max_cols = int(np.ceil(np.sqrt(num_total_chains))) if num_total_chains > 3 else num_total_chains
+    if num_total_chains > 3:
+        max_cols = int(np.ceil(np.sqrt(num_total_chains)))
+    else:
+        max_cols = num_total_chains
     
     col_heights = [0.0] * max_cols
     v_buffer = 2.5 
@@ -1011,29 +1024,42 @@ def plot_path_lineages(*shooting_chains, out='path_tree.pdf',
 
         for r_idx, (v_min, v_s, v_max, p_type, extra) in enumerate(col_v):
             y = y_top - r_idx
-            color = color_map.get(p_type, '#BBBBBB')
-            d_min = p_min if v_min == -inf else v_min
-            d_max = p_max if v_max == inf else v_max
-            
-            ax.plot([d_min + x_off, d_max + x_off], [y, y], color=color, lw=3.0, zorder=2)
-            
-            if v_min == -inf:
-                ax.text(d_min + x_off - 0.1, y, s_A, ha='right', va='center', weight='bold', color=color, fontsize=6)
-            if v_max == inf:
-                ax.text(d_max + x_off + 0.1, y, s_B, ha='left', va='center', weight='bold', color=color, fontsize=6)
-            
-            ax.text(d_min + x_off, y - 0.22, f"{v_min:.2f}" if v_min != -inf else s_A, fontsize=5, ha='left', color='#666666', va='top')
-            ax.text(d_max + x_off, y - 0.22, f"{v_max:.2f}" if v_max != inf else s_B, fontsize=5, ha='right', color='#666666', va='top')
-            ax.text(v_s + x_off, y + 0.1, f"{v_s:.2f}", fontsize=5, ha='center', weight='bold', va='bottom')
-            
-            ax.scatter(v_s + x_off, y, color='white', ec='#333333', s=25, zorder=4)
-            
-            if r_idx > 0: 
-                ax.vlines(v_s + x_off, y, y + 1, color='#BBBBBB', ls=':', lw=0.8, zorder=1)
-            
-            full_label = f"{col_f[r_idx]}  {extra}" if extra else col_f[r_idx]
             center_x = x_off + (p_min + p_max) / 2
-            ax.text(center_x, y + 0.25, full_label, fontsize=6.5, ha='center', va='bottom', alpha=0.9, family='monospace')
+            if p_type is not None:
+                color = color_map.get(p_type, '#BBBBBB')
+                
+                d_min = p_min if v_min == -inf else v_min
+                d_max = p_max if v_max == inf else v_max
+                
+                ax.plot([d_min + x_off, d_max + x_off], [y, y], color=color, lw=3.0, zorder=2)
+                
+                if v_min == -inf:
+                    ax.text(d_min + x_off - 0.1, y, s_A, ha='right',
+                            va='center', weight='bold', color=color, fontsize=6)
+                if v_max == inf:
+                    ax.text(d_max + x_off + 0.1, y, s_B, ha='left',
+                            va='center', weight='bold', color=color, fontsize=6)
+                
+                ax.text(d_min + x_off, y - 0.22, f"{v_min:.2f}" if v_min != -inf else s_A,
+                        fontsize=5, ha='left', color='#666666', va='top')
+                ax.text(d_max + x_off, y - 0.22, f"{v_max:.2f}" if v_max != inf else s_B,
+                        fontsize=5, ha='right', color='#666666', va='top')
+                ax.text(v_s + x_off, y + 0.1, f"{v_s:.2f}",
+                        fontsize=5, ha='center', weight='bold', va='bottom')
+                
+                ax.scatter(v_s + x_off, y, color='white', ec='#333333', s=25, zorder=4)
+                
+                if r_idx > 0: 
+                    ax.vlines(v_s + x_off, y, y + 1, color='#BBBBBB', ls=':', lw=0.8, zorder=1)
+                
+                full_label = f"{col_f[r_idx]}  {extra}" if extra else col_f[r_idx]
+                ax.text(center_x, y + 0.25, full_label, fontsize=6.5,
+                        ha='center', va='bottom', alpha=0.9, family='monospace')
+
+            # just notify termination
+            else:
+                ax.text(center_x, y, 'XXX', fontsize=12, color='red',
+                        ha='center', va='center', alpha=0.9, family='monospace')
     
     # --- 6. CLEANUP ---
     ax.axis('off')
