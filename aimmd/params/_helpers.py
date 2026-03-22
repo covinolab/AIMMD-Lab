@@ -261,7 +261,7 @@ class ParamsHelpers(ABC):
             # free overriding bins
             elif name == 'free_overriding_bins':
                 if isinstance(value, Iterable):
-                    value = list(np.array(value, dtype=int))
+                    value = [v for v in np.array(value, dtype=int)]
                 elif isisntance(value, Integral):
                     value = [value]
                 elif value is None:
