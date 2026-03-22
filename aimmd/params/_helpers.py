@@ -34,8 +34,10 @@ import inspect
 from abc import ABC
 from types import MethodType as Method
 from typing import List, Callable
+from numbers import Integral
 from pathlib import PosixPath
 from MDAnalysis import Universe
+from collections.abc import Iterable
 
 # aimmd imports
 from .utils import update_source, create_default_values_function
@@ -188,14 +190,14 @@ class ParamsHelpers(ABC):
                         f'{name!r} must be three distinct upper alpha chars')
 
             # state selector strings (set of letters or 'all')
-            elif name in ('extra_bins', 'free_overriding_states'):
+            elif name in ('extra_bins', 'terminal_bin_extension'):
                 value = str(value).replace(' ','')
                 if value.lower() != 'all':
                     value = value.upper()
                 if value and not value.isalpha():
                     raise TypeError(
                         f'{name!r} must be distinct upper alpha chars')
-
+            
             # topology (update universe)
             elif name == 'topology':
                 # Cache an MDAnalysis Universe if possible (used by masses()).
@@ -244,8 +246,8 @@ class ParamsHelpers(ABC):
                 elif value.startswith('rf'):
                     values = 'rfps'
                 else:
-                    raise TypeError(f'{name} must be either "tps" or '
-                                    f'"rfps", got {value}')
+                    raise TypeError(f'{name!r} must be either "tps" or '
+                                    f'"rfps", got {value!r}')
 
             # list of strings
             elif expected_type is List[str]:
@@ -253,9 +255,20 @@ class ParamsHelpers(ABC):
                     raise TypeError(f'{name} must be list of strings, '
                                     f'got {type(value).__name__}')
                 elif np.any([type(element) is not str for element in value]):
-                    raise TypeError(f'{name} must be list of strings, '
+                    raise TypeError(f'{name!r} must be list of strings, '
                                     f'at least one of its elements is not')
-
+            
+            # free overriding bins
+            elif name == 'free_overriding_bins':
+                if isinstance(value, Iterable):
+                    value = list(np.array(value, dtype=int))
+                elif isisntance(value, Integral):
+                    value = [value]
+                elif value is None:
+                    pass
+                else:
+                    raise TypeError(f'{name!r} must index bins, got {value!r}')
+            
             # path
             elif name == 'path':
                 if not PosixPath(value).exists():
@@ -327,19 +340,29 @@ class ParamsHelpers(ABC):
                             f"selection pool size must be 1")
 
         # check nbins
-        if 'nbins' in fields or 'extra_bins' in fields:
+        if 'nbins' in fields or 'terminal_bin_extension' in fields:
             if self.nbins > 0:
                 pass
             elif self.nbins == 0 and (
-                self.extra_bins == 'all' or (
-                self.states[+0] in self.extra_bins and
-                self.states[-1] in self.extra_bins)):
+              self.terminal_bin_extension == 'all' or
+              (self.states[+0] in self.terminal_bin_extension or
+               self.states[-1] in self.terminal_bin_extension)):
                 pass
             else:
                 states = f'{self.states[+0]}{self.states[-1]}'
                 raise TypeError(f'`nbins` must be > 0, or >= 0 when '
                                 f'`extra_bins in ({states!r}, \'all\')`')
-
+        
+        # check free_overriding_bins
+        if 'free_overriding_bins' in fields:
+            try:
+                np.arange(self.nbins - 1)[self.free_overriding_bins]
+            except Exception as exception:
+                raise TypeError(
+                  f"can't determine free overriding bins when "
+                  f"free_overriding_bins = {self.free_overriding_bins!r}, "
+                  f"nbins = {self.nbins}": {exception}")
+        
         # redefine values function
         default_values_function = self._default_values_function
         if (self.values_function is None or
