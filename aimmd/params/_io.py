@@ -387,9 +387,6 @@ class ParamsIO(ABC):
         text.append(body)
         text = "\n".join(text)
         
-        # temp for debugging
-        print(text)
-        
         # was there? then use it
         writing = True
         if seek_existing_file:
