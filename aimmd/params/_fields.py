@@ -356,7 +356,7 @@ point but can increase overhead."""
                  })
     
     free_overriding_bins: List = field(
-        default=lambda: [0, -1],
+        default_factory=lambda: [0, -1],
         metadata={'description':
 """Bins where overriding is allowed, following the same logic as numpy array
 indexing. For example, `free_overriding_bins = [0, 1]` will consider only the
