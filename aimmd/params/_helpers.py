@@ -361,7 +361,7 @@ class ParamsHelpers(ABC):
                 raise TypeError(
                   f"can't determine free overriding bins when "
                   f"free_overriding_bins = {self.free_overriding_bins!r}, "
-                  f"nbins = {self.nbins}": {exception}")
+                  f"nbins = {self.nbins}: {exception}")
         
         # redefine values function
         default_values_function = self._default_values_function
