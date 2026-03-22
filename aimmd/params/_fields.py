@@ -354,7 +354,7 @@ Higher values increase the chance of finding a usable free-simulation shooting
 point but can increase overhead."""
                  })
     
-    free_overriding_bins: str = field(
+    free_overriding_bins: List = field(
         default=lambda: [0, -1],
         metadata={'description':
 """Bins where overriding is allowed, following the same logic as numpy array
