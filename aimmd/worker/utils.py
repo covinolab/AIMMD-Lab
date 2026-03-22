@@ -533,6 +533,7 @@ def select_shooting_point(pool, params, folder,
     
     # merge empty bins, update histograms and densities
     keepers = combined_histograms > 0
+    processed_overriding_bins = overriding_bins
     if not keepers.all():
         (bins, merged_bin_counts,
          processed_overriding_bins, *merged_histograms
@@ -541,6 +542,7 @@ def select_shooting_point(pool, params, folder,
             *histograms, combined_histograms,
             densities, populations
         )
+        processed_overriding_bins = processed_overriding_bins.astype(bool)
         histograms = merged_histograms[:len(histograms)]
         combined_histograms, densities, populations = merged_histograms[-3:]
         if len(bins) - 1 < nbins:
@@ -550,9 +552,7 @@ def select_shooting_point(pool, params, folder,
             print(f'    populations  {populations}')
             print(f'    densities    {densities}')
             if overriding_bins.any() and overriding_attempts:
-                print(f'    overriding   {processed_overriding_bins}')
-        else:
-            processed_overriding_bins = overriding_bins
+                print(f'    overriding   {processed_overriding_bins}')            
         
         # to preserve target distribution: divide densities by merged bin counts
         densities /= merged_bin_counts
