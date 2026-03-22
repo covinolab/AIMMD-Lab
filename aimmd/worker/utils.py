@@ -456,7 +456,7 @@ def select_shooting_point(pool, params, folder,
     pool_size = params.selection_pool_size
     len_ext = len(params.trajectory_extension)
     nbins = params.nbins
-    overriding_bins = np.ones(nbins)
+    overriding_bins = np.ones(nbins, dtype=bool)
     overriding_bins[params.free_overriding_bins] = True
     
     # process chain
