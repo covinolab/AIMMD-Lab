@@ -356,7 +356,7 @@ class ParamsHelpers(ABC):
         # check free_overriding_bins
         if 'free_overriding_bins' in fields:
             try:
-                np.arange(self.nbins - 1)[self.free_overriding_bins]
+                np.arange(self.nbins)[self.free_overriding_bins]
             except Exception as exception:
                 raise TypeError(
                   f"can't determine free overriding bins when "
