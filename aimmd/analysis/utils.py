@@ -233,7 +233,7 @@ def compute_bins(pathensemble,
                  find_extremes_with='free',
                  source='values',
                  states='ARB',
-                 marginal_bins='all'):
+                 terminal_bin_extension='all'):
     """
     Construct 1D bin boundaries for projection/analysis.
 
@@ -272,7 +272,7 @@ def compute_bins(pathensemble,
         Passed to the extreme estimators.
     states : str, default='ARB'
         Triplet `(a, r, b)` used by the extreme estimators.
-    marginal_bins : {'all'} or str, default='all'
+    terminal_bin_extension : {'all'} or str, default='all'
         Which marginal bins to include by replacing outer boundaries:
 
         - 'all' : replace both ends (first boundary = -inf, last boundary = +inf)
@@ -310,12 +310,12 @@ def compute_bins(pathensemble,
     a, r, b = states
     left = False
     right = False
-    if marginal_bins == 'all':
+    if terminal_bin_extension == 'all':
         left = True
         right = True
-    elif a in marginal_bins:
+    elif a in terminal_bin_extension:
         left = True
-    elif b in marginal_bins:
+    elif b in terminal_bin_extension:
         right = True
 
     # reactive region
