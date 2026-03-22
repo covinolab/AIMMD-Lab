@@ -345,7 +345,7 @@ from free-simulation segments around selected states.
 Warning: enabling this can slow down selection since you must reload the
 free simulations every time."""
                  })
-
+    
     free_overriding_attempts: int = field(
         default=100,
         metadata={'description':
@@ -353,7 +353,16 @@ free simulations every time."""
 Higher values increase the chance of finding a usable free-simulation shooting
 point but can increase overhead."""
                  })
-
+    
+    free_overriding_bins: str = field(
+        default=lambda: [0, -1],
+        metadata={'description':
+"""Bins where overriding is allowed, following the same logic as numpy array
+indexing. For example, `free_overriding_bins = [0, 1]` will consider only the
+first and last selection bin for overrding. `free_overriding_bins = None` will
+consider all bins for overriding."""
+        })
+    
     free_overriding_recovery_rate: float = field(
         default=0.05,
         metadata={'description':
