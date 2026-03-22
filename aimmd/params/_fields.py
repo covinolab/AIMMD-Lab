@@ -312,8 +312,9 @@ approximately `[-cutoff_max, +cutoff_max]` (with optional ±inf bins)."""
 """Extends the first and/or last bin edges to the state interfaces (±inf).
 This forces the outermost bins to capture all configurations close to the
 states, increasing exploration at the cost of reduced exploitation.
-Recommended for `selection_pool_size > 1`. Values: '' or 'none' (disable),
-'all' (apply to both edges), 'first', or 'last'."""
+Recommended for `selection_pool_size > 1`. Values: '' (disable),
+'all' (apply to both edges), or directly the state names towards which you
+want the extension to happen ("A", "B", "AB", etc.)."""
                  })
     
     density_adjustment: bool = field(
