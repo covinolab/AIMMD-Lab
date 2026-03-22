@@ -306,14 +306,14 @@ If free simulations are disabled, the finite bin range typically spans
 approximately `[-cutoff_max, +cutoff_max]` (with optional ±inf bins)."""
                  })
 
-    marginal_bins: str = field(
+    terminal_bin_extension: str = field(
         default='',
         metadata={'description':
-"""Add marginal bins at the state interfaces (±inf boundaries).
-This can increase exploration by explicitly treating state-adjacent regions as
-separate bins, at the cost of reduced exploitation.
-Intended mainly for `selection_pool_size > 1`.
-Common values: 'all', '' (disable), or the state names ('A', 'B', ...)."""
+"""Extends the first and/or last bin edges to the state interfaces (±inf).
+This forces the outermost bins to capture all configurations close to the
+states, increasing exploration at the cost of reduced exploitation.
+Recommended for `selection_pool_size > 1`. Values: '' or 'none' (disable),
+'all' (apply to both edges), 'first', or 'last'."""
                  })
     
     density_adjustment: bool = field(
