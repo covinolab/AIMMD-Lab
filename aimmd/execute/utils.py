@@ -38,6 +38,7 @@ import threading
 import subprocess
 import multiprocessing
 from math import inf
+import traceback
 
 # aimmd imports
 from ..core.utils import now
@@ -246,8 +247,19 @@ def execute_command(command, stop_condition=lambda: False,
             print(f'[Exception] Terminating "{command}" ({time.ctime()})',
                   file=log_file)
         terminate_process_and_print_remaining_output()
+
+        # print traceback, even if we're not raising failures, for DEBUG
+        traceback_message = (f'Exception in execute_command control loop: '
+                             f'{traceback.format_exc()}')
+        if log_file and log_file != sys.stdout:
+            print(traceback_message, file=log_file)
+
         if raise_if_failure:
+            # report failure with the original exception message if available
             error_message = f'{command!r} failed with exit code 1'
+            if str(exception):
+                error_message += f' and exception: {exception}'
+            
             if log_file and log_file != sys.stdout:
                 print(f'RuntimeError: {error_message}', file=log_file)
             raise RuntimeError(error_message)
