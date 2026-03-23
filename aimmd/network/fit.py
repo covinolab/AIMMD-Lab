@@ -572,7 +572,7 @@ def fit(params,
                         find_extremes_with='transitions',
                         source='values',
                         states=states,
-                        marginal_bins='all')
+                        terminal_bin_extension='all')
     if must_stop():
         return [], [], [], [], []
     

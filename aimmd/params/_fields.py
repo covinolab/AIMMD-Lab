@@ -306,14 +306,15 @@ If free simulations are disabled, the finite bin range typically spans
 approximately `[-cutoff_max, +cutoff_max]` (with optional ±inf bins)."""
                  })
 
-    marginal_bins: str = field(
+    terminal_bin_extension: str = field(
         default='',
         metadata={'description':
-"""Add marginal bins at the state interfaces (±inf boundaries).
-This can increase exploration by explicitly treating state-adjacent regions as
-separate bins, at the cost of reduced exploitation.
-Intended mainly for `selection_pool_size > 1`.
-Common values: 'all', '' (disable), or the state names ('A', 'B', ...)."""
+"""Extends the first and/or last bin edges to the state interfaces (±inf).
+This forces the outermost bins to capture all configurations close to the
+states, increasing exploration at the cost of reduced exploitation.
+Recommended for `selection_pool_size > 1`. Values: '' (disable),
+'all' (apply to both edges), or directly the state names towards which you
+want the extension to happen ("A", "B", "AB", etc.)."""
                  })
     
     density_adjustment: bool = field(
@@ -345,7 +346,7 @@ from free-simulation segments around selected states.
 Warning: enabling this can slow down selection since you must reload the
 free simulations every time."""
                  })
-
+    
     free_overriding_attempts: int = field(
         default=100,
         metadata={'description':
@@ -353,7 +354,16 @@ free simulations every time."""
 Higher values increase the chance of finding a usable free-simulation shooting
 point but can increase overhead."""
                  })
-
+    
+    free_overriding_bins: List = field(
+        default_factory=lambda: [0, -1],
+        metadata={'description':
+"""Bins where overriding is allowed, following the same logic as numpy array
+indexing. For example, `free_overriding_bins = [0, 1]` will consider only the
+first and last selection bin for overrding. `free_overriding_bins = None` will
+consider all bins for overriding."""
+        })
+    
     free_overriding_recovery_rate: float = field(
         default=0.05,
         metadata={'description':

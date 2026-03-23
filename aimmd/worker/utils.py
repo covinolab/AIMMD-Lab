@@ -456,7 +456,9 @@ def select_shooting_point(pool, params, folder,
     pool_size = params.selection_pool_size
     len_ext = len(params.trajectory_extension)
     nbins = params.nbins
-
+    overriding_bins = np.zeros(nbins, dtype=bool)
+    overriding_bins[params.free_overriding_bins] = True
+    
     # process chain
     if chain is not None:
         chain = chain[chain.accepted]
@@ -524,14 +526,23 @@ def select_shooting_point(pool, params, folder,
         densities *= centers ** 2 + lorentzian ** 2
         densities /= densities.sum()
         print(f'    (after applying the Loretzian) {densities}')
+
+    # report also overriding
+    if overriding_bins.any() and overriding_attempts:
+        print(f'*** overriding   {overriding_bins}')
     
     # merge empty bins, update histograms and densities
     keepers = combined_histograms > 0
+    processed_overriding_bins = overriding_bins
     if not keepers.all():
-        bins, merged_bin_counts, *merged_histograms = merge_empty_bins(
-            bins, keepers,
-            *histograms, combined_histograms, densities, populations
+        (bins, merged_bin_counts,
+         processed_overriding_bins, *merged_histograms
+        ) = merge_empty_bins(
+            bins, keepers, overriding_bins,
+            *histograms, combined_histograms,
+            densities, populations
         )
+        processed_overriding_bins = processed_overriding_bins.astype(bool)
         histograms = merged_histograms[:len(histograms)]
         combined_histograms, densities, populations = merged_histograms[-3:]
         if len(bins) - 1 < nbins:
@@ -540,6 +551,8 @@ def select_shooting_point(pool, params, folder,
             print(f'    merged count {merged_bin_counts}')
             print(f'    populations  {populations}')
             print(f'    densities    {densities}')
+            if overriding_bins.any() and overriding_attempts:
+                print(f'    overriding   {processed_overriding_bins}')            
         
         # to preserve target distribution: divide densities by merged bin counts
         densities /= merged_bin_counts
@@ -584,14 +597,18 @@ def select_shooting_point(pool, params, folder,
     # get shooting point and report info
     shooting_point = path[indices[i]]
     loc = locs[i]
-    if nbins > 1:
+    if len(bins) - 1 > 1:
         value = values[i]
         print(f'=== selecting frame {loc} (value: {value:.3f})')
     else:
         print(f'=== selecting frame {loc}')
     
     if overriding_types and k is not None:
-        if np.digitize(pool_shooting_values[pool_index], bins) - 1 == k:
+        if not processed_overriding_bins[k]:
+            print('*** skipped overriding because the SP bin is '
+                  'not in overriding_bins')
+            overriding = None
+        elif np.digitize(pool_shooting_values[pool_index], bins) - 1 == k:
             if np.random.random() > overriding_rate:
                 print(f'*** skipped overriding because the old SP is in the '
                       f'same bin (rec. rate = {overriding_rate})')
@@ -600,7 +617,7 @@ def select_shooting_point(pool, params, folder,
                 # on a very rare occasion: still override
                 print(f'*** rescued overriding with '
                       f'rec. rate = {overriding_rate}')
-
+    
     if overriding:
         candidates = np.flatnonzero(np.digitize(
             overriding_values, bins) - 1 == k)

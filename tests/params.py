@@ -125,12 +125,13 @@ Finite boundaries are clipped to lie within [-cutoff_max, +cutoff_max].
 If free simulations are disabled, the finite bin range typically spans
 approximately `[-cutoff_max, +cutoff_max]` (with optional ±inf bins)."""
 
-marginal_bins = ''
-"""Add marginal bins at the state interfaces (±inf boundaries).
-This can increase exploration by explicitly treating state-adjacent regions as
-separate bins, at the cost of reduced exploitation.
-Intended mainly for `selection_pool_size > 1`.
-Common values: 'all', '' (disable), or the state names ('A', 'B', ...)."""
+terminal_bin_extension = ''
+"""Extends the first and/or last bin edges to the state interfaces (±inf).
+This forces the outermost bins to capture all configurations close to the
+states, increasing exploration at the cost of reduced exploitation.
+Recommended for `selection_pool_size > 1`. Values: '' (disable),
+'all' (apply to both edges), or directly the state names towards which you
+want the extension to happen ("A", "B", "AB", etc.)."""
 
 density_adjustment = True
 """If True: apply a correction to the density during selection to accelerate

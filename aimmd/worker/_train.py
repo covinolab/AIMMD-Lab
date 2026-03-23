@@ -156,7 +156,7 @@ class WorkerTrain(ABC):
         do_tps = params.chain_type == 'tps'
         cutoff_min = params.cutoff_min
         cutoff_max = params.cutoff_max
-        marginal_bins = params.marginal_bins
+        terminal_bin_extension = params.terminal_bin_extension
         batch_size = params.network_batch_size
         rescale_committor = params.rescale_committor
         reweight_parameters = params.reweight_parameters
@@ -334,7 +334,7 @@ class WorkerTrain(ABC):
                                 find_extremes_with='free',
                                 source=source,
                                 states=states,
-                                marginal_bins=marginal_bins)
+                                terminal_bin_extension=terminal_bin_extension)
             print(f'    bins: {bins}')
             
             # check mid-cycle

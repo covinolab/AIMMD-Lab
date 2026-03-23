@@ -22,7 +22,7 @@ def test_bin_helpers_and_statistics(tmp_path):
     ensemble = PathEnsemble(path1, path2)
 
     # `compute_bins` should create an infinite left/right margin when requested.
-    bins = compute_bins(ensemble, nbins=4, marginal_bins="all")
+    bins = compute_bins(ensemble, nbins=4, terminal_bin_extension="all")
     assert np.isneginf(bins[0]) and np.isposinf(bins[-1])
     centers = bin_centers(np.array([-np.inf, -1.0, 1.0, np.inf]))
     np.testing.assert_allclose(centers, np.array([-2.0, 0.0, 2.0]))
