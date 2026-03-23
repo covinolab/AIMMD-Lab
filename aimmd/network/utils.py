@@ -291,3 +291,81 @@ def extract_indices_and_series(paths, key, *names):
         *[np.array(series) for series in series_out],
         len(key),
     )
+
+
+def extract_vamp_pairs(paths, key, lagtime, name):
+    """Extract time-lagged frame pairs from continuous paths for VAMP2 training.
+
+    For each successfully-loaded path with n frames, this function produces
+    ``n - lagtime`` pairs ``(frame_t, frame_{t+lagtime})``, concatenated across
+    all selected paths. The skipping logic (skip on I/O failure) mirrors
+    :func:`extract_indices_and_series` exactly: only paths for which ``name``
+    can be fully loaded are included, so pair indices are consistent with the
+    descriptor arrays returned by that function when called with the same key.
+
+    Parameters
+    ----------
+    paths : PathEnsemble
+        The path ensemble (same interface as for ``extract_indices_and_series``).
+    key : array-like or None
+        Path selector (same semantics as ``extract_indices_and_series``).
+    lagtime : int
+        Number of frames to shift between the two sides of each pair. Must
+        be >= 1. Paths with fewer than ``lagtime + 1`` frames contribute no
+        pairs.
+    name : str
+        Name of the per-frame series to extract (e.g. ``'descriptors'`` or
+        ``'coordinates'``). Passed to ``path.get``.
+
+    Returns
+    -------
+    data_t : numpy.ndarray
+        Concatenated frames at time t, shape ``(n_pairs, *frame_shape)``.
+    data_tau : numpy.ndarray
+        Concatenated frames at time t+lagtime, same shape as ``data_t``.
+    n_selected : int
+        Number of paths selected by ``key`` (including skipped ones).
+    n_pairs : int
+        Total number of valid pairs extracted.
+    """
+    if key is None:
+        key = range(len(paths))
+    else:
+        key = np.arange(len(paths))[key].flatten()
+
+    t_out = []
+    tau_out = []
+    n_pairs = 0
+
+    for k in key:
+        path = paths[k]
+        path_indices = path.internal('indices')
+        n = len(path_indices)
+
+        if n <= lagtime:
+            continue
+
+        try:
+            series = path.get(
+                name,
+                start=path_indices[0],
+                stop=path_indices[-1] + 1,
+                raise_if_missing=True,
+            )
+            assert len(series) == n
+        except Exception:
+            continue
+
+        n_path_pairs = n - lagtime
+        t_out.append(series[:n_path_pairs])
+        tau_out.append(series[lagtime:])
+        n_pairs += n_path_pairs
+
+    if t_out:
+        data_t = np.concatenate(t_out, axis=0)
+        data_tau = np.concatenate(tau_out, axis=0)
+    else:
+        data_t = np.empty(0)
+        data_tau = np.empty(0)
+
+    return data_t, data_tau, len(key), n_pairs
