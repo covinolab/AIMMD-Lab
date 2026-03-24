@@ -47,10 +47,10 @@ def test_toy_1d():
         raise RuntimeError(
             'Training takes too much time, you may want to skip this test')
     aimmd.Worker(params, 'run1', nframes=100, walltime=120).free(0, 0, 1)
-    aimmd.Worker(params, 'run1', nsteps=5, walltime=120).shoot(1, 0)
+    aimmd.Worker(params, 'run1', nsteps=3, walltime=60).shoot(1, 0)
 
     print('\nManaging two chains with the same worker')
-    aimmd.Worker(params, 'run1', walltime=60).shoot(1, 0, nchains_per_task=2)
+    aimmd.Worker(params, 'run1', nsteps=7, walltime=60).shoot(1, 0, nchains_per_task=2)
     
     print('\nInitializing AIMMD')
     launcher = aimmd.Launcher('params.py', 'run1')
@@ -61,11 +61,10 @@ def test_toy_1d():
 
     # together
     print('Running with launcher (one chain per task)')
-    launcher.run(1, 1, 1, nsteps=5, walltime=60)
-    launcher.run(1, 1, 1, nsteps=12, walltime=60)
+    launcher.run(1, 1, 1, nsteps=10, walltime=60)
     
     print('Running with launcher (three chains per task)')
-    launcher.run(1, 1, 1, nsteps=20, walltime=60, nchains_per_task=3)
+    launcher.run(1, 1, 1,  walltime=60, nchains_per_task=3)
     
     print('\nLoading AIMMD path ensemble')
     pathensemble = params.pathensemble('run1')

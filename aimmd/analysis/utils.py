@@ -866,7 +866,7 @@ def find_path_lineages(*shooting_chains, verbose=False):
                 ) or current_path
                 
                 # Identify the 'parent' being shot
-                selecting_path = extract_name(line, '=== choosing from')
+                selecting_path = extract_name(line, '*** choosing from')
                 selected_path = selecting_path or selected_path
                 parent_path = (selecting_path or
                                extract_name(line, '=== overriding with')

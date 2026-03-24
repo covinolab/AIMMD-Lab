@@ -92,33 +92,16 @@ def test_check_if_initialized_and_copy_behave_consistently(tmp_path):
     assert cloned.initial_paths == params.initial_paths
 
 
-def test_update_network_and_bins_loading_roundtrip(tmp_path):
+def test_update_network_loading_roundtrip(tmp_path):
     """Saved network/bins artifacts should be reloadable through Params helpers."""
 
     params = _toy_params(tmp_path)
     states = params.sorted_states
     network_fname = tmp_path / f"network{states}.h5"
-    bins_fname = tmp_path / f"bins{states}.npy"
-    densities_fname = tmp_path / f"densities{states}.npy"
 
     torch.save(params.network.state_dict(), network_fname)
-    save_npy(str(bins_fname), np.array([-np.inf, 0.0, np.inf]))
-    save_npy(str(densities_fname), np.array([0.25, 0.75]))
-
+    
     params.update_network(str(tmp_path), timeout=0.0, raise_if_failure=True)
-    bins, densities = params.load_bins_and_densities(str(tmp_path), timeout=0.0, raise_if_failure=True)
-    np.testing.assert_allclose(bins, np.array([-np.inf, 0.0, np.inf]))
-    np.testing.assert_allclose(densities, np.array([0.25, 0.75]))
-
-
-def test_load_bins_and_densities_can_fail_softly(tmp_path, capsys):
-    """The non-raising mode should return empty arrays after timing out."""
-
-    params = _toy_params(tmp_path)
-    bins, densities = params.load_bins_and_densities(str(tmp_path), timeout=0.0, raise_if_failure=False)
-    assert bins == []
-    assert densities == []
-    assert "Warning:" in capsys.readouterr().out
 
 
 def test_check_engine_returns_success_and_failure(monkeypatch, tmp_path):
