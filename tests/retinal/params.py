@@ -7,8 +7,6 @@ initial_paths = ['initial.trr']
 gmx_grompp = 'gmx grompp -maxwarn 4'
 gmx_mdrun = 'gmx mdrun -v -ntmpi 1'
 rescale_committor = False
-at_least_one_transition_in_pool = True
-selection_pool_size = 20
 
 """
 Auxiliary

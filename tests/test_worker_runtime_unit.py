@@ -277,16 +277,14 @@ def test_shoot_registers_completed_path_and_updates_non_tps_weight(monkeypatch, 
         positions=np.array([[[-1, 0, 0]], [[0, 0, 0]], [[1, 0, 0]]], dtype=np.float32),
     )
     chain = PathEnsemble()
-    pool = PathEnsemble()
     params = aimmd.Params.placeholder.copy()
     params.__dict__.update(
         states="ARB",
         sorted_states="ARB",
         chain_type="rfps",
-        at_least_one_transition_in_pool=False,
+        always_select_inside_the_bins=True,
         nbins=1,
         max_length=10,
-        selection_pool_size=2,
         free_overriding_states="",
         engine="toy",
         check_if_initialized=lambda *deffnms: False,
@@ -297,7 +295,6 @@ def test_shoot_registers_completed_path_and_updates_non_tps_weight(monkeypatch, 
         compute_values_args=(lambda x: np.array([0.0]), "values", "positions"),
     )
     worker = TinyShootWorker(params, aimmd.PathEnsemble(initial), tmp_path)
-    monkeypatch.setattr("aimmd.worker._shoot.update_selection_pool", lambda *args, **kwargs: pool)
     monkeypatch.setattr("aimmd.worker._shoot.select_shooting_point", lambda *args, **kwargs: initial[1:2])
     monkeypatch.setattr("aimmd.worker._shoot.remove", lambda *args, **kwargs: None)
     back = build_path(tmp_path, stem="back_seg")

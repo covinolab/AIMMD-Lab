@@ -112,8 +112,8 @@ class LauncherRun(ABC):
     def run(self, n=1, n1=0, n2=0,
             reactive_region_mode='chain',
             state1_mode='free', state2_mode='free',
-            nsteps=inf, nframes=inf, nrounds=None, walltime=inf,
-            cpus_per_task='share', gpus_per_task='share'):
+            nchains_per_task=1, nsteps=inf, nframes=inf, nrounds=None,
+            walltime=inf, cpus_per_task='share', gpus_per_task='share',):
         """
         Launch AIMMD runs locally by spawning multiple worker processes.
 
@@ -148,6 +148,11 @@ class LauncherRun(ABC):
             Otherwise, it refers to the number of steps of each single worker
             in the launcher run. The first worker reaching nsteps stops all
             the others.
+        nchains_per_task : int, optional, default = 1
+            If > 1, the worker will manage more than one chain. A higher value
+            of `nchains_per_task` tends to regularize the training set and thus
+            improve performance. If running only one shooting worker,
+            `nchains_per_task=10` is recommended.
         nframes : float or iterable of float, optional
             Maximum number of simulated frames (worker stop condition). Default
             is ``inf``. Attention! If "train" runs, then
@@ -193,8 +198,8 @@ class LauncherRun(ABC):
         # update run settings
         self._update(n, n1, n2,
                      reactive_region_mode, state1_mode, state2_mode,
-                     nsteps, nframes, nrounds, walltime,
-                     cpus_per_task, gpus_per_task)
+                     nchains_per_task, nsteps, nframes, nrounds,
+                     walltime, cpus_per_task, gpus_per_task)
 
         # initialize processes, create folders
         for args, description in zip(*self._build()):

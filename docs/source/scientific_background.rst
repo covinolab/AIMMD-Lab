@@ -63,7 +63,6 @@ uniformly, and the resulting algorithm can be rejection-free.
 In AIMMD, that perspective is implemented as:
 
 - the ``rfps`` chain type,
-- the adaptive shooting-point selection pool,
 - the interplay between bins, densities, and network values,
 - a reformulated reweighting scheme (via the drop-method).
 

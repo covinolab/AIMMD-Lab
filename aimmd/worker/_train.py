@@ -18,7 +18,9 @@ worker:
 4) constructs adaptation bins from the current ensemble,
 5) reweights the ensemble (if not doing TPS),
 6) projects the (T)PE density onto the bins to obtain densities,
-7) persists updated artifacts to disk (values files, network state, bins,
+7) saves shooting point population for improving RFPS selection,
+8) saves average path histogram for improving RFPS selection,
+9) persists updated artifacts to disk (values files, network state, bins,
    densities, and periodic network backups).
 
 Stop-condition handling is cooperative: the task periodically calls a local
@@ -147,6 +149,9 @@ class WorkerTrain(ABC):
 
         # get/process params
         directory = self._directory
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+            print(f'+++ created {directory}')
         params = self.params
         states = params.sorted_states
         r = states[1]
@@ -171,11 +176,15 @@ class WorkerTrain(ABC):
             'batch_size': batch_size}
         # initalize everywhere; compute just on the reactive region
         save_interval = params.network_save_interval
-        initial_paths = self.initial_paths
-        # only transitions
-        initial_paths = initial_paths.extract(states, states[::-1])
-        margins = PathEnsemble([path[1::-1] for path in initial_paths] +
-                               [path[-2::1] for path in initial_paths])
+
+        # get margins: frames in first and last state
+        margins = PathEnsemble()
+        for path in (params.initial_paths or
+                     PathEnsemble(f'{directory}/*/initial*{ext}')):
+            for i in np.flatnonzero(path.states == states[+0]):
+                margins.append(path[i:i+1])
+            for i in np.flatnonzero(path.states == states[-1]):
+                margins.append(path[i:i+1])
         
         # update kwargs to fit function
         kwargs['worker'] = self
@@ -327,6 +336,11 @@ class WorkerTrain(ABC):
                 # nothing chanced: can wait for the next cycle
                 continue
             
+            # get TPE weights
+            if do_tps:
+                weights = (pathensemble.weights *
+                           pathensemble.are_transitions(states))
+
             print(f'\nObtaining the adaptation bins {now()}')
             bins = compute_bins(pathensemble, nbins,
                                 cutoff_max=cutoff_max,
@@ -335,16 +349,11 @@ class WorkerTrain(ABC):
                                 source=source,
                                 states=states,
                                 terminal_bin_extension=terminal_bin_extension)
-            print(f'    bins: {bins}')
+            print(f'    bins          {bins}')
             
             # check mid-cycle
             if self.termination_signal:
                 return
-            
-            # get TPE weights
-            if do_tps:
-                weights = (pathensemble.weights *
-                           pathensemble.are_transitions(states))
             
             # reweight pathensemble
             print(f'\nReweighting the full path ensemble {now()}')
@@ -427,7 +436,32 @@ class WorkerTrain(ABC):
             densities = pathensemble.project(bins, source=source)
             densities[densities == 0.] = 1e-15
             densities /= densities.sum()
-            print(f'    densities: {densities}')
+            print(f'    densities     {densities}')
+
+            print(f'\nComputing shooting point populations {now()}')
+            shooting_values = []
+            for chain in self._shot_chains:
+                shooting_values.extend(chain.shooting(source))
+            populations = np.histogram(shooting_values, bins)[0]
+            print(f'    populations   {populations}')
+
+            # check mid-cycle
+            if self.termination_signal:
+                return
+
+            print(f'\nComputing average shooting path histogram {now()}')
+            averaged_hist = np.zeros(nbins)
+            for chain in self._shot_chains:
+                for values in chain.internal(source):
+                    histogram = np.histogram(values, bins)[0].astype(float)
+                    histogram /= histogram.sum() or 1.
+                    averaged_hist += histogram
+            averaged_hist /= averaged_hist.sum() or 1.
+            print(f'    averaged hist {averaged_hist}')
+            
+            # check mid-cycle
+            if self.termination_signal:
+                return
             
             if source == 'new':
                 # replace values (as much as possible) all at once
@@ -442,10 +476,13 @@ class WorkerTrain(ABC):
                 torch.save(network.state_dict(), network_fname)
 
             # save bins and densities
-            print(f'\nSaving bins and densities {now()}')
+            print(f'\nSaving bins, densities, shooting point populations, '
+                  f'and average shooting path histogram {now()}')
             save_npy(f'{directory}/bins{states}.npy', bins)
             save_npy(f'{directory}/densities{states}.npy', densities)
-
+            save_npy(f'{directory}/populations{states}.npy', populations)
+            save_npy(f'{directory}/averaged_hist{states}.npy', averaged_hist)
+            
             # backup network
             n = (self.total_steps // save_interval) * save_interval
             backup = f'{network_fname[:-3]}.step{n:06g}.h5'

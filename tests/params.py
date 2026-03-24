@@ -1,6 +1,6 @@
 # packages
 import builtins as __builtins__
-import sys as sys
+import pytest as pytest
 
 from params import states_function
 """Map an MDAnalysis trajectory or Timestep to state labels.
@@ -20,7 +20,7 @@ Example: 'ARB' means transitions are defined from A to B through R."""
 name = 'AIMMD'
 """System name, used when creating SLURM job names."""
 
-topology = 'initial.xtc'
+topology = 'run.gro'
 """Topology/structure file used for engine setup and mass lookup.
 Typically a GROMACS .gro file. Used by:
 - mass assignment routines,
@@ -45,13 +45,13 @@ Callable that advances the system by one step for the toy engine.
 It is expected to take an MDAnalysis Timestep (or equivalent) as input
 and evolve it in-place, based on the chosen law of motion."""
 
-toy_slowdown = 0.0
+toy_slowdown = 0.01
 """Artificial delay per toy integration step (seconds).
 Used to slow down the toy engine to emulate wall-clock behavior or to reduce
 CPU usage during debugging, while allowing AIMMD manager tasks to keep up with
 the simulation speed."""
 
-from aimmd.network.utils import network
+from params import network
 """Neural network model used to estimate logit-committor-like values.
 The network is evaluated on descriptors (or positions if descriptors are not
 provided). The default placeholder returns a trivial output.
@@ -65,7 +65,7 @@ If None, AIMMD evaluates `network(descriptors)` directly.
 If provided, this callable must accept an array of descriptors and return a
 1D array of values (one per frame)."""
 
-from tests._helpers_unit import simple_descriptors_function as descriptors_function
+descriptors_function = None
 """Compute descriptors from an MDAnalysis trajectory.
 If None, AIMMD uses raw positions (potentially more expensive and higher
 dimensional). If provided, the callable should return an array of descriptors
@@ -98,18 +98,12 @@ Supported values:
 - 'tps'  : transition path sampling,
 - 'rfps' : rejection-free path sampling."""
 
-selection_pool_size = 10
-"""Number of candidate paths for shooting point selection considered
-at each selection step. For standard TPS (`chain_type='tps'`), this must be 1.
-For RFPS, values > 1 enable pool-based selection and bin rebalancing, while
-improving the homogeneity of the sampled chain."""
+always_select_inside_the_bins = True
+"""If True: ensure you always select from paths with values in the current
+bins. This to prevent the simulations fromm getting stuck close to the state
+boundaries."""
 
-at_least_one_transition_in_pool = False
-"""If True: ensure each selection pool contains at least 1 transition.
-If True, detailed balance is not strictly preserved, but it can reduce
-stagnation near state boundaries and improve exploration."""
-
-nbins = 5
+nbins = 10
 """Number of bins used to discretize value space in the reactive region.
 Bins are constructed in (logit) committor/value space and used to guide
 shooting point selection. Must be >= 0. 0 disables binning."""
@@ -129,14 +123,14 @@ terminal_bin_extension = ''
 """Extends the first and/or last bin edges to the state interfaces (±inf).
 This forces the outermost bins to capture all configurations close to the
 states, increasing exploration at the cost of reduced exploitation.
-Recommended for `selection_pool_size > 1`. Values: '' (disable),
-'all' (apply to both edges), or directly the state names towards which you
-want the extension to happen ("A", "B", "AB", etc.)."""
+Values: '' (disable), 'all' (apply to both edges), or directly the state
+names towards which you want the extension to happen ("A", "B", "AB", etc.)."""
 
 density_adjustment = True
 """If True: apply a correction to the density during selection to accelerate
 convergence. For each shooting chain, in each bin: multiply the density by
-the number of points already selected in the bin."""
+the number of points already selected in the bin and consider the averaged
+histogram over all the shot paths instead of the individual path histograms."""
 
 lorentzian = float('inf')
 """Lorentzian width controlling the target distribution in value space.
@@ -145,7 +139,7 @@ according to a Lorentzian in logit/value space.
 If `inf`, shooting points are sampled approximately uniformly between the first
 and last finite bin boundaries."""
 
-free_overriding_states = ''
+free_overriding_states = 'all'
 """Enable occasional shooting point selection from free simulations near states.
 If non-empty, AIMMD may override the usual selection and draw shooting points
 from free-simulation segments around selected states.
@@ -158,6 +152,12 @@ free_overriding_attempts = 100
 """Number of frames from the free simulations considered for overriding.
 Higher values increase the chance of finding a usable free-simulation shooting
 point but can increase overhead."""
+
+free_overriding_bins = [0, -1]
+"""Bins where overriding is allowed, following the same logic as numpy array
+indexing. For example, `free_overriding_bins = [0, 1]` will consider only the
+first and last selection bin for overrding. `free_overriding_bins = None` will
+consider all bins for overriding."""
 
 free_overriding_recovery_rate = 0.05
 """Probability of overriding within the same bin as the previous shooting point.
@@ -193,7 +193,7 @@ extra_free_frames = 0
 If > 0, free simulations do not stop immediately upon reaching the target
 state, but continue for `extra_free_frames` additional frames."""
 
-from aimmd.network.fit import default as fit
+from params import fit
 """Callable that fits network parameters to PathEnsemble data.
 Expected signature (conceptually):
 - positional: (network, pathensemble)

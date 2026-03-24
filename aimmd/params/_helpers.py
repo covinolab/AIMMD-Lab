@@ -316,7 +316,6 @@ class ParamsHelpers(ABC):
         TypeError
             If consistency requirements fail, for example:
             - rescaling requested but network does not implement Rescalable,
-            - chain type incompatible with selection pool size,
             - invalid nbins/extra_bins combination,
             - initial paths not transitions or incompatible with topology.
 
@@ -333,12 +332,7 @@ class ParamsHelpers(ABC):
             if not isinstance(self.network, RescalableNetwork):
                 raise TypeError(f"params' network {self.network} "
                                 "is not aimmd.network.Rescalable")
-
-        # check chain type
-        if self.chain_type == 'tps' and self.selection_pool_size > 1:
-            raise TypeError(f"when chain_type is 'tps', "
-                            f"selection pool size must be 1")
-
+        
         # check nbins
         if 'nbins' in fields or 'terminal_bin_extension' in fields:
             if self.nbins > 0:

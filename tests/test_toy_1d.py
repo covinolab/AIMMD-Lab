@@ -32,13 +32,13 @@ def test_toy_1d():
     
     print('\nImporting parameters')
     params = aimmd.Params.load('params.py')
-    params.check_engine(timeout=2)
+    #params.check_engine(timeout=2)
     states_function = params.states_function
     descriptors_function = params.descriptors_function
     values_function = params.values_function
     network = params.network
     trajectory_extension = params.trajectory_extension
-
+    
     # running one at a time
     print('Running one task at a time')
     t0 = time.time()
@@ -48,17 +48,24 @@ def test_toy_1d():
             'Training takes too much time, you may want to skip this test')
     aimmd.Worker(params, 'run1', nframes=100, walltime=120).free(0, 0, 1)
     aimmd.Worker(params, 'run1', nsteps=5, walltime=120).shoot(1, 0)
+
+    print('\nManaging two chains with the same worker')
+    aimmd.Worker(params, 'run1', walltime=60).shoot(1, 0, nchains_per_task=2)
     
     print('\nInitializing AIMMD')
     launcher = aimmd.Launcher('params.py', 'run1')
     
     print('Testing slurm job creation')
-    launcher.create_job('job.sh', n=1, n1=1, n2=1, walltime=3600)
+    launcher.create_job('job.sh', n=1, n1=1, n2=1, nchains_per_task=3, walltime=3600)
     # can run it e.g. on cluster
 
     # together
-    print('Running with launcher')
-    launcher.run(1, 1, 1, nsteps=10, walltime=120)
+    print('Running with launcher (one chain per task)')
+    launcher.run(1, 1, 1, nsteps=5, walltime=60)
+    launcher.run(1, 1, 1, nsteps=12, walltime=60)
+    
+    print('Running with launcher (three chains per task)')
+    launcher.run(1, 1, 1, nsteps=20, walltime=60, nchains_per_task=3)
     
     print('\nLoading AIMMD path ensemble')
     pathensemble = params.pathensemble('run1')

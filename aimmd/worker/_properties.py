@@ -9,8 +9,6 @@ This module defines :class:`WorkerProperties`, a mixin that provides:
 - a :attr:`log_file` property controlling where the worker prints its output
   (by redirecting ``sys.stdout`` / ``sys.stderr``),
 - a :attr:`must_stop` property implementing the worker's stop-condition checks,
-- an :attr:`initial_paths` convenience property to locate (or lazily create)
-  initial paths in the working directory.
 
 The mixin assumes it is used together with other worker mixins that define
 runtime state such as:
@@ -228,39 +226,3 @@ class WorkerProperties(ABC):
             return True
         
         return False
-    
-    @property
-    def initial_paths(self):
-        """
-        Initial paths available to the worker.
-
-        The worker expects initial paths to live under a folder named according
-        to the sorted end states, e.g. ``initial('A','B')``. This property first
-        attempts to load existing paths from ``{directory}/initial{states}/*``.
-        If none are found, it lazily initializes them via :class:`~aimmd.launcher.Launcher`
-        in :attr:`_directory` and tries again.
-
-        Returns
-        -------
-        aimmd.pathensemble.PathEnsemble
-            Ensemble containing all initial paths located (or created) for the
-            current end-state set.
-
-        Notes
-        -----
-        - The state tuple is obtained from :attr:`params.sorted_states` and is
-          embedded directly into the folder name.
-        - The lazy creation branch imports :class:`~aimmd.launcher.Launcher`
-          locally to reduce import-time coupling and avoid circular imports.
-        """
-        # retrieve initial path in directory
-        states = self.params.sorted_states
-        initial_paths = PathEnsemble(f'{self.directory}/initial{states}/*')
-        if not initial_paths:
-            from ..launcher import Launcher
-            # need to initialize first
-            launcher = Launcher(self.params, self._directory)
-            launcher._update(n=0)
-            launcher._build()
-            initial_paths = PathEnsemble(f'{self._directory}/initial{states}/*')
-        return initial_paths

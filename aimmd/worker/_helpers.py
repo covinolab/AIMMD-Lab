@@ -362,6 +362,7 @@ class WorkerHelpers(ABC):
             if tty:
                 # Add terminal-specific positioning and stream routing
                 kwargs.update({
+                    "desc": str(self._location),  # in case the chain changes
                     "position": (self.localid * 2 + offset),
                     "dynamic_ncols": True,
                     "file": self.original_stdout,

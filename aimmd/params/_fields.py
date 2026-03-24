@@ -264,21 +264,12 @@ Supported values:
 - 'rfps' : rejection-free path sampling."""
                  })
 
-    selection_pool_size: int = field(
-        default=10,
+    always_select_inside_the_bins: bool = field(
+        default=True,
         metadata={'description':
-"""Number of candidate paths for shooting point selection considered
-at each selection step. For standard TPS (`chain_type='tps'`), this must be 1.
-For RFPS, values > 1 enable pool-based selection and bin rebalancing, while
-improving the homogeneity of the sampled chain."""
-                 })
-
-    at_least_one_transition_in_pool: bool = field(
-        default=False,
-        metadata={'description':
-"""If True: ensure each selection pool contains at least 1 transition.
-If True, detailed balance is not strictly preserved, but it can reduce
-stagnation near state boundaries and improve exploration."""
+"""If True: ensure you always select from paths with values in the current
+bins. This to prevent the simulations from getting stuck close to the state
+boundaries."""
                  })
 
     nbins: int = field(
@@ -312,9 +303,8 @@ approximately `[-cutoff_max, +cutoff_max]` (with optional ±inf bins)."""
 """Extends the first and/or last bin edges to the state interfaces (±inf).
 This forces the outermost bins to capture all configurations close to the
 states, increasing exploration at the cost of reduced exploitation.
-Recommended for `selection_pool_size > 1`. Values: '' (disable),
-'all' (apply to both edges), or directly the state names towards which you
-want the extension to happen ("A", "B", "AB", etc.)."""
+Values: '' (disable), 'all' (apply to both edges), or directly the state
+names towards which you want the extension to happen ("A", "B", "AB", etc.)."""
                  })
     
     density_adjustment: bool = field(
@@ -322,7 +312,9 @@ want the extension to happen ("A", "B", "AB", etc.)."""
         metadata={'description':
 """If True: apply a correction to the density during selection to accelerate
 convergence. For each shooting chain, in each bin: multiply the density by
-the number of points already selected in the bin."""
+the number of points already selected in the bin and consider the averaged
+histogram over all the shot paths instead of the individual path histograms.
+The averaged histogram is used only when `chain_type` is 'rfps'."""
                  })
     
     lorentzian: float = field(

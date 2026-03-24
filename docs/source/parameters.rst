@@ -65,15 +65,13 @@ Several parameters directly control how AIMMD explores path space:
    ``'rfps'`` for rejection-free path sampling or ``'tps'`` for TPS-style
    acceptance.
 
-``selection_pool_size``
-   Number of candidate paths used when selecting the next shooting point.
-
-``at_least_one_transition_in_pool``
-   Optional heuristic that may improve sampling in early rounds by ensuring that at least one path in the selection pool is reactive.
-
 ``nbins``, ``cutoff_min``, ``cutoff_max``, ``marginal_bins``
    Define how value space is discretized for adaptive sampling and density
    estimation.
+
+``always_select_inside_the_bins``
+   Do not select shooting points from paths entirely outside the selection
+   bins range.
 
 Engine Integration
 ------------------

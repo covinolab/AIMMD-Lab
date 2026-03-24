@@ -74,6 +74,8 @@ from itertools import islice
 from ..cache.npy import save_npy
 from ..core.utils import remove, unique_path
 from ..path.utils import get_cache_fname
+from ..pathensemble import PathEnsemble
+from ..worker.utils import get_initial_frames_for_free_simulations
 
 
 class LauncherBuild(ABC):
@@ -130,10 +132,12 @@ class LauncherBuild(ABC):
 
         for run_id in range(len(self)):
             params = self._params[run_id]
-            if not params.initial_paths:
+            initial_paths = params.initial_paths
+            if not initial_paths:
                 raise TypeError("'initial_paths' missing in aimmd.Params")
             a, r, b = params.states
             sorted_states = params.sorted_states
+            ext = params.trajectory_extension
             params_path = os.path.relpath(params.save())
             directory = self._directories[run_id]
             n = self._n[run_id]
@@ -142,6 +146,7 @@ class LauncherBuild(ABC):
             reactive_region_mode = self._reactive_region_mode[run_id]
             state1_mode = self._state1_mode[run_id]
             state2_mode = self._state2_mode[run_id]
+            nchains_per_task = self._nchains_per_task[run_id]
             nsteps = self._nsteps[run_id]
             nframes = self._nframes[run_id]
             nrounds = self._nrounds[run_id]
@@ -157,25 +162,9 @@ class LauncherBuild(ABC):
             if not os.path.exists(directory):
                 os.makedirs(directory)
                 print(f'+++ created {directory!r}')
-
-            # initial paths
-            folder = f'{directory}/initial{sorted_states}'
-            if not os.path.exists(folder):
-                os.makedirs(folder)
-                print(f'+++ created {folder!r}')
-            remove(f'{folder}/*')
-            for path in params.initial_paths:
-                old = path.fname
-                fname = unique_path(f'{folder}/{PosixPath(old).name}', '.trr')
-                path.write(fname)
-                print(f'+++ saved {str(fname)!r} (from: {old!r})')
-                for attribute, series in islice(
-                    path.__dict__.items(), 6, None):
-                    name = get_cache_fname(fname, attribute)
-                    save_npy(name, series)
-                    print(f'+++ saved {name!r}')
-
+            
             # free simulations
+            n_free = 0
             for t, m in zip([r, a, b], [n, n1, n2]):
                 if not m:
                     continue
@@ -184,6 +173,8 @@ class LauncherBuild(ABC):
                     continue
                 if t == r and reactive_region_mode != 'free':
                     continue
+                n_free += 1
+                
                 # folders
                 folder = f'free{t}'
                 dfolder = f'{directory}/{folder}'
@@ -196,6 +187,22 @@ class LauncherBuild(ABC):
                         raise RuntimeError(f"can't initialize process {i} "
                               f"(free {k}) in {dfolder!r} more than once")
                     process_identifiers.append(process_identifier)
+                    
+                    # process and save initial frames
+                    path = initial_paths[n_free % len(initial_paths)]
+                    old = path.fname
+                    initial_frames = get_initial_frames_for_free_simulations(
+                        path, t, r)
+                    fname = f'{dfolder}/initial{n_free}{ext}'
+                    initial_frames.write(fname, overwrite=True)
+                    print(f'+++ saved {str(fname)!r} (from: {old!r})')
+                    
+                    # copy time series
+                    for attribute, series in islice(
+                        path.__dict__.items(), 6, None):
+                        name = get_cache_fname(fname, attribute)
+                        save_npy(name, series)
+                        print(f'+++ saved {name!r}')
 
                     localid = i % self._ntasks_per_node
                     if num_processes > 1:
@@ -208,21 +215,27 @@ class LauncherBuild(ABC):
                          log_file, *conditions, termination_timeout,
                          'free', t, k, m, nrounds > 0 or n > 0))
                     descriptions.append(f'"{directory}" {folder} (worker{k})')
+                    
+                    # advance the task id
                     i += 1
 
-            # shot simulations
+            # shooting simulations
+            n_shooting = 0
             for t, m in zip([r, a, b], [n, n1, n2]):
                 if t == r and reactive_region_mode == 'free':
                     continue
                 if ((t == a and state1_mode != 'shoot') or
                     (t == b and state2_mode != 'shoot')):
                     continue
-                for k in range(m):
-                    if t == r and reactive_region_mode == 'sweep':
+                sweep = (t == r and reactive_region_mode == 'sweep')
+                for k in range(m * nchains_per_task):
+                    n_shooting += 1
+                    if sweep:
                         folder = f'sweep{t}{k}'
                     else:
                         folder = f'chain{t}{k}'
                     dfolder = f'{directory}/{folder}'
+                    
                     process_identifier = dfolder
                     if process_identifier in process_identifiers:
                         raise RuntimeError(f"can't initialize process {i} "
@@ -231,26 +244,52 @@ class LauncherBuild(ABC):
                     if not os.path.exists(dfolder):
                         os.makedirs(dfolder)
                         print(f'+++ created {dfolder}')
-                    sweep = False
-                    if t == r:
-                        if reactive_region_mode == 'sweep':
-                            sweep = True
-                        else:
-                            os.system(f'touch {dfolder}/pool.log')
-                    localid = i % self._ntasks_per_node
-                    if num_processes > 1:
-                        log_file = f'{folder}/worker.log'
+                    
+                    # process initial path
+                    path = initial_paths[n_shooting % len(initial_paths)]
+                    old = path.fname
+                    if sweep:
+                        keepers = path.states == t
+                        if not keepers.any():
+                            raise RuntimeError(f"{old} has no frames in {t}")
                     else:
-                        log_file = 'stdout'
-                    noappend = False
-                    args.append(
-                        (params_path, directory, localid,
-                         self._cpus_per_task, self._gpus_per_task,
-                         log_file, *conditions, termination_timeout,
-                         'shoot', t, k, sweep))
-                    descriptions.append(f'"{directory}" {folder}')
-                    i += 1
+                        path = PathEnsemble(path).extract(
+                            sorted_states, sorted_states[::-1])[0]
+                        if not path:
+                            raise RuntimeError(
+                                f"{old} has no {sorted_states} transitions")
+                        keepers = np.ones(len(path), dtype=bool)
+                    
+                    # save initial path
+                    fname = f'{dfolder}/initial{ext}'
+                    path.write(fname, key=keepers, overwrite=True)
+                    print(f'+++ saved {str(fname)!r} (from: {old!r})')
+                    
+                    # copy time series
+                    for attribute, series in islice(
+                        path.__dict__.items(), 6, None):
+                        name = get_cache_fname(fname, attribute)
+                        save_npy(name, series)
+                        print(f'+++ saved {name!r}')
 
+                    # for now, just pick the first chain associated to worker
+                    if k % nchains_per_task == 0:
+                        localid = i % self._ntasks_per_node
+                        if num_processes > 1:
+                            log_file = f'{folder}/worker.log'
+                        else:
+                            log_file = 'stdout'
+                        noappend = False
+                        args.append(
+                            (params_path, directory, localid,
+                             self._cpus_per_task, self._gpus_per_task,
+                             log_file, *conditions, termination_timeout,
+                             'shoot', t, k, sweep, nchains_per_task))
+                        descriptions.append(f'"{directory}" {folder}')
+                        
+                        # advance the task id
+                        i += 1
+            
             # trainer
             if nrounds:
                 localid = i % self._ntasks_per_node

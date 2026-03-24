@@ -79,7 +79,7 @@ AIMMD organizes computation into **workers** launched by a **launcher**, either 
 Workers execute exactly one task at a time:
 
 - **`shoot`**: the core path-sampling loop.  
-  Selects a shooting point from a selection pool (committor-guided), runs a backward and forward simulation, merges them into a new path, and registers it in a shooting chain. Supports TPS-style acceptance, or the rejection-free sampling algorithm.
+  Selects a shooting point from the previously accepted path in a chain (committor-guided), runs a backward and forward simulation, merges them into a new path, and registers it in a shooting chain. Supports TPS-style acceptance, or the rejection-free sampling algorithm.
 
 - **`free`**: runs equilibrium MD simulations around a chosen state.  
   Used to provide additional sampling/statistics and (optionally) candidate frames for shooting-point selection (“overriding” frames).
