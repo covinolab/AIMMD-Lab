@@ -260,6 +260,12 @@ class WorkerTrain(ABC):
             if must_stop():
                 return
 
+            # Recompute any missing descriptor cache files (e.g. after deletion)
+            if params.compute_descriptors_args is not None:
+                n = pathensemble.compute(*params.compute_descriptors_args)
+                if n:
+                    print(f'... (re)computed {n} missing descriptor frames')
+
             print(f'\nComputing the committor values of '
                   f'the new reactive {r} frames {now()}')
             n = pathensemble.compute(**compute_kwargs('values'))
