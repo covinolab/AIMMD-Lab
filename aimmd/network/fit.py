@@ -48,7 +48,7 @@ from tqdm import tqdm
 from scipy.special import expit
 
 # aimmd imports
-from .utils import extract_indices_and_series, extract_vamp_pairs
+from .utils import extract_indices_and_series, extract_lsr_pairs
 from ..core.utils import concatenate, now
 from ..analysis.utils import compute_bins, merge_marginal_bins
 
@@ -90,11 +90,11 @@ def fit(params,
         in_memory=True,
         graphs=False,
 
-        # VAMP2 auxiliary loss
-        vamp_loss_weight=0.0,
-        vamp_lagtime=1,
-        vamp_batch_size=None,
-        vamp_epsilon=1e-6,
+        # latent space regularization
+        lsr_weight=0.0,
+        lsr_lagtime=1,
+        lsr_batch_size=None,
+        lsr_epsilon=1e-6,
 
         # misc
         verbose=False,
@@ -257,28 +257,30 @@ def fit(params,
         If True, descriptors are assumed to be graph objects in an mlcolvar-like
         DataDict format, requiring `torch_geometric` for batching.
 
-    vamp_loss_weight : float, default=0.0
-        If non-zero, add a VAMP2 auxiliary loss term weighted by this factor.
-        The VAMP2 loss is computed from time-lagged pairs drawn from all
-        continuous (non-internal) trajectories in the path ensemble and acts
-        on the network's latent representation (via ``network.forward_latent``
-        if available, otherwise the scalar network output). A value of 0.0
-        (default) disables the VAMP2 term entirely and incurs no overhead.
+    lsr_weight : float, default=0.0
+        If non-zero, add a latent space regularization (LSR) term to the loss,
+        weighted by this factor. The LSR term is computed from time-lagged pairs
+        drawn from all continuous (non-internal) trajectories in the path
+        ensemble and acts on the network's latent representation (via
+        ``network.forward_latent`` if available, otherwise the scalar network
+        output). The term encourages the latent features to capture slow
+        dynamical modes of the system. A value of 0.0 (default) disables LSR
+        entirely and incurs no overhead.
 
-    vamp_lagtime : int, default=1
-        Lag in frames used to form VAMP2 pairs (x_t, x_{t+lagtime}) within
-        each continuous trajectory. Larger values capture slower dynamics but
-        reduce the number of available pairs.
+    lsr_lagtime : int, default=1
+        Lag in frames used to form time-lagged pairs (x_t, x_{t+lagtime})
+        within each continuous trajectory for the LSR term. Larger values
+        target slower dynamics but reduce the number of available pairs.
 
-    vamp_batch_size : int or None, default=None
-        Number of pairs sampled per VAMP2 step. If None, defaults to
-        ``batch_size``. Should be at least 2× the latent dimension for
-        well-conditioned covariance estimates.
+    lsr_batch_size : int or None, default=None
+        Number of time-lagged pairs sampled per LSR gradient step. If None,
+        defaults to ``batch_size``. Should be at least 2× the latent dimension
+        for well-conditioned cross-covariance estimates.
 
-    vamp_epsilon : float, default=1e-6
-        Tikhonov regularisation added to the diagonal of both covariance
-        matrices before Cholesky inversion. Prevents numerical issues when
-        the batch size is smaller than the latent dimension.
+    lsr_epsilon : float, default=1e-6
+        Floor value for the per-sample L2 norm during row-normalisation of
+        latent features inside the LSR loss. Prevents division by zero for
+        frames near the network's zero surface.
 
     verbose : bool, default=False
         If True, show progress via `tqdm` and print more frequent diagnostics.
@@ -286,7 +288,7 @@ def fit(params,
     loss_log_path : str or None, default=None
         If not None, save a CSV with one row per epoch containing the columns
         ``epoch``, ``total_loss``, ``committor_loss``, ``vamp_loss``, and
-        ``scale``. The committor and VAMP terms are each already multiplied by
+        ``scale``. The committor and LSR terms are each already multiplied by
         their respective weights so that ``total_loss ≈ committor_loss +
         vamp_loss`` (plus any regularisation terms).  The file is written only
         after training completes.
@@ -524,26 +526,27 @@ def fit(params,
         print(f'Augmentation factor from {a} to {b}: {conversion1to2:.3e}')
         print(f'Augmentation factor from {b} to {a}: {conversion2to1:.3e}')
     
-    # VAMP2 pair collection (split by origin state for balanced batching)
+    # Latent space regularization: collect time-lagged pairs split by origin
+    # state for balanced batching.
     # A-origin: paths starting from a (i == a, t == r)
     # B-origin: paths starting from b (i == b, t == r)
     # Keeping them separate prevents batch bias when one side has far more
     # trajectories than the other (common early in an AIMMD run).
-    vamp_desc_t_A = vamp_desc_tau_A = None
-    vamp_desc_t_B = vamp_desc_tau_B = None
-    n_vamp_A = n_vamp_B = 0
-    n_vamp_pairs = 0
-    if vamp_loss_weight:
-        vamp_key_A = np.flatnonzero((i == a) & (t == r))
-        vamp_key_B = np.flatnonzero((i == b) & (t == r))
-        print(f'\nCollecting VAMP2 pairs (lagtime={vamp_lagtime}) {now()}')
-        vamp_desc_t_A, vamp_desc_tau_A, n_sel_A, n_vamp_A = extract_vamp_pairs(
-            pathensemble, vamp_key_A, vamp_lagtime, descriptors_source)
-        vamp_desc_t_B, vamp_desc_tau_B, n_sel_B, n_vamp_B = extract_vamp_pairs(
-            pathensemble, vamp_key_B, vamp_lagtime, descriptors_source)
-        n_vamp_pairs = n_vamp_A + n_vamp_B
-        print(f'   {n_vamp_A} A-origin pairs ({n_sel_A} paths), '
-              f'{n_vamp_B} B-origin pairs ({n_sel_B} paths)')
+    lsr_desc_t_A = lsr_desc_tau_A = None
+    lsr_desc_t_B = lsr_desc_tau_B = None
+    n_lsr_A = n_lsr_B = 0
+    n_lsr_pairs = 0
+    if lsr_weight:
+        lsr_key_A = np.flatnonzero((i == a) & (t == r))
+        lsr_key_B = np.flatnonzero((i == b) & (t == r))
+        print(f'\nCollecting time-lagged pairs for LSR (lagtime={lsr_lagtime}) {now()}')
+        lsr_desc_t_A, lsr_desc_tau_A, n_sel_A, n_lsr_A = extract_lsr_pairs(
+            pathensemble, lsr_key_A, lsr_lagtime, descriptors_source)
+        lsr_desc_t_B, lsr_desc_tau_B, n_sel_B, n_lsr_B = extract_lsr_pairs(
+            pathensemble, lsr_key_B, lsr_lagtime, descriptors_source)
+        n_lsr_pairs = n_lsr_A + n_lsr_B
+        print(f'   {n_lsr_A} A-origin pairs ({n_sel_A} paths), '
+              f'{n_lsr_B} B-origin pairs ({n_sel_B} paths)')
         if must_stop():
             return [], [], [], [], []
 
@@ -711,16 +714,16 @@ def fit(params,
     if in_memory:
         print(f'Transforming descriptors {now()}')
         descriptors = descriptor_transform(descriptors)
-        if vamp_loss_weight and n_vamp_pairs > 0 and not graphs:
-            if n_vamp_A > 0:
-                vamp_desc_t_A = descriptor_transform(vamp_desc_t_A)
-                vamp_desc_tau_A = descriptor_transform(vamp_desc_tau_A)
-            if n_vamp_B > 0:
-                vamp_desc_t_B = descriptor_transform(vamp_desc_t_B)
-                vamp_desc_tau_B = descriptor_transform(vamp_desc_tau_B)
+        if lsr_weight and n_lsr_pairs > 0 and not graphs:
+            if n_lsr_A > 0:
+                lsr_desc_t_A = descriptor_transform(lsr_desc_t_A)
+                lsr_desc_tau_A = descriptor_transform(lsr_desc_tau_A)
+            if n_lsr_B > 0:
+                lsr_desc_t_B = descriptor_transform(lsr_desc_t_B)
+                lsr_desc_tau_B = descriptor_transform(lsr_desc_tau_B)
     
-    # VAMP2 helpers (defined here so they close over network, device, dtype)
-    vamp_bs = vamp_batch_size if vamp_batch_size is not None else batch_size
+    # LSR helpers (defined here so they close over network, device, dtype)
+    lsr_bs = lsr_batch_size if lsr_batch_size is not None else batch_size
 
     def _get_latent(net, d):
         """Return latent features: forward_latent if available, else forward."""
@@ -728,33 +731,34 @@ def fit(params,
             return net.forward_latent(d)
         return net(d)
 
-    def _vamp2_loss(chi_0, chi_tau):
-        """Negative VAMP2 score (loss to minimise = maximise VAMP2).
+    def _lsr_loss(chi_0, chi_tau):
+        """Latent space regularization loss (negated; minimise to regularise).
 
-        Row-normalises the latent features before computing the cross-
-        correlation matrix.  This makes the loss:
+        Computes the negative squared Frobenius norm of the time-lagged
+        cross-covariance matrix of row-normalised latent features. This is a
+        surrogate for the VAMP-2 score (Mardt et al., 2018; Wu & Noé, 2020)
+        that avoids explicit matrix inversion. Row-normalisation makes the loss:
 
-        - **scale-invariant**: VAMP2 is not affected by the overall
-          magnitude of the latent features, preventing overflow when
-          feature magnitudes grow during training;
-        - **bounded**: VAMP2 ≤ d (one squared canonical correlation per
-          latent dimension, each at most 1);
-        - **gradient-stable**: no matrix inversion or eigendecomposition
-          is required.
+        - **scale-invariant**: the loss cannot be driven to -inf by scaling up
+          feature magnitudes, which would otherwise cause gradient explosion;
+        - **bounded**: ||C01||_F^2 ≤ 1 after row-normalisation (by the
+          submultiplicativity of the Frobenius norm), so the loss lies in [-1, 0];
+        - **gradient-stable**: no Cholesky factorisation or eigendecomposition
+          enters the backward pass.
 
-        The approximation VAMP2 ≈ ||C01||_F^2 holds exactly when the
-        per-sample covariance is identity (i.e. after row-normalisation
-        C00 ≈ C11 ≈ I), which is equivalent to maximising the sum of
-        squared canonical correlations between the lagged feature sets.
+        The surrogate equals the true VAMP-2 score exactly when the equal-time
+        covariances satisfy C00 = C11 = I (trivially true for d=1; an
+        approximation for d>1 that improves as the latent distribution becomes
+        more isotropic on the unit sphere).
         """
         n = chi_0.shape[0]
         # Centre features
         chi_0 = chi_0 - chi_0.mean(0, keepdim=True)
         chi_tau = chi_tau - chi_tau.mean(0, keepdim=True)
         # Row-normalise each sample to unit norm
-        chi_0 = chi_0 / chi_0.norm(dim=1, keepdim=True).clamp(min=vamp_epsilon)
-        chi_tau = chi_tau / chi_tau.norm(dim=1, keepdim=True).clamp(min=vamp_epsilon)
-        # VAMP2 ≈ ||C01||_F^2  (exact when C00 = C11 = I)
+        chi_0 = chi_0 / chi_0.norm(dim=1, keepdim=True).clamp(min=lsr_epsilon)
+        chi_tau = chi_tau / chi_tau.norm(dim=1, keepdim=True).clamp(min=lsr_epsilon)
+        # LSR loss = -||C01||_F^2  (exact VAMP-2 surrogate when C00 = C11 = I)
         C01 = chi_0.T @ chi_tau / n
         return -(C01 * C01).sum()
 
@@ -874,20 +878,20 @@ def fit(params,
             committor_term = loss_function(q, r)
             loss = committor_term
 
-            # VAMP2 auxiliary loss
-            vamp_contrib = 0.0
-            if vamp_loss_weight and n_vamp_pairs > 0:
+            # Latent space regularization (LSR)
+            lsr_contrib = 0.0
+            if lsr_weight and n_lsr_pairs > 0:
                 # Balanced sampling: draw half from A-origin and half from
                 # B-origin trajectories to prevent bias toward the more
                 # populated state.
-                half = vamp_bs // 2
+                half = lsr_bs // 2
                 raw_t_segs, raw_tau_segs = [], []
                 for desc_t_side, desc_tau_side, n_side in (
-                        (vamp_desc_t_A, vamp_desc_tau_A, n_vamp_A),
-                        (vamp_desc_t_B, vamp_desc_tau_B, n_vamp_B)):
+                        (lsr_desc_t_A, lsr_desc_tau_A, n_lsr_A),
+                        (lsr_desc_t_B, lsr_desc_tau_B, n_lsr_B)):
                     if n_side == 0:
                         continue
-                    n_draw = half if (n_vamp_A > 0 and n_vamp_B > 0) else vamp_bs
+                    n_draw = half if (n_lsr_A > 0 and n_lsr_B > 0) else lsr_bs
                     v_idx = np.random.choice(n_side, n_draw, replace=True)
                     raw_t_segs.append(desc_t_side[v_idx])
                     raw_tau_segs.append(desc_tau_side[v_idx])
@@ -910,22 +914,22 @@ def fit(params,
                         dv_t_list = descriptor_transform(raw_t)
                         dv_tau_list = descriptor_transform(raw_tau)
                     else:
-                        dv_t_list = [vamp_desc_t_A[i] for i in v_idx]   # fallback
-                        dv_tau_list = [vamp_desc_tau_A[i] for i in v_idx]
+                        dv_t_list = [lsr_desc_t_A[i] for i in v_idx]   # fallback
+                        dv_tau_list = [lsr_desc_tau_A[i] for i in v_idx]
                     dv_t = Batch.from_data_list(dv_t_list).to(device).to_dict()
                     dv_tau = Batch.from_data_list(dv_tau_list).to(device).to_dict()
 
                 network.train()
                 chi_t = _get_latent(network, dv_t)
                 chi_tau = _get_latent(network, dv_tau)
-                vamp_term = vamp_loss_weight * _vamp2_loss(chi_t, chi_tau)
-                vamp_contrib = float(vamp_term.detach())
-                loss = loss + vamp_term
+                lsr_term = lsr_weight * _lsr_loss(chi_t, chi_tau)
+                lsr_contrib = float(lsr_term.detach())
+                loss = loss + lsr_term
 
             # Store individual components for per-epoch logging (list mutation
             # is visible outside the closure without nonlocal)
             _epoch_losses[0] = float(committor_term.detach())
-            _epoch_losses[1] = vamp_contrib
+            _epoch_losses[1] = lsr_contrib
 
             loss.backward()
             return loss

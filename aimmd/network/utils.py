@@ -293,15 +293,17 @@ def extract_indices_and_series(paths, key, *names):
     )
 
 
-def extract_vamp_pairs(paths, key, lagtime, name):
-    """Extract time-lagged frame pairs from continuous paths for VAMP2 training.
+def extract_lsr_pairs(paths, key, lagtime, name):
+    """Extract time-lagged frame pairs from continuous paths for latent space regularization.
 
     For each successfully-loaded path with n frames, this function produces
     ``n - lagtime`` pairs ``(frame_t, frame_{t+lagtime})``, concatenated across
-    all selected paths. The skipping logic (skip on I/O failure) mirrors
-    :func:`extract_indices_and_series` exactly: only paths for which ``name``
-    can be fully loaded are included, so pair indices are consistent with the
-    descriptor arrays returned by that function when called with the same key.
+    all selected paths. These pairs are used by the latent space regularization
+    (LSR) loss in :func:`aimmd.network.fit.fit`. The skipping logic (skip on
+    I/O failure) mirrors :func:`extract_indices_and_series` exactly: only paths
+    for which ``name`` can be fully loaded are included, so pair indices are
+    consistent with the descriptor arrays returned by that function when called
+    with the same key.
 
     Parameters
     ----------
