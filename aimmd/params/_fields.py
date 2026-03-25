@@ -312,9 +312,7 @@ names towards which you want the extension to happen ("A", "B", "AB", etc.)."""
         metadata={'description':
 """If True: apply a correction to the density during selection to accelerate
 convergence. For each shooting chain, in each bin: multiply the density by
-the number of points already selected in the bin and consider the averaged
-histogram over all the shot paths instead of the individual path histograms.
-The averaged histogram is used only when `chain_type` is 'rfps'."""
+the number of points already selected in the bin."""
                  })
     
     lorentzian: float = field(

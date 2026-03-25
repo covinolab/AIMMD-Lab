@@ -146,7 +146,7 @@ class LauncherBuild(ABC):
             reactive_region_mode = self._reactive_region_mode[run_id]
             state1_mode = self._state1_mode[run_id]
             state2_mode = self._state2_mode[run_id]
-            nchains_per_task = self._nchains_per_task[run_id]
+            nchains_per_worker = self._nchains_per_worker[run_id]
             nsteps = self._nsteps[run_id]
             nframes = self._nframes[run_id]
             nrounds = self._nrounds[run_id]
@@ -228,7 +228,7 @@ class LauncherBuild(ABC):
                     (t == b and state2_mode != 'shoot')):
                     continue
                 sweep = (t == r and reactive_region_mode == 'sweep')
-                for k in range(m * nchains_per_task):
+                for k in range(m * nchains_per_worker):
                     n_shooting += 1
                     if sweep:
                         folder = f'sweep{t}{k}'
@@ -273,7 +273,7 @@ class LauncherBuild(ABC):
                         print(f'+++ saved {name!r}')
 
                     # for now, just pick the first chain associated to worker
-                    if k % nchains_per_task == 0:
+                    if k % nchains_per_worker == 0:
                         localid = i % self._ntasks_per_node
                         if num_processes > 1:
                             log_file = f'{folder}/worker.log'
@@ -284,7 +284,7 @@ class LauncherBuild(ABC):
                             (params_path, directory, localid,
                              self._cpus_per_task, self._gpus_per_task,
                              log_file, *conditions, termination_timeout,
-                             'shoot', t, k, sweep, nchains_per_task))
+                             'shoot', t, k, sweep, nchains_per_worker))
                         descriptions.append(f'"{directory}" {folder}')
                         
                         # advance the task id

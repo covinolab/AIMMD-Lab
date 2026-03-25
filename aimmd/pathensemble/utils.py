@@ -77,6 +77,7 @@ from MDAnalysis.coordinates.timestep import Timestep
 
 # aimmd imports
 from ..path import Path
+from ..core.utils import memory_reader_from_timesteps
 from ..path.utils import get_fnames
 from ..path.chainreader import ChainReader
 

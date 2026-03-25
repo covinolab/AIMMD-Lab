@@ -129,7 +129,7 @@ from ..execute.threads import ThreadExecutor
 # worker "shoot" run method
 class WorkerShoot(ABC):
 
-    def shoot(self, target_state=1, k=0, sweep=False, nchains_per_task=1):
+    def shoot(self, target_state=1, k=0, sweep=False, nchains_per_worker=1):
         """
         Public convenience wrapper for the shooting task.
         
@@ -149,7 +149,7 @@ class WorkerShoot(ABC):
         k : int, optional
             Worker index used to disambiguate output folders (e.g., ``chainR{k}``)
             and to offset cycling of initial paths. Default is ``0``.
-            If `nchains_per_task > 1`, it is just the *first* shooting chain
+            If `nchains_per_worker > 1`, it is just the *first* shooting chain
             associated with the worker, with the others following sequentially.
         sweep : bool, optional
             If ``False``, run committor-guided shooting with a Markov chain
@@ -160,20 +160,20 @@ class WorkerShoot(ABC):
             frames (from the merged initial ensemble) and repeatedly shoot from
             them to empirically estimate outcome probabilities (e.g., fraction
             reaching state 1 vs state 0). Default is ``False``.
-        nchains_per_task : int, optional, default = 1
+        nchains_per_worker : int, optional, default = 1
             If > 1, the worker will manage more than one chain. A higher value
-            of `nchains_per_task` tends to regularize the training set and thus
+            of `nchains_per_worker` tends to regularize the training set and thus
             improve performance. If running only one shooting worker,
-            `nchains_per_task=10` is recommended.
+            `nchains_per_worker=10` is recommended.
         
         Returns
         -------
         object
             Whatever :meth:`Worker.run` returns for the ``'shoot'`` task.
         """
-        return self.run('shoot', target_state, k, sweep, nchains_per_task)
+        return self.run('shoot', target_state, k, sweep, nchains_per_worker)
 
-    def _shoot(self, target_state=1, k=0, sweep=False, nchains_per_task=1):
+    def _shoot(self, target_state=1, k=0, sweep=False, nchains_per_worker=1):
         """
         Internal implementation of the ``'shoot'`` worker task.
 
@@ -185,7 +185,7 @@ class WorkerShoot(ABC):
             See :meth:`shoot`.
         sweep : bool, optional
             See :meth:`shoot`.
-        nchains_per_task : int, optional
+        nchains_per_worker : int, optional
             See :meth:`shoot`.
 
         Returns
@@ -209,9 +209,10 @@ class WorkerShoot(ABC):
         max_length = params.max_length
         ext = params.trajectory_extension
         free_overriding_states = params.free_overriding_states
+        density_adjustment = params.density_adjustment and nbins > 1
         original_stdout = self.log_file == self.original_stdout
         k = int(k)
-        nchains_per_task = int(nchains_per_task)
+        nchains_per_worker = int(nchains_per_worker)
 
         # exclusively for progress bar
         # location can be different from folder if the params file does not live
@@ -235,39 +236,41 @@ class WorkerShoot(ABC):
             eneconv = params.gmx_eneconv
         else:
             eneconv = None  
-
-        # initialize shooting chains managed by worker
-        chains = []
+        
+        # initialize shots
+        shots = [None for _ in range(k + nchains_per_worker)]
         total_frames = 0
         total_steps = 0
         
         # create/overwrite initial frames
-        for chain_id in range(nchains_per_task):
+        for chain_id in range(nchains_per_worker):
             set_chain_id(chain_id)
-            while not (initial_path := Path(f'{self._folder}/initial*{ext}')):
+            while not (initial_path := Path(f'{self._folder}/initial{ext}')):
                 from ..launcher import Launcher
                 launcher = Launcher(params, directory)
                 launcher._update(n=self._k + 1)
                 launcher._build()
             
+            # load
             if not sweep:
                 print(f'\nLoading shooting chain {now()}')
-                # paths have zero weight if incomplete
+                # paths have zero weights if incomplete
                 chain = params.shot_chains(directory, t, self._k)
                 print(f'... currently {len(chain)} path'
-                      f'{"s" if len(chain) != 1 else ""} in shooting chain')
+                  f'{"s" if len(chain) != 1 else ""} in shooting chain')
             else:
+                print(f'\nLoading shooting results {now()}')
                 chain = params.shot_paths(directory, 'sweep', t, self._k)
-                print(f'\nReport after {len(chain)} paths')
+                print(f'*** report after {len(chain)} paths')
                 chain.report_shooting_results(states, sweep_size)
                 print()
-
+            
             # update total frames and steps
             total_frames += sum(chain.n_frames)
             total_steps += len(chain)
-
-            # add chain to the list
-            chains.append(chain)
+            
+            # assign to shots list
+            shots[self._k] = chain
         
         # update total frames and steps
         self.total_frames = total_frames
@@ -296,9 +299,11 @@ class WorkerShoot(ABC):
         while not self.must_stop:
             
             # we always manage the SHORTEST chain
-            chain_id = np.argmin([len(chain) for chain in chains])
-            chain = chains[chain_id]
+            chain_id = np.argmin([len(chain) for chain in
+                                  shots[k:k + nchains_per_worker]])
             set_chain_id(chain_id)
+            chain = shots[self._k]
+            print('ASFDWFEWFWEFDWEFDWEFWEFWEFWEFWEFWEFE', chain, shots)
             
             # need to initialize?
             if not params.check_if_initialized(
@@ -312,11 +317,28 @@ class WorkerShoot(ABC):
                     path = Path(f'{self._folder}/initial*{ext}')
                     # force recompute
                     remove(get_cache_fname(path.fname, 'values'))
-
-                # select shooting point
+                
                 if not sweep:
+                    
+                    # update shots if required
+                    if density_adjustment and nbins > 1:
+                        h = 0
+                        while os.path.exists(f'{directory}/chain{t}{h}'):
+                            if k <= h < k + nchains_per_worker:
+                                pass
+                            elif h < len(shots):
+                                shots[h] = params.shot_chains(
+                                    directory, t, h, old=shots[h])
+                            else:
+                                shots.append(params.shot_chains(
+                                    directory, t, h))
+                            h += 1
+                    
+                    print(shots, [s.fnames for s in shots])
+                    
+                    # select shooting point
                     shooting_point = select_shooting_point(
-                        path, params, target_state=t)
+                        path, params, shots, target_state=t)
                 
                 else:  # sweep
                     index = len(chain) % len(path)

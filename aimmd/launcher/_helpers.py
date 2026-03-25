@@ -246,7 +246,7 @@ class LauncherHelpers(ABC):
                 reactive_region_mode='chain',
                 state1_mode='free',
                 state2_mode='free',
-                nchains_per_task=1,
+                nchains_per_worker=1,
                 nsteps=inf,
                 nframes=inf,
                 nrounds=None,
@@ -279,11 +279,11 @@ class LauncherHelpers(ABC):
             Mode used for state 1 processes for each run. Default is ``'free'``.
         state2_mode : {'free', 'shoot'} or iterable, optional
             Mode used for state 2 processes for each run. Default is ``'free'``.
-        nchains_per_task : int, optional, default = 1
+        nchains_per_worker : int, optional, default = 1
             If > 1, the worker will manage more than one chain. A higher value
-            of `nchains_per_task` tends to regularize the training set and thus
+            of `nchains_per_worker` tends to regularize the training set and thus
             improve performance. If running only one shooting worker,
-            `nchains_per_task=10` is recommended.
+            `nchains_per_worker=10` is recommended.
         nsteps : float or iterable of float, optional
             Maximum number of simulated independent trajectories (worker stop
             condition). Default is ``inf``. Attention! If "train" runs, then
@@ -341,8 +341,8 @@ class LauncherHelpers(ABC):
         nsteps = self._process_input('nsteps', nsteps, float)
         nframes = self._process_input('nframes', nframes, float)
         nrounds = self._process_input('nrounds', nrounds, object)
-        nchains_per_task = self._process_input(
-            'nchains_per_task', nchains_per_task, int)
+        nchains_per_worker = self._process_input(
+            'nchains_per_worker', nchains_per_worker, int)
         walltime = float(walltime)
 
         # process nrounds according to specification
@@ -381,7 +381,7 @@ class LauncherHelpers(ABC):
         self._nsteps = nsteps
         self._nframes = nframes
         self._nrounds = nrounds
-        self._nchains_per_task = nchains_per_task
+        self._nchains_per_worker = nchains_per_worker
         self._walltime = walltime
         
         # get number of processes

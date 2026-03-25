@@ -193,6 +193,10 @@ class WorkerTrain(ABC):
         print(f'\nLoading pre-existing network parameters {now()}')
         network_fname = f'{directory}/network{states}.h5'
         params.update_network(directory, timeout=0, raise_if_failure=False)
+        try:
+            bins = NPY_CACHE.load(f'{directory}/bins{states}.h5')
+        except:
+            bins = None
 
         # do you need to stop already?
         if self.must_stop:
@@ -437,27 +441,10 @@ class WorkerTrain(ABC):
             densities[densities == 0.] = 1e-15
             densities /= densities.sum()
             print(f'    densities     {densities}')
-
-            print(f'\nComputing shooting point populations {now()}')
-            shooting_values = []
-            for chain in self._shot_chains:
-                shooting_values.extend(chain.shooting(source))
-            populations = np.histogram(shooting_values, bins)[0]
-            print(f'    populations   {populations}')
-
+            
             # check mid-cycle
             if self.termination_signal:
                 return
-
-            print(f'\nComputing average shooting path histogram {now()}')
-            averaged_hist = np.zeros(nbins)
-            for chain in self._shot_chains:
-                for values in chain.internal(source):
-                    histogram = np.histogram(values, bins)[0].astype(float)
-                    histogram /= histogram.sum() or 1.
-                    averaged_hist += histogram
-            averaged_hist /= averaged_hist.sum() or 1.
-            print(f'    averaged hist {averaged_hist}')
             
             # check mid-cycle
             if self.termination_signal:
@@ -476,12 +463,9 @@ class WorkerTrain(ABC):
                 torch.save(network.state_dict(), network_fname)
 
             # save bins and densities
-            print(f'\nSaving bins, densities, shooting point populations, '
-                  f'and average shooting path histogram {now()}')
+            print(f'\nSaving selection bins and densities {now()}')
             save_npy(f'{directory}/bins{states}.npy', bins)
             save_npy(f'{directory}/densities{states}.npy', densities)
-            save_npy(f'{directory}/populations{states}.npy', populations)
-            save_npy(f'{directory}/averaged_hist{states}.npy', averaged_hist)
             
             # backup network
             n = (self.total_steps // save_interval) * save_interval

@@ -439,6 +439,7 @@ def merge_empty_bins(bins, keepers, *histograms, center=0):
         defined on the original bins. Each histogram is merged to match
         the returned ``merged_bins`` by summing the values of all original
         bins contributing to each merged bin.
+        If one of the histograms is `None`, just leave unchanged.
     center : float, default=0
         Reference value defining the outward merge direction. Bins whose
         centers are less than or equal to ``center`` merge toward smaller
@@ -500,7 +501,9 @@ def merge_empty_bins(bins, keepers, *histograms, center=0):
 
     # merge all histograms by summation
     merged_histograms = tuple(
-        np.add.reduceat(histogram, starts) for histogram in histograms
+        np.add.reduceat(histogram, starts)
+        if histogram is not None else None
+        for histogram in histograms
     )
 
     return merged_bins, merged_bin_counts, *merged_histograms

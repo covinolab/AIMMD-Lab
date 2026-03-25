@@ -144,7 +144,7 @@ class LauncherMethods(ABC):
     def create_job(self, filename, n=1, n1=0, n2=0,
                    reactive_region_mode='chain',
                    state1_mode='free', state2_mode='free',
-                   nchains_per_task=1, nsteps=inf, nframes=inf, nrounds=inf,
+                   nchains_per_worker=1, nsteps=inf, nframes=inf, nrounds=inf,
                    walltime=24*3600, cpus_per_task=1, gpus_per_task=0,
                    ntasks_per_node=1, skip_binding=True):
         """
@@ -184,11 +184,11 @@ class LauncherMethods(ABC):
             Mode for state-1 replicas. Default is ``'free'``.
         state2_mode : {'free', 'shoot'} or iterable, optional
             Mode for state-2 replicas. Default is ``'free'``.
-        nchains_per_task : int, optional, default = 1
+        nchains_per_worker : int, optional, default = 1
             If > 1, the worker will manage more than one chain. A higher value
-            of `nchains_per_task` tends to regularize the training set and thus
+            of `nchains_per_worker` tends to regularize the training set and thus
             improve performance. If running only one shooting worker,
-            `nchains_per_task=10` is recommended.
+            `nchains_per_worker=10` is recommended.
         nsteps : float or iterable of float, optional
             Maximum number of simulated independent trajectories (worker stop
             condition). Default is ``inf``. Attention! If "train" runs, then
@@ -292,7 +292,7 @@ class LauncherMethods(ABC):
         self._update(n, n1, n2,
                      reactive_region_mode,
                      state1_mode, state2_mode,
-                     nchains_per_task, nsteps, nframes, nrounds,
+                     nchains_per_worker, nsteps, nframes, nrounds,
                      inf,  # infinite walltime
                      cpus_per_task if not skip_binding else 'skip',
                      gpus_per_task if not skip_binding else 'skip',

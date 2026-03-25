@@ -56,6 +56,7 @@ import time
 import numpy as np
 import torch
 import random
+from glob import glob
 from math import inf
 from pathlib import PosixPath
 
@@ -302,7 +303,7 @@ def find_previous_fname_in_chain(fname):
     return f'{folder}/initial{ext}' if folder else f'initial{ext}'
 
 
-def select_shooting_point(path, params, free_trajectories=[], target_state=1):
+def select_shooting_point(path, params, shots=[], target_state=1):
     """
     Select a shooting point (frame) from path for committor-guided path sampling.
 
@@ -343,9 +344,8 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
     params : aimmd.params.Params
         Parameters object providing the network, binning configuration, and
         control flags for selection.
-    free_trajectories : list, optional
-        List of free trajectories that may provide additional candidate frames
-        for "overriding" selection.
+    shots : list of aimmd.pathensemble.Pathensemble
+        If included, for computing shooting point populations in bins
     target_state : int or str, optional
         Target state label or index, normalized via :func:`process_state`.
     
@@ -380,6 +380,9 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
     
     # get the rest of the params
     chain_type = params.chain_type
+    ext = params.trajectory_extension
+    compute_values_args = params.compute_values_args
+    density_adjustment = params.density_adjustment
     lorentzian = params.lorentzian
     free_overriding_states = params.free_overriding_states
     if free_overriding_states == 'all':
@@ -387,8 +390,6 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
     overriding_types = [f'{s}{t}' for s in free_overriding_states]
     overriding_attempts = params.free_overriding_attempts
     overriding_rate = params.free_overriding_recovery_rate
-    compute_values_args = params.compute_values_args
-    density_adjustment = params.density_adjustment
     always_select_inside_the_bins = params.always_select_inside_the_bins
 
     # get bins and overriding bins info
@@ -401,27 +402,52 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
     locs = path.locs[indices]
     si = path.shooting_index - indices[0]
     
-    # network parameters, bins, densities
+    # initialize SP populations
+    populations = None
+    
     if nbins > 1:
+        
+        # collect shooting points
+        if density_adjustment:
+            shooting_points = PathEnsemble()
+            for chain in shots:
+                if not chain:
+                    continue
+                shooting_points += chain.shooting('self')
+            shooting_points = shooting_points.join()
+            current_points = PathEnsemble()
+            for fname in glob(f'{folder}/../chain{t}*/back{ext}'):
+                shooting_point = Path()
+                shooting_point.extend(fname, 1)
+                current_points += shooting_point
+            current_points = current_points.join()
+        
+        # load network params, bins, and densities
         params.update_network(f'{folder}/..')
         bins = NPY_CACHE.load(f'{folder}/../bins{states}.npy')
         densities = NPY_CACHE.load(f'{folder}/../densities{states}.npy').copy()
-        averaged_hist = NPY_CACHE.load(
-            f'{folder}/../averaged_hist{states}.npy').copy()
-        populations = NPY_CACHE.load(f'{folder}/../populations{states}.npy')
         
-        # compute only where there are no values (yet)
+        # compute (new) values
         path.compute(*compute_values_args, raise_if_error=True, return_result=True)
         values = path.values[indices]
-                
-        # path histogram
-        histogram = np.histogram(values, bins)[0].astype(float)   
+        
+        # compute (new) shooting point values
+        if density_adjustment:
+            shooting_points.compute(*compute_values_args)
+            print(shooting_points.values)
+            populations = (np.histogram(
+                shooting_points.values, bins)[0] +
+                           np.histogram(
+                current_points.compute(compute_values_args[0],
+                                       compute_values_args[2]), bins)[0]
+                          ).astype(float)
+        
+        # compute path histogram
+        histogram = np.histogram(values, bins)[0].astype(float)
     
     else: # all default
         bins = np.array([-inf, +inf])
         densities = np.array([1.])
-        averaged_hist = np.array([1.])
-        populations = np.array([1.])
         values = np.zeros(len(indices))
         histogram = np.array([1.])
     
@@ -430,8 +456,8 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
     if overriding_bins.any() and overriding_attempts:
         print(f'    overriding bins    {overriding_bins}') 
     print(f'*** path histogram     {histogram}')
-    print(f'*** averaged histogram {averaged_hist}')
-    print(f'*** SP populations     {populations}')
+    if populations is not None:
+        print(f'*** SP populations     {populations}')
     print(f'*** ensemble densities {densities}')
     
     # density adjustment (lorentzian)
@@ -448,13 +474,11 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
     if not keepers.all():
         (bins, merged_bin_counts,
          processed_overriding_bins,
-         histogram, averaged_hist,
-         densities, populations
+         histogram, densities, populations
         ) = merge_empty_bins(
             bins, keepers, overriding_bins,
-            histogram, averaged_hist,
-            densities, populations
-        )
+            histogram, densities, populations)
+        # only if populations
         processed_overriding_bins = processed_overriding_bins.astype(bool)
         if len(bins) - 1 < nbins:
             print(f'*** merged {nbins - len(bins) + 1} internal empty bins:')
@@ -462,22 +486,18 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
             if processed_overriding_bins.any() and overriding_attempts:
                 print(f'    overriding bins    {processed_overriding_bins}') 
             print(f'    path histogram     {histogram}')
-            print(f'    averaged histogram {averaged_hist}')
-            print(f'    SP populations     {populations}')
+            if populations is not None:
+                print(f'    SP populations     {populations}')
             print(f'    ensemble densities {densities}')           
         
         # to preserve target distribution: divide densities by merged bin counts
         densities /= merged_bin_counts
     
-    # density adjustment (by populations & averaged_histogram)
-    if density_adjustment:
-        densities *= populations + 1
-        # further correct selection by use the averaged_hist
-        # ONLY with RFPS (and not with TPS)
-        if chain_type == 'rfps':
-            averaged_hist *= (histogram > 0)
-            if averaged_hist.any():
-                averaged_hist = histogram
+    # density adjustment by SP populations
+    if populations is not None:
+        densities *= populations + .1
+    
+    # final normalization and report
     densities /= densities.sum()
     print(f'    adjusted densities {densities}')
     
@@ -514,8 +534,8 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
         # fallback to previous path in chain
         if prev_fname != fname:
             print(f'!!! fallback to {prev_fname}')
-            return select_shooting_point(
-                path, params, free_trajectories, target_state)
+            path = prev_path
+            return select_shooting_point(path, params, shots, target_state)
         
         else:  # special situation: FFS-like
             i = np.argmin(np.abs(values))
@@ -524,6 +544,7 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
             bin_info = 'bin: outside'
     
     # get shooting point and report info
+    print(path, indices[i], 'RTTTTTTTT')
     shooting_point = path[indices[i]]
     loc = locs[i]
     if nbins > 1:
@@ -551,7 +572,7 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
         
         # get free configurations from overriding
         candidate_paths = PathEnsemble()
-        for trajectory in free_trajectories:
+        for trajectory in params.free_trajectories(f'{folder}/..'):
             candidate_paths += trajectory.split().extract(*overriding_types)
         overriding = overriding_unique = candidate_paths.sample(
             overriding_attempts)
@@ -561,9 +582,10 @@ def select_shooting_point(path, params, free_trajectories=[], target_state=1):
             overriding_unique = PathEnsemble(overriding).merge()
             overriding_unique.compute(
                 *compute_values_args, raise_if_error=True)
+        overriding_values = overriding.values
         
         candidates = np.flatnonzero(
-            np.digitize(overriding.values, bins) - 1 == k)
+            np.digitize(overriding_values, bins) - 1 == k)
         if len(candidates):
             i = np.random.choice(candidates)
             path = overriding
