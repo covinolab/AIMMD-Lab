@@ -265,6 +265,13 @@ class WorkerTrain(ABC):
                 n = pathensemble.compute(*params.compute_descriptors_args)
                 if n:
                     print(f'... (re)computed {n} missing descriptor frames')
+                # also recompute initial path descriptor frames, if not present
+                initial_paths_pe = assemble_pathensemble(
+                    self.initial_paths
+                )
+                n = initial_paths_pe.compute(*params.compute_descriptors_args)
+                if n:
+                    print(f"... (re)computed {n} missing inital path descriptor frames")
 
             print(f'\nComputing the committor values of '
                   f'the new reactive {r} frames {now()}')

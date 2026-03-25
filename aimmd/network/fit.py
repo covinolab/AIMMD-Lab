@@ -39,6 +39,7 @@ saved state dict.
 """
 
 # external imports
+import os
 import copy
 import time
 import torch
@@ -76,7 +77,12 @@ def _load_batch_descriptors(npy_paths, locs):
     cache = {}
     for i, (npy_path, loc) in enumerate(zip(npy_paths, locs)):
         if npy_path not in cache:
-            cache[npy_path] = NPY_CACHE.get(npy_path)
+            arr = NPY_CACHE.get(npy_path)
+            if arr is None:
+                raise RuntimeError(
+                    f'Could not load descriptor cache file: {npy_path!r}.' \
+                    'The descriptor caches are likely corrupted.')
+            cache[npy_path] = arr
         result[i] = cache[npy_path][loc]
     return np.array(result)
 
