@@ -522,10 +522,20 @@ def select_shooting_point(path, params, shots=[], target_state=1):
         prev_fname = current_fname = fname
         while always_select_inside_the_bins:
             prev_fname = find_previous_fname_in_chain(fname)
+            
+            # reached the initial path
             if prev_fname == current_fname:
                 break
             prev_path = Path(prev_fname)
-            if prev_path.is_complete(states):
+            
+            # the old path must have weight > 0
+            if chain_type == 'rfps' and prev_path.is_complete(states):
+                break
+            
+            # this is only partially true, since not all transiitons
+            # are accepted; at the same time, a transition having
+            # not frames inside the bins is extremely unlikely
+            if chain_type == 'tps' and prev_path.is_transition(states):
                 break
             current_fname = prev_fname
         

@@ -314,9 +314,10 @@ class WorkerShoot(ABC):
                 path = chain.path
                 if path is None or sweep:
                     path = Path(f'{self._folder}/initial*{ext}')
-                    # force recompute
-                    remove(get_cache_fname(path.fname, 'values'))
+                    if not sweep:  # force recompute values
+                        remove(get_cache_fname(path.fname, 'values'))
                 
+                # path sampling chain
                 if not sweep:
                     
                     # update shots if required
