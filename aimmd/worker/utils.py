@@ -539,40 +539,16 @@ def select_shooting_point(chain, params, shots=[], target_state=1):
         candidates = np.flatnonzero(np.digitize(values, bins) - 1 == k)
         i = np.random.choice(candidates)
 
-    else:
+    elif always_select_inside_the_bins and len(chain) > 1:
         
-        # find previous path in chain
-        prev_fname = current_fname = fname
-        while always_select_inside_the_bins:
-            prev_fname = find_previous_fname_in_chain(fname)
-            
-            # reached the initial path
-            if prev_fname == current_fname:
-                break
-            prev_path = Path(prev_fname)
-            
-            # the old path must have weight > 0
-            if chain_type == 'rfps' and prev_path.is_complete(states):
-                break
-            
-            # this is only partially true, since not all transiitons
-            # are accepted; at the same time, a transition having
-            # not frames inside the bins is extremely unlikely
-            if chain_type == 'tps' and prev_path.is_transition(states):
-                break
-            current_fname = prev_fname
-        
-        # fallback to previous path in chain
-        if prev_fname != fname:
-            print(f'!!! fallback to {prev_fname}')
-            path = prev_path
-            return select_shooting_point(path, params, shots, target_state)
-        
-        else:  # special situation: FFS-like
-            i = np.argmin(np.abs(values))
-            print(f'!!! outside bins range')
-            k = None
-            bin_info = 'bin: outside'
+        # use previous path in chain
+        return select_shooting_point(chain[:-1], params, shots, target_state)
+    
+    else: # special situation: FFS-like
+        i = np.argmin(np.abs(values))
+        print(f'!!! outside bins range')
+        k = None
+        bin_info = 'bin: outside'
     
     # get shooting point and report info
     shooting_point = path[indices[i]]
