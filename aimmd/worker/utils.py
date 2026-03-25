@@ -315,8 +315,7 @@ def select_shooting_point(path, params, shots=[], target_state=1):
     - current network-evaluated committor-like values for frames in the path,
     - adaptive bins and target densities (loaded from disk),
     - current sampled shooting point population (to discourage oversampling
-      already common regions, loaded from disk),
-    - average path histogram (loaded from disk),
+      already common regions),
     - optional additional biasing/regularization (Lorentzian factor),
     - optional "overriding" candidate frames from free trajectories.
 

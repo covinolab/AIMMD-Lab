@@ -18,9 +18,7 @@ worker:
 4) constructs adaptation bins from the current ensemble,
 5) reweights the ensemble (if not doing TPS),
 6) projects the (T)PE density onto the bins to obtain densities,
-7) saves shooting point population for improving RFPS selection,
-8) saves average path histogram for improving RFPS selection,
-9) persists updated artifacts to disk (values files, network state, bins,
+7) persists updated artifacts to disk (values files, network state, bins,
    densities, and periodic network backups).
 
 Stop-condition handling is cooperative: the task periodically calls a local
