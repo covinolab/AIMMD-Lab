@@ -534,6 +534,7 @@ def select_shooting_point(pool, params, folder,
     # merge empty bins, update histograms and densities
     keepers = combined_histograms > 0
     processed_overriding_bins = overriding_bins
+    merged_bin_counts = np.ones(len(densities))
     if not keepers.all():
         (bins, merged_bin_counts,
          processed_overriding_bins, *merged_histograms
@@ -559,7 +560,7 @@ def select_shooting_point(pool, params, folder,
     
     # density adjustment (populations)
     if density_adjustment:
-        densities *= populations + 1
+        densities *= populations + merged_bin_counts
     densities /= densities.sum()
     print(f'    (adjusted)   {densities}')
     
