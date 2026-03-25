@@ -24,6 +24,7 @@ Notes
 from abc import ABC
 from math import inf
 from typing import List, Callable
+from numbers import Number
 from pathlib import PosixPath
 from torch.nn import Module as NeuralNetworkModule
 from dataclasses import dataclass, field
@@ -307,12 +308,22 @@ Values: '' (disable), 'all' (apply to both edges), or directly the state
 names towards which you want the extension to happen ("A", "B", "AB", etc.)."""
                  })
     
-    density_adjustment: bool = field(
-        default=True,
+    local_density_adjustment: Number = field(
+        default=inf,
+        metadata={'description':
+"""Apply a correction to the density during selection to accelerate
+convergence. For each shooting chain, in each bin: multiply the density by
+the number of the latest `local_density_adjustment` shooting points already
+selected in the bin. Stacking with `global_density_adjustment`."""
+                 })
+
+    global_density_adjustment: bool = field(
+        default=False,
         metadata={'description':
 """If True: apply a correction to the density during selection to accelerate
 convergence. For each shooting chain, in each bin: multiply the density by
-the number of points already selected in the bin."""
+the number of shooting points from all chains already selected in the bin.
+Stacking with `local_density_adjustment`."""
                  })
     
     lorentzian: float = field(

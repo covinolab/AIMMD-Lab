@@ -209,7 +209,7 @@ class WorkerShoot(ABC):
         max_length = params.max_length
         ext = params.trajectory_extension
         free_overriding_states = params.free_overriding_states
-        density_adjustment = params.density_adjustment and nbins > 1
+        density_adjustment = params.global_density_adjustment and nbins > 1
         original_stdout = self.log_file == self.original_stdout
         k = int(k)
         nchains_per_worker = int(nchains_per_worker)
@@ -228,6 +228,7 @@ class WorkerShoot(ABC):
             self._k = k + chain_id
             self._location = f'{self.directory}/{folder}'
             self._folder = f'{directory}/{folder}'
+            self._initial = Path(f'{self._folder}/initial*{ext}')
             if not original_stdout:
                 self.log_file = f'{folder}/worker.log'
         
@@ -309,19 +310,13 @@ class WorkerShoot(ABC):
                 f'{self._folder}/back', f'{self._folder}/forw'):
                 print(f'\nSelecting shooting point for '
                       f'{self._folder}/path{len(chain) + 1:06g} {now()}')
-
-                # last path with weight > 0 from the chain
-                path = chain.path
-                if path is None or sweep:
-                    path = Path(f'{self._folder}/initial*{ext}')
-                    if not sweep:  # force recompute values
-                        remove(get_cache_fname(path.fname, 'values'))
                 
                 # path sampling chain
                 if not sweep:
                     
-                    # update shots if required
-                    if density_adjustment and nbins > 1:
+                    # update shots if asked by
+                    # params.global_density_adjustment -> density_adjustment
+                    if density_adjustment:
                         h = 0
                         while os.path.exists(f'{directory}/chain{t}{h}'):
                             if k <= h < k + nchains_per_worker:
@@ -336,14 +331,15 @@ class WorkerShoot(ABC):
                     
                     # select shooting point
                     shooting_point = select_shooting_point(
-                        path, params, shots, target_state=t)
+                        PathEnsemble(self._initial) + chain,
+                        params, shots, target_state=t)
                 
                 else:  # sweep
-                    index = len(chain) % len(path)
-                    fname_index, loc = path._get_local_loc(index)
+                    index = len(chain) % len(self._initial)
+                    fname_index, loc = self._initial._get_local_loc(index)
                     print(f'=== selecting frame '
                           f'{path._fnames[fname_index]}, {loc}')
-                    shooting_point = path[index:index + 1]
+                    shooting_point = self._initial[index:index + 1]
                 
                 # clean
                 remove(f'{self._folder}/*back*', f'{self._folder}/*forw*')

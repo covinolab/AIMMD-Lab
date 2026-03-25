@@ -303,9 +303,10 @@ def find_previous_fname_in_chain(fname):
     return f'{folder}/initial{ext}' if folder else f'initial{ext}'
 
 
-def select_shooting_point(path, params, shots=[], target_state=1):
+def select_shooting_point(chain, params, shots=[], target_state=1):
     """
-    Select a shooting point (frame) from path for committor-guided path sampling.
+    Select a shooting point (frame) for committor-guided path sampling
+    from latest path in chain with nonzero weight.
 
     This function implements the core *proposal* step of AIMMD shooting when the
     target corresponds to the reactive region. The objective is to select a
@@ -316,9 +317,10 @@ def select_shooting_point(path, params, shots=[], target_state=1):
     - adaptive bins and target densities (loaded from disk),
     - current sampled shooting point population (to discourage oversampling
       already common regions),
-    - optional additional biasing/regularization (Lorentzian factor),
+    - optional additional biasing/regularization
+      (Lorentzian factor, global, and local populations),
     - optional "overriding" candidate frames from free trajectories.
-
+    
     The function has two regimes:
 
     1) **Internal shooting** (``t != states[1]``)
@@ -337,14 +339,15 @@ def select_shooting_point(path, params, shots=[], target_state=1):
     
     Parameters
     ----------
-    path : aimmd.path.Path
-        The path from which you select from. It *must* be in the same folder
-        of where you run new simulations.
+    chain : aimmd.pathensemble.Pathensemble
+        The shooting path chains. You will select from the latest path in
+        chain with nonzero weight. The inital path is assumed to be there
+        in first position.
     params : aimmd.params.Params
         Parameters object providing the network, binning configuration, and
         control flags for selection.
     shots : list of aimmd.pathensemble.Pathensemble
-        If included, for computing shooting point populations in bins
+        For computing the global shooting point populations in bins.
     target_state : int or str, optional
         Target state label or index, normalized via :func:`process_state`.
     
@@ -359,13 +362,14 @@ def select_shooting_point(path, params, shots=[], target_state=1):
       state, bins, and densities used at selection time so that TPS acceptance
       can compute the correct selection bias for the chosen shooting point.
     """
-
+    
     # get states
     states = params.states
     t = process_state(target_state, states)
     states = params.sorted_states
-    
-    # report
+
+    # which path?
+    path = chain.path
     fname = path.fname
     folder = '/'.join(path.fname.split('/')[:-1]) or '.'
     print(f'*** choosing from {fname} {now()}')
@@ -381,7 +385,6 @@ def select_shooting_point(path, params, shots=[], target_state=1):
     chain_type = params.chain_type
     ext = params.trajectory_extension
     compute_values_args = params.compute_values_args
-    density_adjustment = params.density_adjustment
     lorentzian = params.lorentzian
     free_overriding_states = params.free_overriding_states
     if free_overriding_states == 'all':
@@ -390,11 +393,15 @@ def select_shooting_point(path, params, shots=[], target_state=1):
     overriding_attempts = params.free_overriding_attempts
     overriding_rate = params.free_overriding_recovery_rate
     always_select_inside_the_bins = params.always_select_inside_the_bins
-
+    
     # get bins and overriding bins info
     nbins = params.nbins
     overriding_bins = np.zeros(nbins, dtype=bool)
     overriding_bins[params.free_overriding_bins] = True
+
+    # get density adjustment info
+    local_density_adjustment = params.local_density_adjustment and nbins > 1
+    global_density_adjustment = params.global_density_adjustment and nbins > 1
     
     # get path info
     indices = path.internal('indices')
@@ -402,17 +409,18 @@ def select_shooting_point(path, params, shots=[], target_state=1):
     si = path.shooting_index - indices[0]
     
     # initialize SP populations
-    populations = None
+    global_populations = None
+    local_populations = None
     
     if nbins > 1:
         
-        # collect shooting points
-        if density_adjustment:
+        # collect shooting points from every chain
+        if global_density_adjustment:
             shooting_points = PathEnsemble()
-            for chain in shots:
-                if not chain:
+            for current_chain in shots:
+                if not current_chain:
                     continue
-                shooting_points += chain.shooting('self')
+                shooting_points += current_chain.shooting('self')
             shooting_points = shooting_points.join()
             current_points = PathEnsemble()
             for fname in glob(f'{folder}/../chain{t}*/back{ext}'):
@@ -427,18 +435,29 @@ def select_shooting_point(path, params, shots=[], target_state=1):
         densities = NPY_CACHE.load(f'{folder}/../densities{states}.npy').copy()
         
         # compute (new) values
-        path.compute(*compute_values_args, raise_if_error=True, return_result=True)
+        path.compute(*compute_values_args, raise_if_error=True,
+                     overwrite=path==chain[0])
         values = path.values[indices]
         
-        # compute (new) shooting point values
-        if density_adjustment:
+        # global shooting point populations
+        if global_density_adjustment:
             shooting_points.compute(*compute_values_args)
-            populations = (np.histogram(
-                shooting_points.values, bins)[0] +
-                           np.histogram(
+            global_populations = np.histogram(shooting_points.values, bins)[0]
+            global_populations += np.histogram(
                 current_points.compute(compute_values_args[0],
-                                       compute_values_args[2]), bins)[0]
-                          ).astype(float)
+                                        compute_values_args[2]), bins)[0]
+            global_populations = global_populations.astype(float)
+        
+        # local shooting point populations
+        if local_density_adjustment >= len(chain) - 1:
+            local_populations = np.histogram(
+                chain[1:].shooting('values'), bins)[0]
+            local_populations = local_populations.astype(float)
+        elif local_density_adjustment >= 1:
+            n = int(local_density_adjustment)
+            local_populations = np.histogram(
+                chain[-n:].shooting('values'), bins)[0]
+            local_populations = local_populations.astype(float)
         
         # compute path histogram
         histogram = np.histogram(values, bins)[0].astype(float)
@@ -454,12 +473,13 @@ def select_shooting_point(path, params, shots=[], target_state=1):
     if overriding_bins.any() and overriding_attempts:
         print(f'    overriding bins    {overriding_bins}') 
     print(f'*** path histogram     {histogram}')
-    if populations is not None:
-        print(f'*** SP populations     {populations}')
+    if global_populations is not None:
+        print(f'*** global populations {global_populations}')
+    if local_populations is not None:
+        print(f'*** local populations  {local_populations}')
     print(f'*** ensemble densities {densities}')
     
     # density adjustment (lorentzian)
-    densities /= densities.sum()
     if lorentzian < inf:
         centers = bin_centers(bins)
         densities *= centers ** 2 + lorentzian ** 2
@@ -469,13 +489,16 @@ def select_shooting_point(path, params, shots=[], target_state=1):
     # merge empty bins, update histograms and densities
     keepers = histogram > 0
     processed_overriding_bins = overriding_bins
+    merged_bin_counts = np.ones(len(densities))
     if not keepers.all():
         (bins, merged_bin_counts,
          processed_overriding_bins,
-         histogram, densities, populations
+         histogram, densities,
+         global_populations, local_populations
         ) = merge_empty_bins(
             bins, keepers, overriding_bins,
-            histogram, densities, populations)
+            histogram, densities,
+            global_populations, local_populations)
         # only if populations
         processed_overriding_bins = processed_overriding_bins.astype(bool)
         if len(bins) - 1 < nbins:
@@ -484,16 +507,16 @@ def select_shooting_point(path, params, shots=[], target_state=1):
             if processed_overriding_bins.any() and overriding_attempts:
                 print(f'    overriding bins    {processed_overriding_bins}') 
             print(f'    path histogram     {histogram}')
-            if populations is not None:
-                print(f'    SP populations     {populations}')
             print(f'    ensemble densities {densities}')           
         
         # to preserve target distribution: divide densities by merged bin counts
         densities /= merged_bin_counts
     
     # density adjustment by SP populations
-    if populations is not None:
-        densities *= populations + .1
+    if global_populations is not None:
+        densities *= global_populations + .5 * merged_bin_counts
+    if local_populations is not None:
+        densities *= local_populations + .5 * merged_bin_counts
     
     # final normalization and report
     densities /= densities.sum()
