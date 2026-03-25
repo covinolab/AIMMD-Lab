@@ -51,6 +51,34 @@ from scipy.special import expit
 from .utils import extract_indices_and_series, extract_lsr_pairs
 from ..core.utils import concatenate, now
 from ..analysis.utils import compute_bins, merge_marginal_bins
+from ..path.utils import get_cache_fname
+from .._config import NPY_CACHE
+
+
+def _load_batch_descriptors(npy_paths, locs):
+    """Load a batch of raw descriptors by indexing per-trajectory NPY cache files.
+
+    Groups frame lookups by file to avoid redundant disk reads within a batch.
+
+    Parameters
+    ----------
+    npy_paths : array-like of str
+        Descriptor ``.npy`` file path for each frame in the batch.
+    locs : array-like of int
+        Absolute frame index within the corresponding ``.npy`` file.
+
+    Returns
+    -------
+    numpy.ndarray
+        Raw descriptor array, shape ``(batch, *frame_shape)``.
+    """
+    result = [None] * len(npy_paths)
+    cache = {}
+    for i, (npy_path, loc) in enumerate(zip(npy_paths, locs)):
+        if npy_path not in cache:
+            cache[npy_path] = NPY_CACHE.get(npy_path)
+        result[i] = cache[npy_path][loc]
+    return np.array(result)
 
 
 def fit(params,
@@ -250,8 +278,19 @@ def fit(params,
     in_memory : bool, default=True
         Descriptor loading strategy:
 
-        - If True, transform all descriptors up-front and keep them in memory.
-        - If False, apply `descriptor_transform` per batch.
+        - If ``True``: all raw descriptors are loaded into one concatenated
+          numpy array at the start of training, then ``descriptor_transform``
+          is applied to the whole set at once and the result is kept in memory.
+          Fast per-epoch access but requires peak RAM proportional to the full
+          training-set size (raw array + transformed representation).
+        - If ``False``: **no large descriptor array is kept in memory**.
+          Instead, only per-frame file references ``(npy_path, loc)`` are
+          stored.  Each training batch (and each LSR batch) loads its raw
+          frames on-the-fly from the NPY cache via
+          :func:`_load_batch_descriptors`, then applies
+          ``descriptor_transform`` immediately.  Peak RAM is proportional to
+          one batch rather than the full dataset, at the cost of repeated disk
+          I/O and transform overhead each epoch.
 
     graphs : bool, default=False
         If True, descriptors are assumed to be graph objects in an mlcolvar-like
@@ -367,72 +406,76 @@ def fit(params,
     # s: shooting states of path
     # t: internal states path
 
+    # When in_memory=False: collect per-frame file references (fname + loc)
+    # instead of the full raw descriptor array. Raw data is loaded per batch.
+    _desc_series = (descriptors_source,) if in_memory else ('filenames', 'locs')
+
     # Collect indices + descriptors/values for each relevant category
     # (each call may skip paths that cannot provide the requested series)
-    (in1, in1_back, in1_forw, in1_descriptors,
+    (in1, in1_back, in1_forw, *in1_desc_ref,
      npaths_in1) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == r) & (t == a)), descriptors_source)
+        np.flatnonzero((i == r) & (t == a)), *_desc_series)
     if must_stop():  # responsiveness
         return [], [], [], [], []
-    (in2, in2_back, in2_forw, in2_descriptors,
+    (in2, in2_back, in2_forw, *in2_desc_ref,
      npaths_in2) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == r) & (t == b)), descriptors_source)
+        np.flatnonzero((i == r) & (t == b)), *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (free1to1, free1to1_back, free1to1_forw,
-     free1to1_values, free1to1_descriptors,
+     free1to1_values, *free1to1_desc_ref,
      npaths_free1to1) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == a) & (t == r) & (f != b) & (s == a)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (free2to2, free2to2_back, free2to2_forw,
-     free2to2_values, free2to2_descriptors,
+     free2to2_values, *free2to2_desc_ref,
      npaths_free2to2) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == b) & (t == r) & (f != a) & (s == b)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (free1to2, free1to2_back, free1to2_forw,
-     free1to2_values, free1to2_descriptors,
+     free1to2_values, *free1to2_desc_ref,
      npaths_free1to2) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == a) & (t == r) & (f == b) & (s == a)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (free2to1, free2to1_back, free2to1_forw,
-     free2to1_values, free2to1_descriptors,
+     free2to1_values, *free2to1_desc_ref,
      npaths_free2to1) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == b) & (t == r) & (f == a) & (s == b)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (shot1to1, shot1to1_back, shot1to1_forw,
-     shot1to1_values, shot1to1_descriptors,
+     shot1to1_values, *shot1to1_desc_ref,
      npaths_shot1to1) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == a) & (t == r) & (f != b) & (s == r)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (shot2to2, shot2to2_back, shot2to2_forw,
-     shot2to2_values, shot2to2_descriptors,
+     shot2to2_values, *shot2to2_desc_ref,
      npaths_shot2to2) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == b) & (t == r) & (f != a) & (s == r)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (shot1to2, shot1to2_back, shot1to2_forw,
-     shot1to2_values, shot1to2_descriptors,
+     shot1to2_values, *shot1to2_desc_ref,
      npaths_shot1to2) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == a) & (t == r) & (f == b) & (s == r)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (shot2to1, shot2to1_back, shot2to1_forw,
-     shot2to1_values, shot2to1_descriptors,
+     shot2to1_values, *shot2to1_desc_ref,
      npaths_shot2to1) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == b) & (t == r) & (f == a) & (s == r)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     
@@ -534,16 +577,34 @@ def fit(params,
     # trajectories than the other (common early in an AIMMD run).
     lsr_desc_t_A = lsr_desc_tau_A = None
     lsr_desc_t_B = lsr_desc_tau_B = None
+    lsr_npy_t_A = lsr_locs_t_A = lsr_npy_tau_A = lsr_locs_tau_A = None
+    lsr_npy_t_B = lsr_locs_t_B = lsr_npy_tau_B = lsr_locs_tau_B = None
     n_lsr_A = n_lsr_B = 0
     n_lsr_pairs = 0
     if lsr_weight:
         lsr_key_A = np.flatnonzero((i == a) & (t == r))
         lsr_key_B = np.flatnonzero((i == b) & (t == r))
         print(f'\nCollecting time-lagged pairs for LSR (lagtime={lsr_lagtime}) {now()}')
-        lsr_desc_t_A, lsr_desc_tau_A, n_sel_A, n_lsr_A = extract_lsr_pairs(
-            pathensemble, lsr_key_A, lsr_lagtime, descriptors_source)
-        lsr_desc_t_B, lsr_desc_tau_B, n_sel_B, n_lsr_B = extract_lsr_pairs(
-            pathensemble, lsr_key_B, lsr_lagtime, descriptors_source)
+        if in_memory:
+            lsr_desc_t_A, lsr_desc_tau_A, n_sel_A, n_lsr_A = extract_lsr_pairs(
+                pathensemble, lsr_key_A, lsr_lagtime, descriptors_source)
+            lsr_desc_t_B, lsr_desc_tau_B, n_sel_B, n_lsr_B = extract_lsr_pairs(
+                pathensemble, lsr_key_B, lsr_lagtime, descriptors_source)
+        else:
+            # Collect file references instead of raw arrays; load per batch.
+            fn_t_A, fn_tau_A, n_sel_A, n_lsr_A = extract_lsr_pairs(
+                pathensemble, lsr_key_A, lsr_lagtime, 'filenames')
+            lc_t_A, lc_tau_A, _, _ = extract_lsr_pairs(
+                pathensemble, lsr_key_A, lsr_lagtime, 'locs')
+            fn_t_B, fn_tau_B, n_sel_B, n_lsr_B = extract_lsr_pairs(
+                pathensemble, lsr_key_B, lsr_lagtime, 'filenames')
+            lc_t_B, lc_tau_B, _, _ = extract_lsr_pairs(
+                pathensemble, lsr_key_B, lsr_lagtime, 'locs')
+            _gcf = lambda arr: np.array([get_cache_fname(f, 'descriptors') for f in arr]) if len(arr) else arr
+            lsr_npy_t_A, lsr_locs_t_A     = _gcf(fn_t_A),   lc_t_A
+            lsr_npy_tau_A, lsr_locs_tau_A = _gcf(fn_tau_A), lc_tau_A
+            lsr_npy_t_B, lsr_locs_t_B     = _gcf(fn_t_B),   lc_t_B
+            lsr_npy_tau_B, lsr_locs_tau_B = _gcf(fn_tau_B), lc_tau_B
         n_lsr_pairs = n_lsr_A + n_lsr_B
         print(f'   {n_lsr_A} A-origin pairs ({n_sel_A} paths), '
               f'{n_lsr_B} B-origin pairs ({n_sel_B} paths)')
@@ -555,11 +616,28 @@ def fit(params,
                           free1to2_values, free2to1_values,
                           shot1to1_values, shot2to2_values,
                           shot1to2_values, shot2to1_values])
-    descriptors = concatenate([in1_descriptors, in2_descriptors,
-                               free1to1_descriptors, free2to2_descriptors,
-                               free1to2_descriptors, free2to1_descriptors,
-                               shot1to1_descriptors, shot2to2_descriptors,
-                               shot1to2_descriptors, shot2to1_descriptors])
+    # Build the descriptor data structure.
+    # in_memory=True : a single concatenated numpy array of raw descriptors
+    #                  (transformed up-front on line ~716 below).
+    # in_memory=False: two compact arrays storing per-frame file references
+    #                  (desc_npy_paths[i], desc_locs[i]) so raw data is
+    #                  loaded on demand per batch via _load_batch_descriptors.
+    _all_desc_ref0 = [in1_desc_ref[0], in2_desc_ref[0],
+                      free1to1_desc_ref[0], free2to2_desc_ref[0],
+                      free1to2_desc_ref[0], free2to1_desc_ref[0],
+                      shot1to1_desc_ref[0], shot2to2_desc_ref[0],
+                      shot1to2_desc_ref[0], shot2to1_desc_ref[0]]
+    if in_memory:
+        descriptors = concatenate(_all_desc_ref0)
+    else:
+        desc_fnames   = concatenate(_all_desc_ref0)
+        desc_locs     = concatenate([in1_desc_ref[1], in2_desc_ref[1],
+                                     free1to1_desc_ref[1], free2to2_desc_ref[1],
+                                     free1to2_desc_ref[1], free2to1_desc_ref[1],
+                                     shot1to1_desc_ref[1], shot2to2_desc_ref[1],
+                                     shot1to2_desc_ref[1], shot2to1_desc_ref[1]])
+        desc_npy_paths = np.array(
+            [get_cache_fname(f, 'descriptors') for f in desc_fnames])
     results = concatenate([in1_results, in2_results,
                            free1to1_results, free2to2_results,
                            free1to2_results, free2to1_results,
@@ -666,7 +744,11 @@ def fit(params,
     keepers = selection_probabilities > 0
     selection_probabilities = selection_probabilities[keepers]
     values = values[keepers[n_internal_frames:]]
-    descriptors = descriptors[keepers]
+    if in_memory:
+        descriptors = descriptors[keepers]
+    else:
+        desc_npy_paths = desc_npy_paths[keepers]
+        desc_locs      = desc_locs[keepers]
     results = results[keepers]
     k = results[:, 0] > 0
     training_set_size = len(selection_probabilities)
@@ -697,14 +779,24 @@ def fit(params,
         
         # create validation vectors
         if not graphs:
-            d_val = descriptor_transform(descriptors[validation_indices])
+            if in_memory:
+                raw_val = descriptors[validation_indices]
+            else:
+                raw_val = _load_batch_descriptors(
+                    desc_npy_paths[validation_indices], desc_locs[validation_indices])
+            d_val = descriptor_transform(raw_val)
             d_val = torch.tensor(d_val, dtype=dtype, device=device)
             d_val.requires_grad = True
         else:
             # when using graphs, we need to process the DataDict objects
             # instead of arrays
-            d_val_list = [descriptors['data_list'][i] for i in validation_indices]
-            d_val = Batch.from_data_list(d_val_list).to(device).to_dict()                
+            if in_memory:
+                # descriptors is already a list of Data objects after the pre-transform
+                d_val_list = [descriptors[i] for i in validation_indices]
+            else:
+                d_val_list = descriptor_transform(_load_batch_descriptors(
+                    desc_npy_paths[validation_indices], desc_locs[validation_indices]))
+            d_val = Batch.from_data_list(d_val_list).to(device).to_dict()
         r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
     
     print(f'\nTraining set size {training_set_size}')
@@ -803,19 +895,22 @@ def fit(params,
         
         # build descriptors batch (array or graph)
         if not graphs:
-            if not in_memory:  # separately to save memory
-                d = descriptor_transform(descriptors[indices])
-            else:
-                d = descriptors[indices]
+            if in_memory:
+                d = descriptors[indices]          # already transformed upfront
+            else:  # load raw frames on-the-fly from NPY_CACHE, then transform
+                d = descriptor_transform(
+                    _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))
             d = torch.tensor(d, dtype=dtype, device=device)
             d.requires_grad = True
         else:
-            # when using graphs, we need to process the the DataDict objects
+            # when using graphs, we need to process the DataDict objects
             # instead of arrays
-            if not in_memory:  # separately to save memory
-                d = descriptor_transform(descriptors[indices,:])
-            else:
-                d = [descriptors['data_list'][i] for i in indices]
+            if in_memory:
+                # descriptors is already a list of Data objects after the pre-transform
+                d = [descriptors[i] for i in indices]
+            else:  # load raw frames on-the-fly from NPY_CACHE
+                d = descriptor_transform(
+                    _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))
             d = Batch.from_data_list(d).to(device).to_dict()
 
         # flatten non-graph descriptors for dense networks
@@ -886,36 +981,50 @@ def fit(params,
                 # populated state.
                 half = lsr_bs // 2
                 raw_t_segs, raw_tau_segs = [], []
-                for desc_t_side, desc_tau_side, n_side in (
-                        (lsr_desc_t_A, lsr_desc_tau_A, n_lsr_A),
-                        (lsr_desc_t_B, lsr_desc_tau_B, n_lsr_B)):
+                if in_memory:
+                    _lsr_sides = ((lsr_desc_t_A, lsr_desc_tau_A, n_lsr_A),
+                                  (lsr_desc_t_B, lsr_desc_tau_B, n_lsr_B))
+                else:
+                    _lsr_sides = (
+                        (lsr_npy_t_A, lsr_npy_tau_A, lsr_locs_t_A, lsr_locs_tau_A, n_lsr_A),
+                        (lsr_npy_t_B, lsr_npy_tau_B, lsr_locs_t_B, lsr_locs_tau_B, n_lsr_B))
+                for side in _lsr_sides:
+                    n_side = side[-1]
                     if n_side == 0:
                         continue
                     n_draw = half if (n_lsr_A > 0 and n_lsr_B > 0) else lsr_bs
                     v_idx = np.random.choice(n_side, n_draw, replace=True)
-                    raw_t_segs.append(desc_t_side[v_idx])
-                    raw_tau_segs.append(desc_tau_side[v_idx])
+                    if in_memory:
+                        desc_t_side, desc_tau_side = side[0], side[1]
+                        raw_t_segs.append(desc_t_side[v_idx])
+                        raw_tau_segs.append(desc_tau_side[v_idx])
+                    else:
+                        npy_t, npy_tau, locs_t, locs_tau = side[0], side[1], side[2], side[3]
+                        raw_t_segs.append(
+                            _load_batch_descriptors(npy_t[v_idx], locs_t[v_idx]))
+                        raw_tau_segs.append(
+                            _load_batch_descriptors(npy_tau[v_idx], locs_tau[v_idx]))
                 raw_t = np.concatenate(raw_t_segs, axis=0)
                 raw_tau = np.concatenate(raw_tau_segs, axis=0)
 
                 if not graphs:
-                    if not in_memory:
-                        dv_t = descriptor_transform(raw_t)
-                        dv_tau = descriptor_transform(raw_tau)
-                    else:
+                    if in_memory:
                         dv_t = raw_t
                         dv_tau = raw_tau
+                    else:
+                        dv_t = descriptor_transform(raw_t)
+                        dv_tau = descriptor_transform(raw_tau)
                     dv_t = torch.flatten(
                         torch.tensor(dv_t, dtype=dtype, device=device), start_dim=1)
                     dv_tau = torch.flatten(
                         torch.tensor(dv_tau, dtype=dtype, device=device), start_dim=1)
                 else:
-                    if not in_memory:
+                    if in_memory:
                         dv_t_list = descriptor_transform(raw_t)
                         dv_tau_list = descriptor_transform(raw_tau)
                     else:
-                        dv_t_list = [lsr_desc_t_A[i] for i in v_idx]   # fallback
-                        dv_tau_list = [lsr_desc_tau_A[i] for i in v_idx]
+                        dv_t_list = descriptor_transform(raw_t)
+                        dv_tau_list = descriptor_transform(raw_tau)
                     dv_t = Batch.from_data_list(dv_t_list).to(device).to_dict()
                     dv_tau = Batch.from_data_list(dv_tau_list).to(device).to_dict()
 
