@@ -334,8 +334,6 @@ class WorkerShoot(ABC):
                                     directory, t, h))
                             h += 1
                     
-                    print(shots, [s.fnames for s in shots])
-                    
                     # select shooting point
                     shooting_point = select_shooting_point(
                         path, params, shots, target_state=t)

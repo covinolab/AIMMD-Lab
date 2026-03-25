@@ -433,7 +433,6 @@ def select_shooting_point(path, params, shots=[], target_state=1):
         # compute (new) shooting point values
         if density_adjustment:
             shooting_points.compute(*compute_values_args)
-            print(shooting_points.values)
             populations = (np.histogram(
                 shooting_points.values, bins)[0] +
                            np.histogram(
@@ -543,7 +542,6 @@ def select_shooting_point(path, params, shots=[], target_state=1):
             bin_info = 'bin: outside'
     
     # get shooting point and report info
-    print(path, indices[i], 'RTTTTTTTT')
     shooting_point = path[indices[i]]
     loc = locs[i]
     if nbins > 1:
