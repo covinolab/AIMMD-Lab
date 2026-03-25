@@ -27,7 +27,7 @@ def test_register_select_and_accept_path(tmp_path, monkeypatch):
     params = aimmd.Params.placeholder
     params.__dict__["states"] = "ARB"
     shooting_point = select_shooting_point(
-        chain[0], params, target_state="A"
+        chain, params, target_state="A"
     )
     assert shooting_point.n_atoms > 0
 

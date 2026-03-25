@@ -400,7 +400,7 @@ def select_shooting_point(chain, params, shots=[], target_state=1):
     overriding_bins[params.free_overriding_bins] = True
 
     # get density adjustment info
-    local_density_adjustment = params.local_density_adjustment and nbins > 1
+    local_density_adjustment = params.local_density_adjustment * (nbins > 1)
     global_density_adjustment = params.global_density_adjustment and nbins > 1
     
     # get path info
