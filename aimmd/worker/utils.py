@@ -278,31 +278,6 @@ def register_path(path, chain, eneconv=None):
           f'with {len(path)} frames {now()}')
 
 
-def find_previous_fname_in_chain(fname):
-    """Get file name of previous path in shooting chain, or
-    ...initial<ext> if that was the first fname in chain.
-    
-    Params
-    ------
-    fname : str
-        Path filename. 
-
-    Returns
-    -------
-    prev_fname : str
-        Previous path filename (also initial).
-    """
-
-    folder = '/'.join(fname.split('/')[:-1])
-    ext = '.' + fname.split('.')[-1]
-    len_ext = len(ext)
-    n = fname[-len_ext-6:-len_ext]
-    if (n.isnumeric() and int(n) > 1 and
-        fname[-len_ext-6-4:-len_ext-6] == 'path'):
-        return f'{fname[:-len_ext-6]}{int(n)-1:06g}{ext}'
-    return f'{folder}/initial{ext}' if folder else f'initial{ext}'
-
-
 def select_shooting_point(chain, params, shots=[], target_state=1):
     """
     Select a shooting point (frame) for committor-guided path sampling
