@@ -303,7 +303,6 @@ class WorkerShoot(ABC):
                                   shots[k:k + nchains_per_worker]])
             set_chain_id(chain_id)
             chain = shots[self._k]
-            print('ASFDWFEWFWEFDWEFDWEFWEFWEFWEFWEFWEFE', chain, shots)
             
             # need to initialize?
             if not params.check_if_initialized(

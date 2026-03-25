@@ -299,7 +299,7 @@ def find_previous_fname_in_chain(fname):
     n = fname[-len_ext-6:-len_ext]
     if (n.isnumeric() and int(n) > 1 and
         fname[-len_ext-6-4:-len_ext-6] == 'path'):
-        return f'{fname[-len_ext-6]}{int(n)-1:06g}{ext}'
+        return f'{fname[:-len_ext-6]}{int(n)-1:06g}{ext}'
     return f'{folder}/initial{ext}' if folder else f'initial{ext}'
 
 
