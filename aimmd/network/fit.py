@@ -130,6 +130,9 @@ def fit(params,
         lsr_batch_size=None,
         lsr_epsilon=1e-6,
 
+        # energy head auxiliary loss
+        energy_head_weight=0.0,
+
         # misc
         verbose=False,
         worker=None,
@@ -327,15 +330,28 @@ def fit(params,
         latent features inside the LSR loss. Prevents division by zero for
         frames near the network's zero surface.
 
+    energy_head_weight : float, default=0.0
+        Weight for the auxiliary energy-prediction loss term.  When non-zero,
+        ``network`` must have been constructed with ``energy_head=True`` (a
+        per-node readout MLP followed by scatter_sum), and each graph in the
+        batch must carry an ``energy`` attribute (a scalar stored in the
+        SQLite graph cache by the modified ``process_descriptors_pyg`` /
+        ``descriptors_function`` pipeline).  The loss term is:
+        ``energy_head_weight * MSE(norm(e_pred), norm(e_ref))``
+        where both predicted and reference energies are Z-scored per batch
+        before computing the MSE, making the scale of the loss independent
+        of the absolute energy units.  Only active for ``graphs=True``; silently
+        ignored otherwise.  Default: 0.0 (disabled).
+
     verbose : bool, default=False
         If True, show progress via `tqdm` and print more frequent diagnostics.
 
     loss_log_path : str or None, default=None
         If not None, save a CSV with one row per epoch containing the columns
-        ``epoch``, ``total_loss``, ``committor_loss``, ``vamp_loss``, and
-        ``scale``. The committor and LSR terms are each already multiplied by
-        their respective weights so that ``total_loss ≈ committor_loss +
-        vamp_loss`` (plus any regularisation terms).  The file is written only
+        ``epoch``, ``total_loss``, ``committor_loss``, ``vamp_loss``,
+        ``energy_loss``, and ``scale``. Each loss term is already multiplied by
+        its weight so that ``total_loss ≈ committor_loss + vamp_loss +
+        energy_loss`` (plus any regularisation terms).  The file is written only
         after training completes.
 
     worker : aimmd.Worker or None, optional
@@ -380,7 +396,7 @@ def fit(params,
     t0 = time.time()
     losses, scales = [], []
     loss_log = []                   # one dict per epoch for CSV output
-    _epoch_losses = [0.0, 0.0]     # [committor_loss, weighted_vamp_loss] — mutated inside closure()
+    _epoch_losses = [0.0, 0.0, 0.0]  # [committor_loss, weighted_vamp_loss, energy_loss] — mutated inside closure()
     network = params.network
     device = next(network.parameters()).device
     dtype = next(network.parameters()).dtype
@@ -802,6 +818,10 @@ def fit(params,
             else:
                 d_val_list = descriptor_transform(_load_batch_descriptors(
                     desc_npy_paths[validation_indices], desc_locs[validation_indices]))
+            if any(not (hasattr(g, 'energy') and g.energy is not None) for g in d_val_list):
+                for g in d_val_list:
+                    if hasattr(g, 'energy'):
+                        del g.energy
             d_val = Batch.from_data_list(d_val_list).to(device).to_dict()
         r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
     
@@ -917,6 +937,12 @@ def fit(params,
             else:  # load raw frames on-the-fly from NPY_CACHE
                 d = descriptor_transform(
                     _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))
+            # Ensure uniform energy presence: if any graph in the batch lacks
+            # an energy field, strip it from all to avoid PyG collation errors.
+            if any(not (hasattr(g, 'energy') and g.energy is not None) for g in d):
+                for g in d:
+                    if hasattr(g, 'energy'):
+                        del g.energy
             d = Batch.from_data_list(d).to(device).to_dict()
 
         # flatten non-graph descriptors for dense networks
@@ -975,7 +1001,15 @@ def fit(params,
 
         def closure():
             optimizer.zero_grad()
-            q = network(d)
+            # Determine whether we can use the energy head this step
+            _use_energy = (energy_head_weight > 0.0
+                           and graphs
+                           and isinstance(d, dict)
+                           and d.get('energy') is not None)
+            if _use_energy:
+                q, e_pred = network(d, return_energy=True)
+            else:
+                q = network(d)
             committor_term = loss_function(q, r)
             loss = committor_term
 
@@ -1031,6 +1065,11 @@ def fit(params,
                     else:
                         dv_t_list = descriptor_transform(raw_t)
                         dv_tau_list = descriptor_transform(raw_tau)
+                    for lst in (dv_t_list, dv_tau_list):
+                        if any(not (hasattr(g, 'energy') and g.energy is not None) for g in lst):
+                            for g in lst:
+                                if hasattr(g, 'energy'):
+                                    del g.energy
                     dv_t = Batch.from_data_list(dv_t_list).to(device).to_dict()
                     dv_tau = Batch.from_data_list(dv_tau_list).to(device).to_dict()
 
@@ -1041,10 +1080,23 @@ def fit(params,
                 lsr_contrib = float(lsr_term.detach())
                 loss = loss + lsr_term
 
+            # Energy head auxiliary loss
+            energy_contrib = 0.0
+            if _use_energy:
+                import torch.nn.functional as _F
+                e_ref = d['energy'].to(dtype=dtype)      # (n_graphs,) kJ/mol
+                e_ref = (e_ref - e_ref.mean()) / (e_ref.std() + 1e-8)
+                e_pred_sq = e_pred.squeeze()
+                e_pred_sq = (e_pred_sq - e_pred_sq.mean()) / (e_pred_sq.std() + 1e-8)
+                energy_term = energy_head_weight * _F.mse_loss(e_pred_sq, e_ref)
+                energy_contrib = float(energy_term.detach())
+                loss = loss + energy_term
+
             # Store individual components for per-epoch logging (list mutation
             # is visible outside the closure without nonlocal)
             _epoch_losses[0] = float(committor_term.detach())
             _epoch_losses[1] = lsr_contrib
+            _epoch_losses[2] = energy_contrib
 
             loss.backward()
             return loss
@@ -1064,6 +1116,7 @@ def fit(params,
             'total_loss': losses[-1],
             'committor_loss': _epoch_losses[0],
             'vamp_loss': _epoch_losses[1],
+            'energy_loss': _epoch_losses[2],
             'scale': scales[-1],
         })
         Range = float(torch.min(q)), float(torch.max(q))

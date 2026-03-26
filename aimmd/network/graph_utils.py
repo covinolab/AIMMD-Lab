@@ -109,9 +109,10 @@ def load_from_sqlite(key: str, conn: sqlite3.Connection, compression_lib = "gzip
         return pickle.loads(row[0])
     return None
 
-def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Connection, compression_lib = "gzip"):
-    """ Store a graph in SQLite cache. 
-    
+def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Connection,
+                    compression_lib: str = "gzip", commit: bool = True):
+    """ Store a graph in SQLite cache.
+
     Parameters
     ----------
     key : str
@@ -123,6 +124,11 @@ def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Con
     compression_lib : str, optional
         The compression library to use, by default "gzip".
         Supported: "gzip", "lz4", "none".
+    commit : bool, optional
+        Whether to commit the transaction immediately after the insert,
+        by default True.  Pass False when bulk-writing many graphs and
+        commit manually afterward for better performance on network
+        filesystems.
     """
     msgpack_bytes = pickle.dumps(data)
     if compression_lib == "gzip":
@@ -134,7 +140,8 @@ def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Con
     else:
         raise ValueError(f"Unknown compression library: {compression_lib}")
     conn.execute("INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)", (key, compressed_data))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_stable_hash(config: mlcolvar.data.graph.atomic.Configurations) -> str:
@@ -460,6 +467,7 @@ def get_graphs_pyg(
         cutoff: float,
         verbose: bool = False,
         atom_indices: np.ndarray | None = None,
+        energies: np.ndarray | None = None,
     ) -> list[torch_geometric.data.Data]:
     """ Process descriptors into torch_geometric graphs using MDAnalysis for pbc handling.
 
@@ -491,6 +499,14 @@ def get_graphs_pyg(
         because (a) the same universe is used, (b) H atoms are filtered by
         the selection strings, and (c) their stale positions never enter any
         distance calculation that affects the final graph.
+    energies : np.ndarray, optional
+        Array of shape ``(n_frames,)`` with a scalar energy value per frame
+        (e.g. the MD potential energy in kJ/mol). When provided, each
+        constructed ``Data`` object gets an ``energy`` attribute
+        ``torch.tensor([E], dtype=torch.float32)`` that is stored in the
+        SQLite cache alongside the graph topology. At training time this
+        value is available as ``batch['energy']`` after
+        ``Batch.from_data_list(...).to_dict()``.
 
     Returns
     -------
@@ -507,7 +523,7 @@ def get_graphs_pyg(
     atom_types = list(sorted(set(mdanalysis_universe.atoms.types)))
 
     data_list = []
-    for frame in tqdm(coordinate_array_reshaped, disable=not verbose):
+    for i, frame in enumerate(tqdm(coordinate_array_reshaped, disable=not verbose)):
         # take care of pbcs, placing the system in the center of the box and restoring environment around it
         ts = mdanalysis_universe.trajectory[0]
         if atom_indices is not None:
@@ -524,8 +540,8 @@ def get_graphs_pyg(
 
         # Get node attributes: one-hot encoding of atom types
         node_attr = np.zeros((system_and_surroundings.n_atoms, len(atom_types)), dtype=np.float32)
-        for i, atom in enumerate(system_and_surroundings.atoms.types):
-            node_attr[i, atom_types.index(atom)] = 1.0
+        for j, atom in enumerate(system_and_surroundings.atoms.types):
+            node_attr[j, atom_types.index(atom)] = 1.0
 
         edge_index = radius_graph(
             x=torch.tensor(positions, dtype=torch.float),
@@ -541,6 +557,8 @@ def get_graphs_pyg(
                 edge_index=edge_index, node_attrs=torch.tensor(node_attr, dtype=torch.float),
                 shifts=shifts
             )
+        if energies is not None:
+            data.energy = torch.tensor([energies[i]], dtype=torch.float32)
         data_list.append(data)
 
     return data_list
@@ -556,6 +574,7 @@ def process_descriptors_pyg(
         verbose: bool = False,
         compression_lib: str = "lz4",
         atom_indices: np.ndarray | None = None,
+        energies: np.ndarray | None = None,
     ) -> list[torch_geometric.data.Data]:
     """ Transform the descriptors to network input using MDAnalysis and torch_geometric.
     Here, we transform the atomic positions to a graph embedding using MDAnalysis for pbc
@@ -590,6 +609,19 @@ def process_descriptors_pyg(
         Pass heavy-atom indices to work with heavy-atom-only descriptors
         while still using the full topology for PBC and selections, guaranteeing
         graphs identical to the full-atom workflow.
+    energies : np.ndarray, optional
+        Array of shape ``(n_frames,)`` with a scalar energy per frame (e.g.
+        MD potential energy in kJ/mol). When provided:
+
+        - For **cache misses**: the energy is attached to the newly built
+          ``Data`` object as ``data.energy = torch.tensor([E], dtype=float32)``
+          and stored in the SQLite cache alongside the graph.
+        - For **cache hits**: if the loaded graph does not already have an
+          ``energy`` attribute, the value is attached in-place and the
+          updated graph is re-stored to the cache (lazy back-fill).
+
+        At training time ``batch['energy']`` will be a ``(n_graphs,)`` tensor
+        after ``Batch.from_data_list(...).to_dict()``.
 
     Returns
     -------
@@ -621,6 +653,8 @@ def process_descriptors_pyg(
         # process missing graphs
         start = time.time()
         descriptors_missing = np.array([descriptors[i] for i in missing_indices])
+        missing_energies = ([energies[i] for i in missing_indices]
+                            if energies is not None else None)
         graphs_list_new = get_graphs_pyg(
             descriptors=descriptors_missing,
             mdanalysis_universe=mdanalysis_universe,
@@ -629,18 +663,20 @@ def process_descriptors_pyg(
             cutoff=cutoff,
             verbose=verbose,
             atom_indices=atom_indices,
+            energies=missing_energies,
         )
         end = time.time()
         if verbose:
             print(f"Created new graphs in {end - start:.2f} seconds.")
 
-        # Store new graphs in database
+        # Store new graphs in database (batch commit for performance)
         start = time.time()
         new_graphs = [graphs_list_new[i] for i in range(len(missing_indices))]
 
         for i, graph in enumerate(new_graphs):
             graph_hash = stable_hashes[missing_indices[i]]
-            store_in_sqlite(graph_hash, graph, conn, compression_lib=compression_lib)
+            store_in_sqlite(graph_hash, graph, conn, compression_lib=compression_lib, commit=False)
+        conn.commit()
 
         end = time.time()
         if verbose:
@@ -649,6 +685,20 @@ def process_descriptors_pyg(
         # now assemble the full graphs list
         for i, graph in enumerate(new_graphs):
             loaded_graphs[missing_indices[i]] = graph
+
+    # Lazy back-fill: attach energy to cached graphs that pre-date this feature.
+    # Use commit=False and a single commit at the end to avoid one fsync per
+    # graph (critical performance on network/shared filesystems).
+    if energies is not None:
+        needs_commit = False
+        for i, graph in enumerate(loaded_graphs):
+            if not hasattr(graph, 'energy') or graph.energy is None:
+                graph.energy = torch.tensor([energies[i]], dtype=torch.float32)
+                store_in_sqlite(stable_hashes[i], graph, conn,
+                                compression_lib=compression_lib, commit=False)
+                needs_commit = True
+        if needs_commit:
+            conn.commit()
 
     dataset = mlcolvar.data.DictDataset(
         dictionary={
