@@ -59,6 +59,7 @@ Notes
 """
 
 # external
+import io
 import os
 import time
 import torch
@@ -79,6 +80,7 @@ from ..analysis.utils import compute_bins
 from ..execute.threads import ThreadExecutor
 from ..pathensemble.utils import assemble_pathensemble
 from ..network.rescale_utils import find_knots_and_values, rescale
+from ..path.utils import get_cache_fname
 
 
 class WorkerTrain(ABC):
@@ -465,3 +467,341 @@ class WorkerTrain(ABC):
             if self.total_steps and not os.path.exists(backup):
                 shutil.copyfile(network_fname, backup)
                 print(f'*** copied {network_fname!r} to {backup!r}')
+
+    def kinetics_convergence(self, fractions=None,
+                             save_file='kinetics_convergence.npy',
+                             network_save_pattern=(
+                                 '{directory}/network{states}'
+                                 '.kcv{fraction_pct:03d}.h5'),
+                             **kwargs):
+        """
+        Assess how kinetics estimates converge with growing training-set size.
+
+        For each requested fraction the path ensemble is sub-sampled (see
+        *Fraction sampling* below), the network is retrained from scratch on
+        the sub-sample, and the AIMMD reweighting is used to estimate the rate
+        constants ``k12`` and ``k21``.  The results are collected, saved, and
+        returned as a structured NumPy array so they can immediately be plotted
+        or stored for later analysis.
+
+        This is a convenience wrapper around :meth:`Worker.run` with task
+        ``'kinetics_convergence'``; it therefore inherits all of the standard
+        run-wrapper behaviour (directory switching, cache clearing, resource
+        binding, etc.).
+
+        Parameters
+        ----------
+        fractions : list of float, optional
+            Fractions of the full path ensemble to include in each training
+            run.  Values must lie in ``(0, 1]``.  The list is de-duplicated
+            and sorted in ascending order before use.  Default is
+            ``[0.2, 0.4, 0.6, 0.8, 1.0]`` (five 20 %-increment steps).
+        save_file : str, optional
+            Path (relative to the worker directory) where the result array is
+            written as a ``.npy`` file.  Default is
+            ``'kinetics_convergence.npy'``.
+        network_save_pattern : str or None, optional
+            Format string used to derive the filename for the network
+            checkpoint saved after each fraction's training run.  The
+            following placeholders are available:
+
+            * ``{directory}`` — the worker directory (same as
+              :attr:`Worker.directory`).
+            * ``{states}`` — the sorted state-label string, e.g. ``'ARB'``
+              (same as :attr:`Params.sorted_states`).
+            * ``{fraction}`` — the fraction as a float, e.g. ``0.2``.
+            * ``{fraction_pct}`` — the fraction as an integer percentage,
+              e.g. ``20``.
+
+            The default pattern
+            ``'{directory}/network{states}.kcv{fraction_pct:03d}.h5'``
+            produces filenames such as
+            ``run_example/networkARB.kcv020.h5``.
+
+            Pass ``None`` to skip saving networks entirely.
+        **kwargs
+            Additional keyword arguments forwarded to the fit routine (e.g.
+            ``epochs``, ``lr``, ``batch_size``).  Stop-condition keys
+            (``walltime``, ``nsteps``, ``nframes``) are consumed by the run
+            wrapper and do not reach the fit routine.
+
+        Returns
+        -------
+        numpy.ndarray
+            Structured array with dtype
+            ``[('fraction', float), ('k12', float), ('k21', float)]`` and one
+            row per requested fraction.  Entries for fractions where training
+            failed are left as ``nan``.
+
+        Fraction sampling
+        -----------------
+        Paths are sub-sampled *per source* so that every shooting chain and
+        every free-simulation trajectory contributes the same fraction to the
+        training set.  Concretely:
+
+        * For each shooting chain of length ``N``, the first
+          ``max(1, round(N * fraction))`` paths are used.
+        * For each free trajectory of length ``N`` (frames), the first
+          ``max(1, round(N * fraction))`` frames are used.
+
+        Using the *first* paths/frames preserves the temporal ordering of the
+        Markov chains, which is the most natural sub-sample for a convergence
+        analysis.
+
+        Notes
+        -----
+        * The fit routine (``params.fit``) always resets the network parameters
+          before training (via ``network.reset_parameters()``), so each fraction
+          is trained independently from a random initialisation.
+        * The current network state is saved before the analysis and restored
+          afterwards, leaving the worker in the same state it was in before
+          the call.
+        * Temporary ``*.kcv.npy`` cache files are written to disk during value
+          computation and removed again before the method returns.
+
+        Examples
+        --------
+        Basic usage after a completed run::
+
+            worker = aimmd.Worker(params, 'run_example')
+            results = worker.kinetics_convergence()
+            # saves run_example/networkARB.kcv020.h5, .kcv040.h5, … .kcv100.h5
+            print(results['fraction'], results['k12'], results['k21'])
+
+        Custom fractions, fewer training epochs, and a custom network naming::
+
+            results = worker.kinetics_convergence(
+                fractions=[0.25, 0.5, 0.75, 1.0],
+                network_save_pattern=(
+                    'checkpoints/network{states}_f{fraction:.2f}.h5'),
+                epochs=100,
+            )
+
+        Disable per-fraction network saving::
+
+            results = worker.kinetics_convergence(network_save_pattern=None)
+
+        See Also
+        --------
+        Worker.train : The standard training task.
+        """
+        return self.run('kinetics_convergence', fractions, save_file,
+                        network_save_pattern, **kwargs)
+
+    def _kinetics_convergence(self, fractions=None,
+                               save_file='kinetics_convergence.npy',
+                               network_save_pattern=(
+                                   '{directory}/network{states}'
+                                   '.kcv{fraction_pct:03d}.h5'),
+                               **kwargs):
+        """
+        Internal implementation of the ``'kinetics_convergence'`` task.
+
+        See :meth:`kinetics_convergence` for full user-facing documentation.
+
+        Parameters
+        ----------
+        fractions : list of float or None
+            Requested sub-sampling fractions; defaults to
+            ``[0.2, 0.4, 0.6, 0.8, 1.0]``.
+        save_file : str
+            Output filename for the result array.
+        network_save_pattern : str or None
+            Format string for per-fraction network checkpoint filenames.
+            Available placeholders: ``{directory}``, ``{states}``,
+            ``{fraction}``, ``{fraction_pct}``.  ``None`` skips saving.
+        **kwargs
+            Forwarded to ``params.fit``.  ``worker=self`` is injected
+            automatically.
+
+        Returns
+        -------
+        numpy.ndarray
+            Structured array with fields ``fraction``, ``k12``, ``k21``.
+        """
+        # ── defaults ──────────────────────────────────────────────────────
+        if fractions is None:
+            fractions = [0.2, 0.4, 0.6, 0.8, 1.0]
+        fractions = sorted(set(float(f) for f in fractions))
+
+        # ── params ────────────────────────────────────────────────────────
+        directory = self._directory
+        params = self.params
+        states = params.sorted_states
+        r = states[1]
+        network = params.network
+        fit = params.fit
+        reweight_parameters = params.reweight_parameters
+        nbins = params.nbins
+        cutoff_min = params.cutoff_min
+        cutoff_max = params.cutoff_max
+        terminal_bin_extension = params.terminal_bin_extension
+        batch_size = params.network_batch_size
+        compute_values_args = params.compute_values_args
+        compute_condition = {'states': lambda state: state == r}
+
+        def _compute_kwargs(target):
+            return {
+                'function': compute_values_args[0],
+                'target': target,
+                'source': compute_values_args[2],
+                'conditions': compute_condition,
+                'batch_size': batch_size,
+            }
+
+        kwargs['worker'] = self
+
+        # ── save network state (restored at the end) ──────────────────────
+        print(f'\nSaving current network state {now()}')
+        device = next(network.parameters()).device
+        _buf = io.BytesIO()
+        torch.save(network.state_dict(), _buf)
+        _saved_state = _buf.getvalue()
+
+        # ── load full path ensemble from disk ─────────────────────────────
+        print(f'\nLoading full path ensemble {now()}')
+        self._shot_chains = params.shot_chains(
+            directory, None,
+            old=getattr(self, '_shot_chains', []))
+        self._free_trajectories = params.free_trajectories(directory)
+
+        # ── build margins from initial paths (same as _train) ─────────────
+        initial_paths = self.initial_paths
+        initial_paths = initial_paths.extract(states, states[::-1])
+        margins = PathEnsemble(
+            [path[1::-1] for path in initial_paths] +
+            [path[-2::1] for path in initial_paths])
+
+        # ── pre-compute sizes for fraction arithmetic ──────────────────────
+        chain_lengths = [len(c) for c in self._shot_chains]
+        free_lengths  = [len(t) for t in self._free_trajectories]
+
+        # ── result container ───────────────────────────────────────────────
+        results = np.full(
+            len(fractions), nan,
+            dtype=[('fraction', float), ('k12', float), ('k21', float)])
+        results['fraction'] = fractions
+
+        # ── main loop over fractions ───────────────────────────────────────
+        for i, fraction in enumerate(fractions):
+            print(f'\n=== Kinetics convergence: fraction {fraction:.2f} ==='
+                  f' ({now()})')
+
+            if self.termination_signal:
+                break
+
+            # sub-sample chains: first round(N * fraction) paths per chain
+            sub_chains = [
+                chain[:max(1, round(n * fraction))]
+                for chain, n in zip(self._shot_chains, chain_lengths)]
+
+            # sub-sample free trajectories: first round(N * fraction) frames
+            sub_free = [
+                traj[:max(1, round(n * fraction))]
+                for traj, n in zip(self._free_trajectories, free_lengths)]
+
+            pathensemble = assemble_pathensemble(sub_chains, sub_free)
+
+            # ensure existing value files are present (fill missing only)
+            n = pathensemble.compute(**_compute_kwargs('values'))
+            if n:
+                print(f'... computed {n} missing values')
+
+            if self.termination_signal:
+                break
+
+            # train network from scratch on the sub-sampled ensemble
+            print(f'Training network on {fraction*100:.0f}% of data '
+                  f'{now()}')
+            losses, *_ = fit(params, pathensemble + margins, **kwargs)
+
+            if not len(losses):
+                print(f'!!! training failed for fraction {fraction:.2f}')
+                continue
+
+            print(f'Training completed {now()}')
+
+            if self.termination_signal:
+                break
+
+            # compute updated values using 'kcv' target to avoid overwriting
+            # production value files on disk
+            n = pathensemble.compute(
+                **_compute_kwargs('kcv'), overwrite=True)
+            print(f'... computed {n} committor values with new network')
+
+            # compute adaptation bins → derive sp_cutoff_min/max
+            rw_p = reweight_parameters.copy()
+            bins = compute_bins(
+                pathensemble, nbins,
+                cutoff_max=cutoff_max,
+                cutoff_min=cutoff_min,
+                find_extremes_with='free',
+                source='kcv',
+                states=states,
+                terminal_bin_extension=terminal_bin_extension)
+
+            sp_cutoff_min = bins[+0]
+            sp_cutoff_max = bins[-1]
+            if sp_cutoff_min == -inf and bins[+1] < +inf:
+                sp_cutoff_min = bins[+1]
+            if sp_cutoff_max == +inf and bins[-2] > -inf:
+                sp_cutoff_max = bins[-2]
+            if 'sp_cutoff_min' not in rw_p:
+                rw_p['sp_cutoff_min'] = sp_cutoff_min
+            if 'sp_cutoff_max' not in rw_p:
+                rw_p['sp_cutoff_max'] = sp_cutoff_max
+
+            # reweight and estimate rates
+            result1 = pathensemble.reweight(states, **rw_p, source='kcv')
+            result2 = pathensemble.reweight(states[::-1], **rw_p,
+                                            source='kcv')
+            w1 = result1[0]
+            w2 = result2[0]
+
+            lengths = pathensemble.n_frames
+            k12 = np.sum(w1 * lengths)
+            k12 = 1 / k12 if k12 else nan
+            k21 = np.sum(w2 * lengths)
+            k21 = 1 / k21 if k21 else nan
+
+            print(f'    k12 estimate: {k12:.3e} [1/dt]')
+            print(f'    k21 estimate: {k21:.3e} [1/dt]')
+            print(f'    {lengths.sum()} frames in sub-sampled ensemble')
+
+            results['k12'][i] = k12
+            results['k21'][i] = k21
+
+            # save per-fraction network checkpoint (if requested)
+            if network_save_pattern is not None:
+                net_fname = network_save_pattern.format(
+                    directory=directory,
+                    states=states,
+                    fraction=fraction,
+                    fraction_pct=round(fraction * 100),
+                )
+                os.makedirs(os.path.dirname(net_fname) or '.', exist_ok=True)
+                torch.save(network.state_dict(), net_fname)
+                print(f'    saved network to {net_fname!r}')
+
+            # clean up temporary kcv cache files so they do not clutter disk
+            for fname in set(pathensemble.fnames):
+                kcv_fname = get_cache_fname(fname, 'kcv')
+                NPY_CACHE.remove(kcv_fname)
+                if os.path.exists(kcv_fname):
+                    try:
+                        os.remove(kcv_fname)
+                    except OSError:
+                        pass
+
+        # ── restore original trained network ──────────────────────────────
+        print(f'\nRestoring original network state {now()}')
+        _buf = io.BytesIO(_saved_state)
+        network.load_state_dict(torch.load(_buf, map_location=device,
+                                           weights_only=True))
+
+        # ── save and return results ────────────────────────────────────────
+        np.save(save_file, results)
+        print(f'Saved kinetics convergence results to {save_file!r}')
+
+        return results
