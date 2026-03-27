@@ -1171,7 +1171,7 @@ def fit(params,
         import csv
         with open(loss_log_path, 'w', newline='') as _f:
             _writer = csv.DictWriter(
-                _f, fieldnames=['epoch', 'total_loss', 'committor_loss', 'vamp_loss', 'scale'])
+                _f, fieldnames=['epoch', 'total_loss', 'committor_loss', 'lsr_loss', 'scale'])
             _writer.writeheader()
             _writer.writerows(loss_log)
         print(f'    loss history saved to {loss_log_path}')
