@@ -1063,7 +1063,7 @@ def fit(params,
             'epoch': counter.n + 1,
             'total_loss': losses[-1],
             'committor_loss': _epoch_losses[0],
-            'vamp_loss': _epoch_losses[1],
+            'lsr_loss': _epoch_losses[1],
             'scale': scales[-1],
         })
         Range = float(torch.min(q)), float(torch.max(q))
