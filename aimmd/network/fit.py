@@ -133,6 +133,10 @@ def fit(params,
         # energy head auxiliary loss
         energy_head_weight=0.0,
 
+        # warm-start: skip reset_parameters so the network keeps its
+        # pre-loaded weights (e.g. a pre-trained baseline committor).
+        warm_start=False,
+
         # misc
         verbose=False,
         worker=None,
@@ -893,8 +897,11 @@ def fit(params,
     min_loss_step1 = 0
     min_loss_step2 = 0
     
-    print(f'Resetting the network parameters {now()}\n')
-    network.reset_parameters()
+    if warm_start:
+        print(f'Warm-start: keeping pre-loaded network parameters {now()}\n')
+    else:
+        print(f'Resetting the network parameters {now()}\n')
+        network.reset_parameters()
     
     # actual loop
     print(f'Starting the training cycle {now()}')
@@ -1224,7 +1231,8 @@ def fit(params,
         import csv
         with open(loss_log_path, 'w', newline='') as _f:
             _writer = csv.DictWriter(
-                _f, fieldnames=['epoch', 'total_loss', 'committor_loss', 'vamp_loss', 'scale'])
+                _f, fieldnames=['epoch', 'total_loss', 'committor_loss', 'vamp_loss',
+                                'energy_loss', 'scale'])
             _writer.writeheader()
             _writer.writerows(loss_log)
         print(f'    loss history saved to {loss_log_path}')
