@@ -418,9 +418,13 @@ def select_shooting_point(chain, params, shots=[], target_state=1):
         if global_density_adjustment:
             shooting_points.compute(*compute_values_args)
             global_populations = np.histogram(shooting_points.values, bins)[0]
-            global_populations += np.histogram(
-                current_points.compute(compute_values_args[0],
-                                        compute_values_args[2]), bins)[0]
+            try:  # catch instabilities in try/except loop
+                global_populations += np.histogram(
+                    current_points.compute(compute_values_args[0],
+                                           compute_values_args[2]), bins)[0]
+            except Exception as exception:
+                print("!!! Warning: in computing current shooting points' "
+                      f"values: {exception}")
             global_populations = global_populations.astype(float)
         
         # local shooting point populations
