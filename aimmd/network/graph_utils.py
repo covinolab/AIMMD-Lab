@@ -18,9 +18,20 @@ try:
     import sqlite3
     from mlcolvar.data.dataset import DictDataset
     from mlcolvar.data.graph.utils import create_dataset_from_configurations
-    from mlcolvar.utils.io import (_configures_from_trajectory,
-                                   _z_table_from_top,
-                                   _names_from_top)
+    try:
+        # old name (older mlcolvar versions)
+        from mlcolvar.utils.io import (
+            _configures_from_trajectory,
+            _z_table_from_top,
+            _names_from_top,
+        )
+    except ImportError:
+        # new name (newer mlcolvar versions)
+        from mlcolvar.utils.io import (
+            _configurations_from_trajectory as _configures_from_trajectory,
+            _z_table_from_top,
+            _names_from_top,
+        )
     import multiprocessing
     from torch_geometric.nn import radius_graph
     import time
