@@ -49,7 +49,7 @@ from tqdm import tqdm
 from scipy.special import expit
 
 # aimmd imports
-from .utils import extract_indices_and_series, extract_lsr_pairs
+from .utils import extract_indices_and_series, extract_lsr_pairs, extract_mar_sequences
 from ..core.utils import concatenate, now
 from ..analysis.utils import compute_bins, merge_marginal_bins
 from ..path.utils import get_cache_fname
@@ -129,6 +129,12 @@ def fit(params,
         lsr_lagtime=1,
         lsr_batch_size=None,
         lsr_epsilon=1e-6,
+
+        # minimum action regularization
+        mar_weight=0.0,
+        mar_lagtime=1,
+        mar_batch_size=None,
+        mar_epsilon=1e-8,
 
         # misc
         verbose=False,
@@ -380,7 +386,7 @@ def fit(params,
     t0 = time.time()
     losses, scales = [], []
     loss_log = []                   # one dict per epoch for CSV output
-    _epoch_losses = [0.0, 0.0]     # [committor_loss, weighted_vamp_loss] — mutated inside closure()
+    _epoch_losses = [0.0, 0.0, 0.0]  # [committor_loss, lsr_loss, mar_loss] — mutated inside closure()
     network = params.network
     device = next(network.parameters()).device
     dtype = next(network.parameters()).dtype
@@ -617,6 +623,38 @@ def fit(params,
         if must_stop():
             return [], [], [], [], []
 
+    # Minimum action regularization: collect ordered sequences from reactive paths.
+    # Falls back to all available paths (e.g. initial seed paths) if no reactive
+    # paths from TPS sampling are found yet, so MAR acts from the first training step.
+    mar_sequences_in_mem = []   # in_memory=True : list of raw descriptor arrays (one per path)
+    mar_sequences_refs = []     # in_memory=False: list of (npy_paths, locs) tuples (one per path)
+    n_mar_sequences = 0
+    if mar_weight:
+        mar_key = np.flatnonzero(
+            ((i == a) & (t == r) & (f == b)) |   # free1to2 and shot1to2
+            ((i == b) & (t == r) & (f == a))      # free2to1 and shot2to1
+        )
+        # Fallback: if no reactive paths from TPS exist yet (e.g. round 1 with only
+        # initial paths that may not be classified as reactive), expand to all paths.
+        mar_key_used = mar_key if len(mar_key) > 0 else None
+        mar_label = 'reactive' if len(mar_key) > 0 else 'all (fallback)'
+        print(f'\nCollecting MAR sequences ({mar_label}, lagtime={mar_lagtime}) {now()}')
+        if in_memory:
+            mar_sequences_in_mem, n_mar_sel, n_mar_sequences = extract_mar_sequences(
+                pathensemble, mar_key_used, mar_lagtime, descriptors_source)
+        else:
+            fn_seqs, n_mar_sel, n_mar_sequences = extract_mar_sequences(
+                pathensemble, mar_key_used, mar_lagtime, 'filenames')
+            lc_seqs, _, _ = extract_mar_sequences(
+                pathensemble, mar_key_used, mar_lagtime, 'locs')
+            _gcf_mar = lambda f: get_cache_fname(f, 'descriptors')
+            for fn_seq, lc_seq in zip(fn_seqs, lc_seqs):
+                npy_seq = np.array([_gcf_mar(f) for f in fn_seq])
+                mar_sequences_refs.append((npy_seq, lc_seq))
+        print(f'   {n_mar_sequences} sequences ({n_mar_sel} paths selected)')
+        if must_stop():
+            return [], [], [], [], []
+
     # Concatenate into global training vectors
     values = concatenate([free1to1_values, free2to2_values,  # only reactive
                           free1to2_values, free2to1_values,
@@ -822,6 +860,7 @@ def fit(params,
     
     # LSR helpers (defined here so they close over network, device, dtype)
     lsr_bs = lsr_batch_size if lsr_batch_size is not None else batch_size
+    mar_bs = mar_batch_size if mar_batch_size is not None else 8
 
     def _get_latent(net, d):
         """Return latent features: forward_latent if available, else forward."""
@@ -859,6 +898,41 @@ def fit(params,
         # LSR loss = -||C01||_F^2  (exact VAMP-2 surrogate when C00 = C11 = I)
         C01 = chi_0.T @ chi_tau / n
         return -(C01 * C01).sum()
+
+    def _mar_loss(latent_sequences):
+        """Normalized action ratio loss for Minimum Action Regularization (MAR).
+
+        For each reactive transition path with latent sequence z_0, ..., z_{n-1},
+        computes the normalized Onsager-Machlup action ratio:
+
+            ratio_i = (n-1) * sum_{t=0}^{n-2} ||z_{t+1} - z_t||^2
+                      / ||z_{n-1} - z_0||^2.clamp(min=mar_epsilon)
+
+        By Cauchy-Schwarz, ratio_i >= 1 for non-degenerate paths, with equality
+        iff the path is a geodesic (straight line) in latent space. The loss is
+        mean(relu(ratio_i - 1)) >= 0, equal to 0 only for geodesics or degenerate
+        (all-equal) paths. The relu prevents the degenerate case (path_action=0,
+        endpoint_sq clamped to mar_epsilon) from producing a negative loss and
+        creating an attractive gradient toward feature collapse.
+
+        Properties:
+        - Scale-invariant: multiplying all z by a constant leaves ratio unchanged,
+          so the loss cannot be driven to zero by feature shrinkage.
+        - No matrix operations: purely element-wise squared distances.
+        - Works for latent_dim=1 (in which case it penalises non-monotone paths).
+        - Collapse-safe: the relu ensures zero gradient when the network collapses.
+        """
+        per_path = []
+        for z in latent_sequences:
+            n = z.shape[0]
+            steps = z[1:] - z[:-1]                          # (n-1, d)
+            path_action = (steps * steps).sum()              # scalar
+            endpoint_sq = ((z[-1] - z[0]) ** 2).sum().clamp(min=mar_epsilon)
+            # clamp at 0: Cauchy-Schwarz guarantees ratio>=1 for non-degenerate paths;
+            # the relu prevents the collapsed (all-equal) case from giving -1 and
+            # creating an attractive gradient toward feature collapse.
+            per_path.append(torch.relu((n - 1) * path_action / endpoint_sq - 1.0))
+        return torch.stack(per_path).mean()
 
     """
     Training loop.
@@ -1041,10 +1115,38 @@ def fit(params,
                 lsr_contrib = float(lsr_term.detach())
                 loss = loss + lsr_term
 
+            # Minimum Action Regularization (MAR)
+            mar_contrib = 0.0
+            if mar_weight and n_mar_sequences > 0:
+                n_avail = n_mar_sequences
+                path_idxs = np.random.choice(n_avail, min(mar_bs, n_avail), replace=False)
+                latent_seqs = []
+                for pidx in path_idxs:
+                    if in_memory:
+                        raw_seq = mar_sequences_in_mem[pidx]
+                    else:
+                        npy_seq, lc_seq = mar_sequences_refs[pidx]
+                        raw_seq = _load_batch_descriptors(npy_seq, lc_seq)
+                    if not graphs:
+                        dv_mar = torch.flatten(
+                            torch.tensor(descriptor_transform(raw_seq),
+                                         dtype=dtype, device=device),
+                            start_dim=1)
+                    else:
+                        graph_list = descriptor_transform(raw_seq)
+                        dv_mar = Batch.from_data_list(graph_list).to(device).to_dict()
+                    network.train()
+                    z_seq = _get_latent(network, dv_mar)   # (n_frames_i, latent_dim)
+                    latent_seqs.append(z_seq)
+                mar_term = mar_weight * _mar_loss(latent_seqs)
+                mar_contrib = float(mar_term.detach())
+                loss = loss + mar_term
+
             # Store individual components for per-epoch logging (list mutation
             # is visible outside the closure without nonlocal)
             _epoch_losses[0] = float(committor_term.detach())
             _epoch_losses[1] = lsr_contrib
+            _epoch_losses[2] = mar_contrib
 
             loss.backward()
             return loss
@@ -1064,6 +1166,7 @@ def fit(params,
             'total_loss': losses[-1],
             'committor_loss': _epoch_losses[0],
             'lsr_loss': _epoch_losses[1],
+            'mar_loss': _epoch_losses[2],
             'scale': scales[-1],
         })
         Range = float(torch.min(q)), float(torch.max(q))
@@ -1171,7 +1274,8 @@ def fit(params,
         import csv
         with open(loss_log_path, 'w', newline='') as _f:
             _writer = csv.DictWriter(
-                _f, fieldnames=['epoch', 'total_loss', 'committor_loss', 'lsr_loss', 'scale'])
+                _f, fieldnames=['epoch', 'total_loss', 'committor_loss',
+                                'lsr_loss', 'mar_loss', 'scale'])
             _writer.writeheader()
             _writer.writerows(loss_log)
         print(f'    loss history saved to {loss_log_path}')
