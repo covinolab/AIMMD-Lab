@@ -338,7 +338,7 @@ class WorkerShoot(ABC):
                     index = len(chain) % len(self._initial)
                     fname_index, loc = self._initial._get_local_loc(index)
                     print(f'=== selecting frame '
-                          f'{path._fnames[fname_index]}, {loc}')
+                          f'{self._initial._fnames[fname_index]}, {loc}')
                     shooting_point = self._initial[index:index + 1]
                 
                 # clean
