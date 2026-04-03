@@ -263,7 +263,7 @@ class WorkerShoot(ABC):
                 print(f'\nLoading shooting results {now()}')
                 chain = params.shot_paths(directory, 'sweep', t, self._k)
                 print(f'*** report after {len(chain)} paths')
-                chain.report_shooting_results(states, sweep_size)
+                chain.report_shooting_results(states, len(self._initial))
                 print()
             
             # update total frames and steps
@@ -408,4 +408,4 @@ class WorkerShoot(ABC):
                 
                 else:  # print sweep summary
                     print(f'\nReport after {len(chain)} paths')
-                    chain.report_shooting_results(states, sweep_size)
+                    chain.report_shooting_results(states, len(self._initial))
