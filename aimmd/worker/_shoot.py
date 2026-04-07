@@ -120,12 +120,7 @@ Notes
 
 # external
 import os
-import time
-import numpy as np
 from abc import ABC
-from math import inf
-from tqdm import tqdm
-from numbers import Integral
 
 # aimmd imports
 from .utils import register_path
@@ -137,8 +132,6 @@ from .._config import print
 from ..cache.npy import save_npy
 from ..core.utils import now, remove, cycle, process_state
 from ..pathensemble import PathEnsemble
-from ..execute.threads import ThreadExecutor
-
 
 # worker "shoot" run method
 class WorkerShoot(ABC):
