@@ -67,7 +67,6 @@ import time
 from abc import ABC
 
 # aimmd imports
-from ..path import Path
 from ..core.utils import now, remove
 
 # WorkerSimulate mixin class
