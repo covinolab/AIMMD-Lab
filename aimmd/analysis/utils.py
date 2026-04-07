@@ -899,180 +899,159 @@ def find_path_lineages(*shooting_chains, verbose=False):
         pbar.close()
 
 
-def plot_path_lineages(*shooting_chains, out='path_tree.pdf',
+def plot_path_lineages(*shooting_chains, out='path_lineages',
                        states='ARB', source='values', 
                        vmin=-20, vmax=20, fields=None, show=False):
     """
-    Visualizes the genealogical history of AIMMD path sampling results
-    ensembles using an independently-packed grid layout. 
+    Visualizes the genealogical history of AIMMD path sampling results,
+    one shooting chain at a time.
     
-    Each lineage is treated as an autonomous vertical unit, allowing 
-    columns to stack tightly without being constrained by the length 
-    of chains in adjacent tiles. Labels are centered relative to the 
-    data axis of each column.
+    Parameters
+    ----------
+    shooting_chains: list of aimmd.PathEnsemble objects
+    out: str
+        Output filename prefix: <out>_chain<reactive><chain_number>.pdf
+    states: str
+        Identifies reactant (`states[0]`), reactive (`states[1]`), and product
+        (`states[2]`) in configuration space (`states[0] < states[2]`).
+    source: str
+        Where to get RC values from `shooting_chains`.
+    vmin: float
+        Do not plot values `< vmin`.
+    vmax: float
+        Do not plot values `> vmax`.
+    fields: list of str
+        Display additional path labels on plot. Labels must be assigned to
+        paths in `shooting_chains` as hidden attributes.
+        E.g., if you want to display the `_chain` label to each path, you need
+        to compute and assign a `path._chain` attribute to each path in each
+        pathensemble of `shooting_chains`, and then use `fields=['_chain']`.
+    show: bool, default False
+        Show plot. If `False`, close it.
+    
+    Returns
+    -------
+    None
     """
     
-    # --- 1. CONFIGURATION & STATE NORMALIZATION ---
-    states = sorted([states[0], states[-1]])
-    s_A, s_B = states[0], states[-1]
-    done, fnames, values = [], [], []
+    # initial and final states
+    i, f = sorted([states[0], states[-1]])
+    r = states[1]
+    states = f'{i}{r}{f}'
     
-    color_map = {
-        'AA': '#EE8866', 'BB': '#77AADD', 
-        'AB': '#44AA99', 'incomplete': '#BBBBBB',
-        'free_A': '#FF0000',  # Bright Red
-        'free_B': '#0000FF'   # Bright Blue
-    }
-    
-    # --- 2. LINEAGE EXTRACTION ---
-    for chain in shooting_chains:
-        i = len(chain) - 1
-        while i >= 0:
-            path = chain[i]
-            if path in done:
-                i -= 1
-                continue
-                        
-            curr_fnames, curr_vals = [], []
-            while True:
-                done.append(path)
-                s_val = path.shooting(source)
-                min_v = -inf if s_A in path.type else path.min(source)
-                max_v = inf if s_B in path.type else path.max(source)
-                
-                is_A, is_B = (min_v == -inf), (max_v == inf)
-                if is_A and not is_B: p_type = 'AA'
-                elif is_B and not is_A: p_type = 'BB'
-                elif is_A and is_B: p_type = 'AB'
-                else: p_type = 'incomplete'
-                
-                extra_info = ""
-                if fields:
-                    info_bits = [f"{f}:{getattr(path, f)}" 
-                                 for f in fields if hasattr(path, f)]
-                    extra_info = " | ".join(info_bits)
-
-                if not len(curr_vals) and getattr(path, '_last_in_chain', False):
-                    curr_vals.insert(0, (-inf, 0., +inf, None, None))
-                    curr_fnames.insert(0, '')
-                
-                curr_vals.insert(0, (min_v, s_val, max_v, p_type, extra_info))
-                curr_fnames.insert(0, path.fname)
-                
-                if not hasattr(path, '_previous'):
-                    i -= 1
-                    break
-                
-                prev = path._previous
-                if isinstance(prev, str):
-                    if 'initial' in prev: 
-                        curr_vals.insert(0, (-inf, s_val, inf, 'AB', ""))
-                    elif f'free{s_A}' in prev: 
-                        # Specific Color: Bright Red for free state A
-                        curr_vals.insert(0, (-inf, s_val, s_val, 'free_A', ""))
-                    elif f'free{s_B}' in prev: 
-                        # Specific Color: Bright Blue for free state B
-                        curr_vals.insert(0, (s_val, s_val, inf, 'free_B', ""))
-                    curr_fnames.insert(0, prev)
-                    i -= 1
-                    break
-                path = prev
-            
-            fnames.append(curr_fnames)
-            values.append(curr_vals)
-    
-    # --- 3. DYNAMIC BOUNDARY CALCULATION ---
-    flat_coords = []
-    for col in values:
-        for p in col:
-            flat_coords.extend([p[0], p[1], p[2]])
-    flat_coords = np.array(flat_coords)
-    real_coords = flat_coords[~np.isinf(flat_coords)]
-    
-    p_min = min(vmin, np.min(real_coords)) if real_coords.size > 0 else vmin
-    p_max = max(vmax, np.max(real_coords)) if real_coords.size > 0 else vmax
-    plot_width = p_max - p_min
-    
-    # --- 4. TILING GEOMETRY ---
-    num_total_chains = len(values)
-    if num_total_chains > 3:
-        max_cols = int(np.ceil(np.sqrt(num_total_chains)))
-    else:
-        max_cols = num_total_chains
-    
-    col_heights = [0.0] * max_cols
-    v_buffer = 2.5 
-    col_width = plot_width * 1.3
-    
-    positions = []
-    for idx, col_v in enumerate(values):
-        tile_c = idx % max_cols
-        chain_len = len(col_v)
-        y_start = col_heights[tile_c]
-        positions.append((tile_c, y_start))
-        col_heights[tile_c] += (chain_len + v_buffer)
+    # boundaries
+    print('Adjusting vmin, vmax', end='')
+    vmin = max(vmin, np.concatenate(sum(shooting_chains).values).min())
+    vmax = min(vmax, np.concatenate(sum(shooting_chains).values).max())
+    print(f': {vmin:.2f}, {vmax:.2f}')
         
-    total_max_height = max(col_heights)
-    fig, ax = plt.subplots(figsize=(max_cols * 4.5, total_max_height * 0.35 + 1))
-    
-    # --- 5. RENDERING ---
-    for idx, (col_f, col_v, (tile_c, y_base)) in enumerate(zip(fnames, values, positions)):
-        x_off = tile_c * col_width
-        y_top = total_max_height - y_base
-        chain_len = len(col_v)
-        
-        if tile_c < max_cols - 1:
-            sep_x = x_off + p_max + (col_width - plot_width) / 2
-            ax.vlines(sep_x, y_top - chain_len - 1, y_top + 1, color='#EEEEEE', lw=1.0, zorder=0)
+    # iterate for chain 
+    for k, chain in tqdm(enumerate(shooting_chains),
+                         total=len(shooting_chains)):
+        plt.figure(figsize=(4.5, len(chain) * 0.35 + 1))
+        y = len(chain)
+        for path in chain:
+            y -= 1.0
 
-        for r_idx, (v_min, v_s, v_max, p_type, extra) in enumerate(col_v):
-            y = y_top - r_idx
-            center_x = x_off + (p_min + p_max) / 2
-            if p_type is not None:
-                color = color_map.get(p_type, '#BBBBBB')
+            # connection with before
+            sv = path.shooting('values')
+            sv_clipped = np.clip(sv, vmin, vmax)
+            parent = getattr(path, '_previous', None)
+            if isinstance(parent, str):
+                y -= .5
+                if f'free{states[0]}/' in parent:
+                    color = 'red'
+                elif f'free{states[-1]}/' in parent:
+                    color = 'blue'
+                else:
+                    color = '#44AA99'
                 
-                d_min = p_min if v_min == -inf else v_min
-                d_max = p_max if v_max == inf else v_max
-                
-                ax.plot([d_min + x_off, d_max + x_off], [y, y], color=color, lw=3.0, zorder=2)
-                
-                if v_min == -inf:
-                    ax.text(d_min + x_off - 0.1, y, s_A, ha='right',
-                            va='center', weight='bold', color=color, fontsize=6)
-                if v_max == inf:
-                    ax.text(d_max + x_off + 0.1, y, s_B, ha='left',
-                            va='center', weight='bold', color=color, fontsize=6)
-                
-                ax.text(d_min + x_off, y - 0.22, f"{v_min:.2f}" if v_min != -inf else s_A,
-                        fontsize=5, ha='left', color='#666666', va='top')
-                ax.text(d_max + x_off, y - 0.22, f"{v_max:.2f}" if v_max != inf else s_B,
-                        fontsize=5, ha='right', color='#666666', va='top')
-                ax.text(v_s + x_off, y + 0.1, f"{v_s:.2f}",
-                        fontsize=5, ha='center', weight='bold', va='bottom')
-                
-                ax.scatter(v_s + x_off, y, color='white', ec='#333333', s=25, zorder=4)
-                
-                if r_idx > 0: 
-                    ax.vlines(v_s + x_off, y, y + 1, color='#BBBBBB', ls=':', lw=0.8, zorder=1)
-                
-                full_label = f"{col_f[r_idx]}  {extra}" if extra else col_f[r_idx]
-                ax.text(center_x, y + 0.25, full_label, fontsize=6.5,
-                        ha='center', va='bottom', alpha=0.9, family='monospace')
-
-            # just notify termination
+                plt.plot([vmin, vmax], [y + .75, y + .75], color=color)
+                plt.gca().text(vmin, y + .8, parent, fontsize=5,
+                               ha='left', va='bottom', family='monospace')
+                plt.plot([sv_clipped, sv_clipped], [y, y + .75], zorder=-1,
+                         linestyle=':', lw=1, color='#333333')
             else:
-                ax.text(center_x, y, 'XXX', fontsize=12, color='red',
-                        ha='center', va='center', alpha=0.9, family='monospace')
-    
-    # --- 6. CLEANUP ---
-    ax.axis('off')
-    ax.set_xlim(p_min - 2, max_cols * col_width)
-    ax.set_ylim(-1, total_max_height + 1)
-    
-    leg_handles = [Patch(color=c, label=k) for k, c in color_map.items() if not k.startswith('free_')]
-    ax.legend(handles=leg_handles, loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=4, frameon=False, fontsize=8)
-    
-    plt.tight_layout()
-    plt.savefig(out, bbox_inches='tight')
-    if show: plt.show()
-    else: plt.close()
+                plt.plot([sv_clipped, sv_clipped], [y, y + 1], zorder=-1,
+                         linestyle=':', lw=1, color='#333333')
+            
+            # plot bar and extreme values
+            path_type = path.type[:3]
+            if path_type in (states, states[::-1]):
+                plt.plot([vmin, vmax], [y, y],
+                         color='#44AA99', lw=3, zorder=2)
+                plt.gca().text(vmin, y, f'{i}  ',
+                               ha='right', va='center', weight='bold',
+                               color='red', fontsize=6)
+                plt.gca().text(vmax, y, f'  {f}',
+                               ha='left', va='center', weight='bold',
+                               color='blue', fontsize=6)
+            elif path_type == f'{states[0]}{states[1]}{states[0]}':
+                v = path.max('values')
+                plt.plot([vmin, min(v, vmax)], [y, y],
+                         color='#EE8866', lw=3, zorder=2)
+                plt.gca().text(vmin, y, f'{i}  ',
+                               ha='right', va='center', weight='bold',
+                               color='red', fontsize=6)
+                plt.gca().text(min(v, vmax), y, f'   {v:.2f}', fontsize=5,
+                               ha='left', va='center', color='#666666')
+            elif path_type == f'{states[2]}{states[1]}{states[2]}':
+                v = path.min('values')
+                plt.plot([max(v, vmin), vmax], [y, y],
+                         color='#77AADD', lw=3, zorder=2)
+                plt.gca().text(vmax, y, f'  {f}',
+                               ha='left', va='center', weight='bold',
+                               color='blue', fontsize=6)
+                plt.gca().text(max(v, vmin), y, f'{v:.2f}   ', fontsize=5,
+                               ha='right', va='center', color='#666666')
+            elif path_type[0] == states[0]:
+                v = path.max('values')
+                plt.plot([vmin, min(v, vmax)], [y, y],
+                         color='#BBBBBB', lw=3, zorder=2)
+                plt.gca().text(vmin, y, f'{i}   ',
+                               ha='right', va='center', weight='bold',
+                               color='red', fontsize=6)
+                plt.gca().text(min(v, vmax), y, f'  {v:.2f}', fontsize=5,
+                               ha='left', va='center', color='#666666')
+            elif path_type[0] == states[2]:
+                v = path.min('values')
+                plt.plot([max(v, vmin), vmax], [y, y],
+                         color='#BBBBBB', lw=3, zorder=2)
+                plt.gca().text(vmax, y, f'   {f}',
+                               ha='left', va='center', weight='bold',
+                               color='blue', fontsize=6)
+                plt.gca().text(max(v, vmin), y, f'{v:.2f}   ', fontsize=5,
+                               ha='right', va='center', color='#666666')
+            else:
+                v1 = path.min('values')
+                v2 = path.max('values')
+                plt.plot([max(v1, vmin), min(v2, vmax)], [y, y],
+                         color='#BBBBBB', lw=3, zorder=2)
+                plt.gca().text(max(v1, vmin), y, f'{v1:.2f}   ', fontsize=5,
+                               ha='right', va='center', color='#666666')
+                plt.gca().text(min(v2, vmax), y, f'   {v2:.2f}', fontsize=5,
+                               ha='left', va='center', color='#666666')
+
+            # plot shooting value
+            plt.plot(sv_clipped, y, 'o', color='black', ms=6)
+            plt.plot(sv_clipped, y, 'o', color='white', ms=4.5)
+            plt.gca().text(sv_clipped, y - .33, f'{sv:.2f}', fontsize=5,
+                           ha='center', va='center', color='#666666')
+            
+            # labels
+            text = f'{path.fname} ({len(path)})'
+            if fields:
+                text = " | ".join([text] + [
+                                   f"{getattr(path, f)}" 
+                                   for f in fields if hasattr(path, f)])
+            plt.gca().text(vmin, y + .3, text, fontsize=6.5,
+                           ha='left', va='center', family='monospace')
+        
+        # process and save picture
+        plt.gca().axis('off')
+        plt.gca().set_ylim(y-1, len(chain) + .5)
+        plt.savefig(f'{out}_chain{r}{k}.pdf', bbox_inches='tight')
+        if show:
+            plt.show()
+        else:
+            plt.close()
