@@ -76,22 +76,17 @@ Notes
 """
 
 # exteral
-import os
-import time
 import numpy as np
 from abc import ABC
-from math import inf
-from numbers import Integral
 
 # aimmd imports
 from ..path import Path
 from .._config import print
 from ..core.utils import now, remove, process_state
 from ..pathensemble import PathEnsemble
-from ..execute.threads import ThreadExecutor
 from ..pathensemble.utils import assemble_pathensemble
 
-
+# WorkerFree mixin class
 class WorkerFree(ABC):
 
     def free(self, target_state=0, k=0, total=1, wait=False):
