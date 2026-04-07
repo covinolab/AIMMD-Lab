@@ -37,9 +37,6 @@ update_network(...)
     Wait for a network checkpoint file to appear, then load into the current
     `params.network`.
 
-load_bins_and_densities(...)
-    Wait for `.npy` files to appear and validate shapes/consistency.
-
 copy()
     Shallow copy of Params (copies `__dict__`).
 
