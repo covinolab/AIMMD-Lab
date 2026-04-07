@@ -65,9 +65,7 @@ import torch
 import numpy as np
 import shutil
 from abc import ABC
-from glob import glob
 from math import inf, nan
-from tqdm import tqdm
 
 # aimmd imports
 from .utils import rescale_bins
@@ -76,11 +74,10 @@ from ..cache.npy import save_npy
 from ..core.utils import now, replace_in_cache
 from ..pathensemble import PathEnsemble
 from ..analysis.utils import compute_bins
-from ..execute.threads import ThreadExecutor
 from ..pathensemble.utils import assemble_pathensemble
 from ..network.rescale_utils import find_knots_and_values, rescale
 
-
+# WorkerTrain mixin class
 class WorkerTrain(ABC):
 
     def train(self, nrounds=1, keep_running=False, **kwargs):
