@@ -426,15 +426,17 @@ class ParamsMethods(ABC):
             os.system(f'rm -f .params_check_engine*')
             os.chdir(cwd)
 
-    def update_network(self, directory, timeout=20.,
+    def update_network(self, path, timeout=20.,
                        raise_if_failure=True):
         """
         Load a network checkpoint from disk into `self.network`.
 
         Parameters
         ----------
-        directory : str
-            Directory containing `network{states}.h5` checkpoint file.
+        path : str
+            If path to file: path containing the checkpoint file.
+            If path to directory: directory containing the
+            `network{params.states}.h5` checkpoint file.
         timeout : float, optional
             Maximum wait time (seconds) for the checkpoint to become readable.
         raise_if_failure : bool, optional
@@ -452,11 +454,18 @@ class ParamsMethods(ABC):
         """
         # find device
         device = next(self.network.parameters()).device
-
+        
         # find name
-        states = self.sorted_states
-        network_fname = f'{directory}/network{states}.h5'
-
+        if os.path.isfile(path):
+            network_fname = path
+        elif os.path.isdir(path):
+            states = self.sorted_states
+            network_fname = f'{path}/network{states}.h5'
+        elif raise_if_failure:
+            raise FileNotFoundError(f'{path!r} does not exist')
+        else:
+            print(f'Warning: {path!r} does not exist')
+        
         # advance only if data are present
         t0 = time.time()
         while True:
@@ -464,7 +473,7 @@ class ParamsMethods(ABC):
                 state_dict = torch.load(network_fname, map_location=device)
                 self.network.load_state_dict(state_dict)
                 return
-
+            
             # error only after timeout
             except Exception as exception:
                 if time.time() - t0 >= timeout:
