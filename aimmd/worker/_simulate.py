@@ -67,10 +67,9 @@ import time
 from abc import ABC
 
 # aimmd imports
-from ..path import Path
-from ..core.utils import now, remove, process_state
+from ..core.utils import now, remove
 
-
+# WorkerSimulate mixin class
 class WorkerSimulate(ABC):
     def _simulate(self, deffnm, trajectory, t, mode='shoot',
                   offset=0, extra_frames=0):
