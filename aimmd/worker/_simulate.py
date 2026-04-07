@@ -87,12 +87,15 @@ class WorkerSimulate(ABC):
         t : str
             Target state label(s) used by the stop logic. Interpretation depends
             on ``mode``:
-
             - ``mode='shoot'``: the simulation is considered complete when the
-              trajectory hits the state(s) in ``t``.
-            - ``mode='free'``: allowed states are ``f'{t}{states[1]}'``; the
-              first-frame check depends on whether ``t`` matches the second
-              state label in ``params.states``.
+              trajectory reaches a state different from ``t`` or hits
+              `worker.params.max_length` frames.
+            - ``mode='free'``: allowed states are
+              ``f'{t}{worker.params.states[1]}'``; the simulation is considered
+              complete when the trajectory reaches a state different from the
+              allowed ones or hits `worker.params.max_length` connected frames
+              inside one state; the first-frame check depends on whether ``t``
+              matches the second state label in ``params.states``.
         mode : {'shoot', 'free'}, optional
             Selects file naming conventions and stop-check settings. Default is
             ``'shoot'``.
