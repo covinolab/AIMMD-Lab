@@ -7,7 +7,8 @@ Safe `.npy` file utilities and a lightweight `.npy` reader cache.
 This module has two responsibilities:
 
 1) Safe on-disk storage of NumPy arrays
-   - `save_npy`: write an array atomically (temp file + replace), protected by a lock.
+   - `save_npy`: write an array atomically (temp file + replace),
+      protected by a lock.
    - `load_npy`: read an array under the same lock.
    - `update_npy`: update selected rows of an existing `.npy` file in place,
      also protected by a lock.
@@ -21,7 +22,7 @@ Locking model
 All operations use a per-file lock located next to the `.npy` file:
 
 - Data: ``<folder>/<name>.npy``
-- Lock: ``<folder>/.<name>.lock``
+- Lock: ``/tmp/.<name>.lock``
 
 The lock prevents readers from loading a file while it is being written or
 updated.
@@ -70,7 +71,7 @@ from .base import AbstractCache
 from ..core.utils import extract_folder_and_name, extend_array
 
 
-def save_npy(fname, array, timeout=5.):
+def save_npy(fname, array, timeout=10.):
     """
     Save an array to a `.npy` file safely (lock + atomic replace).
 
@@ -98,23 +99,22 @@ def save_npy(fname, array, timeout=5.):
     before each successive attempt.
     """
     folder, name = extract_folder_and_name(fname)
-    temp = f'{folder}/.{name}'
-    lock = f'{folder}/.{name}.lock'
-    error_message = None
-    for _ in range(10):
+    max_retries = 10
+    temp_fname = f'{folder}/temp.{name}'
+    lock = f'/tmp/.{name}.lock'
+    for _ in range(max_retries):
         try:
             with FileLock(lock, timeout=timeout):
-                np.save(temp, array)
-                os.replace(temp, fname)
+                np.save(temp_fname, array)
+                os.replace(temp_fname, fname)
                 return
         except Exception as exception:
             error_message = str(exception)
             time.sleep(0.1)
-    if error_message is not None:
-        raise RuntimeError(error_message)
+    raise RuntimeError(error_message)
 
 
-def load_npy(fname, timeout=5.):
+def load_npy(fname, timeout=10.):
     """
     Load an array from a `.npy` file safely (under a lock).
 
@@ -137,33 +137,32 @@ def load_npy(fname, timeout=5.):
     -----
     This function is intentionally permissive and returns None on failure.
     """
-    if not os.path.exists(fname):
-        return None
+    folder, name = extract_folder_and_name(fname)
+    lock = f'/tmp/.{name}.lock'
     try:
-        folder, name = extract_folder_and_name(fname)
-        lock = f'{folder}/.{name}.lock'
         with FileLock(lock, timeout=timeout):
             return np.load(fname)
     except:
         return None
 
 
-def update_npy(fname, data, indices, timeout=5.):
+def update_npy(fname, data, indices, timeout=10.):
     """
     Update selected rows (axis 0) of a `.npy` file in place.
 
-    This function is optimized for high-performance computing environments where 
-    network filesystems (NFS/Lustre) may exhibit transient I/O latencies. It 
-    combines file locking, atomic binary writes, and a retry mechanism to 
-    prevent race conditions and 'Errno 5' (I/O) errors from crashing long-running 
-    simulations.
+    This function is optimized for high-performance computing environments
+    where network filesystems (NFS/Lustre) may exhibit transient I/O
+    latencies. It  combines file locking, atomic binary writes, and a retry
+    mechanism to  prevent race conditions and 'Errno 5' (I/O) errors from
+    crashing long-running  simulations.
 
     Parameters
     ----------
     fname : str
         Path to the target `.npy` file.
     data : array-like
-        The data to be written. Must match the trailing shape of the existing file.
+        The data to be written. Must match the trailing shape of the existing
+        file.
     indices : int or array-like of int
         The row index (or indices) along axis 0 where data should be written.
     timeout : float
@@ -176,34 +175,39 @@ def update_npy(fname, data, indices, timeout=5.):
         - If the stored dtype in the file does not match the input data dtype.
         - If the trailing shape (axis 1+) does not match the file.
     OSError
-        - If the filesystem remains unresponsive after the maximum number of retries.
+        - If the filesystem remains unresponsive after the maximum number of
+          retries.
 
     Implementation Details
     ----------------------
     1. Header Assumption: Assumes a fixed 128-byte header for fast seeking.
-    2. Atomic Growth: Uses `file.truncate` to grow the file if indices exceed size.
-    3. Resilience: Wraps binary I/O in a 5-attempt retry loop with exponential backoff.
-    4. Data Integrity: Uses `os.fsync` to ensure bits are physically committed to disk.
+    2. Atomic Growth: Uses `file.truncate` to grow the file if indices exceed
+       size.
+    3. Resilience: Wraps binary I/O in a 5-attempt retry loop with exponential
+       backoff.
+    4. Data Integrity: Uses `os.fsync` to ensure bits are physically committed
+       to disk.
     """
     
-    # --- 1. Argument Normalization & Validation ---
+    # argument normalization and validation
     if isinstance(indices, (int, Integral)):
         data = [data]
     data = np.atleast_1d(data)
     indices = np.asarray(indices).flatten()
     
-    # Determine the minimum required length of the first axis
+    # determine the minimum required length of the first axis
     min_size = int(indices.max()) + 1
     data_shape = data.shape
     data_dtype = data.dtype
     data_descr = data_dtype.descr
     
-    # We restrict to simple dtypes to ensure rowsize calculation is deterministic
+    # restrict to simple dtypes to ensure rowsize calculation is deterministic
     if len(data_descr) > 1:
-        raise RuntimeError('Only simple arrays (single dtype) are supported for in-place updates.')
+        raise RuntimeError('Only simple arrays (single dtype) '
+                           'are supported for in-place updates.')
     
-    # --- 2. Creation Logic ---
-    # If the file doesn't exist, we materialize a zero-filled array and save it.
+    # creation logic
+    # If the file doesn't exist, materialize a zero-filled array and save it.
     # Note: save_npy must also have retry logic to be fully safe.
     if not os.path.exists(fname):
         new_shape = (min_size,) + data_shape[1:]
@@ -212,26 +216,28 @@ def update_npy(fname, data, indices, timeout=5.):
         save_npy(fname, result)
         return
     
-    # --- 3. Geometric Calculations ---
-    # Calculate bytes per row (excluding axis 0)
+    # geometric calculations
+    # calculate bytes per row (excluding axis 0)
     rowsize = data.itemsize
     if len(data_shape) > 1:
         rowsize *= np.prod(data_shape[1:])
     rowsize = int(rowsize)
     
-    # Isolate folder and lockfile path
-    folder, name = os.path.split(fname)
-    lock_path = os.path.join(folder, f'.{name}.lock')
-   
-    # --- 4. Robust Binary I/O Loop ---
-    # Cluster filesystems often fail during metadata updates (rename/truncate/fsync).
-    # We retry the entire block to ensure a "Stale File Handle" or "I/O Error" 
-    # doesn't terminate the parent simulation process.
+    # extract folder and name
+    folder, name = extract_folder_and_name(fname)
+    
+    # robust binary I/O loop
+    # Cluster filesystems often fail during metadata updates
+    # (rename/truncate/fsync).
+    # We retry the entire block to ensure a "Stale File Handle" or
+    # "I/O Error" doesn't terminate the parent simulation process.
     max_retries = 5
+    lock = f'/tmp/.{name}.lock'
     for attempt in range(max_retries):
         try:
-            with FileLock(lock_path, timeout=timeout):
-                # open in 'r+b' (read/write binary) to allow seeking without clearing file
+            with FileLock(lock, timeout=timeout):
+                # open in 'r+b' (read/write binary) to allow seeking
+                # without clearing file
                 with open(fname, "r+b") as file:
                     # header is assumed to be the first 128 bytes
                     header = file.read(128)
@@ -241,65 +247,71 @@ def update_npy(fname, data, indices, timeout=5.):
                     descr_end = header.find(b", 'fortran")
                     existing_descr = header[descr_begin:descr_end]
                     
-                    # convert input dtype to the .npy string format (e.g., '<f8')
+                    # convert input dtype to the .npy string format
                     target_descr_encoded = f"'{data_dtype.str}'".encode()
                     
                     if existing_descr != target_descr_encoded:
-                        raise RuntimeError(f"Dtype mismatch in {fname}. "
-                                           f"File: {existing_descr.decode()}, "
-                                           f"Input: {target_descr_encoded.decode()}")
+                        raise RuntimeError(
+                            f"Dtype mismatch in {fname}. "
+                            f"File: {existing_descr.decode()}, "
+                            f"Input: {target_descr_encoded.decode()}")
                     
                     # extract/validate shape
                     shape_begin = header.find(b"'shape': (") + 9
-                    shape_end = shape_begin + header[shape_begin:].find(b'),') + 1
-                    shape_str = header[shape_begin + 1:shape_end - 1].decode('latin1')
-                    existing_shape = tuple([int(s) for s in shape_str.split(',') if s.strip()])
+                    shape_end = (shape_begin +
+                                 header[shape_begin:].find(b'),') + 1)
+                    shape_str = header[shape_begin + 1:shape_end - 1]
+                    shape_str = shape_str.decode('latin1')
+                    existing_shape = tuple([int(s) for s in
+                        shape_str.split(',') if s.strip()])
                     
                     if existing_shape[1:] != data_shape[1:]:
-                        raise RuntimeError(f"Shape mismatch. "
-                                           f"File trailing shape: {existing_shape[1:]}, "
-                                           f"Input: {data_shape[1:]}")
+                        raise RuntimeError(
+                            f"Shape mismatch. "
+                            f"File trailing shape: {existing_shape[1:]}, "
+                            f"Input: {data_shape[1:]}")
                     
                     # resize file if growing
                     current_size = int(existing_shape[0])
                     new_size = max(min_size, current_size)
                     
                     if current_size != new_size:
-                        # Grow the file physically to accommodate the new maximum index
+                        # grow the file physically to accommodate
+                        # the new maximum index
                         file.truncate(128 + new_size * rowsize)
                     
-                    # write data: seek to specific byte offsets and overwrite segments
+                    # write data: seek to specific byte offsets
+                    # and overwrite segments
                     for i, rowdata in zip(indices, data):
                         file.seek(128 + i * rowsize)
                         file.write(rowdata.tobytes())
                     
                     # update header
-                    # if the size of axis 0 changed, we must rewrite the header 
-                    # so that np.load() recognizes the new frames
+                    # if the size of axis 0 changed, we must rewrite the
+                    # header so that np.load() recognizes the new frames
                     if current_size != new_size:
                         new_shape_tuple = (new_size,) + existing_shape[1:]
-                        # Reconstruct the shape string in the header buffer
+                        # reconstruct shape string in the header buffer
                         header = (header[:shape_begin] +
                                   str(new_shape_tuple).encode('latin1') +
                                   header[shape_end:])[:127] + b"\n"
                         file.seek(0)
                         file.write(header)
                     
-                    # Force the OS to flush buffers to the physical storage device
+                    # force the OS to flush buffers to the
+                    # physical storage device
                     file.flush()
                     os.fsync(file.fileno())
             
-            # successfully completed the write
-            break 
+            # completed
+            return 
             
         except OSError as exception:
-            # catch transient errors (Errno 5, 116, etc.) and retry
-            if attempt < max_retries - 1:
-                # sleep and retry
-                time.sleep(.1)
-                continue
-            # rethrow if we still fail after max_retries
-            raise exception
+            error_message = str(exception)
+            time.sleep(.1)
+    
+    # raise error
+    raise RuntimeError(error_message)
 
 
 class NpyReaderCache(AbstractCache):
@@ -310,7 +322,8 @@ class NpyReaderCache(AbstractCache):
     --------
     - Loads arrays using :func:`load_npy`.
     - Marks arrays as read-only before returning/caching them.
-    - Uses the base cache eviction mechanism when the heuristic size budget is exceeded.
+    - Uses the base cache eviction mechanism when the heuristic size budget
+      is exceeded.
 
     Attributes
     ----------
@@ -343,7 +356,8 @@ class NpyReaderCache(AbstractCache):
         Raises
         ------
         TypeError
-            If the file cannot be loaded (missing file, lock timeout, corruption).
+            If the file cannot be loaded (missing file, lock timeout,
+            corruption).
         """
         result = load_npy(fname)
         if result is None:
@@ -365,6 +379,7 @@ class NpyReaderCache(AbstractCache):
         Returns
         -------
         numpy.ndarray
-            Extended array (read-only), or the original array if already long enough.
+            Extended array (read-only), or the original array if already
+            long enough.
         """
         return extend(instance, min_length)
