@@ -699,6 +699,19 @@ class WorkerTrain(ABC):
 
             pathensemble = assemble_pathensemble(sub_chains, sub_free)
 
+            # Recompute any missing descriptor cache files before computing
+            # values — mirrors the equivalent provision in _train so that the
+            # convergence loop is robust to missing/deleted descriptor files.
+            if params.compute_descriptors_args is not None:
+                n = pathensemble.compute(*params.compute_descriptors_args)
+                if n:
+                    print(f'... (re)computed {n} missing descriptor frames')
+                initial_paths_pe = assemble_pathensemble(self.initial_paths)
+                n = initial_paths_pe.compute(*params.compute_descriptors_args)
+                if n:
+                    print(f'... (re)computed {n} missing initial path '
+                          f'descriptor frames')
+
             # ensure existing value files are present (fill missing only)
             n = pathensemble.compute(**_compute_kwargs('values'))
             if n:
