@@ -63,6 +63,7 @@ import os
 import time
 import numpy as np
 import psutil
+import shutil
 from numbers import Integral
 from filelock import FileLock
 
@@ -232,13 +233,14 @@ def update_npy(fname, data, indices, timeout=10.):
     # We retry the entire block to ensure a "Stale File Handle" or
     # "I/O Error" doesn't terminate the parent simulation process.
     max_retries = 5
+    temp = fname
     lock = f'{folder}/.{name}.lock'
     for attempt in range(max_retries):
         try:
             with FileLock(lock, timeout=timeout):
                 # open in 'r+b' (read/write binary) to allow seeking
                 # without clearing file
-                with open(fname, "r+b") as file:
+                with open(temp, "r+b") as file:
                     # header is assumed to be the first 128 bytes
                     header = file.read(128)
                     
@@ -303,10 +305,19 @@ def update_npy(fname, data, indices, timeout=10.):
                     file.flush()
                     os.fsync(file.fileno())
             
+            # back to fname
+            if attempt == max_retries - 1:
+                shutil.copyfile(temp, fname)
+                os.remove(temp)
+            
             # completed
             return 
             
         except OSError as exception:
+            # last resort: move to /tmp
+            if attempt == max_retries - 2:
+                temp = f'/tmp/.{name}'
+                shutil.copyfile(fname, temp)
             error_message = str(exception)
             time.sleep(.1)
     
