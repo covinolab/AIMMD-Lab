@@ -22,7 +22,7 @@ Locking model
 All operations use a per-file lock located next to the `.npy` file:
 
 - Data: ``<folder>/<name>.npy``
-- Lock: ``/tmp/.<name>.lock``
+- Lock: ``<folder>/.<name>.lock``
 
 The lock prevents readers from loading a file while it is being written or
 updated.
@@ -101,7 +101,7 @@ def save_npy(fname, array, timeout=10.):
     folder, name = extract_folder_and_name(fname)
     max_retries = 10
     temp_fname = f'{folder}/temp.{name}'
-    lock = f'/tmp/.{name}.lock'
+    lock = f'{folder}/.{name}.lock'
     for _ in range(max_retries):
         try:
             with FileLock(lock, timeout=timeout):
@@ -138,7 +138,7 @@ def load_npy(fname, timeout=10.):
     This function is intentionally permissive and returns None on failure.
     """
     folder, name = extract_folder_and_name(fname)
-    lock = f'/tmp/.{name}.lock'
+    lock = f'{folder}/.{name}.lock'
     try:
         with FileLock(lock, timeout=timeout):
             return np.load(fname)
@@ -232,7 +232,7 @@ def update_npy(fname, data, indices, timeout=10.):
     # We retry the entire block to ensure a "Stale File Handle" or
     # "I/O Error" doesn't terminate the parent simulation process.
     max_retries = 5
-    lock = f'/tmp/.{name}.lock'
+    lock = f'{folder}/.{name}.lock'
     for attempt in range(max_retries):
         try:
             with FileLock(lock, timeout=timeout):
