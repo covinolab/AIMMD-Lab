@@ -502,6 +502,58 @@ Scheduling model:
                  })
 
     # ------------------------------------------------------------------
+    # Bias recording options
+    # ------------------------------------------------------------------
+
+    record_bias: bool = field(
+        default=False,
+        metadata={'description':
+"""If True, record the instantaneous bias potential for each trajectory frame.
+The bias is extracted by `bias_function` and cached as `<traj>.bias.npy` alongside
+each trajectory file. Only when `record_bias=True` are bias caches computed and
+Tiwary-Parrinello-corrected rate estimates printed during training.
+Set to False (default) for unbiased runs; existing runs are fully unaffected."""
+                 })
+
+    bias_function: Callable = field(
+        default=None,
+        metadata={'description':
+"""Callable that extracts the bias potential for each frame, in kT units (dimensionless).
+Two calling conventions are supported (selected by `bias_source`):
+
+- `bias_source = 'reader'` (default, toy/position-based):
+      bias_function(trajectory_reader) -> ndarray of shape (n_frames,)
+  Same convention as `states_function`. Called per-batch by `path.compute(...)`.
+
+- `bias_source = 'file'` (PLUMED/GROMACS):
+      bias_function(fname: str) -> ndarray of shape (n_frames_in_file,)
+  Receives the trajectory file path; the function locates the associated PLUMED
+  output (e.g. COLVAR file) and returns bias values for ALL frames in the file.
+  No re-running of PLUMED is required.
+
+In both modes, results are cached as `<traj>.bias.npy` and accessed via `path.bias`."""
+                 })
+
+    bias_source: str = field(
+        default='reader',
+        metadata={'description':
+"""Determines the calling convention of `bias_function`. Supported values:
+- 'reader' : bias_function(trajectory_reader) -> ndarray  [default; toy/position-based]
+- 'file'   : bias_function(fname: str) -> ndarray         [PLUMED/GROMACS file-based]
+See `bias_function` for details on each mode."""
+                 })
+
+    bias_reactive_threshold: float = field(
+        default=0.5,
+        metadata={'description':
+"""Maximum acceptable mean |bias| (in kT) in the reactive region R.
+After bias computation, the training worker checks the mean absolute bias over all
+frames whose state label equals the reactive-region label (e.g. 'R' in 'ARB').
+If the mean exceeds this threshold, a warning is printed. This validates the
+Tiwary-Parrinello assumption that the bias is negligible inside R."""
+                 })
+
+    # ------------------------------------------------------------------
     # Internal bookkeeping
     # ------------------------------------------------------------------
 

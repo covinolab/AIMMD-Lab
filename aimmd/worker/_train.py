@@ -70,7 +70,7 @@ from math import inf, nan
 
 # aimmd imports
 from .utils import rescale_bins
-from .._config import NPY_CACHE, print
+from .._config import NPY_CACHE, MDA_CACHE, print
 from ..cache.npy import save_npy
 from ..core.utils import now, replace_in_cache
 from ..pathensemble import PathEnsemble
@@ -170,6 +170,10 @@ class WorkerTrain(ABC):
             'batch_size': batch_size}
         # initalize everywhere; compute just on the reactive region
         save_interval = params.network_save_interval
+        record_bias = params.record_bias
+        bias_function = params.bias_function
+        bias_source = params.bias_source
+        bias_reactive_threshold = params.bias_reactive_threshold
         initial_paths = self.initial_paths
         # only transitions
         initial_paths = initial_paths.extract(states, states[::-1])
@@ -271,6 +275,44 @@ class WorkerTrain(ABC):
                 n = initial_paths_pe.compute(*params.compute_descriptors_args)
                 if n:
                     print(f"... (re)computed {n} missing inital path descriptor frames")
+
+            # Compute bias potential per frame (only when record_bias is enabled)
+            if record_bias and bias_function is not None:
+                if bias_source == 'reader':
+                    # reader-based: same convention as states_function / descriptors_function
+                    print(f'\nComputing bias cache (reader mode) {now()}')
+                    n = pathensemble.compute(
+                        function=bias_function,
+                        target='bias',
+                        source='reader',
+                        batch_size=batch_size)
+                    if n:
+                        print(f'... computed {n} bias frames')
+                elif bias_source == 'file':
+                    # file-based: bias_function(fname) -> full file array; cache once per file
+                    print(f'\nComputing bias cache (file mode) {now()}')
+                    seen = set()
+                    n_cached = 0
+                    for _path in pathensemble:
+                        for _fname in _path._fnames:
+                            if _fname in seen:
+                                continue
+                            seen.add(_fname)
+                            _cache_fname = get_cache_fname(_fname, 'bias')
+                            _reader = MDA_CACHE.get(_fname)
+                            if _reader is None:
+                                continue
+                            _n_traj_frames = len(_reader.trajectory)
+                            _existing = NPY_CACHE.get(
+                                _cache_fname, min_length=_n_traj_frames)
+                            if _existing is not None:
+                                continue  # already cached with enough frames
+                            _bias = bias_function(_fname)
+                            save_npy(_cache_fname, np.asarray(_bias, dtype=float))
+                            NPY_CACHE.remove(_cache_fname)
+                            n_cached += 1
+                    if n_cached:
+                        print(f'... wrote bias cache for {n_cached} trajectory files')
 
             print(f'\nComputing the committor values of '
                   f'the new reactive {r} frames {now()}')
@@ -393,7 +435,22 @@ class WorkerTrain(ABC):
             print(f'    k12 estimate: {k12:.3e} [1/dt]')
             print(f'    k21 estimate: {k21:.3e} [1/dt]')
             print(f'    {lengths.sum()} frames (excluded margins)')
-            
+
+            # Bias-reweighted rates (only when record_bias is enabled)
+            if record_bias:
+                from ..pathensemble.bias_utils import (
+                    check_reactive_bias, compute_bias_corrections)
+                check_reactive_bias(
+                    pathensemble, states, bias_reactive_threshold)
+                gamma1 = compute_bias_corrections(pathensemble, w1)
+                gamma2 = compute_bias_corrections(pathensemble, w2)
+                k12_rw = np.sum(w1 * lengths * gamma1)
+                k12_rw = 1 / k12_rw if k12_rw else nan
+                k21_rw = np.sum(w2 * lengths * gamma2)
+                k21_rw = 1 / k21_rw if k21_rw else nan
+                print(f'    k12 bias-reweighted: {k12_rw:.3e} [1/dt]')
+                print(f'    k21 bias-reweighted: {k21_rw:.3e} [1/dt]')
+
             # only after one training round: rescale committor
             # TODO in the future you may want to adjust it
             # after every reweighting
