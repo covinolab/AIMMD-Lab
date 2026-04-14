@@ -144,9 +144,22 @@ def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Con
         compressed_data = msgpack_bytes
     else:
         raise ValueError(f"Unknown compression library: {compression_lib}")
-    conn.execute("INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)", (key, compressed_data))
-    conn.commit()
+    
+    # try storing, if it fails due to database lock, retry a few times with some delay
+    for _ in range(10):
+        try:
+            conn.execute("INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)", (key, compressed_data))
+            conn.commit()
+            return # success
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e):
+                time.sleep(0.05)
+            else:
+                raise
 
+    # persistent problem
+    raise RuntimeError("Failed to store graph in SQLite after multiple attempts due to persistent database lock.")
+    
 
 def get_stable_hash(config: mlcolvar.data.graph.atomic.Configurations) -> str:
     """ Get a stable hash for a configuration.
