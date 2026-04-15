@@ -5,7 +5,7 @@ Public package entry point.
 
 This module:
 - triggers one-time initialization (see :func:`aimmd._init.initialize`),
-- re-exports configuration symbols from :mod:`aimmd._config`,
+- re-exports selected configuration symbols from :mod:`aimmd._config`,
 - exposes the most important high-level classes at package scope.
 
 What happens on import
@@ -25,6 +25,10 @@ The following objects are made available at top-level:
 - ``aimmd.PathEnsemble``: main dataset/ensemble container
 - ``aimmd.Worker``: worker logic for running simulations / evaluations
 - ``aimmd.Launcher``: orchestration logic
+
+From :mod:`aimmd._config`:
+- ``GROMACS``, ``PARENT``, ``WORKER``, ``EM_MDP``
+- ``NPY_CACHE``, ``MDA_CACHE``
 
 Versioning
 ----------
@@ -46,15 +50,14 @@ from .worker import Worker
 from .launcher import Launcher
 from .pathensemble import PathEnsemble
 
-# all/version
-__all__ = ['__version__']
-__all__.extend(dir(_config))
-__all__.remove('_initialized')
-__all__.extend(['utils',
-    'Path', 'Params', 'PathEnsemble',
-    'Worker', 'Launcher'
-])
+# version/all
 __version__ = '0.1.0'
+__all__ = [
+    '__version__', 'utils',
+    'Path', 'Params', 'PathEnsemble',
+    'Worker', 'Launcher', 'GROMACS',
+    'PARENT', 'WORKER', 'EM_MDP',
+    'NPY_CACHE', 'MDA_CACHE']
 
 # summary/representation
 def _summary() -> str:
