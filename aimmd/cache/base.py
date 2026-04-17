@@ -185,8 +185,8 @@ class AbstractCache(ABC):
         # Attempt fast-path lookup.
         instance = self._cache.get(fname, None)
 
-        # Reload if not present or insufficient length.
-        if instance is None or len(instance) < min_length:
+        # Reload if not present, unsized (0-d corrupt/None save), or too short.
+        if instance is None or not hasattr(instance, '__len__') or len(instance) < min_length:
             new = self.load(fname)
             if new is not None:
                 instance = new

@@ -84,7 +84,9 @@ from abc import ABC
 # aimmd imports
 from ..path import Path
 from .._config import print
+from ..cache.npy import save_npy
 from ..core.utils import now, remove, process_state
+from ..path.utils import get_cache_fname
 from ..pathensemble.utils import assemble_pathensemble
 
 # WorkerFree mixin class
@@ -275,6 +277,24 @@ class WorkerFree(ABC):
                 # last frame (initialize simulation)
                 # already divide in parts if more than one frame
                 params.initialize_simulation(initial_frames, deffnm)
+
+                # PLUMED file-mode bias tracking: the part0000 segment is the
+                # python-written seed (initialize_simulation writes
+                # initial_frames[:-1] there). GROMACS never runs on it, so
+                # PLUMED produces no COLVAR data and run_simulation cannot
+                # slice a per-part _COLVAR for it. Without a bias cache here,
+                # path._get('bias', raise_if_missing=True) would fail and the
+                # whole free trajectory would fall back to gamma=1.0 in the
+                # bias correction. Approximate the seed-frame bias as 0
+                # (1-frame-out-of-thousands; bypasses bias_function which has
+                # no source COLVAR to read).
+                if (getattr(params, 'record_bias', False)
+                        and getattr(params, 'bias_source', '') == 'file'):
+                    seed_n = max(len(initial_frames) - 1, 0)
+                    if seed_n > 0:
+                        seed_xtc = f'{deffnm}.part0000{ext}'
+                        save_npy(get_cache_fname(seed_xtc, 'bias'),
+                                 np.zeros(seed_n, dtype=float))
 
             # update old_nframes
             old_nframes = nframes

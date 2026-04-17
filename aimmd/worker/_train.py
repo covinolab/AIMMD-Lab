@@ -82,6 +82,68 @@ from ..path.utils import get_cache_fname
 # WorkerTrain mixin class
 class WorkerTrain(ABC):
 
+    def _cache_bias_files(self, pathensemble, bias_function):
+        """Cache per-file bias arrays (file-mode bias tracking).
+
+        For each unique trajectory file in ``pathensemble``, ensure
+        ``{fname}.bias.npy`` exists and covers at least every frame of the
+        underlying trajectory. The cache is rewritten whenever the existing
+        ``bias.npy`` is shorter than the current frame count — this matters
+        because free trajectories grow between rounds while a stale
+        ``bias.npy`` would otherwise satisfy a naive ``is not None`` check
+        and silently produce truncated bias slices in
+        :func:`compute_bias_corrections`.
+
+        ``bias_function(fname)`` is expected to return a 1-D array of length
+        equal to the current trajectory frame count, or ``None`` if no bias
+        source is available for that file (in which case the file is left
+        alone — a worker-level fallback, e.g. the zero-bias cache written by
+        ``_free.py`` for the part0000 seed, may already be in place).
+
+        Parameters
+        ----------
+        pathensemble : PathEnsemble
+            Ensemble whose underlying trajectory files should have up-to-date
+            bias caches.
+        bias_function : callable
+            ``params.bias_function`` (``bias_source='file'``).
+
+        Notes
+        -----
+        Prints ``Computing bias cache (file mode)`` at invocation and
+        ``... wrote bias cache for N trajectory files`` when any rewrite
+        happened.
+        """
+        print(f'\nComputing bias cache (file mode) {now()}')
+        seen = set()
+        n_cached = 0
+        for _path in pathensemble:
+            for _fname in _path._fnames:
+                if _fname in seen:
+                    continue
+                seen.add(_fname)
+                _cache_fname = get_cache_fname(_fname, 'bias')
+                _reader = MDA_CACHE.get(_fname)
+                if _reader is None:
+                    continue
+                _n_traj_frames = len(_reader.trajectory)
+                _existing = NPY_CACHE.get(
+                    _cache_fname, min_length=_n_traj_frames)
+                # Enforce length: `NPY_CACHE.get` returns whatever it finds
+                # on disk even if it's shorter than `min_length`, so a short
+                # stale file would satisfy `is not None`. Check length too.
+                if (_existing is not None
+                        and len(_existing) >= _n_traj_frames):
+                    continue
+                _bias = bias_function(_fname)
+                if _bias is None:
+                    continue  # no COLVAR for this file; skip
+                save_npy(_cache_fname, np.asarray(_bias, dtype=float))
+                NPY_CACHE.remove(_cache_fname)
+                n_cached += 1
+        if n_cached:
+            print(f'... wrote bias cache for {n_cached} trajectory files')
+
     def train(self, nrounds=1, keep_running=False, **kwargs):
         """
         Public convenience wrapper for the training task.
@@ -289,30 +351,9 @@ class WorkerTrain(ABC):
                     if n:
                         print(f'... computed {n} bias frames')
                 elif bias_source == 'file':
-                    # file-based: bias_function(fname) -> full file array; cache once per file
-                    print(f'\nComputing bias cache (file mode) {now()}')
-                    seen = set()
-                    n_cached = 0
-                    for _path in pathensemble:
-                        for _fname in _path._fnames:
-                            if _fname in seen:
-                                continue
-                            seen.add(_fname)
-                            _cache_fname = get_cache_fname(_fname, 'bias')
-                            _reader = MDA_CACHE.get(_fname)
-                            if _reader is None:
-                                continue
-                            _n_traj_frames = len(_reader.trajectory)
-                            _existing = NPY_CACHE.get(
-                                _cache_fname, min_length=_n_traj_frames)
-                            if _existing is not None:
-                                continue  # already cached with enough frames
-                            _bias = bias_function(_fname)
-                            save_npy(_cache_fname, np.asarray(_bias, dtype=float))
-                            NPY_CACHE.remove(_cache_fname)
-                            n_cached += 1
-                    if n_cached:
-                        print(f'... wrote bias cache for {n_cached} trajectory files')
+                    # file-based: bias_function(fname) -> full file array
+                    self._cache_bias_files(
+                        pathensemble, bias_function)
 
             print(f'\nComputing the committor values of '
                   f'the new reactive {r} frames {now()}')
@@ -438,6 +479,13 @@ class WorkerTrain(ABC):
 
             # Bias-reweighted rates (only when record_bias is enabled)
             if record_bias:
+                # Re-cache bias files right before gamma is computed: between
+                # round start and here, free trajectories can have grown by
+                # hundreds of frames (see `... N new frames` on ensemble reload
+                # after training). A stale bias.npy would silently produce a
+                # truncated slice and drag gamma toward 1.0.
+                if bias_source == 'file' and bias_function is not None:
+                    self._cache_bias_files(pathensemble, bias_function)
                 from ..pathensemble.bias_utils import (
                     check_reactive_bias, compute_bias_corrections)
                 check_reactive_bias(
