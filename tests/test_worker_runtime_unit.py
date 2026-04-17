@@ -305,7 +305,7 @@ def test_shoot_registers_completed_path_and_updates_non_tps_weight(monkeypatch, 
     simulate_results = iter([(0, len(back), "A", len(back)), (0, len(forw), "B", len(forw))])
     monkeypatch.setattr(worker, "_simulate", lambda *args, **kwargs: next(simulate_results), raising=False)
 
-    def stop_after_one_register(path, chain_, eneconv):
+    def stop_after_one_register(path, chain_, eneconv, **kwargs):
         chain_.append(path)
         worker.must_stop = True
 

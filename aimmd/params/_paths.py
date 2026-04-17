@@ -53,14 +53,18 @@ from ..pathensemble.utils import assemble_pathensemble
 # params' paths loading methods
 class ParamsPaths(ABC):
 
-    def free_trajectories(self, directory):
+    def free_trajectories(self, directory, target_state=None):
         """
         Collect (unsplit) free trajectories from an AIMMD run directory.
 
         Parameters
         ----------
         directory : str
-            Base run directory containing `free{state}/traj??????.part????` files.
+            Base run directory containing `free{target_state}/traj??????.part????`
+            trajectory files.
+        target_state : str, optional
+            If None, load for all states in `self.states`.
+            Otherwise interpreted via `process_state(target_state, self.states)`.
         
         Returns
         -------
@@ -87,9 +91,15 @@ class ParamsPaths(ABC):
         # get "offset" for determining the path number
         ext = self.trajectory_extension
         offset = len(ext) + 9
-
+        
+        # find allowed folders
+        if target_state is None:
+            states = self.states
+        else:
+            states = process_state(target_state, self.states)
+        
         # iterate on allowed folders
-        for t in self.states:
+        for t in states:
             # which paths are indicted?
             indicted = {}
             if os.path.exists(f'{directory}/free{t}/indicted.log'):
@@ -291,4 +301,4 @@ class ParamsPaths(ABC):
         """
         return assemble_pathensemble(
             self.shot_chains(directory, None, None, shot_chains),
-            self.free_trajectories(directory))
+            self.free_trajectories(directory, None))
