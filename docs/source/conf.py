@@ -39,12 +39,6 @@ def _install_doc_stubs() -> None:
         except Exception:
             return False
 
-    if not _can_import("dill"):
-        dill = _ensure_module("dill")
-        dill_source = _ensure_module("dill.source")
-        dill_source.getsource = lambda obj: ""
-        dill.source = dill_source
-
     if not _can_import("tqdm"):
         tqdm_mod = _ensure_module("tqdm")
 
