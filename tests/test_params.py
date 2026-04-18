@@ -9,7 +9,8 @@ def test_params():
     import aimmd
     import numpy as np
     import torch
-    from pathlib import PosixPath
+    from re import split
+    from pathlib import Path as PosixPath
     from aimmd.network import Rescalable
             
     cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -20,7 +21,7 @@ def test_params():
         ['initial.xtc', 'initial.trr']):
         
         # relative path
-        folder = FOLDER.split('/')[-1]
+        folder = split(r'[\\/]', FOLDER)[-1]
         
         try:  # setup
             os.chdir(FOLDER)
