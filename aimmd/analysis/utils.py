@@ -78,6 +78,7 @@ statistics to transition statistics when required.
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from re import split
 from math import inf, nan
 from tqdm import tqdm
 from scipy.stats import beta
@@ -879,7 +880,7 @@ def find_path_lineages(*shooting_chains, verbose=False):
             return
         
         # current folder
-        folder = '/'.join(fnames[-1].split('/')[:-1])
+        folder = '/'.join(split(r'[\\/]', fnames[-1])[:-1])
         suffix = '.' + fnames[-1].split('.')[-1]
         
         # --- 2. LOG PARSING HELPER ---
