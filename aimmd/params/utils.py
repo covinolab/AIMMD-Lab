@@ -30,10 +30,9 @@ AIMMD components.
 # external
 import numpy as np
 import torch
-from dill.source import getsource
-
-# aimmd imports
+from re import split
 from types import FunctionType as Function
+from dill.source import getsource
 
 
 def update_source(instance, name):
@@ -80,14 +79,14 @@ def update_source(instance, name):
     # The object's *class* must be importable and defined in the same file too.
     if not isinstance(instance, Function):
         # When "local" import, omit path
-        module = cls.__module__.split("/")[-1]
+        module = split(r'[\\/]', cls.__module__)[-1]
         instance.__source__ = f'from {module} import {name}\n'
 
     # Function defined not in "__main__": represent by import statement.
     elif instance.__module__ != '__main__':
         if hasattr(instance, '__source__'):
             return
-        module = instance.__module__.split("/")[-1]
+        module = split(r'[\\/]', instance.__module__)[-1]
         if instance.__name__ == name:
             instance.__source__ = f'from {module} import {name}\n'
         else:
