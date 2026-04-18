@@ -295,13 +295,13 @@ in absolute value."""
 """Maximum absolute value for finite bin boundaries.
 Finite boundaries are clipped to lie within [-cutoff_max, +cutoff_max].
 If free simulations are disabled, the finite bin range typically spans
-approximately `[-cutoff_max, +cutoff_max]` (with optional ±inf bins)."""
+approximately `[-cutoff_max, +cutoff_max]` (with optional +-inf bins)."""
                  })
 
     terminal_bin_extension: str = field(
         default='',
         metadata={'description':
-"""Extends the first and/or last bin edges to the state interfaces (±inf).
+"""Extends the first and/or last bin edges to the state interfaces (+-inf).
 This forces the outermost bins to capture all configurations close to the
 states, increasing exploration at the cost of reduced exploitation.
 Values: '' (disable), 'all' (apply to both edges), or directly the state
