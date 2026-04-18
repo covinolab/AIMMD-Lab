@@ -25,7 +25,7 @@ from abc import ABC
 from math import inf
 from typing import List, Callable
 from numbers import Number
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from torch.nn import Module as NeuralNetworkModule
 from dataclasses import dataclass, field
 
