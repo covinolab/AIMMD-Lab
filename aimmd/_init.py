@@ -84,7 +84,7 @@ def initialize():
     import matplotlib
     import MDAnalysis
     import multiprocessing
-    from pathlib import PosixPath
+    from pathlib import Path as PosixPath
 
     # AIMMD imports that depend on the above dependencies being available
     from .cache import NpyReaderCache, MDAReaderCache
