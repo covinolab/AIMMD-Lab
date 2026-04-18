@@ -35,7 +35,7 @@ from abc import ABC
 from types import MethodType as Method
 from typing import List, Callable
 from numbers import Integral
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from MDAnalysis import Universe
 from collections.abc import Iterable
 
