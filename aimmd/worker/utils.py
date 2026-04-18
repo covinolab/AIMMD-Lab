@@ -56,6 +56,7 @@ import time
 import numpy as np
 import torch
 import random
+from re import split
 from glob import glob
 from math import inf
 from pathlib import Path as PosixPath
@@ -462,7 +463,7 @@ def select_shooting_point(chain, params, shots=[], target_state=1):
     # which path?
     path = chain.path
     fname = path.fname
-    folder = '/'.join(path.fname.split('/')[:-1]) or '.'
+    folder = '/'.join(split(r'[\\/]', path.fname)[:-1]) or '.'
     print(f'*** choosing from {fname} {now()}')
     
     # easy situation: internal shooting
