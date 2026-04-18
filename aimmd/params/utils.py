@@ -32,7 +32,7 @@ import numpy as np
 import torch
 from re import split
 from types import FunctionType as Function
-from dill.source import getsource
+from inspect import getsource
 
 
 def update_source(instance, name):
@@ -87,26 +87,26 @@ def update_source(instance, name):
         if hasattr(instance, '__source__'):
             return
         module = split(r'[\\/]', instance.__module__)[-1]
-        if instance.__name__ == name:
+        if instance.__name__ in (name, '<lambda>'):
             instance.__source__ = f'from {module} import {name}\n'
         else:
             instance.__source__ = (f'from {module} import '
                                    f'{instance.__name__} as {name}\n')
     
     # Function defined in "__main__": check name is correct.
-    elif instance.__name__ != name:
+    elif instance.__name__ not in (name, '<lambda>'):
         raise TypeError(f'please rename function '
                         f'{instance.__name__!r} to {name!r}')
     
     # Function defined in "__main__": embed its full source code.
     else:
-        instance.__source__ = getsource(instance).lstrip()            
+        instance.__source__ = getsource(instance).lstrip()  
         
         # Process lambda functions: represent as an assignment to preserve name.
         if (not instance.__source__.startswith('def ')
             and 'lambda' in instance.__source__):
-            instance.__source__ = f'{name} = lambda' + (
-                'lambda'.join(instance.__source__.split('lambda')[1]))
+            instance.__source__ = (f'{name} = lambda' +
+                instance.__source__.split('lambda', 1)[1])
 
 
 def create_default_values_function(network, descriptor_transform=None):
