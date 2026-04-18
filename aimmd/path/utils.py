@@ -37,7 +37,7 @@ import os
 import numpy as np
 from glob import glob
 from numbers import Number
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from collections.abc import Iterable
 
 # aimmd imports
