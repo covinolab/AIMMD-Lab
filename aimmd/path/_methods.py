@@ -39,6 +39,7 @@ Notes
 
 # external
 import os
+import re
 import numpy as np
 from abc import ABC
 from math import inf
@@ -392,7 +393,7 @@ class PathMethods(ABC):
                     fields = line.split()
                     if not fields:
                         continue
-                    if fields[0].split('/')[-1] in self.fname:
+                    if split(r'[\\/]', fields[0])[-1] in self.fname:
                         if len(fields) == 1:
                             self._exclude_from = 0
                         else:
