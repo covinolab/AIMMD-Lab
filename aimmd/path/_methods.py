@@ -393,7 +393,7 @@ class PathMethods(ABC):
                     fields = line.split()
                     if not fields:
                         continue
-                    if split(r'[\\/]', fields[0])[-1] in self.fname:
+                    if re.split(r'[\\/]', fields[0])[-1] in self.fname:
                         if len(fields) == 1:
                             self._exclude_from = 0
                         else:
