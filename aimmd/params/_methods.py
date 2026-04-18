@@ -56,7 +56,7 @@ import traceback
 from abc import ABC
 from glob import glob
 from numbers import Integral
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from MDAnalysis import Universe, Writer
 
 # aimmd imports
