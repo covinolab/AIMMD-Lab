@@ -80,7 +80,7 @@ import numpy as np
 import bisect
 from glob import glob
 from numbers import Integral
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from scipy.special import logit, expit
 from MDAnalysis.coordinates.base import Timestep
 from MDAnalysis.coordinates.memory import MemoryReader
