@@ -154,7 +154,7 @@ class ParamsHelpers(ABC):
                 # These callables may be None (meaning “use defaults”).
                 if value is None and name in (
                     'descriptors_function', 'descriptor_transform',
-                    'values_function', 'toy_mdrun'):
+                    'values_function', 'toy_mdrun', 'bias_function'):
                     pass
 
                 elif not callable(value):

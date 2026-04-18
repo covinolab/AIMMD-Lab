@@ -374,7 +374,11 @@ class WorkerShoot(ABC):
                 path = back[nframes_back - 1::-1] + forw[1:nframes_forw]
                 # save path and add it to chain
                 # (zero weight in case of "bad" path)
-                register_path(path, chain, eneconv)
+                _bias_fn = (params.bias_function
+                            if (params.record_bias
+                                and params.bias_source == 'file')
+                            else None)
+                register_path(path, chain, eneconv, bias_function=_bias_fn)
                 self.total_steps += 1
                 self.total_frames += path.n_frames
                 

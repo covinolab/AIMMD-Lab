@@ -69,6 +69,113 @@ from ..pathensemble import PathEnsemble
 from ..execute.utils import execute_command
 
 
+def _split_cumulative_colvar(deffnm_dir, deffnm_base, ext):
+    """Slice a cumulative PLUMED COLVAR file into per-part `_COLVAR` files.
+
+    Background
+    ----------
+    PLUMED 2.10 (and earlier) writes a single accumulating ``COLVAR`` file
+    per chain dir (the file specified by ``PRINT FILE=COLVAR`` in plumed.dat),
+    even when GROMACS uses ``-noappend``. With ``RESTART=YES`` set globally
+    (e.g. by ``OPES_METAD ... RESTART=YES``) the COLVAR is appended to across
+    GROMACS restarts. PLUMED does NOT mirror GROMACS' ``.partNNNN`` naming.
+
+    AIMMD's bias-tracking pipeline expects one ``{deffnm}.partNNNN_COLVAR``
+    file per trajectory part (so ``bias_function(traj.partNNNN.xtc)`` can
+    locate it). This helper bridges the gap by slicing the cumulative
+    ``{deffnm_dir}/COLVAR`` into per-part files using the assumption that
+    PLUMED writes one row per xtc-output frame (PRINT STRIDE matches
+    nstxout-compressed) and rows are time-ordered.
+
+    Algorithm
+    ---------
+    Walks ``{deffnm_base}.part????{ext}`` in part-number order, maintaining
+    a cursor into the cumulative COLVAR row array:
+
+    - For parts that already have a `_COLVAR` file, advance the cursor by
+      that file's existing data-row count (so previous slicing is honored).
+    - Skip ``part0000`` entirely: it is the python-written seed frame
+      (see :meth:`ParamsMethods.initialize_simulation`) for which GROMACS
+      never ran and PLUMED produced no data. Its bias cache is written
+      directly by the free worker (``_free.py``).
+    - For the remaining parts, take the next ``n_frames`` rows from the
+      cumulative COLVAR and write them as ``{deffnm}.partNNNN_COLVAR``.
+
+    The cumulative ``COLVAR`` is left in place: subsequent GROMACS restarts
+    keep appending to it, and a later call needs to see all rows.
+
+    Parameters
+    ----------
+    deffnm_dir : str
+        Directory containing the cumulative ``COLVAR`` and the
+        ``{deffnm_base}.partNNNN{ext}`` trajectory parts.
+    deffnm_base : str
+        Trajectory basename (e.g. ``'traj000001'``).
+    ext : str
+        Trajectory extension including the dot (e.g. ``'.xtc'``).
+    """
+    cum_colvar = os.path.join(deffnm_dir, 'COLVAR')
+    if not os.path.exists(cum_colvar):
+        return  # nothing to slice
+
+    # Read header (first comment line) and all data rows
+    header = '#! FIELDS time'  # safe fallback if no header is present
+    with open(cum_colvar) as fh:
+        for line in fh:
+            if line.startswith('#'):
+                header = line.rstrip('\n')
+                break
+    rows = np.loadtxt(cum_colvar, comments='#')
+    if rows.ndim == 1:
+        rows = rows[None, :]
+    if len(rows) == 0:
+        return
+
+    # All trajectory parts in part-number order
+    pattern = os.path.join(deffnm_dir, f'{deffnm_base}.part????{ext}')
+    part_files = sorted(glob(pattern))
+    if not part_files:
+        return
+
+    cursor = 0
+    for pf in part_files:
+        per_part_colvar = pf.replace(ext, '_COLVAR')
+
+        # Skip the python-written seed; bias.npy is written by _free.py.
+        if pf.endswith(f'.part0000{ext}'):
+            continue
+
+        # Already sliced in a previous run: advance cursor by its row count
+        if os.path.exists(per_part_colvar):
+            with open(per_part_colvar) as fh:
+                cursor += sum(1 for line in fh if not line.startswith('#'))
+            continue
+
+        # Need to know this part's frame count
+        reader = MDA_CACHE.get(pf)
+        if reader is None:
+            continue  # could not open trajectory; skip silently
+        n_frames = len(reader)
+        if n_frames == 0:
+            continue
+
+        # Not enough cumulative rows yet (e.g. PLUMED is still flushing)
+        if cursor + n_frames > len(rows):
+            print(f'!!! cumulative COLVAR {cum_colvar!r} has only '
+                  f'{len(rows) - cursor} unconsumed rows but {pf!r} has '
+                  f'{n_frames} frames; skipping (will retry next call)')
+            return
+
+        sel_rows = rows[cursor:cursor + n_frames]
+        cursor += n_frames
+
+        # Write per-part _COLVAR (header + space-joined 6-digit floats)
+        with open(per_part_colvar, 'w') as fh:
+            fh.write(header + '\n')
+            for row in sel_rows:
+                fh.write(' '.join(f'{v:.6f}' for v in row) + '\n')
+
+
 # params' methods
 class ParamsMethods(ABC):
 
@@ -233,14 +340,51 @@ class ParamsMethods(ABC):
         """
         # gromacs
         if self.engine == 'gromacs':
-            command = f'{self.gmx_mdrun} -deffnm {deffnm}'
+            # Resolve the chain subdirectory and the basename of deffnm.
+            # We cd into the chain dir before invoking mdrun so that PLUMED's
+            # FILE=COLVAR (and FILE=COLVAR.partNNNN in noappend mode) land in
+            # the chain dir rather than the shared cwd.  This eliminates the
+            # race condition that occurs when 5 shooting workers all write to
+            # the same COLVAR in the process working directory.
+            deffnm_abs = os.path.abspath(deffnm)
+            deffnm_dir = os.path.dirname(deffnm_abs)
+            deffnm_base = os.path.basename(deffnm_abs)
+            cmd_parts = [f'cd {deffnm_dir}',
+                         f'{self.gmx_mdrun} -deffnm {deffnm_base}']
             if not backup:
-                command += ' -nobackup'
+                cmd_parts[-1] += ' -nobackup'
             if cpt:
-                command += f' -cpi {deffnm}.cpt -cpt {cpt}'
+                cmd_parts[-1] += f' -cpi {deffnm_base}.cpt -cpt {cpt}'
             if noappend:
-                command += ' -noappend'
-            return execute_command(command, **kwargs)
+                cmd_parts[-1] += ' -noappend'
+            command = ' && '.join(cmd_parts)
+            result = execute_command(command, **kwargs)
+            # PLUMED bias: rename COLVAR → {deffnm}_COLVAR so that back and
+            # forward segments (and successive free-traj parts) never clobber
+            # each other.  Only active when record_bias='file'.
+            if (getattr(self, 'record_bias', False)
+                    and getattr(self, 'bias_source', '') == 'file'):
+                if not noappend:
+                    # shoot mode: PLUMED writes COLVAR in the chain dir
+                    chain_colvar = os.path.join(deffnm_dir, 'COLVAR')
+                    if os.path.exists(chain_colvar):
+                        os.rename(chain_colvar, f'{deffnm_abs}_COLVAR')
+                else:
+                    # free mode: handle two PLUMED naming conventions.
+                    # 1) Some PLUMED builds mirror GROMACS noappend numbering
+                    #    and produce COLVAR.partNNNN files — rename those.
+                    for colvar_f in sorted(glob(
+                            os.path.join(deffnm_dir, 'COLVAR.part????'))):
+                        part = os.path.basename(colvar_f)[len('COLVAR'):]
+                        dest = f'{deffnm_abs}{part}_COLVAR'
+                        if not os.path.exists(dest):
+                            os.rename(colvar_f, dest)
+                    # 2) PLUMED 2.10 (default) writes a single accumulating
+                    #    COLVAR file regardless of GROMACS noappend. Slice it
+                    #    into per-part {deffnm}.partNNNN_COLVAR files.
+                    _split_cumulative_colvar(
+                        deffnm_dir, deffnm_base, self.trajectory_extension)
+            return result
 
         # toy: code here -> same as execute command
         if self.engine == 'toy':

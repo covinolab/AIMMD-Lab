@@ -23,7 +23,8 @@ responsible for a single aspect of worker behavior:
 - :class:`~aimmd.worker._free.WorkerFree`
   Free simulations.
 - :class:`~aimmd.worker._train.WorkerTrain`
-  Network training and adaptive-bin/density updates.
+  Network training, adaptive-bin/density updates, and kinetics convergence
+  analysis.
 - :class:`~aimmd.worker._magic.WorkerMagic`
   Minimal magic methods (e.g., readable ``repr``).
 
@@ -68,7 +69,9 @@ class Worker(
 
     - ``'shoot'``: committor-guided path sampling (core enhanced sampling),
     - ``'free'``: free simulations around a chosen state,
-    - ``'train'``: update the committor model and adaptive sampling state.
+    - ``'train'``: update the committor model and adaptive sampling state,
+    - ``'kinetics_convergence'``: retrain on growing sub-samples of the path
+      ensemble and report how rate estimates converge with training-set size.
 
     Parameters
     ----------

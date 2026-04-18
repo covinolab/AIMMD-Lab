@@ -39,6 +39,7 @@ saved state dict.
 """
 
 # external imports
+import os
 import copy
 import time
 import torch
@@ -48,9 +49,42 @@ from tqdm import tqdm
 from scipy.special import expit
 
 # aimmd imports
-from .utils import extract_indices_and_series, extract_lsr_pairs
+from .utils import extract_indices_and_series, extract_lsr_pairs, extract_mar_sequences
 from ..core.utils import concatenate, now
 from ..analysis.utils import compute_bins, merge_marginal_bins
+from ..path.utils import get_cache_fname
+from .._config import NPY_CACHE
+
+
+def _load_batch_descriptors(npy_paths, locs):
+    """Load a batch of raw descriptors by indexing per-trajectory NPY cache files.
+
+    Groups frame lookups by file to avoid redundant disk reads within a batch.
+
+    Parameters
+    ----------
+    npy_paths : array-like of str
+        Descriptor ``.npy`` file path for each frame in the batch.
+    locs : array-like of int
+        Absolute frame index within the corresponding ``.npy`` file.
+
+    Returns
+    -------
+    numpy.ndarray
+        Raw descriptor array, shape ``(batch, *frame_shape)``.
+    """
+    result = [None] * len(npy_paths)
+    cache = {}
+    for i, (npy_path, loc) in enumerate(zip(npy_paths, locs)):
+        if npy_path not in cache:
+            arr = NPY_CACHE.get(npy_path)
+            if arr is None:
+                raise RuntimeError(
+                    f'Could not load descriptor cache file: {npy_path!r}.' \
+                    'The descriptor caches are likely corrupted.')
+            cache[npy_path] = arr
+        result[i] = cache[npy_path][loc]
+    return np.array(result)
 
 
 def fit(params,
@@ -95,6 +129,12 @@ def fit(params,
         lsr_lagtime=1,
         lsr_batch_size=None,
         lsr_epsilon=1e-6,
+
+        # minimum action regularization
+        mar_weight=0.0,
+        mar_lagtime=1,
+        mar_batch_size=None,
+        mar_epsilon=1e-8,
 
         # misc
         verbose=False,
@@ -250,8 +290,19 @@ def fit(params,
     in_memory : bool, default=True
         Descriptor loading strategy:
 
-        - If True, transform all descriptors up-front and keep them in memory.
-        - If False, apply `descriptor_transform` per batch.
+        - If ``True``: all raw descriptors are loaded into one concatenated
+          numpy array at the start of training, then ``descriptor_transform``
+          is applied to the whole set at once and the result is kept in memory.
+          Fast per-epoch access but requires peak RAM proportional to the full
+          training-set size (raw array + transformed representation).
+        - If ``False``: **no large descriptor array is kept in memory**.
+          Instead, only per-frame file references ``(npy_path, loc)`` are
+          stored.  Each training batch (and each LSR batch) loads its raw
+          frames on-the-fly from the NPY cache via
+          :func:`_load_batch_descriptors`, then applies
+          ``descriptor_transform`` immediately.  Peak RAM is proportional to
+          one batch rather than the full dataset, at the cost of repeated disk
+          I/O and transform overhead each epoch.
 
     graphs : bool, default=False
         If True, descriptors are assumed to be graph objects in an mlcolvar-like
@@ -335,7 +386,7 @@ def fit(params,
     t0 = time.time()
     losses, scales = [], []
     loss_log = []                   # one dict per epoch for CSV output
-    _epoch_losses = [0.0, 0.0]     # [committor_loss, weighted_vamp_loss] — mutated inside closure()
+    _epoch_losses = [0.0, 0.0, 0.0]  # [committor_loss, lsr_loss, mar_loss] — mutated inside closure()
     network = params.network
     device = next(network.parameters()).device
     dtype = next(network.parameters()).dtype
@@ -367,72 +418,76 @@ def fit(params,
     # s: shooting states of path
     # t: internal states path
 
+    # When in_memory=False: collect per-frame file references (fname + loc)
+    # instead of the full raw descriptor array. Raw data is loaded per batch.
+    _desc_series = (descriptors_source,) if in_memory else ('filenames', 'locs')
+
     # Collect indices + descriptors/values for each relevant category
     # (each call may skip paths that cannot provide the requested series)
-    (in1, in1_back, in1_forw, in1_descriptors,
+    (in1, in1_back, in1_forw, *in1_desc_ref,
      npaths_in1) = extract_indices_and_series(pathensemble,
-        np.flatnonzero(t == a), descriptors_source)
+        np.flatnonzero(t == a), *_desc_series)
     if must_stop():  # responsiveness
         return [], [], [], [], []
-    (in2, in2_back, in2_forw, in2_descriptors,
+    (in2, in2_back, in2_forw, *in2_desc_ref,
      npaths_in2) = extract_indices_and_series(pathensemble,
-        np.flatnonzero(t == b), descriptors_source)
+        np.flatnonzero(t == b), *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (free1to1, free1to1_back, free1to1_forw,
-     free1to1_values, free1to1_descriptors,
+     free1to1_values, *free1to1_desc_ref,
      npaths_free1to1) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == a) & (t == r) & (f != b) & (s == a)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (free2to2, free2to2_back, free2to2_forw,
-     free2to2_values, free2to2_descriptors,
+     free2to2_values, *free2to2_desc_ref,
      npaths_free2to2) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == b) & (t == r) & (f != a) & (s == b)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (free1to2, free1to2_back, free1to2_forw,
-     free1to2_values, free1to2_descriptors,
+     free1to2_values, *free1to2_desc_ref,
      npaths_free1to2) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == a) & (t == r) & (f == b) & (s == a)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (free2to1, free2to1_back, free2to1_forw,
-     free2to1_values, free2to1_descriptors,
+     free2to1_values, *free2to1_desc_ref,
      npaths_free2to1) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == b) & (t == r) & (f == a) & (s == b)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (shot1to1, shot1to1_back, shot1to1_forw,
-     shot1to1_values, shot1to1_descriptors,
+     shot1to1_values, *shot1to1_desc_ref,
      npaths_shot1to1) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == a) & (t == r) & (f != b) & (s == r)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (shot2to2, shot2to2_back, shot2to2_forw,
-     shot2to2_values, shot2to2_descriptors,
+     shot2to2_values, *shot2to2_desc_ref,
      npaths_shot2to2) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == b) & (t == r) & (f != a) & (s == r)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (shot1to2, shot1to2_back, shot1to2_forw,
-     shot1to2_values, shot1to2_descriptors,
+     shot1to2_values, *shot1to2_desc_ref,
      npaths_shot1to2) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == a) & (t == r) & (f == b) & (s == r)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (shot2to1, shot2to1_back, shot2to1_forw,
-     shot2to1_values, shot2to1_descriptors,
+     shot2to1_values, *shot2to1_desc_ref,
      npaths_shot2to1) = extract_indices_and_series(pathensemble,
         np.flatnonzero((i == b) & (t == r) & (f == a) & (s == r)),
-        'values', descriptors_source)
+        'values', *_desc_series)
     if must_stop():
         return [], [], [], [], []
     
@@ -534,19 +589,69 @@ def fit(params,
     # trajectories than the other (common early in an AIMMD run).
     lsr_desc_t_A = lsr_desc_tau_A = None
     lsr_desc_t_B = lsr_desc_tau_B = None
+    lsr_npy_t_A = lsr_locs_t_A = lsr_npy_tau_A = lsr_locs_tau_A = None
+    lsr_npy_t_B = lsr_locs_t_B = lsr_npy_tau_B = lsr_locs_tau_B = None
     n_lsr_A = n_lsr_B = 0
     n_lsr_pairs = 0
     if lsr_weight:
         lsr_key_A = np.flatnonzero((i == a) & (t == r))
         lsr_key_B = np.flatnonzero((i == b) & (t == r))
         print(f'\nCollecting time-lagged pairs for LSR (lagtime={lsr_lagtime}) {now()}')
-        lsr_desc_t_A, lsr_desc_tau_A, n_sel_A, n_lsr_A = extract_lsr_pairs(
-            pathensemble, lsr_key_A, lsr_lagtime, descriptors_source)
-        lsr_desc_t_B, lsr_desc_tau_B, n_sel_B, n_lsr_B = extract_lsr_pairs(
-            pathensemble, lsr_key_B, lsr_lagtime, descriptors_source)
+        if in_memory:
+            lsr_desc_t_A, lsr_desc_tau_A, n_sel_A, n_lsr_A = extract_lsr_pairs(
+                pathensemble, lsr_key_A, lsr_lagtime, descriptors_source)
+            lsr_desc_t_B, lsr_desc_tau_B, n_sel_B, n_lsr_B = extract_lsr_pairs(
+                pathensemble, lsr_key_B, lsr_lagtime, descriptors_source)
+        else:
+            # Collect file references instead of raw arrays; load per batch.
+            fn_t_A, fn_tau_A, n_sel_A, n_lsr_A = extract_lsr_pairs(
+                pathensemble, lsr_key_A, lsr_lagtime, 'filenames')
+            lc_t_A, lc_tau_A, _, _ = extract_lsr_pairs(
+                pathensemble, lsr_key_A, lsr_lagtime, 'locs')
+            fn_t_B, fn_tau_B, n_sel_B, n_lsr_B = extract_lsr_pairs(
+                pathensemble, lsr_key_B, lsr_lagtime, 'filenames')
+            lc_t_B, lc_tau_B, _, _ = extract_lsr_pairs(
+                pathensemble, lsr_key_B, lsr_lagtime, 'locs')
+            _gcf = lambda arr: np.array([get_cache_fname(f, 'descriptors') for f in arr]) if len(arr) else arr
+            lsr_npy_t_A, lsr_locs_t_A     = _gcf(fn_t_A),   lc_t_A
+            lsr_npy_tau_A, lsr_locs_tau_A = _gcf(fn_tau_A), lc_tau_A
+            lsr_npy_t_B, lsr_locs_t_B     = _gcf(fn_t_B),   lc_t_B
+            lsr_npy_tau_B, lsr_locs_tau_B = _gcf(fn_tau_B), lc_tau_B
         n_lsr_pairs = n_lsr_A + n_lsr_B
         print(f'   {n_lsr_A} A-origin pairs ({n_sel_A} paths), '
               f'{n_lsr_B} B-origin pairs ({n_sel_B} paths)')
+        if must_stop():
+            return [], [], [], [], []
+
+    # Minimum action regularization: collect ordered sequences from reactive paths.
+    # Falls back to all available paths (e.g. initial seed paths) if no reactive
+    # paths from TPS sampling are found yet, so MAR acts from the first training step.
+    mar_sequences_in_mem = []   # in_memory=True : list of raw descriptor arrays (one per path)
+    mar_sequences_refs = []     # in_memory=False: list of (npy_paths, locs) tuples (one per path)
+    n_mar_sequences = 0
+    if mar_weight:
+        mar_key = np.flatnonzero(
+            ((i == a) & (t == r) & (f == b)) |   # free1to2 and shot1to2
+            ((i == b) & (t == r) & (f == a))      # free2to1 and shot2to1
+        )
+        # Fallback: if no reactive paths from TPS exist yet (e.g. round 1 with only
+        # initial paths that may not be classified as reactive), expand to all paths.
+        mar_key_used = mar_key if len(mar_key) > 0 else None
+        mar_label = 'reactive' if len(mar_key) > 0 else 'all (fallback)'
+        print(f'\nCollecting MAR sequences ({mar_label}, lagtime={mar_lagtime}) {now()}')
+        if in_memory:
+            mar_sequences_in_mem, n_mar_sel, n_mar_sequences = extract_mar_sequences(
+                pathensemble, mar_key_used, mar_lagtime, descriptors_source)
+        else:
+            fn_seqs, n_mar_sel, n_mar_sequences = extract_mar_sequences(
+                pathensemble, mar_key_used, mar_lagtime, 'filenames')
+            lc_seqs, _, _ = extract_mar_sequences(
+                pathensemble, mar_key_used, mar_lagtime, 'locs')
+            _gcf_mar = lambda f: get_cache_fname(f, 'descriptors')
+            for fn_seq, lc_seq in zip(fn_seqs, lc_seqs):
+                npy_seq = np.array([_gcf_mar(f) for f in fn_seq])
+                mar_sequences_refs.append((npy_seq, lc_seq))
+        print(f'   {n_mar_sequences} sequences ({n_mar_sel} paths selected)')
         if must_stop():
             return [], [], [], [], []
 
@@ -555,11 +660,28 @@ def fit(params,
                           free1to2_values, free2to1_values,
                           shot1to1_values, shot2to2_values,
                           shot1to2_values, shot2to1_values])
-    descriptors = concatenate([in1_descriptors, in2_descriptors,
-                               free1to1_descriptors, free2to2_descriptors,
-                               free1to2_descriptors, free2to1_descriptors,
-                               shot1to1_descriptors, shot2to2_descriptors,
-                               shot1to2_descriptors, shot2to1_descriptors])
+    # Build the descriptor data structure.
+    # in_memory=True : a single concatenated numpy array of raw descriptors
+    #                  (transformed up-front on line ~716 below).
+    # in_memory=False: two compact arrays storing per-frame file references
+    #                  (desc_npy_paths[i], desc_locs[i]) so raw data is
+    #                  loaded on demand per batch via _load_batch_descriptors.
+    _all_desc_ref0 = [in1_desc_ref[0], in2_desc_ref[0],
+                      free1to1_desc_ref[0], free2to2_desc_ref[0],
+                      free1to2_desc_ref[0], free2to1_desc_ref[0],
+                      shot1to1_desc_ref[0], shot2to2_desc_ref[0],
+                      shot1to2_desc_ref[0], shot2to1_desc_ref[0]]
+    if in_memory:
+        descriptors = concatenate(_all_desc_ref0)
+    else:
+        desc_fnames   = concatenate(_all_desc_ref0)
+        desc_locs     = concatenate([in1_desc_ref[1], in2_desc_ref[1],
+                                     free1to1_desc_ref[1], free2to2_desc_ref[1],
+                                     free1to2_desc_ref[1], free2to1_desc_ref[1],
+                                     shot1to1_desc_ref[1], shot2to2_desc_ref[1],
+                                     shot1to2_desc_ref[1], shot2to1_desc_ref[1]])
+        desc_npy_paths = np.array(
+            [get_cache_fname(f, 'descriptors') for f in desc_fnames])
     results = concatenate([in1_results, in2_results,
                            free1to1_results, free2to2_results,
                            free1to2_results, free2to1_results,
@@ -666,7 +788,11 @@ def fit(params,
     keepers = selection_probabilities > 0
     selection_probabilities = selection_probabilities[keepers]
     values = values[keepers[n_internal_frames:]]
-    descriptors = descriptors[keepers]
+    if in_memory:
+        descriptors = descriptors[keepers]
+    else:
+        desc_npy_paths = desc_npy_paths[keepers]
+        desc_locs      = desc_locs[keepers]
     results = results[keepers]
     k = results[:, 0] > 0
     training_set_size = len(selection_probabilities)
@@ -697,14 +823,24 @@ def fit(params,
         
         # create validation vectors
         if not graphs:
-            d_val = descriptor_transform(descriptors[validation_indices])
+            if in_memory:
+                raw_val = descriptors[validation_indices]
+            else:
+                raw_val = _load_batch_descriptors(
+                    desc_npy_paths[validation_indices], desc_locs[validation_indices])
+            d_val = descriptor_transform(raw_val)
             d_val = torch.tensor(d_val, dtype=dtype, device=device)
             d_val.requires_grad = True
         else:
             # when using graphs, we need to process the DataDict objects
             # instead of arrays
-            d_val_list = [descriptors['data_list'][i] for i in validation_indices]
-            d_val = Batch.from_data_list(d_val_list).to(device).to_dict()                
+            if in_memory:
+                # descriptors is already a list of Data objects after the pre-transform
+                d_val_list = [descriptors[i] for i in validation_indices]
+            else:
+                d_val_list = descriptor_transform(_load_batch_descriptors(
+                    desc_npy_paths[validation_indices], desc_locs[validation_indices]))
+            d_val = Batch.from_data_list(d_val_list).to(device).to_dict()
         r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
     
     print(f'\nTraining set size {training_set_size}')
@@ -724,6 +860,7 @@ def fit(params,
     
     # LSR helpers (defined here so they close over network, device, dtype)
     lsr_bs = lsr_batch_size if lsr_batch_size is not None else batch_size
+    mar_bs = mar_batch_size if mar_batch_size is not None else 8
 
     def _get_latent(net, d):
         """Return latent features: forward_latent if available, else forward."""
@@ -761,6 +898,41 @@ def fit(params,
         # LSR loss = -||C01||_F^2  (exact VAMP-2 surrogate when C00 = C11 = I)
         C01 = chi_0.T @ chi_tau / n
         return -(C01 * C01).sum()
+
+    def _mar_loss(latent_sequences):
+        """Normalized action ratio loss for Minimum Action Regularization (MAR).
+
+        For each reactive transition path with latent sequence z_0, ..., z_{n-1},
+        computes the normalized Onsager-Machlup action ratio:
+
+            ratio_i = (n-1) * sum_{t=0}^{n-2} ||z_{t+1} - z_t||^2
+                      / ||z_{n-1} - z_0||^2.clamp(min=mar_epsilon)
+
+        By Cauchy-Schwarz, ratio_i >= 1 for non-degenerate paths, with equality
+        iff the path is a geodesic (straight line) in latent space. The loss is
+        mean(relu(ratio_i - 1)) >= 0, equal to 0 only for geodesics or degenerate
+        (all-equal) paths. The relu prevents the degenerate case (path_action=0,
+        endpoint_sq clamped to mar_epsilon) from producing a negative loss and
+        creating an attractive gradient toward feature collapse.
+
+        Properties:
+        - Scale-invariant: multiplying all z by a constant leaves ratio unchanged,
+          so the loss cannot be driven to zero by feature shrinkage.
+        - No matrix operations: purely element-wise squared distances.
+        - Works for latent_dim=1 (in which case it penalises non-monotone paths).
+        - Collapse-safe: the relu ensures zero gradient when the network collapses.
+        """
+        per_path = []
+        for z in latent_sequences:
+            n = z.shape[0]
+            steps = z[1:] - z[:-1]                          # (n-1, d)
+            path_action = (steps * steps).sum()              # scalar
+            endpoint_sq = ((z[-1] - z[0]) ** 2).sum().clamp(min=mar_epsilon)
+            # clamp at 0: Cauchy-Schwarz guarantees ratio>=1 for non-degenerate paths;
+            # the relu prevents the collapsed (all-equal) case from giving -1 and
+            # creating an attractive gradient toward feature collapse.
+            per_path.append(torch.relu((n - 1) * path_action / endpoint_sq - 1.0))
+        return torch.stack(per_path).mean()
 
     """
     Training loop.
@@ -803,19 +975,22 @@ def fit(params,
         
         # build descriptors batch (array or graph)
         if not graphs:
-            if not in_memory:  # separately to save memory
-                d = descriptor_transform(descriptors[indices])
-            else:
-                d = descriptors[indices]
+            if in_memory:
+                d = descriptors[indices]          # already transformed upfront
+            else:  # load raw frames on-the-fly from NPY_CACHE, then transform
+                d = descriptor_transform(
+                    _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))
             d = torch.tensor(d, dtype=dtype, device=device)
             d.requires_grad = True
         else:
-            # when using graphs, we need to process the the DataDict objects
+            # when using graphs, we need to process the DataDict objects
             # instead of arrays
-            if not in_memory:  # separately to save memory
-                d = descriptor_transform(descriptors[indices,:])
-            else:
-                d = [descriptors['data_list'][i] for i in indices]
+            if in_memory:
+                # descriptors is already a list of Data objects after the pre-transform
+                d = [descriptors[i] for i in indices]
+            else:  # load raw frames on-the-fly from NPY_CACHE
+                d = descriptor_transform(
+                    _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))
             d = Batch.from_data_list(d).to(device).to_dict()
 
         # flatten non-graph descriptors for dense networks
@@ -886,36 +1061,50 @@ def fit(params,
                 # populated state.
                 half = lsr_bs // 2
                 raw_t_segs, raw_tau_segs = [], []
-                for desc_t_side, desc_tau_side, n_side in (
-                        (lsr_desc_t_A, lsr_desc_tau_A, n_lsr_A),
-                        (lsr_desc_t_B, lsr_desc_tau_B, n_lsr_B)):
+                if in_memory:
+                    _lsr_sides = ((lsr_desc_t_A, lsr_desc_tau_A, n_lsr_A),
+                                  (lsr_desc_t_B, lsr_desc_tau_B, n_lsr_B))
+                else:
+                    _lsr_sides = (
+                        (lsr_npy_t_A, lsr_npy_tau_A, lsr_locs_t_A, lsr_locs_tau_A, n_lsr_A),
+                        (lsr_npy_t_B, lsr_npy_tau_B, lsr_locs_t_B, lsr_locs_tau_B, n_lsr_B))
+                for side in _lsr_sides:
+                    n_side = side[-1]
                     if n_side == 0:
                         continue
                     n_draw = half if (n_lsr_A > 0 and n_lsr_B > 0) else lsr_bs
                     v_idx = np.random.choice(n_side, n_draw, replace=True)
-                    raw_t_segs.append(desc_t_side[v_idx])
-                    raw_tau_segs.append(desc_tau_side[v_idx])
+                    if in_memory:
+                        desc_t_side, desc_tau_side = side[0], side[1]
+                        raw_t_segs.append(desc_t_side[v_idx])
+                        raw_tau_segs.append(desc_tau_side[v_idx])
+                    else:
+                        npy_t, npy_tau, locs_t, locs_tau = side[0], side[1], side[2], side[3]
+                        raw_t_segs.append(
+                            _load_batch_descriptors(npy_t[v_idx], locs_t[v_idx]))
+                        raw_tau_segs.append(
+                            _load_batch_descriptors(npy_tau[v_idx], locs_tau[v_idx]))
                 raw_t = np.concatenate(raw_t_segs, axis=0)
                 raw_tau = np.concatenate(raw_tau_segs, axis=0)
 
                 if not graphs:
-                    if not in_memory:
-                        dv_t = descriptor_transform(raw_t)
-                        dv_tau = descriptor_transform(raw_tau)
-                    else:
+                    if in_memory:
                         dv_t = raw_t
                         dv_tau = raw_tau
+                    else:
+                        dv_t = descriptor_transform(raw_t)
+                        dv_tau = descriptor_transform(raw_tau)
                     dv_t = torch.flatten(
                         torch.tensor(dv_t, dtype=dtype, device=device), start_dim=1)
                     dv_tau = torch.flatten(
                         torch.tensor(dv_tau, dtype=dtype, device=device), start_dim=1)
                 else:
-                    if not in_memory:
+                    if in_memory:
                         dv_t_list = descriptor_transform(raw_t)
                         dv_tau_list = descriptor_transform(raw_tau)
                     else:
-                        dv_t_list = [lsr_desc_t_A[i] for i in v_idx]   # fallback
-                        dv_tau_list = [lsr_desc_tau_A[i] for i in v_idx]
+                        dv_t_list = descriptor_transform(raw_t)
+                        dv_tau_list = descriptor_transform(raw_tau)
                     dv_t = Batch.from_data_list(dv_t_list).to(device).to_dict()
                     dv_tau = Batch.from_data_list(dv_tau_list).to(device).to_dict()
 
@@ -926,10 +1115,38 @@ def fit(params,
                 lsr_contrib = float(lsr_term.detach())
                 loss = loss + lsr_term
 
+            # Minimum Action Regularization (MAR)
+            mar_contrib = 0.0
+            if mar_weight and n_mar_sequences > 0:
+                n_avail = n_mar_sequences
+                path_idxs = np.random.choice(n_avail, min(mar_bs, n_avail), replace=False)
+                latent_seqs = []
+                for pidx in path_idxs:
+                    if in_memory:
+                        raw_seq = mar_sequences_in_mem[pidx]
+                    else:
+                        npy_seq, lc_seq = mar_sequences_refs[pidx]
+                        raw_seq = _load_batch_descriptors(npy_seq, lc_seq)
+                    if not graphs:
+                        dv_mar = torch.flatten(
+                            torch.tensor(descriptor_transform(raw_seq),
+                                         dtype=dtype, device=device),
+                            start_dim=1)
+                    else:
+                        graph_list = descriptor_transform(raw_seq)
+                        dv_mar = Batch.from_data_list(graph_list).to(device).to_dict()
+                    network.train()
+                    z_seq = _get_latent(network, dv_mar)   # (n_frames_i, latent_dim)
+                    latent_seqs.append(z_seq)
+                mar_term = mar_weight * _mar_loss(latent_seqs)
+                mar_contrib = float(mar_term.detach())
+                loss = loss + mar_term
+
             # Store individual components for per-epoch logging (list mutation
             # is visible outside the closure without nonlocal)
             _epoch_losses[0] = float(committor_term.detach())
             _epoch_losses[1] = lsr_contrib
+            _epoch_losses[2] = mar_contrib
 
             loss.backward()
             return loss
@@ -948,7 +1165,8 @@ def fit(params,
             'epoch': counter.n + 1,
             'total_loss': losses[-1],
             'committor_loss': _epoch_losses[0],
-            'vamp_loss': _epoch_losses[1],
+            'lsr_loss': _epoch_losses[1],
+            'mar_loss': _epoch_losses[2],
             'scale': scales[-1],
         })
         Range = float(torch.min(q)), float(torch.max(q))
@@ -1056,7 +1274,8 @@ def fit(params,
         import csv
         with open(loss_log_path, 'w', newline='') as _f:
             _writer = csv.DictWriter(
-                _f, fieldnames=['epoch', 'total_loss', 'committor_loss', 'vamp_loss', 'scale'])
+                _f, fieldnames=['epoch', 'total_loss', 'committor_loss',
+                                'lsr_loss', 'mar_loss', 'scale'])
             _writer.writeheader()
             _writer.writerows(loss_log)
         print(f'    loss history saved to {loss_log_path}')

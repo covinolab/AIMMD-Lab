@@ -141,7 +141,82 @@ def rescale_bins(bins, knots, values):
     bins[i:j] = np.linspace(a, b, j - i)
 
 
-def register_path(path, chain, eneconv=None):
+def _read_colvar_for_register(traj_fname, bias_function):
+    """Read a COLVAR file associated with a trajectory segment.
+
+    Derives the COLVAR filename via ``traj_fname.replace('.xtc', '_COLVAR')``
+    (consistent with the rename performed by ``params.run_simulation`` when
+    ``bias_source='file'``), reads the raw data rows and the ``#! FIELDS``
+    header, and calls ``bias_function(traj_fname)`` to obtain the per-frame
+    bias in kT (unit conversion is the caller's responsibility).
+
+    Parameters
+    ----------
+    traj_fname : str
+        Trajectory segment filename (e.g. ``'chainR0/back.xtc'``).
+    bias_function : callable
+        ``params.bias_function`` — maps trajectory filename → ndarray in kT.
+
+    Returns
+    -------
+    bias_kT : numpy.ndarray, shape (n_frames,)
+        Per-frame bias in kT as returned by ``bias_function``.
+    all_rows : numpy.ndarray, shape (n_frames, n_cols)
+        All COLVAR columns (time, CV(s), bias, …) as a float array.
+    header : str
+        The ``#! FIELDS …`` header line, without trailing newline.
+    """
+    # Derive COLVAR filename from trajectory name (drop extension, add _COLVAR)
+    ext = os.path.splitext(traj_fname)[1]            # e.g. '.xtc'
+    colvar_fname = traj_fname.replace(ext, '_COLVAR')
+
+    # Read all data rows and header
+    header = ''
+    with open(colvar_fname) as fh:
+        for line in fh:
+            line = line.rstrip('\n')
+            if line.startswith('#'):
+                header = line
+            else:
+                break
+    all_rows = np.loadtxt(colvar_fname, comments='#')
+    if all_rows.ndim == 1:
+        all_rows = all_rows[None, :]
+
+    # kT-converted bias via user-supplied bias_function
+    bias_kT = np.asarray(bias_function(traj_fname), dtype=float)
+
+    return bias_kT, all_rows, header
+
+
+def _write_colvar(fname, header, rows):
+    """Write a merged COLVAR text file in PLUMED format.
+
+    The time column (column 0) is recalculated as sequential multiples of
+    ``dt`` (derived from the first two rows of ``rows``), so the file is
+    self-consistent regardless of the original timestamps.
+
+    Parameters
+    ----------
+    fname : str
+        Output filename.
+    header : str
+        ``#! FIELDS …`` header line (written verbatim as the first line).
+    rows : numpy.ndarray, shape (n_frames, n_cols)
+        Data rows in the desired frame order.
+    """
+    if len(rows) == 0:
+        return
+    dt = rows[1, 0] - rows[0, 0] if len(rows) > 1 else rows[0, 0]
+    rows = rows.copy()
+    rows[:, 0] = np.arange(len(rows)) * dt
+    with open(fname, 'w') as fh:
+        fh.write(header + '\n')
+        for row in rows:
+            fh.write(' '.join(f'{v:.6f}' for v in row) + '\n')
+
+
+def register_path(path, chain, eneconv=None, bias_function=None):
     """
     Register a newly generated path into the shooting chain and persist it.
 
@@ -180,6 +255,20 @@ def register_path(path, chain, eneconv=None):
         Command (or full command prefix) for GROMACS ``eneconv``. If provided,
         the function attempts to merge ``back.edr`` and ``forw.edr`` into a
         path-level ``.edr`` file.
+    bias_function : callable or None, optional
+        ``params.bias_function`` for ``bias_source='file'`` runs.  When
+        provided, the function reads the COLVAR files associated with the
+        ``back`` and ``forw`` segments (renamed by ``params.run_simulation``
+        to ``back_COLVAR`` / ``forw_COLVAR``), applies the same frame-index
+        selection used for states/descriptors, and writes two additional
+        files alongside the registered path:
+
+        - ``{path}_COLVAR`` — merged COLVAR text file in PLUMED format with
+          rows in path frame order and a recalculated time column.
+        - ``{path}.bias.npy`` — per-frame bias in kT (extracted via
+          ``bias_function``).
+
+        If ``None`` (default), no bias files are written.
 
     Returns
     -------
@@ -255,6 +344,33 @@ def register_path(path, chain, eneconv=None):
             command = f'{eneconv} -f {back_edr} {forw_edr} -o {fname_edr}'
             execute_command(command, log_file='')
             print(f'+++ created {fname_edr}')
+
+    # Save COLVAR + bias.npy for PLUMED file-mode bias tracking.
+    # Uses the same back/forw COLVAR files (renamed by run_simulation) and
+    # the same index selection already computed for states/descriptors above.
+    if bias_function is not None:
+        fname_bias = get_cache_fname(fname, 'bias')
+        fname_colvar = f'{folder}/{name}{ext}'.replace(ext, '_COLVAR')
+        try:
+            if path.n_files == 1:
+                bias_kT, rows, header = _read_colvar_for_register(
+                    str(back_fname), bias_function)
+                sel_bias = bias_kT[path.locs]
+                sel_rows = rows[path.locs]
+            else:
+                bias_kT_b, rows_b, header = _read_colvar_for_register(
+                    str(back_fname), bias_function)
+                bias_kT_f, rows_f, _     = _read_colvar_for_register(
+                    forw_fname, bias_function)
+                sel_bias = np.concatenate([bias_kT_b[back_indices],
+                                           bias_kT_f[forw_indices]])
+                sel_rows = np.concatenate([rows_b[back_indices],
+                                           rows_f[forw_indices]])
+            save_npy(fname_bias, sel_bias)
+            _write_colvar(fname_colvar, header, sel_rows)
+            print(f'+++ saved {fname_colvar} and bias cache')
+        except Exception as exc:
+            print(f'!!! could not save COLVAR/bias for {fname}: {exc}')
 
     # save/load trajectory through temp file
     # in this way, you minimize potential disruptions
