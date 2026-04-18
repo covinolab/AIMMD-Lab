@@ -71,7 +71,6 @@ def initialize():
     # External dependency imports (also acts as a dependency presence check)
     import os
     import sys
-    import dill
     import tqdm
     import numpy
     import scipy
