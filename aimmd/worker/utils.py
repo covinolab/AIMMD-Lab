@@ -58,7 +58,7 @@ import torch
 import random
 from glob import glob
 from math import inf
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 
 # aimmd imports
 from ..path import Path
