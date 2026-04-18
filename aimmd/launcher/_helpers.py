@@ -246,6 +246,7 @@ class LauncherHelpers(ABC):
                 reactive_region_mode='chain',
                 state1_mode='free',
                 state2_mode='free',
+                nchains_per_worker=1,
                 nsteps=inf,
                 nframes=inf,
                 nrounds=None,
@@ -278,6 +279,11 @@ class LauncherHelpers(ABC):
             Mode used for state 1 processes for each run. Default is ``'free'``.
         state2_mode : {'free', 'shoot'} or iterable, optional
             Mode used for state 2 processes for each run. Default is ``'free'``.
+        nchains_per_worker : int, optional, default = 1
+            If > 1, the worker will manage more than one chain. A higher value
+            of `nchains_per_worker` tends to regularize the training set and thus
+            improve performance. If running only one shooting worker,
+            `nchains_per_worker=10` is recommended.
         nsteps : float or iterable of float, optional
             Maximum number of simulated independent trajectories (worker stop
             condition). Default is ``inf``. Attention! If "train" runs, then
@@ -335,6 +341,8 @@ class LauncherHelpers(ABC):
         nsteps = self._process_input('nsteps', nsteps, float)
         nframes = self._process_input('nframes', nframes, float)
         nrounds = self._process_input('nrounds', nrounds, object)
+        nchains_per_worker = self._process_input(
+            'nchains_per_worker', nchains_per_worker, int)
         walltime = float(walltime)
 
         # process nrounds according to specification
@@ -373,13 +381,14 @@ class LauncherHelpers(ABC):
         self._nsteps = nsteps
         self._nframes = nframes
         self._nrounds = nrounds
+        self._nchains_per_worker = nchains_per_worker
         self._walltime = walltime
-
+        
         # get number of processes
         self._num_processes = (self._n1 + self._n2 + self._n +
                                self._nrounds.astype(bool))
         total_num_processes = sum(self._num_processes)
-
+        
         # determine number of CPUs per task
         self._cpus_per_task = cpus_per_task
         if cpus_per_task != 'skip':
@@ -391,7 +400,7 @@ class LauncherHelpers(ABC):
                 self._cpus_per_task = num_cpus_avail
             else:
                 self._cpus_per_task = int(cpus_per_task)
-
+        
         # determine number of GPUs per task
         self._gpus_per_task = gpus_per_task
         if gpus_per_task != 'skip':

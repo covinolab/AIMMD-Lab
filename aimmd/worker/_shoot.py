@@ -5,138 +5,124 @@ aimmd.worker._shoot
 Core path-sampling task for AIMMD workers.
 
 This module defines :class:`WorkerShoot`, the worker implementation of **path
-sampling**, which is the central simulation engine of AIMMD.
-
-Does (AI-enhanced) path sampling by two-way shooting in the chosen state.
+sampling**, which is the central simulation engine of AIMMD. It performs 
+(AI-enhanced) path sampling via two-way shooting in the chosen state.
 
 AIMMD’s main objective is to **enhance sampling** by producing a *diverse* set
-of paths, including more large excursions and transition than unbiased simulations.
+of paths, including more large excursions and transitions than unbiased 
+simulations.
 
 The key mechanism is to repeatedly:
 
-1) choose a **shooting point** (a frame) from an existing ensemble, and
-2) launch a **backward** and a **forward** simulation from that frame to build a
-   new candidate path segment around the reactive region.
+1. Choose a **shooting point** (a frame) from an existing ensemble.
+2. Launch a **backward** and a **forward** simulation from that frame to build 
+   a new candidate path segment around the reactive region.
 
 In the standard workflow, shooting-point selection is guided by the current
-**committor model** (typically a neural network): frames are preferentially
+**committor model** (typically a neural network). Frames are preferentially
 sampled from regions where the committor is most informative for exploring the
-reactive tube / separatrix and for producing statistically useful path diversity.
-The selection logic is implemented in :func:`aimmd.worker.utils.select_shooting_point`
-and operates on a maintained *selection pool* updated continuously from the
-current chain and from initial paths.
+reactive tube/separatrix. The selection logic is implemented in
+:func:`aimmd.worker.utils.select_shooting_point`.
 
-Two execution modes are supported:
+Execution Modes
+---------------
 
-1) **Standard shooting chain** (``sweep=False``)
-   This is the production mode used for AIMMD sampling. The worker maintains:
+1) **Standard Shooting Chain** (``sweep=False``)
+   The production mode for AIMMD sampling. The worker maintains a shooting 
+   *chain* (a growing sequence of sampled paths). Each iteration:
 
-   - a shooting *chain* (the growing sequence of sampled paths),
-   - and, when applicable, a *selection pool* of candidate paths used to propose
-     shooting points according to the committor-guided strategy.
+   - Selects a shooting point from the latest accepted path in the chain (or 
+     the initial path if the chain is empty).
+   - Initializes and extends backward and forward simulations.
+   - Merges segments into a single path and registers it into the chain.
+   - Applies TPS acceptance logic if configured.
+   - Updates a ``tqdm`` progress bar, which is *always* printed to the 
+     original ``stdout`` regardless of file redirection.
 
-   Each iteration:
-
-   - updates the selection pool using the existing chain and/or initial paths,
-   - selects a shooting point (frame) from the pool (or from overriding free
-     trajectories, if configured),
-   - initializes a backward and a forward simulation from that point,
-   - incrementally runs/extends those simulations until completion,
-   - merges the backward and forward pieces into a single path,
-   - registers the path into the chain (and optionally applies TPS acceptance),
-   - updates tqdm progress bar *always* printed in original `stdout`.
-
-2) **Sweep mode for committor validation** (``sweep=True``)
-   Sweep mode serves *model validation* rather than adaptive sampling. It
-   deterministically cycles through a predefined set of frames (taken from the
-   concatenated ``initial_paths`` ensemble) and repeatedly shoots from them
-   to obtain brute-force committor estimates.
-
-   Over many shots from the same starting frame, the empirical committor to end
-   state 1 is estimated as:
-
+2) **Sweep Mode** (``sweep=True``)
+   Used for **committor validation** rather than adaptive sampling. It 
+   deterministically cycles through a predefined set of frames from the 
+   initial file and shoots repeatedly to obtain brute-force committor estimates:
+   
    ``q ≈ N(reach 1) / (N(reach 0) + N(reach 1))``
 
-   Comparing these brute-force estimates to the network-predicted committor
-   provides a direct validation of the committor model.
+   Comparing these estimates to network predictions provides direct model 
+   validation.
 
-Folder layout
+Parallelism & Scaling
+---------------------
+Each worker supports **more than one chain**, allowing for optimization of 
+training set uniformity even with a limited number of workers. A value of 
+**10 chains per worker** is generally recommended.
+
+Folder Layout
 -------------
-Output is written under a per-target, per-worker folder:
+Output is written to a per-target, per-worker directory:
 
-- Standard: ``{directory}/chain{t}{k}``
-- Sweep:    ``{directory}/sweep{t}{k}``
+- **Standard:** ``{directory}/chain{t}{k}``
+- **Sweep:** ``{directory}/sweep{t}{k}``
 
-Within this folder, two engine deffnm prefixes are used:
+Within these folders, the engine uses ``back`` and ``forw`` prefixes for the 
+respective simulation halves. The full path is assembled by reversing the 
+backward piece and concatenating it with the forward piece (excluding the 
+duplicate shooting-point).
 
-- ``{folder}/back`` for the backward half
-- ``{folder}/forw`` for the forward half
+State & Selection Conventions
+-----------------------------
+- **Target State:** The label ``t`` is processed via 
+  :func:`~aimmd.core.utils.process_state`.
+- **Bin Constraints:** Some workflows restrict selection to the latest path 
+  with values inside allowed bins. This is governed by 
+  :attr:`Params.never_select_outside_the_bins`.
+- **Network Synchronization:** If shooting from the reactive state with 
+  multiple bins (``nbins > 1``), the task may block until the network 
+  training completes and the ``state_dict`` is available at 
+  ``<directory>/network<states>.h5``.
 
-The resulting full path is assembled by reversing the backward piece (so it
-runs forward in time away from the shooting point) and concatenating it with
-the forward piece (excluding the duplicate shooting-point frame).
+TPS vs. Non-TPS
+---------------
+- **TPS:** (``params.chain_type == 'tps'``) An acceptance step is performed 
+  after each registration, and TPS weights are saved to disk.
+- **Non-TPS:** Incomplete paths are assigned zero weight and excluded from 
+  future selection.
 
-State conventions
------------------
-The target state label ``t`` is obtained from ``target_state`` via
-:func:`~aimmd.core.utils.process_state`, using ``params.states`` as the mapping.
-
-Some workflows require that at least one transition is present in the selection
-pool. This is controlled by :attr:`Params.at_least_one_transition_in_pool`.
-
-Network/bins waiting
---------------------
-If the worker is shooting from the reactive state (``t == states[1]``), is not
-in sweep mode, and the model uses more than one bin (``nbins > 1``), the task
-can block until the network and current bins/densities are available.
-
-TPS vs non-TPS
---------------
-If ``params.chain_type == 'tps'``, the chain is treated as a TPS chain and
-after each new path is registered, a TPS acceptance step is performed and the
-TPS weights are saved to disk.
-
-If not TPS, incomplete paths may be assigned zero weight and excluded from the
-selection pool in specific cases.
-
-Expected collaborators
+Expected Collaborators
 ----------------------
-This mixin relies on worker components providing:
+This mixin relies on components providing:
 
-- :meth:`run` dispatch (from :class:`~aimmd.worker._run.WorkerRun`),
-- :meth:`_simulate` (from :class:`~aimmd.worker._simulate.WorkerSimulate`),
-- :attr:`initial_paths` and :attr:`must_stop`,
-- path and pool utilities from :mod:`aimmd.worker.utils`:
-  ``register_path``, ``update_selection_pool``, ``select_shooting_point``,
+- :meth:`run` dispatch (from :class:`~aimmd.worker._run.WorkerRun`)
+- :meth:`_simulate` (from :class:`~aimmd.worker._simulate.WorkerSimulate`)
+- :attr:`must_stop` (stop-condition flag)
+- Utilities: ``register_path``, ``select_shooting_point``, and 
   ``accept_or_reject_last_path``.
 
 Notes
 -----
-- The backward simulation is run first. If it hits ``max_length`` (after
-  accounting for offsets), the forward simulation may be skipped entirely.
-- The method updates :attr:`_total_frames` and :attr:`_total_steps` for
-  stop-condition bookkeeping and progress reporting in higher-level loops.
+- The backward simulation is prioritized. If it reaches ``max_length``, the 
+  forward simulation may be skipped.
+- The method tracks :attr:`_total_frames` and :attr:`_total_steps` for 
+  global progress reporting and stop-condition bookkeeping.
 """
 
 # external
 import os
+import numpy as np
 from abc import ABC
 
 # aimmd imports
 from .utils import register_path
 from .utils import select_shooting_point
-from .utils import update_selection_pool
 from .utils import accept_or_reject_last_path
 from ..path import Path
 from .._config import print
 from ..cache.npy import save_npy
-from ..core.utils import now, remove, cycle, process_state
+from ..core.utils import now, remove, process_state
 from ..pathensemble import PathEnsemble
 
 # worker "shoot" run method
 class WorkerShoot(ABC):
 
-    def shoot(self, target_state=1, k=0, sweep=False):
+    def shoot(self, target_state=1, k=0, sweep=False, nchains_per_worker=1):
         """
         Public convenience wrapper for the shooting task.
         
@@ -156,8 +142,10 @@ class WorkerShoot(ABC):
         k : int, optional
             Worker index used to disambiguate output folders (e.g., ``chainR{k}``)
             and to offset cycling of initial paths. Default is ``0``.
+            If `nchains_per_worker > 1`, it is just the *first* shooting chain
+            associated with the worker, with the others following sequentially.
         sweep : bool, optional
-            If ``False``, run committor-guided shooting with a selection pool
+            If ``False``, run committor-guided shooting with a Markov chain
             (enhanced sampling in the reactive region).
 
             If ``True``, run sweep-mode shooting intended for *committor
@@ -165,15 +153,20 @@ class WorkerShoot(ABC):
             frames (from the merged initial ensemble) and repeatedly shoot from
             them to empirically estimate outcome probabilities (e.g., fraction
             reaching state 1 vs state 0). Default is ``False``.
-
+        nchains_per_worker : int, optional, default = 1
+            If > 1, the worker will manage more than one chain. A higher value
+            of `nchains_per_worker` tends to regularize the training set and thus
+            improve performance. If running only one shooting worker,
+            `nchains_per_worker=10` is recommended.
+        
         Returns
         -------
         object
             Whatever :meth:`Worker.run` returns for the ``'shoot'`` task.
         """
-        return self.run('shoot', target_state, k, sweep)
+        return self.run('shoot', target_state, k, sweep, nchains_per_worker)
 
-    def _shoot(self, target_state=1, k=0, sweep=False):
+    def _shoot(self, target_state=1, k=0, sweep=False, nchains_per_worker=1):
         """
         Internal implementation of the ``'shoot'`` worker task.
 
@@ -184,6 +177,8 @@ class WorkerShoot(ABC):
         k : int, optional
             See :meth:`shoot`.
         sweep : bool, optional
+            See :meth:`shoot`.
+        nchains_per_worker : int, optional
             See :meth:`shoot`.
 
         Returns
@@ -202,150 +197,154 @@ class WorkerShoot(ABC):
         do_tps = params.chain_type == 'tps'
         # which state are we talking about?
         states = params.states
-        if params.at_least_one_transition_in_pool:
-            at_least_one = states
-        else:
-            at_least_one = ''
         t = process_state(target_state, states)
-        initial_paths = self.initial_paths  # right order
-        initial_paths._paths = cycle(initial_paths._paths, int(k))  
         nbins = params.nbins
         max_length = params.max_length
+        ext = params.trajectory_extension
         free_overriding_states = params.free_overriding_states
-        
-        # sweep
-        if sweep:
-            sweep_frames = initial_paths.join()
-            sweep_size = len(sweep_frames)
-            if not (sweep_frames.states == t).all():
-                raise RuntimeError(f'all initial paths frames must be in {t}')
-        else:
-            # only transitions
-            initial_paths = initial_paths.extract(states, states[::-1])
-            if not initial_paths:
-                raise RuntimeError('some initial paths must be transitions')
-            if t != states[1]:
-                # just the frame in state for every path
-                for i, path in enumerate(initial_paths):
-                    if path.states[0] == t:
-                        initial_paths._paths[i] = path[:+1]
-                    else:
-                        initial_paths._paths[i] = path[-1:]
-        pool_size = params.selection_pool_size
-
-        # eneconv
-        if params.engine == 'gromacs':
-            eneconv = params.gmx_eneconv
-        else:
-            eneconv = None
-
-        # (temporary) folder: will be updated with directory
-        if not sweep:
-            folder = f'chain{t}{k}'
-        else:
-            folder = f'sweep{t}{k}'
+        density_adjustment = params.global_density_adjustment and nbins > 1
+        original_stdout = self.log_file == self.original_stdout
+        k = int(k)
+        nchains_per_worker = int(nchains_per_worker)
 
         # exclusively for progress bar
         # location can be different from folder if the params file does not live
         # in the current working directory
-        self._location = f'{self.directory}/{folder}'
-        
-        # create folder if not existing (along with all intermediate paths)
         directory = self._directory
-        folder = f'{directory}/{folder}'
-        os.system(f'mkdir -p {folder}')
-        
-        # load chain and pool
-        if not sweep:
-            if t == states[1] and not do_tps:
-                print(f'\nLoading shooting chain and selection pool {now()}')
-                chain = params.shot_chains(directory, t, k)  # weights accounted
-                pool = PathEnsemble(f'{folder}/pool.log')
-                print(f'... currently {len(chain)} path'
-                      f'{"s" if len(chain) != 1 else ""} in shooting chain')
-                print(f'... currently {len(pool)} path'
-                      f'{"s" if len(pool) != 1 else ""} in selection pool')
+
+        # util for managing multiple chains at the same time
+        def set_chain_id(chain_id):
+            if not sweep:
+                folder = f'chain{t}{k + chain_id}'
             else:
-                print(f'\nLoading shooting chain {now()}')
-                chain = params.shot_chains(directory, t, k)  # weights accounted
-                pool = PathEnsemble()
-                print(f'... currently {len(chain)} path'
-                      f'{"s" if len(chain) != 1 else ""} in shooting chain')
+                folder = f'sweep{t}{k + chain_id}'
+            self._k = k + chain_id
+            self._location = f'{self.directory}/{folder}'
+            self._folder = f'{directory}/{folder}'
+            self._initial = Path(f'{self._folder}/initial*{ext}')
+            if not original_stdout:
+                self.log_file = f'{folder}/worker.log'
+        
+        # eneconv
+        if params.engine == 'gromacs':
+            eneconv = params.gmx_eneconv
         else:
-            chain = params.shot_paths(directory, 'sweep', t, k)
-            print(f'\nReport after {len(chain)} paths')
-            chain.report_shooting_results(states, sweep_size)
-            print()
+            eneconv = None  
+        
+        # initialize shots
+        shots = [None for _ in range(k + nchains_per_worker)]
+        total_frames = 0
+        total_steps = 0
+        
+        # create/overwrite initial frames
+        for chain_id in range(nchains_per_worker):
+            set_chain_id(chain_id)
+            while not (initial_path := Path(f'{self._folder}/initial{ext}')):
+                from ..launcher import Launcher
+                launcher = Launcher(params, directory)
+                launcher._update(n=self._k + 1)
+                launcher._build()
+            
+            # load
+            if not sweep:
+                print(f'\nLoading shooting chain {now()}')
+                # paths have zero weights if incomplete
+                chain = params.shot_chains(directory, t, self._k)
+                print(f'... currently {len(chain)} path'
+                  f'{"s" if len(chain) != 1 else ""} in shooting chain')
+            else:
+                print(f'\nLoading shooting results {now()}')
+                chain = params.shot_paths(directory, 'sweep', t, self._k)
+                print(f'*** report after {len(chain)} paths')
+                chain.report_shooting_results(states, len(self._initial))
+                print()
+            
+            # update total frames and steps
+            total_frames += sum(chain.n_frames)
+            total_steps += len(chain)
+            
+            # assign to shots list
+            shots[self._k] = chain
         
         # update total frames and steps
-        self.total_frames = sum(chain.n_frames)
-        self.total_steps = len(chain)
-
+        self.total_frames = total_frames
+        self.total_steps = total_steps
+        
         # must have network, bins, and descriptors
         # only if it makes sense
         if t == states[1] and not sweep and nbins > 1:
-            print(f'\nWaiting for neural network, bins, densities {now()}')
+            print(f'\nWaiting for neural network parameters {now()}')
             while True:
                 try:
-                    params.update_network(
-                        directory, timeout=0, raise_if_failure=True)
-                    bins, densities = params.load_bins_and_densities(
-                        directory, timeout=0, raise_if_failure=True)
+                    params.update_network(directory, timeout=0,
+                                          raise_if_failure=True)
                     break
                 except:
                     if self.must_stop:
                         return
-
+        
         # initialize
         back_simulation_completed = False
         forw_simulation_completed = False
         back = Path()
         forw = Path()
-
+        
         # main cycle
         while not self.must_stop:
-
+            
+            # we always manage the SHORTEST chain
+            chain_id = np.argmin([len(chain) for chain in
+                                  shots[k:k + nchains_per_worker]])
+            set_chain_id(chain_id)
+            chain = shots[self._k]
+            
             # need to initialize?
             if not params.check_if_initialized(
-                f'{folder}/back', f'{folder}/forw'):
+                f'{self._folder}/back', f'{self._folder}/forw'):
                 print(f'\nSelecting shooting point for '
-                      f'{folder}/path{len(chain) + 1:06g} {now()}')
-
+                      f'{self._folder}/path{len(chain) + 1:06g} {now()}')
+                
+                # path sampling chain
                 if not sweep:
-                    # update selection pool
-                    # (add last chain path to pool if not already there)
-                    update_selection_pool(
-                        pool, pool_size, chain,
-                        initial_paths, at_least_one=at_least_one)
-
+                    
+                    # update shots if asked by
+                    # params.global_density_adjustment -> density_adjustment
+                    if density_adjustment:
+                        h = 0
+                        while os.path.exists(f'{directory}/chain{t}{h}'):
+                            if k <= h < k + nchains_per_worker:
+                                pass
+                            elif h < len(shots):
+                                shots[h] = params.shot_chains(
+                                    directory, t, h, old=shots[h])
+                            else:
+                                shots.append(params.shot_chains(
+                                    directory, t, h))
+                            h += 1
+                    
                     # select shooting point
                     shooting_point = select_shooting_point(
-                        pool, params, folder, chain,
-                        free_trajectories=params.free_trajectories(directory)
-                        if free_overriding_states else [],
-                        target_state=t)
-
+                        PathEnsemble(self._initial) + chain,
+                        params, shots, target_state=t)
+                
                 else:  # sweep
-                    index = len(chain) % len(sweep_frames)
-                    fname_index, loc = sweep_frames._get_local_loc(index)
+                    index = len(chain) % len(self._initial)
+                    fname_index, loc = self._initial._get_local_loc(index)
                     print(f'=== selecting frame '
-                          f'{sweep_frames._fnames[fname_index]}, {loc}')
-                    shooting_point = sweep_frames[index:index + 1]
-
+                          f'{self._initial._fnames[fname_index]}, {loc}')
+                    shooting_point = self._initial[index:index + 1]
+                
                 # clean
-                remove(f'{folder}/*back*', f'{folder}/*forw*')
-
+                remove(f'{self._folder}/*back*', f'{self._folder}/*forw*')
+                
                 # initialize simulation
                 params.initialize_simulation(shooting_point,
-                    f'{folder}/back', f'{folder}/forw')
-
-                if not sweep:  # save pool status (removed SP's source)
-                    pool.save(f'{folder}/pool.log')
-
+                    f'{self._folder}/back', f'{self._folder}/forw')
+            
             # update existing paths: backward
             if not back_simulation_completed:
                 (stop_frame, nframes, last_state, last_length) = \
-                    self._simulate(f'{folder}/back', back, t, mode)
+                    self._simulate(f'{self._folder}/back', back, t, mode)
                 back_simulation_completed = stop_frame is not None
                 nframes_back = (stop_frame or 0) + last_length
                 if nframes_back >= max_length:
@@ -360,7 +359,7 @@ class WorkerShoot(ABC):
             if back_simulation_completed and not forw_simulation_completed:
                 offset = nframes_back - 1
                 (stop_frame, nframes, last_state, last_length) = \
-                    self._simulate(f'{folder}/forw', forw, t, mode, offset)
+                    self._simulate(f'{self._folder}/forw', forw, t, mode, offset)
                 forw_simulation_completed = stop_frame is not None
                 nframes_forw = (stop_frame or 0) + last_length
                 nframes_forw = min(nframes_forw, max_length - offset)
@@ -384,7 +383,8 @@ class WorkerShoot(ABC):
                 self.total_frames += path.n_frames
                 
                 # clean and reset
-                remove(f'{folder}/*back*', f'{folder}/*forw*')
+                print()
+                remove(f'{self._folder}/*back*', f'{self._folder}/*forw*')
                 back_simulation_completed = False
                 forw_simulation_completed = False
                 back = Path()
@@ -395,23 +395,14 @@ class WorkerShoot(ABC):
                     # tps (also save weights)
                     if do_tps:
                         accept_or_reject_last_path(chain, params)
-                        save_npy(f'{folder}/tps_weights.npy',
+                        save_npy(f'{self._folder}/tps_weights.npy',
                                  chain.weights)
 
-                    # do not include in pool in this specific case
+                    # path is not valid
                     elif not path.is_complete(t, states):
-                        print('xxx path not valid, not including '
-                              'it in selection pool')
+                        print('xxx path not valid')
                         path.weight = 0.
-
-                    if not path.weight:
-                        # manually compute shooting point value
-                        # otherwise the value will never be updated
-                        # if not training, since will never feature
-                        # in the selection pool
-                        si = path.shooting_index
-                        path[si:si + 1].compute(*params.compute_values_args, return_result=True)
                 
                 else:  # print sweep summary
                     print(f'\nReport after {len(chain)} paths')
-                    chain.report_shooting_results(states, sweep_size)
+                    chain.report_shooting_results(states, len(self._initial))

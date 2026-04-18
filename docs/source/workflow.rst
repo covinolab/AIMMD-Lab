@@ -80,6 +80,8 @@ sampling logic described in the latest reference paper. When
 ``chain_type='tps'``, AIMMD instead follows a more traditional TPS-style
 accept/reject chain.
 
+The same worker can handle more shooting chains sequentially, and different workers also run simultaneusly. Having many chains and free simulations is important for regularizing the training set and improving the training performances: in this way, the **`train`** worker provides frequent updates to the committor model, using always the most recent available training data.
+
 Step 5: Analyze the Resulting Path Ensemble
 -------------------------------------------
 
@@ -196,7 +198,7 @@ Important Output Files
 
 A typical run directory contains:
 
-- shot chains and pool logs for reactive-region sampling,
+- shot chains for reactive-region sampling,
 - ``chain*`` trajectory folders for the path sampling trajectories,
 - ``free*`` trajectory folders for unbiased simulations,
 - ``network*.h5`` snapshots for the learned model,

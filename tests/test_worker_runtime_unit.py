@@ -7,6 +7,7 @@ branch logic itself becomes testable.
 """
 
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -120,6 +121,8 @@ class TinyShootWorker(WorkerShoot):
         self.total_steps = 0
         self.total_frames = 0
         self._location = ""
+        self.log_file = sys.stdout
+        self.original_stdout = sys.stdout
 
 
 class TinyTrainWorker(WorkerTrain):
@@ -228,18 +231,25 @@ def test_free_initializes_and_then_stops_after_one_completed_segment(monkeypatch
         positions=np.array([[[-1, 0, 0]], [[0, 0, 0]], [[1, 0, 0]]], dtype=np.float32),
     )
     params = aimmd.Params.placeholder.copy()
+    
     params.__dict__.update(
         states="ARB",
         nbins=1,
+        # 2. Add the initial paths here
+        initial_paths=aimmd.PathEnsemble(initial), 
         trajectory_extension=".xtc",
         trajectory_update_batch_size=2,
         pipeline=["states", "descriptors", "values"],
+        topology='run.gro',
         extra_free_frames=0,
         restart_free_simulations_with_transitions="",
         check_if_initialized=lambda deffnm: False,
         shot_chains=lambda directory, r, old=None: [],
         initialize_simulation=lambda frames, deffnm: init_calls.append((frames, deffnm)),
+        parent=Path('.').resolve(),
     )
+    params.save()
+    
     init_calls = []
     worker = TinyFreeWorker(params, aimmd.PathEnsemble(initial), tmp_path)
     # `_free` later slices the mutable trajectory object to pick restart frames.
@@ -277,27 +287,28 @@ def test_shoot_registers_completed_path_and_updates_non_tps_weight(monkeypatch, 
         positions=np.array([[[-1, 0, 0]], [[0, 0, 0]], [[1, 0, 0]]], dtype=np.float32),
     )
     chain = PathEnsemble()
-    pool = PathEnsemble()
     params = aimmd.Params.placeholder.copy()
     params.__dict__.update(
         states="ARB",
         sorted_states="ARB",
         chain_type="rfps",
-        at_least_one_transition_in_pool=False,
+        always_select_inside_the_bins=True,
         nbins=1,
         max_length=10,
-        selection_pool_size=2,
         free_overriding_states="",
+        topology='run.gro',
         engine="toy",
+        initial_paths = PathEnsemble(initial),
         check_if_initialized=lambda *deffnms: False,
         shot_chains=lambda directory, t, k=None: chain,
         shot_paths=lambda directory, prefix, t, k=None: chain,
         free_trajectories=lambda directory: [],
         initialize_simulation=lambda shooting_point, *deffnms: None,
         compute_values_args=(lambda x: np.array([0.0]), "values", "positions"),
+        parent=Path('.').resolve(),
     )
+    params.save()
     worker = TinyShootWorker(params, aimmd.PathEnsemble(initial), tmp_path)
-    monkeypatch.setattr("aimmd.worker._shoot.update_selection_pool", lambda *args, **kwargs: pool)
     monkeypatch.setattr("aimmd.worker._shoot.select_shooting_point", lambda *args, **kwargs: initial[1:2])
     monkeypatch.setattr("aimmd.worker._shoot.remove", lambda *args, **kwargs: None)
     back = build_path(tmp_path, stem="back_seg")
@@ -353,6 +364,12 @@ def test_train_performs_one_round_and_saves_outputs(monkeypatch, tmp_path):
                 np.array([-1.0, 1.0]),
                 np.array([0.2, 0.8]),
             )
+        
+        def shooting(self, attribute="values"):
+            return np.array([0.])
+        
+        def internal(self, attribute):
+            return np.array([0])
 
         def project(self, bins, source="values"):
             return np.array([2.0, 1.0], dtype=float)

@@ -28,6 +28,11 @@ def test_launcher_build_creates_expected_plan(tmp_path, monkeypatch):
     params.__dict__["path"] = tmp_path / "params.py"
     params.__dict__["states"] = "ARB"
     (tmp_path / "params.py").write_text("# placeholder params file\n")
+    
+    params.initial_paths[0] = params.initial_paths[0] + params.initial_paths[0]
+    params.initial_paths[0].states = ['R'] * len(params.initial_paths[0])
+    params.initial_paths[0].states[0] = 'A'
+    params.initial_paths[0].states[-1] = 'B'
 
     monkeypatch.setattr("aimmd.launcher._helpers.get_num_cpus", lambda: 4)
     monkeypatch.setattr("aimmd.launcher._helpers.get_num_gpus", lambda: 0)

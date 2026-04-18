@@ -64,7 +64,6 @@ This mixin assumes:
 
 - :meth:`run` dispatch exists (from :class:`~aimmd.worker._run.WorkerRun`),
 - :meth:`_simulate` exists (from :class:`~aimmd.worker._simulate.WorkerSimulate`),
-- :attr:`initial_paths` exists (from :class:`~aimmd.worker._properties.WorkerProperties`),
 - cooperative stop checks via :attr:`must_stop` / :attr:`termination_signal`.
 
 Notes
@@ -77,7 +76,6 @@ Notes
 """
 
 # exteral
-import os
 import numpy as np
 from abc import ABC
 
@@ -87,6 +85,7 @@ from .._config import print
 from ..cache.npy import save_npy
 from ..core.utils import now, remove, process_state
 from ..path.utils import get_cache_fname
+from ..pathensemble import PathEnsemble
 from ..pathensemble.utils import assemble_pathensemble
 
 # WorkerFree mixin class
@@ -164,35 +163,34 @@ class WorkerFree(ABC):
         t = process_state(target_state, states)
         r = states[1]
         tr = f'{t}{r}'  # allowed states: target & reactive
-        
-        restart_with_transition = (
-            params.restart_free_simulations_with_transitions == 'all' or
-            t in params.restart_free_simulations_with_transitions)
-        initial_paths = self.initial_paths
-        # only transitions
-        initial_paths = initial_paths.extract(states, states[::-1])
-        if not initial_paths:
-            raise RuntimeError('some initial paths must be transitions')
+        restart_with_transition = \
+            params.restart_free_simulations_with_transitions
 
         # exclusively for progress bar
         # location can be different from folder if the params file does not live
         # in the current working directory
         self._location = f'{self.directory}/free{t}'
-        
-        # create folder if not existing (along with all intermediate paths)
         directory = self._directory
         folder = f'{directory}/free{t}'
-        os.system(f'mkdir -p {folder}')
         
-        # must have network, bins, and descriptors
+        # initialize fake launcher, create/overwrite initial frames
+        while not (initial_frames_available :=
+                   PathEnsemble(f'{folder}/initial*{ext}')):
+            from ..launcher import Launcher
+            launcher = Launcher(params, directory)
+            if t == states[0]:
+                launcher._update(n=0, n1=1)
+            else:
+                launcher._update(n=0, n2=1)
+            launcher._build()
+        
+        # must have network parameters
         if wait and params.nbins > 1:
-            print(f'\nWaiting for neural network, bins, densities {now()}')
+            print(f'\nWaiting for neural network parameters {now()}')
             while True:
                 try:
-                    params.update_network(
-                        directory, timeout=0, raise_if_failure=True)
-                    bins, densities = params.load_bins_and_densities(
-                        directory, timeout=0, raise_if_failure=True)
+                    params.update_network(directory, timeout=0,
+                                          raise_if_failure=True)
                     break
                 except:
                     if self.termination_signal:
@@ -236,29 +234,22 @@ class WorkerFree(ABC):
                 # need to find initial_frames
                 if restart_with_transition or not initial_frames:
 
-                    # take initial_frames from a list of transitions
+                    # take initial_frames from a sampled transition
                     if restart_with_transition:
                         chains = params.shot_chains(directory, r, old=chains)
                         transitions = assemble_pathensemble(chains).extract(
                             states, states[::-1])
-                        if not transitions:
-                            transitions = initial_paths
-                        i = np.random.choice(len(transitions))
-                        path = transitions[i]
-                    else:
+                        if transitions:
+                            path = transitions[np.random.choice(len(transitions))]
 
-                        # take initial_frames from initial paths (in order)
-                        path = initial_paths[k % len(initial_paths)]
-                    
-                    if t == r:
-                        if np.random.random() > .5:
-                            initial_frames = path[:+2]
                         else:
-                            initial_frames = path[:-3:-1]
-                    elif path.initial('states') == t:
-                        initial_frames = path[1::-1]
+                            
+                            # take initial_frames from those already available
+                            initial_frames = initial_frames_available[
+                                np.random.choice(len(initial_frames_available))]
                     else:
-                        initial_frames = path[-2:]                
+                        initial_frames = initial_frames_available[
+                            k % len(initial_frames_available)]               
                 
                 # wipe out garbage
                 remove(f'{folder}/*{name}*')

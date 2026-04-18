@@ -37,9 +37,6 @@ update_network(...)
     Wait for a network checkpoint file to appear, then load into the current
     `params.network`.
 
-load_bins_and_densities(...)
-    Wait for `.npy` files to appear and validate shapes/consistency.
-
 copy()
     Shallow copy of Params (copies `__dict__`).
 
@@ -626,68 +623,7 @@ class ParamsMethods(ABC):
                     print(f'Warning: {exception}')
                     return
             time.sleep(.1)
-
-    def load_bins_and_densities(self, directory,
-        timeout=20., raise_if_failure=True):
-        """
-        Load bin boundaries and densities from `.npy` files.
-
-        Parameters
-        ----------
-        directory : str
-            Directory containing `bins{states}.npy` and `densities{states}.npy`.
-        timeout : float, optional
-            Maximum wait time (seconds) for files to appear and be readable.
-        raise_if_failure : bool, optional
-            If True, raise after timeout; otherwise warn and return empty arrays.
-
-        Returns
-        -------
-        (numpy.ndarray, numpy.ndarray)
-            bins : 1D array of bin boundaries (length nbins+1 typically)
-            densities : 1D array of per-bin densities (length len(bins)-1)
-
-        Raises
-        ------
-        Exception
-            Any final exception after timeout if `raise_if_failure` is True.
-
-        Notes
-        -----
-        This function validates:
-
-        - bins and densities are both 1D,
-        - `len(densities) == len(bins) - 1`.
-        """
-        # find name
-        states = self.sorted_states
-
-        # advance only if data are present
-        t0 = time.time()
-        while True:
-            try:
-                bins = load_npy(f'{directory}/bins{states}.npy')
-                densities = load_npy(f'{directory}/densities{states}.npy')
-                if bins is None:
-                    raise RuntimeError('could not load bins')
-                if densities is None:
-                    raise RuntimeError('could not load bins')
-                assert len(bins.shape) == len(densities.shape) == 1
-                if len(bins) - 1 != len(densities):
-                    raise RuntimeError(
-                        f'len(densities) = {len(densities)}, '
-                        f'should be len(bins) - 1 = {len(bins) - 1}')
-                return bins, densities
-
-            # error only after timeout
-            except Exception as exception:
-                if time.time() - t0 >= timeout:
-                    if raise_if_failure:
-                        raise exception
-                    print(f'Warning: {exception}')
-                    return [], []
-            time.sleep(.1)
-
+    
     def copy(self):
         """
         *Shallow*-copy this Params object. Only force reload of inital paths.

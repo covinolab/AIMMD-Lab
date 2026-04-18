@@ -81,7 +81,7 @@ def test_log_parsing_relaxation_and_lineages(tmp_path):
     p1 = build_path(chain_dir, stem="path000001")
     (chain_dir / "worker.log").write_text(
         f"Selecting shooting point for '{p1.fname[:-4]}' (value: 0.0)\n"
-        f"=== selecting path '{p0.fname}'\n"
+        f"*** choosing from '{p0.fname}'\n"
         "Shooting initialization completed\n"
     )
     chain = PathEnsemble(p0, p1)

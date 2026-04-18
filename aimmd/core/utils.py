@@ -83,6 +83,7 @@ from numbers import Integral
 from pathlib import PosixPath
 from scipy.special import logit, expit
 from MDAnalysis.coordinates.base import Timestep
+from MDAnalysis.coordinates.memory import MemoryReader
 
 # -----------------------------------------------------------------------------------
 # Time formatting
@@ -586,7 +587,9 @@ def memory_reader_from_timesteps(*list_of_timesteps):
             velocities.append(loc.velocities.copy())
         else:
             velocities.append(np.zeros((loc.n_atoms, 3)))
-        dimensions.append(loc.dimensions.copy())
+        dim = loc.dimensions
+        dimensions.append(dim.copy() if dim is not None else
+                          np.array([0., 0., 0., 90., 90., 90.]))
         dt = loc.dt
     
     def recurse(obj):

@@ -426,12 +426,12 @@ def fit(params,
     # (each call may skip paths that cannot provide the requested series)
     (in1, in1_back, in1_forw, *in1_desc_ref,
      npaths_in1) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == r) & (t == a)), *_desc_series)
+        np.flatnonzero(t == a), *_desc_series)
     if must_stop():  # responsiveness
         return [], [], [], [], []
     (in2, in2_back, in2_forw, *in2_desc_ref,
      npaths_in2) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == r) & (t == b)), *_desc_series)
+        np.flatnonzero(t == b), *_desc_series)
     if must_stop():
         return [], [], [], [], []
     (free1to1, free1to1_back, free1to1_forw,

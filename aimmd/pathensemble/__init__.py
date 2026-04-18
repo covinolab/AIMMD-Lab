@@ -76,7 +76,6 @@ class PathEnsemble(
     represent:
 
     - shooting chains (ordered sequences of sampled paths),
-    - selection pools (bounded candidate sets for shooting-point selection),
     - free-trajectory ensembles (collections of long unbiased trajectories),
     - merged or extracted ensembles used for analysis and training.
 
@@ -106,8 +105,7 @@ class PathEnsemble(
     ----------------------
     Shooting
         The worker maintains a shooting chain as a PathEnsemble. New paths are
-        appended via registration utilities. A separate PathEnsemble is used as
-        the selection pool.
+        appended via registration utilities.
 
     Training
         A PathEnsemble assembled from current chains and free trajectories is
