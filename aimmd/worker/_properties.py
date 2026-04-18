@@ -34,7 +34,7 @@ import sys
 import time
 from abc import ABC
 from math import inf
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 
 # aimmd imports
 from ..pathensemble import PathEnsemble
