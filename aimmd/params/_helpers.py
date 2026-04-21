@@ -35,7 +35,7 @@ from abc import ABC
 from types import MethodType as Method
 from typing import List, Callable
 from numbers import Integral
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from MDAnalysis import Universe
 from collections.abc import Iterable
 
@@ -139,8 +139,7 @@ class ParamsHelpers(ABC):
         -----
         Many fields require special handling:
 
-        - callable fields: disallow lambdas, unwrap bound methods, attach
-          `__source__`.
+        - callable fields: unwrap bound methods, attach `__source__`.
         - `states`: normalized to uppercase letters and validated.
         - `topology`: attempts to build an MDAnalysis Universe to cache masses.
         - `initial_paths`: immediately coerced into a PathEnsemble.
@@ -160,17 +159,12 @@ class ParamsHelpers(ABC):
                 elif not callable(value):
                     raise TypeError(f"'values_function' must be callable, "
                                     f'got {type(value).__name__}: {value}')
-
-                # Lambdas are rejected (currently not supported by serialization).
-                elif getattr(value, '__name__', None) == "<lambda>":
-                    raise TypeError(
-                        "lambda functions don't work in params (for now)")
-
+                
                 # Bound methods are converted to underlying function objects.
                 elif isinstance(value, Method):
                     value = value.__func__
                     update_source(value, name)
-
+                
                 else:
                     update_source(value, name)
 
