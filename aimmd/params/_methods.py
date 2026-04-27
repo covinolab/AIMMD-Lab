@@ -361,6 +361,15 @@ class ParamsMethods(ABC):
             if noappend:
                 cmd_parts[-1] += ' -noappend'
             command = ' && '.join(cmd_parts)
+            # PLUMED's analog of GROMACS `-nobackup`: PLUMED unconditionally
+            # rotates an existing PLUMED.OUT to bck.N.PLUMED.OUT on each new
+            # mdrun and hard-aborts at 100 backups. Delete the previous log
+            # so PLUMED has nothing to rotate. Nothing in AIMMD reads
+            # PLUMED.OUT (bias values are read from COLVAR), so the log can
+            # be discarded between segments.
+            plumed_out = os.path.join(deffnm_dir, 'PLUMED.OUT')
+            if os.path.exists(plumed_out):
+                os.remove(plumed_out)
             result = execute_command(command, **kwargs)
             # PLUMED bias: rename COLVAR → {deffnm}_COLVAR so that back and
             # forward segments (and successive free-traj parts) never clobber
