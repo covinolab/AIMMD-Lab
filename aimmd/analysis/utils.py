@@ -78,6 +78,7 @@ statistics to transition statistics when required.
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from re import split
 from math import inf, nan
 from tqdm import tqdm
 from scipy.stats import beta
@@ -694,24 +695,71 @@ def extract_rate_estimates_from_log_file(fname):
                 step = 0
     return np.array(t), np.array(k12), np.array(k21)
 
-    # initialize output
-    k12 = []
-    k21 = []
+
+def extract_bias_reweighted_rate_estimates_from_log_file(fname):
+    """
+    Parse bias-reweighted rate estimates from an AIMMD training log.
+
+    Complements :func:`extract_rate_estimates_from_log_file` for biased runs
+    (``record_bias=True``). The bias-reweighted lines appear after the raw estimate
+    block in each training round::
+
+        k12 estimate:          1.234e-03 [1/dt]
+        k21 estimate:          5.678e-04 [1/dt]
+        12500 frames (excluded margins)
+        Bias check passed ...
+        k12 bias-reweighted:   1.200e-03 [1/dt]
+        k21 bias-reweighted:   5.500e-04 [1/dt]
+
+    The time coordinate ``t`` is taken from the ``frames`` line (same as for
+    the raw estimates), so the returned arrays align index-by-index with those
+    returned by :func:`extract_rate_estimates_from_log_file`.
+
+    Parameters
+    ----------
+    fname : str or path-like
+        Path to a training log file (e.g. ``trainARB.log``).
+
+    Returns
+    -------
+    (np.ndarray, np.ndarray, np.ndarray)
+        ``(t, k12_rw, k21_rw)`` as NumPy arrays.  Empty arrays if the log
+        contains no bias-reweighted lines (e.g. ``record_bias=False`` run).
+    """
     t = []
-    with open(fname, 'r') as file:
-        step = -1
-        for line in file:
+    k12_rw = []
+    k21_rw = []
+    # State machine: 0=idle, 1=saw k12 estimate, 2=saw k21 estimate, 3=saw frames
+    step = 0
+    _t_pending = None
+    with open(fname, 'r') as fh:
+        for line in fh:
             if 'k12 estimate' in line:
-                k12.append(float(line.split('estimate:')[1].split('[')[0]))
                 step = 1
             elif step == 1:
-                k21.append(float(line.split('estimate:')[1].split('[')[0]))
                 step = 2
-            elif step == 2:
-                t.append(float(line.split('frames')[0]))
+            elif step == 2 and 'frames' in line:
+                try:
+                    _t_pending = float(line.split('frames')[0])
+                except ValueError:
+                    pass
+                step = 3
+            elif step == 3 and 'k12 bias-reweighted' in line:
+                try:
+                    k12_rw.append(float(line.split(':')[-1].split('[')[0]))
+                    step = 4
+                except (ValueError, IndexError):
+                    pass  # don't advance; keeps k12_rw/k21_rw/t in sync
+            elif step == 4 and 'k21 bias-reweighted' in line:
+                try:
+                    k21_rw.append(float(line.split(':')[-1].split('[')[0]))
+                    if _t_pending is not None:
+                        t.append(_t_pending)
+                except (ValueError, IndexError):
+                    pass
                 step = 0
-    return np.array(t), np.array(k12), np.array(k21)
-
+                _t_pending = None
+    return np.array(t), np.array(k12_rw), np.array(k21_rw)
 
 
 def solve_committor_by_relaxation(
@@ -832,7 +880,7 @@ def find_path_lineages(*shooting_chains, verbose=False):
             return
         
         # current folder
-        folder = '/'.join(fnames[-1].split('/')[:-1])
+        folder = '/'.join(split(r'[\\/]', fnames[-1])[:-1])
         suffix = '.' + fnames[-1].split('.')[-1]
         
         # --- 2. LOG PARSING HELPER ---

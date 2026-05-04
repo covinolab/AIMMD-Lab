@@ -78,9 +78,10 @@ import os
 import time
 import numpy as np
 import bisect
+from re import split
 from glob import glob
 from numbers import Integral
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from scipy.special import logit, expit
 from MDAnalysis.coordinates.base import Timestep
 from MDAnalysis.coordinates.memory import MemoryReader
@@ -690,7 +691,7 @@ def extract_folder_and_name(fname):
     next to the target file (locks, temp files, offsets), and need a robust
     way to form sibling paths.
     """
-    split_fname = fname.split('/')
+    split_fname = split(r'[\\/]', fname)
     return '/'.join(split_fname[:-1]) or '.', split_fname[-1]
 
 

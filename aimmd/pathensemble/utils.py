@@ -70,7 +70,7 @@ Notes
 # external
 import numpy as np
 from math import inf
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from collections.abc import Iterable
 from MDAnalysis.coordinates.memory import MemoryReader
 from MDAnalysis.coordinates.timestep import Timestep

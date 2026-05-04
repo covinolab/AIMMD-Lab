@@ -371,3 +371,73 @@ def extract_lsr_pairs(paths, key, lagtime, name):
         data_tau = np.empty(0)
 
     return data_t, data_tau, len(key), n_pairs
+
+
+def extract_mar_sequences(paths, key, lagtime, name):
+    """Extract ordered frame sequences from reactive transition paths for MAR.
+
+    Unlike :func:`extract_lsr_pairs` (which produces flat concatenated pairs),
+    this function preserves path identity: the return value is a list of
+    per-path arrays, one per successfully loaded reactive path. Each array
+    contains every ``lagtime``-th frame (indices 0, lagtime, 2*lagtime, ...)
+    of the internal path frames. Paths with fewer than 3 subsampled frames
+    are silently skipped.
+
+    The caller is responsible for selecting only reactive path keys (e.g. the
+    union of free1to2, free2to1, shot1to2, shot2to1 type conditions) before
+    passing ``key``.
+
+    Parameters
+    ----------
+    paths : PathEnsemble
+        The path ensemble (same interface as for ``extract_lsr_pairs``).
+    key : array-like or None
+        Path selector (same semantics as ``extract_lsr_pairs``).
+    lagtime : int
+        Subsampling stride. A value of 1 uses every frame; a value of k uses
+        every k-th frame (indices 0, k, 2k, ...). Must be >= 1.
+    name : str
+        Name of the per-frame series to extract (e.g. ``'descriptors'``,
+        ``'coordinates'``, ``'filenames'``, ``'locs'``). Passed to
+        ``path.get``.
+
+    Returns
+    -------
+    sequences : list of numpy.ndarray
+        One array per successfully loaded path, shape
+        ``(n_subsampled_frames_i, *frame_shape)``.
+    n_selected : int
+        Number of paths selected by ``key`` (including skipped ones).
+    n_sequences : int
+        Number of paths that produced a valid sequence.
+    """
+    if key is None:
+        key = range(len(paths))
+    else:
+        key = np.arange(len(paths))[key].flatten()
+
+    sequences = []
+
+    for k in key:
+        path = paths[k]
+        path_indices = path.internal('indices')
+        n = len(path_indices)
+
+        sub_idx = np.arange(0, n, lagtime)
+        if len(sub_idx) < 3:
+            continue
+
+        try:
+            series = path.get(
+                name,
+                start=path_indices[0],
+                stop=path_indices[-1] + 1,
+                raise_if_missing=True,
+            )
+            assert len(series) == n
+        except Exception:
+            continue
+
+        sequences.append(series[sub_idx])
+
+    return sequences, len(key), len(sequences)

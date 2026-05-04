@@ -184,10 +184,14 @@ class AbstractCache(ABC):
         """
         # Attempt fast-path lookup.
         instance = self._cache.get(fname, None)
-        
-        # Reload if not present or insufficient length.
+
+        # Reload if not present, unsized (0-d corrupt/None save), too short, or inaccessible.
         try:
-            needs_reload = instance is None or len(instance) < min_length
+            needs_reload = (
+                instance is None
+                or not hasattr(instance, '__len__')
+                or len(instance) < min_length
+            )
         except:  # error in case instance is not accessible anymore
             needs_reload = True
         if needs_reload:

@@ -18,9 +18,20 @@ try:
     import sqlite3
     from mlcolvar.data.dataset import DictDataset
     from mlcolvar.data.graph.utils import create_dataset_from_configurations
-    from mlcolvar.utils.io import (_configures_from_trajectory,
-                                   _z_table_from_top,
-                                   _names_from_top)
+    try:
+        # old name (older mlcolvar versions)
+        from mlcolvar.utils.io import (
+            _configures_from_trajectory,
+            _z_table_from_top,
+            _names_from_top,
+        )
+    except ImportError:
+        # new name (newer mlcolvar versions)
+        from mlcolvar.utils.io import (
+            _configurations_from_trajectory as _configures_from_trajectory,
+            _z_table_from_top,
+            _names_from_top,
+        )
     import multiprocessing
     from torch_geometric.nn import radius_graph
     import time
@@ -30,9 +41,13 @@ except ImportError as e:
                       f"The module 'aimmd.network.graph_utils'"
                       f"requires additional dependencies.") from e
 
-def atom_coordinate_descriptors_function(trajectory: mda.coordinates.timestep.Timestep, verbose=False) -> np.ndarray:
+def atom_coordinate_descriptors_function(
+        trajectory: mda.coordinates.timestep.Timestep,
+        verbose: bool = False,
+        atom_indices: np.ndarray | None = None,
+) -> np.ndarray:
     """From an MDAnalysis trajectory to descriptors, which will be cached by pathensemble.
-    Here, we use all atomic positions as descriptors, which are then further processed to graphs.
+    Here, we use atomic positions as descriptors, which are then further processed to graphs.
 
     Parameters
     ----------
@@ -40,16 +55,25 @@ def atom_coordinate_descriptors_function(trajectory: mda.coordinates.timestep.Ti
         The trajectory to be converted to descriptors.
     verbose : bool, optional
         Whether to show a progress bar, by default False.
-    
+    atom_indices : np.ndarray, optional
+        Integer indices of atoms whose positions to store. If None, all atom positions
+        are stored. Pass heavy-atom indices (e.g. pre-computed via
+        ``universe.select_atoms("not type H").indices``) to reduce memory usage by
+        roughly 2/3 for typical organic systems.
+
     Returns
     -------
     np.ndarray
-        Array of shape (n_frames, n_descriptors) with the descriptors.
+        Array of shape (n_frames, n_selected_atoms * 3) with the descriptors.
+        When ``atom_indices`` is None the shape is (n_frames, n_atoms * 3).
     """
 
     result = []
     for frame in tqdm(trajectory, disable=not verbose, position=0):
-        result.append(frame.positions.ravel().copy())
+        if atom_indices is not None:
+            result.append(frame.positions[atom_indices].ravel().copy())
+        else:
+            result.append(frame.positions.ravel().copy())
     if not len(result):
         result = np.zeros((1, 0))
     return np.array(result)
@@ -120,9 +144,22 @@ def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Con
         compressed_data = msgpack_bytes
     else:
         raise ValueError(f"Unknown compression library: {compression_lib}")
-    conn.execute("INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)", (key, compressed_data))
-    conn.commit()
+    
+    # try storing, if it fails due to database lock, retry a few times with some delay
+    for _ in range(10):
+        try:
+            conn.execute("INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)", (key, compressed_data))
+            conn.commit()
+            return # success
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e):
+                time.sleep(0.05)
+            else:
+                raise
 
+    # persistent problem
+    raise RuntimeError("Failed to store graph in SQLite after multiple attempts due to persistent database lock.")
+    
 
 def get_stable_hash(config: mlcolvar.data.graph.atomic.Configurations) -> str:
     """ Get a stable hash for a configuration.
@@ -446,6 +483,7 @@ def get_graphs_pyg(
         environment_selection: str,
         cutoff: float,
         verbose: bool = False,
+        atom_indices: np.ndarray | None = None,
     ) -> list[torch_geometric.data.Data]:
     """ Process descriptors into torch_geometric graphs using MDAnalysis for pbc handling.
 
@@ -453,8 +491,11 @@ def get_graphs_pyg(
     ----------
     descriptors : np.ndarray
         Array of shape (n_frames, n_atoms * 3) with atomic coordinates.
+        When ``atom_indices`` is provided, ``n_atoms`` is ``len(atom_indices)``
+        rather than the total atom count of ``mdanalysis_universe``.
     mdanalysis_universe : mda.Universe
-        MDAnalysis Universe object with the system topology.
+        MDAnalysis Universe object with the full system topology. Always used
+        for PBC handling and graph construction, regardless of ``atom_indices``.
     system_selection : str
         MDAnalysis selection string for the system of interest.
     environment_selection : str
@@ -463,6 +504,17 @@ def get_graphs_pyg(
         Cutoff distance for graph construction (in Angstrom).
     verbose : bool, optional
         Whether to print progress, by default False.
+    atom_indices : np.ndarray, optional
+        Integer indices (into ``mdanalysis_universe``) of the atoms whose
+        positions are stored in ``descriptors``. When provided, only those
+        atoms' positions are updated per frame; all other atoms retain their
+        positions from the universe's current state (typically the GRO file).
+        Pass heavy-atom indices to avoid touching hydrogen positions while
+        still using the full topology for PBC transformations and spatial
+        selections — this guarantees identical graphs to the full-atom flow
+        because (a) the same universe is used, (b) H atoms are filtered by
+        the selection strings, and (c) their stale positions never enter any
+        distance calculation that affects the final graph.
 
     Returns
     -------
@@ -476,13 +528,16 @@ def get_graphs_pyg(
     system_and_surroundings = system + surroundings
 
     # get atomic numbers set for guests and surroundings
-    atom_types= list(sorted(set(mdanalysis_universe.atoms.types)))
+    atom_types = list(sorted(set(mdanalysis_universe.atoms.types)))
 
     data_list = []
     for frame in tqdm(coordinate_array_reshaped, disable=not verbose):
         # take care of pbcs, placing the system in the center of the box and restoring environment around it
         ts = mdanalysis_universe.trajectory[0]
-        mdanalysis_universe.atoms.positions = frame
+        if atom_indices is not None:
+            mdanalysis_universe.atoms[atom_indices].positions = frame
+        else:
+            mdanalysis_universe.atoms.positions = frame
         ts = transformations.unwrap(system)(ts)
         ts = transformations.center_in_box(system, wrap=False)(ts)
         ts = transformations.wrap(mdanalysis_universe.atoms)(ts)
@@ -506,8 +561,8 @@ def get_graphs_pyg(
         # shifts are empty, as GNN is equivariant and positions are given
         shifts = torch.zeros(edge_index.shape[1], 3, dtype=torch.float)
         data = Data(
-                positions=torch.tensor(positions, dtype=torch.float), 
-                edge_index=edge_index, node_attrs=torch.tensor(node_attr, dtype=torch.float), 
+                positions=torch.tensor(positions, dtype=torch.float),
+                edge_index=edge_index, node_attrs=torch.tensor(node_attr, dtype=torch.float),
                 shifts=shifts
             )
         data_list.append(data)
@@ -524,17 +579,21 @@ def process_descriptors_pyg(
         conn: sqlite3.Connection,
         verbose: bool = False,
         compression_lib: str = "lz4",
+        atom_indices: np.ndarray | None = None,
     ) -> list[torch_geometric.data.Data]:
     """ Transform the descriptors to network input using MDAnalysis and torch_geometric.
-    Here, we transform the atomic positions to a graph embedding using MDAnalysis for pbc 
+    Here, we transform the atomic positions to a graph embedding using MDAnalysis for pbc
     handling and torch_geometric with torch_cluster for graph construction.
-    
+
     Parameters
     ----------
     descriptors : np.ndarray
         The input descriptors (atomic positions) to be transformed.
+        When ``atom_indices`` is provided the shape must be
+        (n_frames, len(atom_indices) * 3) rather than (n_frames, n_all_atoms * 3).
     mdanalysis_universe : mda.Universe
-        The MDAnalysis universe object for handling periodic boundary conditions.
+        The MDAnalysis universe object for handling periodic boundary conditions
+        and graph construction. Always used, regardless of ``atom_indices``.
     system_selection : str
         The selection string for the system atoms.
     environment_selection : str
@@ -548,7 +607,14 @@ def process_descriptors_pyg(
     compression_lib : str, optional
         The compression library to use for storing graphs (default is "lz4").
         Supported options: "gzip", "lz4", "none".
-    
+    atom_indices : np.ndarray, optional
+        Integer indices (into ``mdanalysis_universe``) of the atoms whose
+        positions are stored in ``descriptors``. When provided, only those
+        atoms' positions are updated per frame during graph construction.
+        Pass heavy-atom indices to work with heavy-atom-only descriptors
+        while still using the full topology for PBC and selections, guaranteeing
+        graphs identical to the full-atom workflow.
+
     Returns
     -------
     mlcolvar.data.DictDataset
@@ -558,8 +624,8 @@ def process_descriptors_pyg(
     if verbose:
         print(f"Processing descriptors with shape: {descriptors.shape}")
 
-    # First, we need to transform the descriptors to an md.Trajectory object
-    n_atoms = len(mdanalysis_universe.atoms)
+    # Expected atom count is either the subset or the full universe
+    n_atoms = len(atom_indices) if atom_indices is not None else len(mdanalysis_universe.atoms)
     n_frames = descriptors.shape[0]
     assert descriptors.shape[1] == n_atoms * 3, \
         f"Descriptors should have shape (n_frames, {n_atoms * 3}), got {descriptors.shape}"
@@ -586,6 +652,7 @@ def process_descriptors_pyg(
             environment_selection=environment_selection,
             cutoff=cutoff,
             verbose=verbose,
+            atom_indices=atom_indices,
         )
         end = time.time()
         if verbose:
@@ -594,10 +661,10 @@ def process_descriptors_pyg(
         # Store new graphs in database
         start = time.time()
         new_graphs = [graphs_list_new[i] for i in range(len(missing_indices))]
-        
+
         for i, graph in enumerate(new_graphs):
             graph_hash = stable_hashes[missing_indices[i]]
-            store_in_sqlite(graph_hash, graph, conn, compression_lib = compression_lib)
+            store_in_sqlite(graph_hash, graph, conn, compression_lib=compression_lib)
 
         end = time.time()
         if verbose:
@@ -612,5 +679,5 @@ def process_descriptors_pyg(
             'data_list': loaded_graphs
         },
         data_type = "graphs",
-    )  
+    )
     return dataset

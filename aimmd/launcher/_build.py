@@ -67,7 +67,7 @@ import os
 import numpy as np
 from abc import ABC
 from math import inf
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from itertools import islice
 
 # aimmd imports

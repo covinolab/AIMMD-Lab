@@ -102,6 +102,7 @@ class WorkerRun(ABC):
             - ``'shoot'``: dispatches to :meth:`_shoot`
             - ``'free'``: dispatches to :meth:`_free`
             - ``'train'``: dispatches to :meth:`_train`
+            - ``'kinetics_convergence'``: dispatches to :meth:`_kinetics_convergence`
 
         *args
             Positional arguments forwarded to the selected task method.
@@ -173,6 +174,8 @@ class WorkerRun(ABC):
                 return self._free(*args, **kwargs)
             if task == 'train':
                 return self._train(*args, **kwargs)
+            if task == 'kinetics_convergence':
+                return self._kinetics_convergence(*args, **kwargs)
             raise TypeError(f'{task} not implemented in Worker.run')
 
         except Exception as exception:

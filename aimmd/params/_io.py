@@ -44,7 +44,7 @@ import os
 import sys
 from abc import ABC
 from types import ModuleType
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from dataclasses import MISSING
 
 # aimmd imports
