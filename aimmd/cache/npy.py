@@ -340,16 +340,22 @@ class NpyReaderCache(AbstractCache):
     Attributes
     ----------
     max_size : int
-        Heuristic cache budget, set to available system memory at import time.
+        Heuristic cache budget, set to half of the available system memory at
+        import time. Leaving headroom for the network, MDA universes, NumPy
+        temporaries, and the OS page cache is more important than maximizing
+        cache occupancy: filling all available RAM with cached arrays pushes
+        the process into swap or an OOM kill before eviction has a chance to
+        run.
 
     Notes
     -----
-    - The base class uses `sys.getsizeof`, which does not fully account for
-      NumPy buffer memory. This cache budget is therefore approximate.
     - This cache is process-local (not shared across processes).
+    - `_size` is overridden to charge cached arrays by their `nbytes`, so the
+      budget is honored even for arrays returned by `np.load` (which have
+      `OWNDATA=False` and would otherwise be undercounted by `sys.getsizeof`).
     """
-    
-    max_size = int(psutil.virtual_memory().available)
+
+    max_size = int(psutil.virtual_memory().available * 0.5)
 
     def _open(self, fname):
         """
