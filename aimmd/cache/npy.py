@@ -60,6 +60,7 @@ This module provides robust semantics for that workflow.
 
 # external
 import os
+import sys
 import time
 import numpy as np
 import psutil
@@ -375,6 +376,19 @@ class NpyReaderCache(AbstractCache):
             raise TypeError(f'could not open {fname!r}')
         result.flags.writeable = False
         return result
+
+    def _size(self, instance):
+        """
+        Account for the array's data buffer in addition to the wrapper.
+
+        Arrays returned by ``np.load`` have ``OWNDATA=False`` because the
+        buffer is held by an internal mmap. ``sys.getsizeof`` then reports
+        only the ndarray wrapper (~128 B), so the inherited budget would
+        never trigger eviction. We use ``nbytes`` (real buffer footprint)
+        plus the wrapper size as a close-enough estimate of what's pinned
+        in RAM while the entry is cached.
+        """
+        return int(getattr(instance, 'nbytes', 0)) + sys.getsizeof(instance)
 
     def _extend(self, instance, min_length):
         """

@@ -135,6 +135,18 @@ class AbstractCache(ABC):
         # no-op by default
         return
 
+    def _size(self, instance):
+        """
+        Approximate the memory footprint of `instance` for budget accounting.
+
+        Default implementation returns ``sys.getsizeof(instance)``. Subclasses
+        should override when ``sys.getsizeof`` undercounts the real footprint
+        — most importantly for NumPy arrays returned by ``np.load`` (the buffer
+        is owned by an internal mmap, so ``sys.getsizeof`` reports only the
+        wrapper, ~128 B).
+        """
+        return sys.getsizeof(instance)
+
     def _extend(self, instance, min_length):
         """
         Optionally extend/pad an instance to satisfy a requested minimum length.
@@ -258,10 +270,13 @@ class AbstractCache(ABC):
         self.remove(fname)
 
         # Estimate the memory cost of the new instance.
-        size = sys.getsizeof(instance)
+        size = self._size(instance)
 
-        # Evict oldest entries until there is room.
-        while self.total_size + size >= self.max_size:
+        # Evict oldest entries until there is room. Stop when the cache is
+        # empty: if a single instance is larger than `max_size` we still cache
+        # it (the alternative is an infinite loop, since further `remove()`
+        # calls on an empty cache are no-ops).
+        while self._cache and self.total_size + size >= self.max_size:
             self.remove()
 
         # Insert instance and account memory.
@@ -309,7 +324,7 @@ class AbstractCache(ABC):
         if isinstance(fname, str):
             instance = self._cache.pop(fname, None)
             if instance is not None:
-                self.total_size -= sys.getsizeof(instance)
+                self.total_size -= self._size(instance)
             else:
                 # Not cached: open without caching.
                 instance = self.open(fname)
@@ -319,7 +334,7 @@ class AbstractCache(ABC):
             if len(self):
                 # Pop oldest (FIFO).
                 instance = self._cache.popitem(last=False)[1]
-                self.total_size -= sys.getsizeof(instance)
+                self.total_size -= self._size(instance)
                 return instance
             return
 
