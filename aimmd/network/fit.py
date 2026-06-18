@@ -780,7 +780,21 @@ def fit(params,
             f'          {lengths[9]:9} shot {b} to {a} frames '
                    f'({npaths_shot2to1:6} paths)\n'
             f'   TOTAL: {sum(lengths):9} frames')
-    
+
+    # Multi-system: per-system breakdown of the pooled totals above (one compact
+    # line per system: per-category frame counts + that system's totals).
+    if multi:
+        codes = [f'in{a}', f'in{b}', f'f{a}{a}', f'f{b}{b}', f'f{a}{b}',
+                 f'f{b}{a}', f's{a}{a}', f's{b}{b}', f's{a}{b}', f's{b}{a}']
+        print('   Per-system breakdown:')
+        for j, pp in enumerate(per_pe):
+            cells = ' '.join(f'{codes[k]}={pp[name]["n"]}'
+                             for k, name in enumerate(CATEGORY_NAMES))
+            total_frames = sum(pp[name]['n'] for name in CATEGORY_NAMES)
+            total_paths = sum(pp[name]['npaths'] for name in CATEGORY_NAMES)
+            print(f'     [system {system_labels[j]}] {cells}  '
+                  f'| TOTAL {total_frames} frames ({total_paths} paths)')
+
     print(f'\nCalculating shooting results and sel. probabilities {now()}')
     
     # Allocate per-category result arrays (fractional outcomes to a/b)
