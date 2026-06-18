@@ -181,6 +181,99 @@ You can also override training hyperparameters for a faster exploratory run::
    :meth:`aimmd.Params.update_network`.  Temporary ``*.kcv.npy`` cache files
    written during the analysis are removed automatically.
 
+Multi-System (Multi-Ligand) Runs
+--------------------------------
+
+A single params file can drive **several chemical systems at once** (for example
+two ligands binding the same host) and train **one shared committor model** that
+takes a graph/descriptor from *either* system and returns its committor. This is
+fully backward compatible: it is enabled only when ``multi_system=True``;
+otherwise everything behaves exactly as the single-system workflow above.
+
+**Enabling multi-system mode.** Set ``multi_system=True`` and provide one entry
+per system for the fields that are otherwise single-valued:
+
+.. code-block:: python
+
+    multi_system = True
+    multi_system_share_network = True            # one shared network (see below)
+    system_ids   = ['G2', 'G4']                  # per-system labels
+    topology     = ['G2.gro', 'G4.gro']          # one topology per system
+    initial_paths = [['G2_tp.trr'], ['G4_tp.trr']]   # one group per system
+    atom_types   = ['H', 'C', 'N', 'O', 'F', 'NA', 'P', 'S', 'CL', 'BR', 'I']
+
+The ``system_ids`` name the per-system subfolders ``<run>/<system_id>/`` and index
+the per-system entries of the list-valued fields. If ``system_ids`` is left
+empty it defaults to ``['0', '1', ...]``.
+
+**The ``system_id`` keyword.** In multi-system mode the user data functions
+receive an extra ``system_id`` keyword so a single function can encode
+per-ligand differences (e.g. different state cutoffs or atom selections):
+
+.. code-block:: python
+
+    def states_function(trajectory, system_id=None):
+        cutoff = 4.5 if system_id == 'G2' else 4.1   # per-ligand state boundary
+        ...
+
+``system_id`` is passed **only if a function declares it** (detected via
+:func:`aimmd.core.utils.accepts_system_id`), so existing single-system functions
+keep working unchanged. The same applies to ``descriptors_function``,
+``values_function`` and ``descriptor_transform``.
+
+**Shared graph encoding.** For a single network to consume graphs from several
+systems, set ``atom_types`` to a fixed, ordered atom-type table. Every system is
+then encoded into the same one-hot node columns (unused columns stay zero) and
+the network's input width equals ``len(atom_types)``. With ``atom_types=None``
+the legacy per-universe encoding (``sorted(set(types))``) is used.
+
+**Directory layout.** A multi-system run nests one level: each system gets its
+own subfolder, reusing the ordinary per-directory worker machinery::
+
+    run1/
+      G2/  initialARB/ chainR0/ freeA/ freeB/ binsARB.npy densitiesARB.npy
+      G4/  initialARB/ chainR0/ freeA/ freeB/ binsARB.npy densitiesARB.npy
+      networkARB.h5            # the ONE shared network (share-network mode)
+
+**Shared vs separate networks** (``multi_system_share_network``):
+
+* **True** — one shared network is trained by a single trainer that hands the
+  params ``fit`` function a **list** of per-system PathEnsembles. The default
+  AIMMD ``fit`` pools them in a *balanced* way (each system carries ``1/N`` of the
+  selection weight in every bin, including the in-state anchor bins), so neither
+  ligand dominates regardless of how much data each has. The shared network is
+  written once at the run root (``run1/networkARB.h5``) and read by every
+  system's shooting workers. Rates/kinetics are still computed **per system, in
+  sequence**.
+* **False** — each system trains its own network (``run1/<system_id>/networkARB.h5``)
+  with its own trainer. The params flag ``trainers_share_gpu`` (default ``True``)
+  controls whether those trainers share one GPU or are spread across GPUs.
+
+**Worker counts.** The per-run worker counts ``n`` / ``n1`` / ``n2`` apply **per
+system** in multi-system mode (e.g. ``launcher.run(n=2, n1=1, n2=1)`` gives every
+system 2 shooting + 1 freeA + 1 freeB worker). Launching is otherwise identical:
+
+.. code-block:: python
+
+    import aimmd
+    params   = aimmd.Params.load('params.py')   # multi_system=True
+    launcher = aimmd.Launcher(params, 'run1')
+    launcher.run(n=2, n1=1, n2=1, nframes=25000)
+    # or generate a SLURM script (per-system srun lines):
+    launcher.create_job('job.sh', n=2, n1=1, n2=1, walltime=86400)
+
+**Kinetics convergence** works with a shared model: the per-fraction retrain uses
+the list of per-system ensembles and the result array gains a ``system`` field
+(one row per ``(fraction, system)``).
+
+.. note::
+
+   The first release of multi-system support targets ``chain_type='rfps'`` with
+   the committor balancing described above. LSR/MAR regularization,
+   ``record_bias`` and ``rescale_committor`` are not yet combined with
+   ``multi_system`` and raise a clear ``NotImplementedError``; single-system runs
+   retain full support for all of them.
+
 Sweep Mode
 ----------
 

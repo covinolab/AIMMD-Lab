@@ -484,6 +484,7 @@ def get_graphs_pyg(
         cutoff: float,
         verbose: bool = False,
         atom_indices: np.ndarray | None = None,
+        atom_types: list | None = None,
     ) -> list[torch_geometric.data.Data]:
     """ Process descriptors into torch_geometric graphs using MDAnalysis for pbc handling.
 
@@ -515,6 +516,16 @@ def get_graphs_pyg(
         because (a) the same universe is used, (b) H atoms are filtered by
         the selection strings, and (c) their stale positions never enter any
         distance calculation that affects the final graph.
+    atom_types : list, optional
+        Fixed, ordered list of MDAnalysis atom-type strings defining the
+        one-hot ``node_attrs`` columns. When ``None`` (default) the columns are
+        derived per-universe from ``sorted(set(universe.atoms.types))`` — the
+        legacy, single-system behaviour. Pass an explicit list to obtain a
+        **fixed, shared encoding across multiple systems** (multi-ligand runs):
+        every system featurizes into the same columns, unused columns stay
+        zero, and the network's input width must equal ``len(atom_types)``. Any
+        atom type present in the selection but absent from ``atom_types`` raises
+        a clear ``ValueError``.
 
     Returns
     -------
@@ -527,8 +538,21 @@ def get_graphs_pyg(
     surroundings = mdanalysis_universe.select_atoms(environment_selection)
     system_and_surroundings = system + surroundings
 
-    # get atomic numbers set for guests and surroundings
-    atom_types = list(sorted(set(mdanalysis_universe.atoms.types)))
+    # Atom-type columns for the one-hot node encoding. Default: derive per
+    # universe (legacy single-system behaviour). Multi-system runs pass a fixed,
+    # shared ``atom_types`` so all systems encode into identical columns.
+    if atom_types is None:
+        atom_types = list(sorted(set(mdanalysis_universe.atoms.types)))
+    else:
+        atom_types = list(atom_types)
+        present = set(system_and_surroundings.atoms.types)
+        unknown = present.difference(atom_types)
+        if unknown:
+            raise ValueError(
+                f"atom type(s) {sorted(unknown)} are present in the selected "
+                f"atoms but missing from the fixed atom_types table "
+                f"{atom_types}. Extend atom_types to cover every element in "
+                f"every system.")
 
     data_list = []
     for frame in tqdm(coordinate_array_reshaped, disable=not verbose):
@@ -580,6 +604,7 @@ def process_descriptors_pyg(
         verbose: bool = False,
         compression_lib: str = "lz4",
         atom_indices: np.ndarray | None = None,
+        atom_types: list | None = None,
     ) -> list[torch_geometric.data.Data]:
     """ Transform the descriptors to network input using MDAnalysis and torch_geometric.
     Here, we transform the atomic positions to a graph embedding using MDAnalysis for pbc
@@ -614,6 +639,12 @@ def process_descriptors_pyg(
         Pass heavy-atom indices to work with heavy-atom-only descriptors
         while still using the full topology for PBC and selections, guaranteeing
         graphs identical to the full-atom workflow.
+    atom_types : list, optional
+        Fixed, ordered atom-type table for the one-hot ``node_attrs`` columns,
+        forwarded to :func:`get_graphs_pyg`. ``None`` (default) keeps the legacy
+        per-universe encoding; pass an explicit list for a fixed, shared
+        encoding across multiple systems (multi-ligand runs). The cache key is
+        coordinate-only, so keep one cache (``conn``) per ``atom_types`` table.
 
     Returns
     -------
@@ -653,6 +684,7 @@ def process_descriptors_pyg(
             cutoff=cutoff,
             verbose=verbose,
             atom_indices=atom_indices,
+            atom_types=atom_types,
         )
         end = time.time()
         if verbose:

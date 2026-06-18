@@ -76,6 +76,7 @@ imports from MDAnalysis (but that would be a code change).
 # external
 import os
 import time
+import inspect
 import numpy as np
 import bisect
 from glob import glob
@@ -727,3 +728,29 @@ def guess_masses(atoms):
             # assign martini beads
             return np.full(len(atoms), 72.0)
     return atoms.masses
+
+
+def accepts_system_id(function):
+    """Whether ``function`` can be called with a ``system_id`` keyword argument.
+
+    Used to thread the multi-system ``system_id`` through the user data
+    functions (`states_function`, `descriptors_function`, `values_function`)
+    and `descriptor_transform` in a fully backward-compatible way: functions
+    written for single-system runs (which take only the data argument) are
+    detected here and keep being called without ``system_id``.
+
+    Returns True if the function declares an explicit ``system_id`` parameter
+    (positional-or-keyword or keyword-only) or accepts arbitrary ``**kwargs``.
+    Returns False for anything whose signature cannot be inspected.
+    """
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return False
+    for parameter in parameters.values():
+        if parameter.kind is parameter.VAR_KEYWORD:
+            return True
+        if (parameter.name == 'system_id' and parameter.kind in (
+                parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY)):
+            return True
+    return False

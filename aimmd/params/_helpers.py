@@ -41,6 +41,7 @@ from collections.abc import Iterable
 
 # aimmd imports
 from .utils import update_source, create_default_values_function
+from ..core.utils import accepts_system_id
 from ..path import Path
 from ..pathensemble import PathEnsemble
 from ..network.rescalable import Rescalable as RescalableNetwork
@@ -194,25 +195,76 @@ class ParamsHelpers(ABC):
             
             # topology (update universe)
             elif name == 'topology':
-                # Cache an MDAnalysis Universe if possible (used by masses()).
-                try:
-                    universe = Universe(value)
-                except:
-                    universe = None
-                self.__dict__['_universe'] = universe
-            
+                if isinstance(value, (list, tuple)):
+                    # multi-system: one topology per system. Per-system
+                    # universes are built in `_process_and_check` (the
+                    # system_ids may not be known yet at this point).
+                    value = [str(v) for v in value]
+                    self.__dict__['_universe'] = None
+                else:
+                    # Cache an MDAnalysis Universe if possible (used by masses()).
+                    try:
+                        universe = Universe(value)
+                    except:
+                        universe = None
+                    self.__dict__['_universe'] = universe
+
+            # engine command / mdp fields: a single string, or (multi-system)
+            # a list with one entry per system. Resolved per-worker at run time.
+            elif name in ('gmx_mdp', 'gmx_grompp', 'gmx_mdrun', 'gmx_eneconv',
+                          'gmx_genvel'):
+                if isinstance(value, (list, tuple)):
+                    value = [str(v) for v in value]
+                elif not isinstance(value, str):
+                    raise TypeError(f'{name!r} must be a str or a list of '
+                                    f'strings, got {type(value).__name__}')
+
+            # multi-system per-system labels
+            elif name == 'system_ids':
+                if value is None:
+                    value = []
+                if not isinstance(value, (list, tuple)):
+                    raise TypeError(f'{name!r} must be a list of system '
+                                    f'labels, got {type(value).__name__}')
+                value = [str(v) for v in value]
+
+            # multi-system shared graph atom-type table
+            elif name == 'atom_types':
+                if value is not None:
+                    if not isinstance(value, (list, tuple)):
+                        raise TypeError(f'{name!r} must be a list of atom-type '
+                                        f'strings or None, got '
+                                        f'{type(value).__name__}')
+                    value = [str(v) for v in value]
+
             # initial paths (converted in real-time)
             elif name == 'initial_paths':
-                # `_reload_initial_paths` controls whether we must reload from disk
-                # to recompute states on demand (avoids stale precomputed arrays).
-                if process_and_check:  # otw bug in reloading paths
-                    self.__dict__['_reload_initial_paths'] = \
-                        not isinstance(value, (Path, PathEnsemble))
-                initial_paths = PathEnsemble(value)
-                if value and not initial_paths:
-                    raise TypeError(
-                        f'could not get any initial paths from {value!r}')
-                value = initial_paths
+                # Multi-system runs pass one *group* of initial paths per
+                # system (a list whose elements are themselves lists or
+                # PathEnsembles). Detect that structurally so the behaviour
+                # does not depend on field-assignment order.
+                grouped = (isinstance(value, (list, tuple)) and len(value) > 0
+                           and all(isinstance(v, (list, tuple, PathEnsemble))
+                                   for v in value))
+                if grouped:
+                    # one PathEnsemble per system; cross-checks (atom counts,
+                    # states, ...) run per system in `_process_and_check`.
+                    if process_and_check:
+                        self.__dict__['_reload_initial_paths'] = True
+                    value = [group if isinstance(group, PathEnsemble)
+                             else PathEnsemble(group) for group in value]
+                else:
+                    # single-system (unchanged): `_reload_initial_paths`
+                    # controls whether we must reload from disk to recompute
+                    # states on demand (avoids stale precomputed arrays).
+                    if process_and_check:  # otw bug in reloading paths
+                        self.__dict__['_reload_initial_paths'] = \
+                            not isinstance(value, (Path, PathEnsemble))
+                    initial_paths = PathEnsemble(value)
+                    if value and not initial_paths:
+                        raise TypeError(
+                            f'could not get any initial paths from {value!r}')
+                    value = initial_paths
 
             # engine
             elif name == 'engine':
@@ -374,6 +426,13 @@ class ParamsHelpers(ABC):
         # reassign default values function
         self.__dict__['_default_values_function'] = default_values_function
 
+        # multi-system: build per-system universes and validate the per-system
+        # groups of initial paths, then return (the single-system loop below
+        # assumes one topology / one universe / one states_function).
+        if getattr(self, 'multi_system', False):
+            self._process_and_check_multi_system(fields)
+            return
+
         # initial paths-related checks
         initial_paths = getattr(self, 'initial_paths', None)
         if not initial_paths:
@@ -441,3 +500,126 @@ class ParamsHelpers(ABC):
 
             # reassign path
             self.initial_paths[i] = path
+
+    def _process_and_check_multi_system(self, fields=[]):
+        """
+        Multi-system counterpart of the initial-path checks in
+        `_process_and_check`.
+
+        Builds one MDAnalysis Universe per system (cached in ``_universes``,
+        keyed by ``system_id``) and validates each system's *group* of initial
+        paths against that system's own topology and ``states_function``
+        (called with ``system_id=``). Called only when ``multi_system`` is True.
+
+        Multi-system data model
+        ------------------------
+        - ``topology``      : list of topology files, one per system.
+        - ``system_ids``    : list of labels (defaults to ``'0','1',...``); they
+          name the per-system subfolders ``<run>/<system_id>/``.
+        - ``initial_paths`` : list of PathEnsembles, one group per system,
+          parallel to ``system_ids``.
+        """
+        # topology must be a list in multi-system mode
+        topology = self.topology
+        if not isinstance(topology, (list, tuple)):
+            raise TypeError("when multi_system=True, 'topology' must be a list "
+                            "(one topology file per system), got "
+                            f"{type(topology).__name__}")
+        n_systems = len(topology)
+
+        # system_ids: default to '0', '1', ... and validate uniqueness/length
+        system_ids = (list(self.system_ids) if self.system_ids
+                      else [str(i) for i in range(n_systems)])
+        if len(system_ids) != n_systems:
+            raise TypeError(f"len(system_ids)={len(system_ids)} must equal the "
+                            f"number of topologies ({n_systems})")
+        if len(set(system_ids)) != n_systems:
+            raise TypeError(f"system_ids must be unique, got {system_ids}")
+        self.__dict__['system_ids'] = system_ids
+
+        # build (and cache) one universe per system
+        universes = {}
+        for sid, topo in zip(system_ids, topology):
+            try:
+                universes[sid] = Universe(topo)
+            except Exception:
+                universes[sid] = None
+        self.__dict__['_universes'] = universes
+        self.__dict__['_universe'] = None
+
+        # initial paths: one group (PathEnsemble) per system
+        initial_paths = getattr(self, 'initial_paths', None)
+        if not initial_paths:
+            return
+        if isinstance(initial_paths, PathEnsemble):
+            raise TypeError("when multi_system=True, 'initial_paths' must be a "
+                            "list with one group of paths per system, got a "
+                            "single flat PathEnsemble")
+        if len(initial_paths) != n_systems:
+            raise TypeError(f"'initial_paths' has {len(initial_paths)} groups "
+                            f"but there are {n_systems} systems")
+
+        check_paths = 'initial_paths' in fields
+        check_states = ('states' in fields or 'states_function' in fields
+                        or check_paths)
+        check_descrs = (self.descriptors_function is not None and
+                        ('descriptors_function' in fields or check_paths))
+        if self.descriptors_function is None:
+            check_values = 'values_function' in fields or check_paths
+        else:
+            check_values = ('values_function' in fields or
+                            'descriptors_function' in fields or check_paths)
+        values_takes_sid = accepts_system_id(self.values_function)
+
+        # go through each system's group of paths
+        for s, sid in enumerate(system_ids):
+            universe = universes[sid]
+            for i, path in enumerate(initial_paths[s]):
+                if check_paths:
+                    try:
+                        n_atoms = path.reader.n_atoms
+                    except:
+                        n_atoms = path.reader.trajectory.n_atoms
+                    if universe and n_atoms != len(universe.atoms):
+                        raise TypeError(
+                            f"system {sid!r}: {i}-th initial path "
+                            f"{path.fname!r} has {n_atoms} atoms, while its "
+                            f"topology {topology[s]!r} has "
+                            f"{len(universe.atoms)} atoms")
+
+                if check_states:
+                    if self._reload_initial_paths:
+                        path = Path(path.fname)
+                    if 'states' not in path.__dict__:
+                        path.states = path.compute(self.states_function,
+                                                   system_id=sid)
+                    transition_found = False
+                    for split_path in (split_paths := path.split()):
+                        if split_path.type[:3] in (self.states,
+                                                   self.states[::-1]):
+                            path = split_path
+                            transition_found = True
+                            break
+                    if not transition_found:
+                        types = ", ".join([t[:3] for t in split_paths.types()])
+                        print(f"Warning: system {sid!r} initial trajectory "
+                              f"{path.fname!r} has no {self.states!r} "
+                              f"transitions (path types: {types}), taking it "
+                              f"as it is.")
+
+                if check_descrs:
+                    path.descriptors = path.compute(self.descriptors_function,
+                                                    system_id=sid)
+
+                if check_values:
+                    if self.descriptors_function is not None:
+                        source = path.descriptors[:1]
+                    else:
+                        source = path.coordinates[:1]
+                    if values_takes_sid:
+                        assert self.values_function(
+                            source, system_id=sid).shape == (1,)
+                    else:
+                        assert self.values_function(source).shape == (1,)
+
+                self.initial_paths[s][i] = path

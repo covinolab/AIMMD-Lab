@@ -202,7 +202,13 @@ class WorkerTrain(ABC):
         The method exits by setting :attr:`termination_signal` and returning
         ``None``. It is designed to be executed under :meth:`Worker.run`, which
         handles directory management, cache clearing, and cleanup.
+
+        Multi-system runs (``params.multi_system``) are dispatched to
+        :meth:`_train_multi_system`; single-system behaviour below is unchanged.
         """
+        if getattr(self.params, 'multi_system', False):
+            return self._train_multi_system(nrounds, keep_running, **kwargs)
+
         # process arguments
         nrounds = float(nrounds)
 
@@ -570,6 +576,219 @@ class WorkerTrain(ABC):
                 shutil.copyfile(network_fname, backup)
                 print(f'*** copied {network_fname!r} to {backup!r}')
 
+    def _multi_system_layout(self):
+        """Resolve the (subdirectory, system_id) list this trainer serves.
+
+        - shared network ON : one trainer at the run root serves ALL systems;
+          returns ``[(<root>/<sid>, sid), ...]`` for every ``system_id``.
+        - shared network OFF: one trainer per system, each launched with its own
+          subfolder as ``directory``; returns ``[(<subfolder>, <subfolder name>)]``.
+        """
+        params = self.params
+        directory = self._directory
+        if params.multi_system_share_network:
+            sysids = list(params.system_ids)
+            subdirs = [f'{directory}/{sid}' for sid in sysids]
+        else:
+            sysids = [os.path.basename(os.path.normpath(directory))]
+            subdirs = [directory]
+        return list(zip(subdirs, sysids))
+
+    def _train_multi_system(self, nrounds=inf, keep_running=False, **kwargs):
+        """Training task for multi-system (multi-ligand) runs.
+
+        Mirrors :meth:`_train` but over a list of systems. With a shared network
+        the per-system PathEnsembles are pooled and the params ``fit`` function
+        receives a LIST (balanced inside :func:`aimmd.network.fit.fit`); the one
+        shared network is saved at the run root. Without a shared network this
+        trainer serves a single system's subfolder and trains its own network.
+        Either way, committor values, adaptation bins/densities and rate
+        estimates are computed PER system, in sequence, and written into each
+        system's own subfolder.
+
+        Limitations (raise clearly): ``chain_type='tps'``, ``record_bias`` and
+        ``rescale_committor`` are not yet supported together with multi_system.
+        """
+        nrounds = float(nrounds)
+        directory = self._directory
+        params = self.params
+        states = params.sorted_states
+        r = states[1]
+        network = params.network
+        fit = params.fit
+        nbins = params.nbins
+        cutoff_min = params.cutoff_min
+        cutoff_max = params.cutoff_max
+        terminal_bin_extension = params.terminal_bin_extension
+        batch_size = params.network_batch_size
+        reweight_parameters = params.reweight_parameters
+        compute_values_args = params.compute_values_args
+        save_interval = params.network_save_interval
+        share = bool(params.multi_system_share_network)
+
+        if params.chain_type == 'tps':
+            raise NotImplementedError(
+                "multi_system training currently supports chain_type='rfps' only")
+        if params.record_bias or params.rescale_committor:
+            raise NotImplementedError(
+                "record_bias / rescale_committor are not yet supported with "
+                "multi_system")
+
+        systems = self._multi_system_layout()
+        compute_condition = {'states': lambda state: state == r}
+
+        def values_kwargs(target, system_id):
+            return {'function': compute_values_args[0], 'target': target,
+                    'source': compute_values_args[2],
+                    'conditions': compute_condition,
+                    'batch_size': batch_size, 'system_id': system_id}
+
+        # per-system margin frames (transitions only), from each subfolder's
+        # initial paths
+        margins = []
+        for subdir, sid in systems:
+            ip = PathEnsemble(f'{subdir}/initial{states}/*')
+            ip = ip.extract(states, states[::-1])
+            margins.append(PathEnsemble([p[1::-1] for p in ip] +
+                                        [p[-2::1] for p in ip]))
+
+        kwargs['worker'] = self
+
+        # load shared/own network if available (resolves root vs subfolder)
+        print(f'\nLoading pre-existing network parameters {now()}')
+        network_fname = params._network_fname(directory)
+        params.update_network(directory, timeout=0, raise_if_failure=False)
+        if self.must_stop:
+            self.termination_signal = 2
+            return
+
+        pathensembles = [None] * len(systems)
+
+        def must_stop():
+            nonlocal pathensembles
+            if self.must_stop:
+                self.termination_signal = 2
+                return True
+            print(f'\nLoading current path ensembles {now()}')
+            total_steps = total_frames = 0
+            for k, (subdir, sid) in enumerate(systems):
+                chains = params.shot_chains(subdir, None)
+                frees = params.free_trajectories(subdir)
+                for chain in chains:
+                    total_frames += sum(chain.n_frames)
+                    total_steps += len(chain)
+                for trajectory in frees:
+                    total_frames += trajectory.n_frames
+                pathensembles[k] = assemble_pathensemble(chains, frees)
+                if self.must_stop:
+                    self.termination_signal = 2
+                    return True
+            self.total_steps = total_steps
+            self.total_frames = total_frames
+            return False
+
+        rounds_done = 0
+        while not self.termination_signal:
+
+            if must_stop():
+                return
+
+            # (re)compute descriptors + committor values per system
+            for k, (subdir, sid) in enumerate(systems):
+                pe = pathensembles[k]
+                if params.compute_descriptors_args is not None:
+                    pe.compute(*params.compute_descriptors_args, system_id=sid)
+                pe.compute(**values_kwargs('values', sid))
+            if self.termination_signal:
+                return
+
+            if rounds_done >= nrounds:
+                if not keep_running:
+                    self.termination_signal = 2
+                    return
+                source = 'values'
+            else:
+                # one fit call: a LIST of PEs when sharing the network, else a
+                # single PE (the existing default fit handles both).
+                print(f'\nTraining the network '
+                      f'(round {rounds_done + 1}, {now()})')
+                if share:
+                    fit_input = [pe + margin
+                                 for pe, margin in zip(pathensembles, margins)]
+                else:
+                    fit_input = pathensembles[0] + margins[0]
+                losses, *_ = fit(params, fit_input, **kwargs)
+                if len(losses):
+                    source = 'new'
+                    rounds_done += 1
+                    print(f'*** training completed {now()}')
+                    if self.termination_signal:
+                        break
+                else:
+                    print(f'!!! training failed, reloading {now()}')
+                    params.update_network(
+                        directory, timeout=0, raise_if_failure=False)
+                    source = 'values'
+                if must_stop():
+                    return
+                # refresh values with the new network
+                for k, (subdir, sid) in enumerate(systems):
+                    pe = pathensembles[k]
+                    target = 'new' if source == 'new' else 'values'
+                    pe.compute(**values_kwargs(target, sid),
+                               overwrite=(source == 'new'))
+                if self.termination_signal:
+                    return
+
+            # per-system bins / densities / rates (in sequence) + persist
+            for k, (subdir, sid) in enumerate(systems):
+                pe = pathensembles[k]
+                print(f'\n[system {sid!r}] adaptation bins {now()}')
+                bins = compute_bins(pe, nbins, cutoff_max=cutoff_max,
+                                    cutoff_min=cutoff_min,
+                                    find_extremes_with='free', source=source,
+                                    states=states,
+                                    terminal_bin_extension=terminal_bin_extension)
+                rw_p = reweight_parameters.copy()
+                sp_cutoff_min, sp_cutoff_max = bins[0], bins[-1]
+                if sp_cutoff_min == -inf and bins[1] < +inf:
+                    sp_cutoff_min = bins[1]
+                if sp_cutoff_max == +inf and bins[-2] > -inf:
+                    sp_cutoff_max = bins[-2]
+                rw_p.setdefault('sp_cutoff_min', sp_cutoff_min)
+                rw_p.setdefault('sp_cutoff_max', sp_cutoff_max)
+                w1 = pe.reweight(states, **rw_p, source=source)[0]
+                w2 = pe.reweight(states[::-1], **rw_p, source=source)[0]
+                frame_lengths = pe.n_frames
+                k12 = np.sum(w1 * frame_lengths)
+                k12 = 1 / k12 if k12 else nan
+                k21 = np.sum(w2 * frame_lengths)
+                k21 = 1 / k21 if k21 else nan
+                print(f'    [system {sid!r}] k12 estimate: {k12:.3e} [1/dt]')
+                print(f'    [system {sid!r}] k21 estimate: {k21:.3e} [1/dt]')
+
+                excursions_mask = pe.types(f'.{r}..')
+                pe.weights = (w1 + w2) * excursions_mask
+                densities = pe.project(bins, source=source)
+                densities[densities == 0.] = 1e-15
+                densities /= densities.sum()
+
+                if source == 'new':
+                    replace_in_cache(NPY_CACHE, '.new.npy', '.values.npy',
+                                     set(pe.fnames))
+                save_npy(f'{subdir}/bins{states}.npy', bins)
+                save_npy(f'{subdir}/densities{states}.npy', densities)
+
+            # save the (shared or own) network once per successful round
+            if source == 'new':
+                print(f'\nSaving network parameters to {network_fname} {now()}')
+                torch.save(network.state_dict(), network_fname)
+                n = (self.total_steps // save_interval) * save_interval
+                backup = f'{network_fname[:-3]}.step{n:06g}.h5'
+                if self.total_steps and not os.path.exists(backup):
+                    shutil.copyfile(network_fname, backup)
+                    print(f'*** copied {network_fname!r} to {backup!r}')
+
     def kinetics_convergence(self, fractions=None,
                              save_file='kinetics_convergence.npy',
                              network_save_pattern=(
@@ -735,6 +954,10 @@ class WorkerTrain(ABC):
         numpy.ndarray
             Structured array with fields ``fraction``, ``k12``, ``k21``.
         """
+        if getattr(self.params, 'multi_system', False):
+            return self._kinetics_convergence_multi_system(
+                fractions, save_file, network_save_pattern, **kwargs)
+
         # ── defaults ──────────────────────────────────────────────────────
         if fractions is None:
             fractions = [0.2, 0.4, 0.6, 0.8, 1.0]
@@ -980,4 +1203,169 @@ class WorkerTrain(ABC):
         np.save(save_file, results)
         print(f'Saved kinetics convergence results to {save_file!r}')
 
+        return results
+
+    def _kinetics_convergence_multi_system(self, fractions=None,
+                                           save_file='kinetics_convergence.npy',
+                                           network_save_pattern=(
+                                               '{directory}/network{states}'
+                                               '.kcv{fraction_pct:03d}.h5'),
+                                           **kwargs):
+        """Kinetics-convergence for a SHARED multi-system network.
+
+        At each fraction the per-system PathEnsembles are sub-sampled, the one
+        shared network is retrained on the LIST of sub-sampled ensembles, and
+        rates are estimated **per system, in sequence**. The result is a flat
+        structured array with an explicit ``system`` field (one row per
+        (fraction, system)), saved at the run root.
+
+        Not-shared multi-system runs should analyze each system's subfolder with
+        the ordinary single-system kinetics convergence instead.
+        """
+        params = self.params
+        if not params.multi_system_share_network:
+            raise NotImplementedError(
+                'multi-system kinetics_convergence is implemented for a shared '
+                'network; for separate networks run the single-system '
+                'kinetics_convergence per system subfolder')
+        if params.record_bias or params.rescale_committor:
+            raise NotImplementedError(
+                'record_bias / rescale_committor not supported with '
+                'multi-system kinetics_convergence')
+        if fractions is None:
+            fractions = [0.2, 0.4, 0.6, 0.8, 1.0]
+        fractions = sorted(set(float(f) for f in fractions))
+
+        directory = self._directory
+        states = params.sorted_states
+        r = states[1]
+        network = params.network
+        fit = params.fit
+        reweight_parameters = params.reweight_parameters
+        nbins = params.nbins
+        cutoff_min, cutoff_max = params.cutoff_min, params.cutoff_max
+        terminal_bin_extension = params.terminal_bin_extension
+        batch_size = params.network_batch_size
+        compute_values_args = params.compute_values_args
+        compute_condition = {'states': lambda state: state == r}
+        kwargs['worker'] = self
+        systems = self._multi_system_layout()
+
+        def values_kwargs(target, system_id):
+            return {'function': compute_values_args[0], 'target': target,
+                    'source': compute_values_args[2],
+                    'conditions': compute_condition,
+                    'batch_size': batch_size, 'system_id': system_id}
+
+        # save / restore the trained shared network around the experiment
+        print(f'\nSaving current network state {now()}')
+        device = next(network.parameters()).device
+        _buf = io.BytesIO()
+        torch.save(network.state_dict(), _buf)
+        _saved_state = _buf.getvalue()
+
+        # per-system full chains/free + margins
+        sys_chains, sys_free, margins = [], [], []
+        for subdir, sid in systems:
+            chains = params.shot_chains(subdir, None)
+            frees = params.free_trajectories(subdir)
+            sys_chains.append(chains)
+            sys_free.append(frees)
+            ip = PathEnsemble(f'{subdir}/initial{states}/*')
+            ip = ip.extract(states, states[::-1])
+            margins.append(PathEnsemble([p[1::-1] for p in ip] +
+                                        [p[-2::1] for p in ip]))
+
+        results = np.full(
+            len(fractions) * len(systems), nan,
+            dtype=[('fraction', float), ('system', 'U32'),
+                   ('n_frames', float), ('k12', float), ('k21', float),
+                   ('k12_rw', float), ('k21_rw', float)])
+
+        row = 0
+        for fraction in fractions:
+            print(f'\n=== Kinetics convergence: fraction {fraction:.2f} ==='
+                  f' ({now()})')
+            if self.termination_signal:
+                break
+            # sub-sample each system and (re)compute its values
+            sub_pes = []
+            for k, (subdir, sid) in enumerate(systems):
+                sub_chains = [c[:max(1, round(len(c) * fraction))]
+                              for c in sys_chains[k]]
+                sub_free = [t[:max(1, round(len(t) * fraction))]
+                            for t in sys_free[k]]
+                pe = assemble_pathensemble(sub_chains, sub_free)
+                if params.compute_descriptors_args is not None:
+                    pe.compute(*params.compute_descriptors_args, system_id=sid)
+                pe.compute(**values_kwargs('values', sid))
+                sub_pes.append(pe)
+            if self.termination_signal:
+                break
+
+            print(f'Training shared network on {fraction*100:.0f}% of data '
+                  f'{now()}')
+            losses, *_ = fit(params, [pe + margin for pe, margin
+                                      in zip(sub_pes, margins)], **kwargs)
+            if not len(losses):
+                print(f'!!! training failed for fraction {fraction:.2f}')
+                row += len(systems)
+                continue
+            if self.termination_signal:
+                break
+
+            # per-system rates with the freshly trained shared network
+            for k, (subdir, sid) in enumerate(systems):
+                pe = sub_pes[k]
+                pe.compute(**values_kwargs('kcv', sid), overwrite=True)
+                rw_p = reweight_parameters.copy()
+                bins = compute_bins(pe, nbins, cutoff_max=cutoff_max,
+                                    cutoff_min=cutoff_min,
+                                    find_extremes_with='free', source='kcv',
+                                    states=states,
+                                    terminal_bin_extension=terminal_bin_extension)
+                sp_cutoff_min, sp_cutoff_max = bins[0], bins[-1]
+                if sp_cutoff_min == -inf and bins[1] < +inf:
+                    sp_cutoff_min = bins[1]
+                if sp_cutoff_max == +inf and bins[-2] > -inf:
+                    sp_cutoff_max = bins[-2]
+                rw_p.setdefault('sp_cutoff_min', sp_cutoff_min)
+                rw_p.setdefault('sp_cutoff_max', sp_cutoff_max)
+                w1 = pe.reweight(states, **rw_p, source='kcv')[0]
+                w2 = pe.reweight(states[::-1], **rw_p, source='kcv')[0]
+                frame_lengths = pe.n_frames
+                k12 = np.sum(w1 * frame_lengths)
+                k12 = 1 / k12 if k12 else nan
+                k21 = np.sum(w2 * frame_lengths)
+                k21 = 1 / k21 if k21 else nan
+                results['fraction'][row] = fraction
+                results['system'][row] = str(sid)
+                results['n_frames'][row] = float(frame_lengths.sum())
+                results['k12'][row] = k12
+                results['k21'][row] = k21
+                print(f'    [system {sid!r}] k12={k12:.3e} k21={k21:.3e} '
+                      f'[1/dt], {frame_lengths.sum()} frames')
+                for fname in set(pe.fnames):
+                    kcv_fname = get_cache_fname(fname, 'kcv')
+                    NPY_CACHE.remove(kcv_fname)
+                    if os.path.exists(kcv_fname):
+                        try:
+                            os.remove(kcv_fname)
+                        except OSError:
+                            pass
+                row += 1
+
+            if network_save_pattern is not None:
+                net_fname = network_save_pattern.format(
+                    directory=directory, states=states, fraction=fraction,
+                    fraction_pct=round(fraction * 100))
+                os.makedirs(os.path.dirname(net_fname) or '.', exist_ok=True)
+                torch.save(network.state_dict(), net_fname)
+
+        print(f'\nRestoring original network state {now()}')
+        _buf = io.BytesIO(_saved_state)
+        network.load_state_dict(torch.load(_buf, map_location=device,
+                                           weights_only=True))
+        np.save(save_file, results)
+        print(f'Saved per-system kinetics convergence to {save_file!r}')
         return results

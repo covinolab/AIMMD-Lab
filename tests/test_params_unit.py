@@ -55,6 +55,57 @@ def test_params_load_save_update_and_paths(tmp_path):
     assert len(ensemble) >= 1
 
 
+def test_multi_system_params_fields_and_roundtrip(tmp_path):
+    """Multi-system params: list topology, per-system universes, system_id-aware
+    functions, shared-network path resolution, and a save/reload round-trip."""
+    source = '''
+import numpy as np
+import torch
+
+engine = 'toy'
+multi_system = True
+multi_system_share_network = True
+system_ids = ['G2', 'G4']
+topology = ['G2.gro', 'G4.gro']
+atom_types = ['H', 'C', 'N', 'O', 'NA', 'BR']
+
+def states_function(trajectory, system_id=None):
+    cut = 1.0 if system_id == 'G2' else 1.5
+    return np.array(['R'] * len(trajectory), dtype='<U1')
+
+class Network(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(1, 1)
+    def forward(self, x):
+        return self.lin(x[:, :1])
+network = Network()
+'''
+    params_file = tmp_path / "params.py"
+    params_file.write_text(source)
+
+    params = aimmd.Params.load(str(params_file), save=False)
+    assert params.multi_system and params.multi_system_share_network
+    assert params.system_ids == ['G2', 'G4']
+    assert params.topology == ['G2.gro', 'G4.gro']
+    assert params.atom_types == ['H', 'C', 'N', 'O', 'NA', 'BR']
+    # per-system universe cache exists (dummy topologies -> None, but keyed)
+    assert set(params.__dict__['_universes']) == {'G2', 'G4'}
+    # shared network resolves to the run root from a per-system subfolder
+    assert params._network_fname('run1/G2') == 'run1/networkARB.h5'
+    assert params._network_fname('run1') == 'run1/networkARB.h5'
+
+    # save and reload round-trips the list/grouped fields (topology entries are
+    # rewritten to paths relative to the saved file, exactly as single-system)
+    saved = Path(params.save(tmp_path / "saved.py"))
+    reloaded = aimmd.Params.load(str(saved), save=False)
+    assert reloaded.system_ids == ['G2', 'G4']
+    assert isinstance(reloaded.topology, list) and len(reloaded.topology) == 2
+    assert reloaded.multi_system is True
+    assert reloaded.multi_system_share_network is True
+    assert reloaded.atom_types == ['H', 'C', 'N', 'O', 'NA', 'BR']
+
+
 def test_params_validation_rejects_bad_network(tmp_path):
     """Network assignment should fail if the runtime interface is incomplete."""
 

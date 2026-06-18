@@ -73,7 +73,19 @@ from abc import ABC
 
 # aimmd imports
 from .._config import MDA_CACHE, NPY_CACHE, print
-from ..core.utils import now
+from ..core.utils import now, accepts_system_id
+
+
+def _system_id_binder(function, system_id):
+    """Wrap a user data function so it is always called for one fixed system.
+
+    The returned function takes only the data argument (so callers/`Path.compute`
+    won't try to pass ``system_id`` again) and forwards the bound ``system_id``
+    to the wrapped function.
+    """
+    def bound(data):
+        return function(data, system_id=system_id)
+    return bound
 
 
 class WorkerRun(ABC):
@@ -155,6 +167,11 @@ class WorkerRun(ABC):
             # bind resources
             self._bind_resources()
 
+            # multi-system: bind this worker's system_id into the user data
+            # functions so every downstream compute call featurizes / classifies
+            # for the correct system (no per-call-site threading needed).
+            self._bind_system_id()
+
             # clear caches
             MDA_CACHE.clear()
             NPY_CACHE.clear()
@@ -188,3 +205,41 @@ class WorkerRun(ABC):
             self._directory = self.directory
             self._terminate_operations()
             self._reset_stop_condition()
+
+    def _bind_system_id(self):
+        """Bind this worker's system to the params data functions (multi-system).
+
+        In a multi-system run each worker operates in a per-system subfolder
+        ``<run>/<system_id>/``. The ``system_id`` is the subfolder name. We wrap
+        the params' ``states_function`` / ``descriptors_function`` /
+        ``values_function`` (those that accept a ``system_id`` keyword) so they
+        are always evaluated for THIS worker's system — every shoot/free/train
+        compute call then uses the right per-system state cutoffs and graph
+        featurization without threading ``system_id`` through each call site.
+
+        No-op for single-system runs and for the shared trainer (whose directory
+        is the run root, not a system subfolder); the shared trainer dispatches
+        per system explicitly.
+        """
+        params = self.params
+        if not getattr(params, 'multi_system', False):
+            return
+        system_id = os.path.basename(os.path.normpath(self._directory))
+        system_ids = list(params.system_ids or [])
+        if system_id not in system_ids:
+            return
+        self._system_id = system_id
+        for name in ('states_function', 'descriptors_function',
+                     'values_function', 'descriptor_transform'):
+            function = getattr(params, name, None)
+            if function is not None and accepts_system_id(function):
+                params.__dict__[name] = _system_id_binder(function, system_id)
+        # Resolve per-system engine configuration for THIS worker's system, so
+        # the GROMACS/toy engine (grompp, masses, mdp) uses the right system's
+        # files. Per-worker, single process -> safe to specialize in place.
+        sidx = system_ids.index(system_id)
+        params.__dict__['_universe'] = params.universe_of(system_id)
+        for name in ('topology', 'gmx_mdp', 'gmx_grompp', 'gmx_mdrun'):
+            value = getattr(params, name, None)
+            if isinstance(value, (list, tuple)):
+                params.__dict__[name] = value[sidx]

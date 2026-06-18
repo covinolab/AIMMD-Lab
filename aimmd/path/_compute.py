@@ -80,6 +80,7 @@ from tqdm import tqdm
 
 # aimmd imports
 from .utils import get_cache_fname, compute_batch
+from ..core.utils import accepts_system_id
 from .._config import NPY_CACHE
 
 # compute methods for path
@@ -90,7 +91,7 @@ class PathCompute(ABC):
                 target='', source='reader', conditions={},
                 overwrite=False, mtime=None, batch_size=4096,
                 return_result=False, raise_if_error=False,
-                verbose=False, worker=None):
+                verbose=False, worker=None, system_id=None):
         """
         Compute a time series on this Path, optionally caching the results.
 
@@ -163,13 +164,19 @@ class PathCompute(ABC):
 
         # process "return_result"
         return_result = return_result or not target
-        
+
         # in case no computation is done
         if function is None:
             if return_result:
                 return None
             return 0
-        
+
+        # Multi-system: forward ``system_id`` to ``function`` only if it accepts
+        # it. Resolve once here so single-system functions keep being called
+        # with the data argument only (full backward compatibility).
+        batch_system_id = (system_id if system_id is not None
+                           and accepts_system_id(function) else None)
+
         # compute in batches
         batch_input = []
         batch_targets = []  # info for batch
@@ -283,7 +290,8 @@ class PathCompute(ABC):
                 if current_size >= batch_size:
                     this = compute_batch(function,
                                          batch_input, batch_targets,
-                                         source_is_reader, return_result)
+                                         source_is_reader, return_result,
+                                         system_id=batch_system_id)
                     if return_result:
                         result.extend(this)
                     else:
@@ -298,7 +306,8 @@ class PathCompute(ABC):
         if current_size and not getattr(worker, 'termination_signal', False):
             this = compute_batch(function,
                                  batch_input, batch_targets,
-                                 source_is_reader, return_result)
+                                 source_is_reader, return_result,
+                                 system_id=batch_system_id)
             if return_result:
                 result.extend(this)
             else:

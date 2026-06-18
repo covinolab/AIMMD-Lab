@@ -570,6 +570,66 @@ Tiwary-Parrinello assumption that the bias is negligible inside R."""
                  })
 
     # ------------------------------------------------------------------
+    # Multi-system (multi-ligand) shared-committor options
+    # ------------------------------------------------------------------
+
+    multi_system: bool = field(
+        default=False,
+        metadata={'description':
+"""Enable multi-system (multi-ligand) mode. When False (default) AIMMD behaves
+exactly as a single-system run. When True, one params file orchestrates several
+chemical systems at once: per-system fields (`topology`, `initial_paths`) become
+lists (one entry per system), each system runs in its own subfolder
+`<run>/<system_id>/`, and the user data functions (`states_function`,
+`descriptors_function`, `values_function`) receive an extra `system_id` keyword
+(passed only if their signature accepts it, so existing single-system functions
+keep working unchanged)."""
+                 })
+
+    multi_system_share_network: bool = field(
+        default=False,
+        metadata={'description':
+"""Train ONE shared committor network across all systems (only meaningful when
+`multi_system=True`). When False, every system gets its own network file and its
+own trainer (the trainers may share a GPU, see `trainers_share_gpu`). When True,
+a single network is trained by one trainer that passes the `fit` function a LIST
+of per-system PathEnsembles; the shared network is stored once at the run-folder
+root and read by every system's shooting workers. Rates/kinetics are still
+computed per system, in sequence."""
+                 })
+
+    system_ids: List = field(
+        default_factory=lambda: [],
+        metadata={'description':
+"""Per-system labels for a multi-system run (e.g. ['G2', 'G4']). They name the
+per-system subfolders `<run>/<system_id>/` and index the per-system entries of
+list-valued fields (`topology`, `initial_paths`). If left empty in multi-system
+mode, defaults to ['0', '1', ...] inferred from the number of topologies."""
+                 })
+
+    atom_types: List = field(
+        default=None,
+        metadata={'description':
+"""Fixed, ordered list of MDAnalysis atom-type strings defining the shared
+one-hot graph node encoding (e.g. ['H','C','N','O','F','NA','P','S','CL','BR','I']).
+When None (default) the graph encoding is derived per-universe from
+`sorted(set(universe.atoms.types))` (legacy single-system behaviour). A fixed
+table is what lets one graph network consume graphs from multiple systems: every
+system encodes into the same columns and the network input width must equal
+`len(atom_types)`. Forwarded to `aimmd.network.graph_utils.get_graphs_pyg`."""
+                 })
+
+    trainers_share_gpu: bool = field(
+        default=True,
+        metadata={'description':
+"""When `multi_system=True` and `multi_system_share_network=False`, each system
+has its own trainer. If True (default), all of a run's per-system trainers are
+bound to the SAME GPU (one shared device); if False they are spread across
+distinct GPUs. Ignored when a single shared network is trained (then there is
+only one trainer)."""
+                 })
+
+    # ------------------------------------------------------------------
     # Internal bookkeeping
     # ------------------------------------------------------------------
 

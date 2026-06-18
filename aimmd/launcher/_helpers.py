@@ -56,6 +56,7 @@ Notes
 """
 
 # external
+import sys
 import numpy as np
 import signal
 from abc import ABC
@@ -375,9 +376,24 @@ class LauncherHelpers(ABC):
         self._nrounds = nrounds
         self._walltime = walltime
 
-        # get number of processes
-        self._num_processes = (self._n1 + self._n2 + self._n +
-                               self._nrounds.astype(bool))
+        # get number of processes. In multi-system runs the per-run worker
+        # counts (n/n1/n2) apply PER SYSTEM and there is one trainer per system
+        # (separate networks) or a single shared trainer (shared network).
+        per_run_workers = self._n1 + self._n2 + self._n
+        has_trainer = self._nrounds.astype(bool).astype(int)
+        num_processes = []
+        for run_id in range(len(self)):
+            params = self._params[run_id]
+            if getattr(params, 'multi_system', False):
+                n_systems = max(1, len(params.system_ids))
+                n_trainers = (1 if params.multi_system_share_network
+                              else n_systems)
+                num_processes.append(int(per_run_workers[run_id]) * n_systems
+                                     + n_trainers * int(has_trainer[run_id]))
+            else:
+                num_processes.append(int(per_run_workers[run_id])
+                                     + int(has_trainer[run_id]))
+        self._num_processes = np.array(num_processes)
         total_num_processes = sum(self._num_processes)
 
         # determine number of CPUs per task

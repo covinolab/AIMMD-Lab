@@ -182,6 +182,31 @@ class ParamsProperties(ABC):
             return
         return guess_masses(self._universe.atoms)
 
+    def universe_of(self, system_id=None):
+        """
+        MDAnalysis Universe for a given system.
+
+        Multi-system runs cache one Universe per system in ``_universes``
+        (keyed by ``system_id``); single-system runs use the single
+        ``_universe``. With ``system_id=None`` this returns the single-system
+        universe (backward compatible).
+        """
+        if system_id is None:
+            return self._universe
+        universes = self.__dict__.get('_universes', None)
+        if not universes:
+            return self._universe
+        return universes.get(system_id, None)
+
+    def masses_of(self, system_id=None):
+        """
+        Per-atom masses for a given system (see ``masses``/``universe_of``).
+        """
+        universe = self.universe_of(system_id)
+        if universe is None:
+            return
+        return guess_masses(universe.atoms)
+
     @property
     def compute_states_args(self):
         """

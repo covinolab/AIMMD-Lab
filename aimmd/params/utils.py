@@ -34,6 +34,9 @@ from re import split
 from types import FunctionType as Function
 from inspect import getsource
 
+# aimmd imports
+from ..core.utils import accepts_system_id
+
 
 def update_source(instance, name):
     """
@@ -148,8 +151,9 @@ def create_default_values_function(network, descriptor_transform=None):
     dtype = next(network.parameters()).dtype
     if descriptor_transform is None:
         descriptor_transform = lambda x: x
-    
-    def values_function(input_data):
+    transform_takes_system_id = accepts_system_id(descriptor_transform)
+
+    def values_function(input_data, system_id=None):
         """
         Compute values from numpy-like input using the provided network.
 
@@ -158,6 +162,12 @@ def create_default_values_function(network, descriptor_transform=None):
         input_data : array-like
             Input frames. Typically shape (N, ...) where N is the number of frames.
             The function will flatten each frame into a 1D feature vector.
+        system_id : hashable or None, optional
+            Multi-system identifier. When provided and the `descriptor_transform`
+            accepts a `system_id` keyword, it is forwarded so the transform can
+            featurize the correct system into the shared network's input space.
+            Ignored (with the data argument only) otherwise — single-system
+            behaviour is unchanged.
 
         Returns
         -------
@@ -170,7 +180,11 @@ def create_default_values_function(network, descriptor_transform=None):
         """
         network.eval()  # disables dropout, batchnorm training behavior
         with torch.inference_mode():  # faster than no_grad()
-            input_data = descriptor_transform(np.asarray(input_data))
+            if system_id is not None and transform_takes_system_id:
+                input_data = descriptor_transform(
+                    np.asarray(input_data), system_id=system_id)
+            else:
+                input_data = descriptor_transform(np.asarray(input_data))
             input_data = torch.tensor(
                 input_data, dtype=dtype, device=device)
             input_data = torch.flatten(input_data, start_dim=1)

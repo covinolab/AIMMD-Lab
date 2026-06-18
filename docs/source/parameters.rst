@@ -75,6 +75,47 @@ Several parameters directly control how AIMMD explores path space:
    Define how value space is discretized for adaptive sampling and density
    estimation.
 
+Multi-System (Multi-Ligand) Parameters
+---------------------------------------
+
+These fields turn one params file into a multi-system run that trains a single
+shared committor model across several chemical systems. They all default to the
+single-system behavior, so existing params files are unaffected.
+
+``multi_system``
+   Bool, default ``False``. Enables multi-system mode. When on, the per-system
+   fields below become lists (one entry per system), each system runs in its own
+   subfolder ``<run>/<system_id>/``, and the user data functions receive a
+   ``system_id`` keyword (passed only if their signature accepts it).
+
+``multi_system_share_network``
+   Bool, default ``False``. If ``True``, one shared network is trained by a
+   single trainer that hands ``fit`` a *list* of per-system PathEnsembles
+   (pooled balanced, ``1/N`` per system per bin); the shared network is stored at
+   the run root. If ``False``, each system trains its own network with its own
+   trainer.
+
+``system_ids``
+   List of per-system labels (e.g. ``['G2', 'G4']``); they name the per-system
+   subfolders and index the list-valued fields. Defaults to ``['0', '1', ...]``.
+
+``atom_types``
+   Fixed, ordered list of MDAnalysis atom-type strings defining a *shared* one-hot
+   graph node encoding (e.g.
+   ``['H','C','N','O','F','NA','P','S','CL','BR','I']``). This is what lets one
+   graph network consume graphs from multiple systems. ``None`` (default) keeps
+   the legacy per-universe encoding.
+
+``trainers_share_gpu``
+   Bool, default ``True``. When training separate networks (share OFF), controls
+   whether the per-system trainers bind the same GPU or distinct GPUs.
+
+In multi-system mode ``topology`` and ``initial_paths`` accept lists (one
+topology file per system; one *group* of initial paths per system), and the
+per-run worker counts ``n``/``n1``/``n2`` apply per system. See
+:doc:`workflow` for the full multi-system workflow and the example notebook
+``examples/notebooks/2_multi_system.ipynb``.
+
 Engine Integration
 ------------------
 

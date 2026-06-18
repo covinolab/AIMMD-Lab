@@ -188,21 +188,41 @@ class ParamsMagic(ABC):
             if hasattr(value, '__source__'):
                 lines.append(value.__source__.rstrip('\n'))
 
-            # selected path-like fields are serialized relative to `go_to`
+            # selected path-like fields are serialized relative to `go_to`.
+            # In multi-system mode `topology` is a list (one per system).
             elif name in ('topology', 'gmx_mdp'):
-                lines.append(f'{name} = {os.path.relpath(value, go_to)!r}')
+                if isinstance(value, (list, tuple)):
+                    rel = [os.path.relpath(v, go_to) for v in value]
+                    lines.append(f'{name} = {rel!r}')
+                else:
+                    lines.append(f'{name} = {os.path.relpath(value, go_to)!r}')
 
-            # initial paths: write as list of filenames (if reload is enabled)
+            # initial paths: write as list of filenames (if reload is enabled).
+            # In multi-system mode this is a list of groups (one per system),
+            # serialized as a list of lists of filenames.
             elif name == 'initial_paths':
-                filenames = []
-                if self._reload_initial_paths:
-                    initial_paths = value
-                    for path in initial_paths:
-                        if isinstance(path, Path):
-                            path = path.fnames[0]
-                        filename = os.path.relpath(path, go_to)
-                        filenames.append(f'"{filename}"')
-                lines.append(f'{name} = [{", ".join(filenames)}]')
+                if getattr(self, 'multi_system', False):
+                    groups = []
+                    if self._reload_initial_paths:
+                        for group in value:
+                            fnames = []
+                            for path in group:
+                                if isinstance(path, Path):
+                                    path = path.fnames[0]
+                                rel = os.path.relpath(path, go_to)
+                                fnames.append(f'"{rel}"')
+                            groups.append(f'[{", ".join(fnames)}]')
+                    lines.append(f'{name} = [{", ".join(groups)}]')
+                else:
+                    filenames = []
+                    if self._reload_initial_paths:
+                        initial_paths = value
+                        for path in initial_paths:
+                            if isinstance(path, Path):
+                                path = path.fnames[0]
+                            filename = os.path.relpath(path, go_to)
+                            filenames.append(f'"{filename}"')
+                    lines.append(f'{name} = [{", ".join(filenames)}]')
 
             # all the rest
             elif value == inf:

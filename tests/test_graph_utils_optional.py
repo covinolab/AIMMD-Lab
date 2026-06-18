@@ -157,6 +157,41 @@ def test_get_graphs_pyg_builds_graph_objects_with_expected_payload():
     assert first.edge_index.shape[1] > 0
 
 
+def test_get_graphs_pyg_fixed_atom_types_shared_encoding():
+    """A fixed ``atom_types`` table gives a shared, wider one-hot encoding.
+
+    This is the multi-system encoding: instead of deriving columns per universe
+    (``sorted(set(types))`` -> 3 cols here), pass an explicit table so every
+    system featurizes into the SAME columns (unused columns stay zero), and the
+    network input width equals ``len(atom_types)``.
+    """
+    graph_utils = _import_graph_utils()
+    universe = _graph_test_universe()           # atom types C, H, O
+    descriptors = _graph_descriptors()
+    atom_types = ['H', 'C', 'N', 'O', 'F']      # fixed, atomic-number ordered
+
+    graphs = graph_utils.get_graphs_pyg(
+        descriptors=descriptors, mdanalysis_universe=universe,
+        system_selection="index 0 1", environment_selection="index 2",
+        cutoff=2.0, verbose=False, atom_types=atom_types)
+
+    node_attrs = graphs[0]["node_attrs"]
+    assert node_attrs.shape[1] == len(atom_types)        # 5 columns
+    # still exactly one hot per atom
+    np.testing.assert_allclose(node_attrs.sum(dim=1).numpy(), np.ones(3))
+    # C -> column index 1, H -> 0, O -> 3 (per the fixed table)
+    assert node_attrs[0].argmax().item() == atom_types.index('C')
+    assert node_attrs[1].argmax().item() == atom_types.index('H')
+    assert node_attrs[2].argmax().item() == atom_types.index('O')
+
+    # an atom type missing from the table raises a clear error
+    with pytest.raises(ValueError):
+        graph_utils.get_graphs_pyg(
+            descriptors=descriptors, mdanalysis_universe=universe,
+            system_selection="index 0 1", environment_selection="index 2",
+            cutoff=2.0, atom_types=['H', 'N', 'O'])     # missing 'C'
+
+
 def test_process_descriptors_pyg_populates_and_reuses_cache(tmp_path):
     """The high-level PyG path should populate SQLite once and then reuse it.
 
