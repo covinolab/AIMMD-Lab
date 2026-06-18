@@ -723,11 +723,23 @@ def guess_masses(atoms):
     """atoms: atomsgroup
     martini: all get 72 by default, better than underestimating masses
     """
-    for atom in atoms[:50]:
-        if atom.name.startswith(('BB', 'SC', 'PO4')):
-            # assign martini beads
-            return np.full(len(atoms), 72.0)
-    return atoms.masses
+    # Some topologies (e.g. coordinate-only .xtc universes used by the toy
+    # engine) carry no atom names or masses; MDAnalysis then raises NoDataError
+    # on `atom.name` / `atoms.masses`. Degrade gracefully to uniform masses
+    # rather than crash -- the masses are only used for velocity randomization.
+    try:
+        names = atoms.names
+    except Exception:
+        names = None
+    if names is not None:
+        for name in names[:50]:
+            if str(name).startswith(('BB', 'SC', 'PO4')):
+                # assign martini beads
+                return np.full(len(atoms), 72.0)
+    try:
+        return atoms.masses
+    except Exception:
+        return np.ones(len(atoms))
 
 
 def accepts_system_id(function):

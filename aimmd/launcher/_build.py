@@ -146,9 +146,30 @@ class LauncherBuild(ABC):
             nframes = self._nframes[run_id]
             nrounds = self._nrounds[run_id]
             walltime = self._walltime
+
+            # Multi-system: one per-system subfolder <run>/<system_id>/. The
+            # per-run worker counts (n/n1/n2) apply PER SYSTEM -- each may be a
+            # scalar (same for every system) or a per-system list (e.g. n=[6, 5]
+            # for an extra shooter on the first ligand). Each system's
+            # shoot/free workers run in its subfolder (existing per-directory
+            # logic). Single-system keeps the original flat layout.
+            multi = getattr(params, 'multi_system', False)
+            share = multi and params.multi_system_share_network
+            if multi:
+                n_systems = len(params.system_ids)
+                n_sys = self._per_system_counts(n, n_systems)
+                n1_sys = self._per_system_counts(n1, n_systems)
+                n2_sys = self._per_system_counts(n2, n_systems)
+                total_workers = int(n_sys.sum() + n1_sys.sum() + n2_sys.sum())
+                subtasks = [(f'{directory}/{sid}', sidx, sid)
+                            for sidx, sid in enumerate(params.system_ids)]
+            else:
+                total_workers = int(n) + int(n1) + int(n2)
+                subtasks = [(directory, None, None)]
+
             if nrounds:
                 conditions = (inf, inf, inf)
-            elif n + n1 + n2:
+            elif total_workers:
                 conditions = (walltime, nsteps, nframes)
             else:  # not running anything here
                 continue
@@ -158,21 +179,12 @@ class LauncherBuild(ABC):
                 os.makedirs(directory)
                 print(f'+++ created {directory!r}')
 
-            # Multi-system: one per-system subfolder <run>/<system_id>/. The
-            # per-run worker counts (n/n1/n2) apply PER SYSTEM. Each system's
-            # shoot/free workers run inside its subfolder (the existing
-            # per-directory worker logic, unchanged). Single-system keeps the
-            # original flat layout.
-            multi = getattr(params, 'multi_system', False)
-            share = multi and params.multi_system_share_network
-            if multi:
-                subtasks = [(f'{directory}/{sid}', sidx, sid)
-                            for sidx, sid in enumerate(params.system_ids)]
-            else:
-                subtasks = [(directory, None, None)]
             shared_trainer_localid = None  # for trainers_share_gpu (share OFF)
 
             for work_dir, sidx, sid in subtasks:
+                if multi:                       # per-system worker counts
+                    n, n1, n2 = (int(n_sys[sidx]), int(n1_sys[sidx]),
+                                 int(n2_sys[sidx]))
                 if work_dir != directory and not os.path.exists(work_dir):
                     os.makedirs(work_dir)
                     print(f'+++ created {work_dir!r}')

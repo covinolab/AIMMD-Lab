@@ -179,6 +179,32 @@ def test_multi_system_separate_networks(tmp_path):
         os.chdir(cwd)
 
 
+def test_multi_system_per_system_worker_counts(tmp_path):
+    """Per-system worker counts: n may be a scalar (uniform) or a per-system
+    list. With n=[[2, 1]] the first system gets 2 shooters and the second 1,
+    plus one shared trainer at the run root. Verified at _build() level (no MD)."""
+    import os
+    import aimmd
+
+    folder = str(tmp_path / 'counts')
+    _setup(folder, share_network=True)
+    cwd = os.getcwd()
+    os.chdir(folder)
+    try:
+        launcher = aimmd.Launcher('params.py', 'run1')
+        launcher._update(n=[[2, 1]], n1=1, n2=1, nrounds=1)
+        args, descriptions = launcher._build()
+        s1_shoot = sum('run1/s1' in d and 'chainR' in d for d in descriptions)
+        s2_shoot = sum('run1/s2' in d and 'chainR' in d for d in descriptions)
+        trainers = sum('trainer' in d for d in descriptions)
+        assert s1_shoot == 2, descriptions
+        assert s2_shoot == 1, descriptions
+        assert trainers == 1                     # one shared trainer at the root
+        assert any(d == '"run1" ARB trainer' for d in descriptions)
+    finally:
+        os.chdir(cwd)
+
+
 def test_multi_system_kinetics_convergence(tmp_path):
     import os
     import aimmd
