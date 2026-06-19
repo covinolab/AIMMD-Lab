@@ -425,6 +425,20 @@ class WorkerTrain(ABC):
                 if must_stop():
                     return
 
+                # Persist the freshly trained network immediately, before the
+                # (potentially long) value pass + reweighting below. A crash or
+                # walltime kill during that downstream work then still leaves the
+                # trained model — and its step backup — on disk.
+                if source == 'new':
+                    print(f'\nSaving network parameters to '
+                          f'{network_fname} {now()}')
+                    torch.save(network.state_dict(), network_fname)
+                    n = (self.total_steps // save_interval) * save_interval
+                    backup = f'{network_fname[:-3]}.step{n:06g}.h5'
+                    if self.total_steps and not os.path.exists(backup):
+                        shutil.copyfile(network_fname, backup)
+                        print(f'*** copied {network_fname!r} to {backup!r}')
+
                 # rebuild the eval subsample (frames may have grown during fit)
                 eval_pe = (pathensemble.subsample(caps, states) if caps
                            else pathensemble)
@@ -559,6 +573,13 @@ class WorkerTrain(ABC):
                         overwrite=True, worker=self)
                     time.sleep(.1)  # stability
 
+                # rescaling modified the network in place -> re-save so the file
+                # reflects the rescaled model (the immediate post-training save
+                # above predates this adjustment).
+                print(f'\nRe-saving rescaled network parameters to '
+                      f'{network_fname} {now()}')
+                torch.save(network.state_dict(), network_fname)
+
             # check mid-cycle
             if self.termination_signal:
                 break
@@ -582,29 +603,18 @@ class WorkerTrain(ABC):
                 print(f'    densities: {densities}')
 
             if source == 'new':
-                # replace values (as much as possible) all at once
+                # replace values (as much as possible) all at once. The network
+                # itself was already saved right after training (see above).
                 print(f'\nSubstituting \'...values.npy\' files '
                       f'with \'...new.npy\' {now()}')
                 replace_in_cache(NPY_CACHE, '.new.npy', '.values.npy',
                                  set(eval_pe.fnames))
-
-                # save network parameters
-                print(f'\nSaving network parameters to '
-                      f'{network_fname} {now()}')
-                torch.save(network.state_dict(), network_fname)
 
             # save bins and densities
             if len(bins):
                 print(f'\nSaving bins and densities {now()}')
                 save_npy(f'{directory}/bins{states}.npy', bins)
                 save_npy(f'{directory}/densities{states}.npy', densities)
-
-            # backup network
-            n = (self.total_steps // save_interval) * save_interval
-            backup = f'{network_fname[:-3]}.step{n:06g}.h5'
-            if self.total_steps and not os.path.exists(backup):
-                shutil.copyfile(network_fname, backup)
-                print(f'*** copied {network_fname!r} to {backup!r}')
 
     def _multi_system_layout(self):
         """Resolve the (subdirectory, system_id) list this trainer serves.
@@ -803,6 +813,18 @@ class WorkerTrain(ABC):
                     source = 'values'
                 if must_stop():
                     return
+                # Persist the freshly trained (shared) network immediately, before
+                # the per-system value pass + reweighting below. A crash or
+                # walltime kill during that downstream work then still leaves the
+                # trained model — and its step backup — on disk.
+                if source == 'new':
+                    print(f'\nSaving network parameters to {network_fname} {now()}')
+                    torch.save(network.state_dict(), network_fname)
+                    n = (self.total_steps // save_interval) * save_interval
+                    backup = f'{network_fname[:-3]}.step{n:06g}.h5'
+                    if self.total_steps and not os.path.exists(backup):
+                        shutil.copyfile(network_fname, backup)
+                        print(f'*** copied {network_fname!r} to {backup!r}')
                 # rebuild the eval ensembles (frames may have grown during fit)
                 # and refresh committor values with the new network
                 eval_pes = make_eval_pes()
@@ -884,15 +906,8 @@ class WorkerTrain(ABC):
                     save_npy(f'{subdir}/bins{states}.npy', bins)
                     save_npy(f'{subdir}/densities{states}.npy', densities)
 
-            # save the (shared or own) network once per successful round
-            if source == 'new':
-                print(f'\nSaving network parameters to {network_fname} {now()}')
-                torch.save(network.state_dict(), network_fname)
-                n = (self.total_steps // save_interval) * save_interval
-                backup = f'{network_fname[:-3]}.step{n:06g}.h5'
-                if self.total_steps and not os.path.exists(backup):
-                    shutil.copyfile(network_fname, backup)
-                    print(f'*** copied {network_fname!r} to {backup!r}')
+            # (the shared/own network was already saved right after training,
+            # before the per-system value pass / reweighting above)
 
     def kinetics_convergence(self, fractions=None,
                              save_file='kinetics_convergence.npy',

@@ -319,6 +319,44 @@ def test_multi_system_bias_kinetics_convergence(tmp_path):
         os.chdir(cwd)
 
 
+def test_network_saved_right_after_training(tmp_path, monkeypatch):
+    """The trained network is persisted immediately after `fit`, BEFORE the
+    (potentially long) value pass + reweighting. We make `compute_bins` explode
+    right after training and assert the shared network was still written."""
+    import os
+    import aimmd
+    import aimmd.worker._train as train_mod
+
+    folder = str(tmp_path / 'saveafter')
+    _setup(folder, share_network=True)
+    cwd = os.getcwd()
+    os.chdir(folder)
+    try:
+        # seed data + an initial trained network, then remove it so a fresh save
+        # is required this round.
+        aimmd.Launcher('params.py', 'run1').run(
+            n=1, n1=1, n2=1, nsteps=8, walltime=180)
+        assert os.path.isfile('run1/networkARB.h5')
+        os.remove('run1/networkARB.h5')
+
+        # blow up the post-training reweighting step
+        def boom(*args, **kwargs):
+            raise RuntimeError('boom after training')
+        monkeypatch.setattr(train_mod, 'compute_bins', boom)
+
+        params = aimmd.Params.load('params.py')
+        try:
+            aimmd.Worker(params, 'run1', walltime=180).train(nrounds=1)
+        except Exception:
+            pass  # the crash is expected; what matters is what's on disk
+
+        # the network exists despite the crash -> saved right after training
+        assert os.path.isfile('run1/networkARB.h5'), \
+            'network was not saved before the post-training reweighting'
+    finally:
+        os.chdir(cwd)
+
+
 def test_multi_system_subsample_caps_smoke(tmp_path):
     """A shared multi-system campaign with `subsample_caps` set runs end-to-end:
     the trainer builds a bounded per-system eval ensemble (the value pass / bins /
