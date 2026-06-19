@@ -152,6 +152,37 @@ default to *off*, so unbiased runs are unaffected.
    must equal that system's ``nstxout-compressed`` so that COLVAR row *i* lines up
    with trajectory frame *i*; a mismatch silently misaligns the cached bias.
 
+Value-Pass Subsampling
+----------------------
+
+Each training round the trainer recomputes the committor on every reactive frame
+of the (growing) path ensemble before binning and reweighting. With several
+ligands feeding one trainer this value pass can outgrow the job walltime. The
+optional ``subsample_caps`` bounds it by running the value pass / bin generation
+/ reweighting / rate estimate on a fresh **random subsample** of the ensemble
+each round, while ``fit`` (network training) still sees the full ensemble.
+
+``subsample_caps``
+   ``None`` (default) means no subsampling — behaviour is unchanged. Otherwise a
+   dict with any of:
+
+   - ``'shot'`` — max PATHS kept *per shot-excursion direction-type*. The four
+     direction-types ``sAA``, ``sAB``, ``sBA``, ``sBB`` are capped
+     **independently**, so ``'shot': 100`` keeps up to ``4 * 100 = 400`` shot
+     paths per system.
+   - ``'free'`` — max PATHS kept *per free-excursion direction-type* (``fAA``,
+     ``fAB``, ``fBA``, ``fBB`` each), so ``'free': 500`` keeps up to ``2000`` free
+     paths per system.
+   - ``'in_state'`` — max FRAMES kept per state (the in-A and in-B paths are kept
+     until this many frames accumulate, per state).
+
+   A missing key leaves that category uncapped. In a multi-system run this may be
+   a single dict (broadcast to all systems) or a list of dicts/``None`` (one per
+   ``system_ids`` entry). Pick caps generously (e.g. ``shot=100, free=500``):
+   selection is uniform within each category so the reweighting stays a
+   consistent rate estimate, and in-state-only paths carry zero reweight so
+   dropping them never biases the rate.
+
 Engine Integration
 ------------------
 

@@ -129,7 +129,14 @@ def bias_function(trajectory, system_id=None):
 '''
 
 
-def _setup(folder, share_network, with_bias=False):
+# Optional value-pass subsampling caps (Feature B). Tiny caps so the bounded
+# eval-ensemble slice is exercised through the trainer even on a short toy run.
+CAPS_SUFFIX = '''
+subsample_caps = {'shot': 2, 'free': 2, 'in_state': 50}
+'''
+
+
+def _setup(folder, share_network, with_bias=False, with_caps=False):
     import os
     os.makedirs(folder, exist_ok=True)
     _write_initial_xtc(f'{folder}/s1.xtc', n_atoms=1)
@@ -138,6 +145,8 @@ def _setup(folder, share_network, with_bias=False):
         'SHARE_NETWORK', 'True' if share_network else 'False')
     if with_bias:
         source = source + BIAS_SUFFIX
+    if with_caps:
+        source = source + CAPS_SUFFIX
     with open(f'{folder}/params.py', 'w') as handle:
         handle.write(source)
 
@@ -310,13 +319,39 @@ def test_multi_system_bias_kinetics_convergence(tmp_path):
         os.chdir(cwd)
 
 
+def test_multi_system_subsample_caps_smoke(tmp_path):
+    """A shared multi-system campaign with `subsample_caps` set runs end-to-end:
+    the trainer builds a bounded per-system eval ensemble (the value pass / bins /
+    reweighting run on it) while `fit` still uses the full ensemble, and the
+    shared network + per-system bins are produced."""
+    import os
+    import aimmd
+
+    folder = str(tmp_path / 'caps')
+    _setup(folder, share_network=True, with_caps=True)
+    cwd = os.getcwd()
+    os.chdir(folder)
+    try:
+        params = aimmd.Params.load('params.py')
+        assert params.subsample_caps_of('s1') == {'shot': 2, 'free': 2,
+                                                  'in_state': 50}
+        aimmd.Launcher('params.py', 'run1').run(
+            n=1, n1=1, n2=1, nsteps=8, walltime=180)
+        assert os.path.isfile('run1/networkARB.h5')
+        for sid in ('s1', 's2'):
+            assert os.path.isfile(f'run1/{sid}/binsARB.npy')
+    finally:
+        os.chdir(cwd)
+
+
 if __name__ == '__main__':
     import tempfile, pathlib
     for fn in (test_multi_system_shared_network,
                test_multi_system_separate_networks,
                test_multi_system_kinetics_convergence,
                test_multi_system_bias_shared_network,
-               test_multi_system_bias_kinetics_convergence):
+               test_multi_system_bias_kinetics_convergence,
+               test_multi_system_subsample_caps_smoke):
         with tempfile.TemporaryDirectory() as d:
             fn(pathlib.Path(d))
             print(f'{fn.__name__} OK')

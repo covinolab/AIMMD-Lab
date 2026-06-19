@@ -634,6 +634,37 @@ only one trainer)."""
                  })
 
     # ------------------------------------------------------------------
+    # Training-time value-pass subsampling (optional; speeds up large runs)
+    # ------------------------------------------------------------------
+
+    subsample_caps: dict = field(
+        default=None,
+        metadata={'description':
+"""Optional caps that bound the per-round committor *value pass* (and the bin
+generation / reweighting / rate estimate that consume it) by evaluating them on a
+randomly subsampled slice of the path ensemble instead of every reactive frame.
+`fit` (network training) is unaffected and still sees the full ensemble.
+
+When None (default) NO subsampling happens and behaviour is identical to before.
+When a dict, the recognised keys are:
+
+- 'shot'     : max number of PATHS kept *per shot-excursion direction-type*.
+               Each of sAA, sAB, sBA, sBB is capped independently, so a value of
+               100 keeps up to 4*100 = 400 shot paths per system.
+- 'free'     : max number of PATHS kept *per free-excursion direction-type*.
+               Each of fAA, fAB, fBA, fBB is capped independently, so a value of
+               500 keeps up to 4*500 = 2000 free paths per system.
+- 'in_state' : max number of FRAMES kept per state (the in-A and in-B paths are
+               kept until this many frames are reached, per state, per system).
+
+A missing key means that category is left uncapped. The subsample is drawn fresh
+each round (uniformly within each category, so reweighting stays consistent;
+in-state-only paths carry zero reweight so never bias the rate). In a multi-system
+run this may be a single dict (applied to every system) or a list of dicts/None,
+one per entry of `system_ids`. Pick caps generously (e.g. shot=100, free=500)."""
+                 })
+
+    # ------------------------------------------------------------------
     # Internal bookkeeping
     # ------------------------------------------------------------------
 

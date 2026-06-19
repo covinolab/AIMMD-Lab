@@ -229,6 +229,11 @@ class ParamsProperties(ABC):
         ``bias_reactive_threshold``); a scalar is broadcast to all systems."""
         return self._per_system_value(self.bias_reactive_threshold, system_id)
 
+    def subsample_caps_of(self, system_id=None):
+        """Value-pass subsampling caps for a given system (see
+        ``subsample_caps``); a single dict is broadcast to all systems."""
+        return self._per_system_value(self.subsample_caps, system_id)
+
     @property
     def compute_states_args(self):
         """

@@ -351,12 +351,23 @@ class WorkerTrain(ABC):
                 if n:
                     print(f"... (re)computed {n} missing inital path descriptor frames")
 
+            # Value-pass subsample: bounds the (growing) committor value pass and
+            # the bins/reweighting that consume it by evaluating them on a random
+            # subsample of the ensemble. Identity (the full ensemble, same object)
+            # when no caps are configured -> behaviour is unchanged. `fit` always
+            # uses the full `pathensemble`. Rebuilt again after training below.
+            caps = params.subsample_caps_of(getattr(self, '_system_id', None))
+            eval_pe = pathensemble.subsample(caps, states) if caps else pathensemble
+            if caps:
+                print(f'... value-pass subsample: {len(eval_pe)}/'
+                      f'{len(pathensemble)} paths')
+
             # Compute bias potential per frame (only when record_bias is enabled)
             if record_bias and bias_function is not None:
                 if bias_source == 'reader':
                     # reader-based: same convention as states_function / descriptors_function
                     print(f'\nComputing bias cache (reader mode) {now()}')
-                    n = pathensemble.compute(
+                    n = eval_pe.compute(
                         function=bias_function,
                         target='bias',
                         source='reader',
@@ -366,11 +377,11 @@ class WorkerTrain(ABC):
                 elif bias_source == 'file':
                     # file-based: bias_function(fname) -> full file array
                     self._cache_bias_files(
-                        pathensemble, bias_function)
+                        eval_pe, bias_function)
 
             print(f'\nComputing the committor values of '
                   f'the new reactive {r} frames {now()}')
-            n = pathensemble.compute(**compute_kwargs('values'))
+            n = eval_pe.compute(**compute_kwargs('values'))
             print(f'... computed {n} values')
             
             # check mid-cycle (do not update path ensemble)
@@ -414,17 +425,21 @@ class WorkerTrain(ABC):
                 if must_stop():
                     return
 
+                # rebuild the eval subsample (frames may have grown during fit)
+                eval_pe = (pathensemble.subsample(caps, states) if caps
+                           else pathensemble)
+
                 # (re)compute committor values
                 if source == 'new':
                     print(f'\nUpdating the committor values of all '
                           f'the reactive {r} frames {now()}')
-                    n = pathensemble.compute(**compute_kwargs('new'), overwrite=True)
+                    n = eval_pe.compute(**compute_kwargs('new'), overwrite=True)
                 else:
                     print(f'\nComputing the committor values of '
                       f'the new reactive {r} frames {now()}')
                     # will fill temp files ("...new.npy") and replace "values.npy" later
                     # in this way, we minimize the risk of i/o issues
-                    n = pathensemble.compute(**compute_kwargs('values'))
+                    n = eval_pe.compute(**compute_kwargs('values'))
                 print(f'... computed {n} values')
                 
                 # check mid-cycle (do not update path ensemble)
@@ -436,7 +451,7 @@ class WorkerTrain(ABC):
                 continue
             
             print(f'\nObtaining the adaptation bins {now()}')
-            bins = compute_bins(pathensemble, nbins,
+            bins = compute_bins(eval_pe, nbins,
                                 cutoff_max=cutoff_max,
                                 cutoff_min=cutoff_min,
                                 find_extremes_with='free',
@@ -444,44 +459,46 @@ class WorkerTrain(ABC):
                                 states=states,
                                 terminal_bin_extension=terminal_bin_extension)
             print(f'    bins: {bins}')
-            
+
             # check mid-cycle
             if self.termination_signal:
                 return
-            
+
             # get TPE weights
             if do_tps:
-                weights = (pathensemble.weights *
-                           pathensemble.are_transitions(states))
-            
+                weights = (eval_pe.weights *
+                           eval_pe.are_transitions(states))
+
             # reweight pathensemble
             print(f'\nReweighting the full path ensemble {now()}')
-            
+
             # will update reweighting parameters
             rw_p = reweight_parameters.copy()
-            
-            # find sp_cutoff_min and sp_cutoff_max
-            sp_cutoff_min = bins[+0]
-            sp_cutoff_max = bins[-1]
-            if sp_cutoff_min == -inf and bins[+1] < +inf:
-                sp_cutoff_min = bins[+1]
-            if sp_cutoff_max == +inf and bins[-2] > -inf:
-                sp_cutoff_max = bins[-2]
-            if 'sp_cutoff_min' not in rw_p:
-                rw_p['sp_cutoff_min'] = sp_cutoff_min
-            if 'sp_cutoff_max' not in rw_p:
-                rw_p['sp_cutoff_max'] = sp_cutoff_max
+
+            # find sp_cutoff_min and sp_cutoff_max (nbins<=0 -> no adaptive bins;
+            # compute_bins returns [] and reweight then uses its own defaults)
+            if len(bins):
+                sp_cutoff_min = bins[+0]
+                sp_cutoff_max = bins[-1]
+                if sp_cutoff_min == -inf and bins[+1] < +inf:
+                    sp_cutoff_min = bins[+1]
+                if sp_cutoff_max == +inf and bins[-2] > -inf:
+                    sp_cutoff_max = bins[-2]
+                if 'sp_cutoff_min' not in rw_p:
+                    rw_p['sp_cutoff_min'] = sp_cutoff_min
+                if 'sp_cutoff_max' not in rw_p:
+                    rw_p['sp_cutoff_max'] = sp_cutoff_max
 
             # reweight
-            result1 = pathensemble.reweight(
+            result1 = eval_pe.reweight(
                 states, **rw_p, source=source)
-            result2 = pathensemble.reweight(
+            result2 = eval_pe.reweight(
                 states[::-1], **rw_p, source=source)
             w1, extremes1, xP1 = result1[0], result1[4], result1[5]
             w2, extremes2, xP2 = result2[0], result2[4], result2[5]
 
             # bonus track: estimate rates
-            lengths = pathensemble.n_frames
+            lengths = eval_pe.n_frames
             k12 = np.sum(w1 * lengths)
             k12 = 1 / k12 if k12 else nan
             k21 = np.sum(w2 * lengths)
@@ -498,13 +515,13 @@ class WorkerTrain(ABC):
                 # after training). A stale bias.npy would silently produce a
                 # truncated slice and drag gamma toward 1.0.
                 if bias_source == 'file' and bias_function is not None:
-                    self._cache_bias_files(pathensemble, bias_function)
+                    self._cache_bias_files(eval_pe, bias_function)
                 from ..pathensemble.bias_utils import (
                     check_reactive_bias, compute_bias_corrections)
                 check_reactive_bias(
-                    pathensemble, states, bias_reactive_threshold)
-                gamma1 = compute_bias_corrections(pathensemble, w1)
-                gamma2 = compute_bias_corrections(pathensemble, w2)
+                    eval_pe, states, bias_reactive_threshold)
+                gamma1 = compute_bias_corrections(eval_pe, w1)
+                gamma2 = compute_bias_corrections(eval_pe, w2)
                 k12_rw = np.sum(w1 * lengths * gamma1)
                 k12_rw = 1 / k12_rw if k12_rw else nan
                 k21_rw = np.sum(w2 * lengths * gamma2)
@@ -536,7 +553,7 @@ class WorkerTrain(ABC):
 
                 # rescale all of temp values
                 if len(knots):
-                    pathensemble.compute(
+                    eval_pe.compute(
                         lambda x: rescale(x, knots, values),
                         'new', 'new', compute_condition,
                         overwrite=True, worker=self)
@@ -546,25 +563,30 @@ class WorkerTrain(ABC):
             if self.termination_signal:
                 break
 
-            # assign weights
-            if not do_tps:  # PE weights in reactive region
-                excursions_mask = pathensemble.types(f'.{r}..')
-                pathensemble.weights = (w1 + w2) * excursions_mask
-            else:  # TPE weights
-                pathensemble.weights *= pathensemble.are_transitions(states)
-            
-            print(f'\nProjecting the {"T" * do_tps}PE density {now()}')
-            densities = pathensemble.project(bins, source=source)
-            densities[densities == 0.] = 1e-15
-            densities /= densities.sum()
-            print(f'    densities: {densities}')
-            
+            # adaptive bins / densities drive shooting-point selection; only
+            # meaningful when there are adaptive bins (nbins > 0). The projection
+            # reads the source='new' committor values, so it must run BEFORE the
+            # replace_in_cache below promotes '...new.npy' to '...values.npy'.
+            if len(bins):
+                # assign weights
+                if not do_tps:  # PE weights in reactive region
+                    excursions_mask = eval_pe.types(f'.{r}..')
+                    eval_pe.weights = (w1 + w2) * excursions_mask
+                else:  # TPE weights
+                    eval_pe.weights *= eval_pe.are_transitions(states)
+
+                print(f'\nProjecting the {"T" * do_tps}PE density {now()}')
+                densities = eval_pe.project(bins, source=source)
+                densities[densities == 0.] = 1e-15
+                densities /= densities.sum()
+                print(f'    densities: {densities}')
+
             if source == 'new':
                 # replace values (as much as possible) all at once
                 print(f'\nSubstituting \'...values.npy\' files '
                       f'with \'...new.npy\' {now()}')
                 replace_in_cache(NPY_CACHE, '.new.npy', '.values.npy',
-                                 set(pathensemble.fnames))
+                                 set(eval_pe.fnames))
 
                 # save network parameters
                 print(f'\nSaving network parameters to '
@@ -572,9 +594,10 @@ class WorkerTrain(ABC):
                 torch.save(network.state_dict(), network_fname)
 
             # save bins and densities
-            print(f'\nSaving bins and densities {now()}')
-            save_npy(f'{directory}/bins{states}.npy', bins)
-            save_npy(f'{directory}/densities{states}.npy', densities)
+            if len(bins):
+                print(f'\nSaving bins and densities {now()}')
+                save_npy(f'{directory}/bins{states}.npy', bins)
+                save_npy(f'{directory}/densities{states}.npy', densities)
 
             # backup network
             n = (self.total_steps // save_interval) * save_interval
@@ -713,19 +736,41 @@ class WorkerTrain(ABC):
             self.total_frames = total_frames
             return False
 
+        def make_eval_pes():
+            """Per-system path ensembles for the value pass / bins / reweighting.
+
+            With ``params.subsample_caps`` configured these are bounded random
+            subsamples (drawn fresh each round); otherwise they are the full
+            ensembles (identity -> unchanged behaviour). ``fit`` always uses the
+            full ensembles.
+            """
+            out = []
+            for kk, (subdir_, sid_) in enumerate(systems):
+                caps = params.subsample_caps_of(sid_)
+                if caps:
+                    ep = pathensembles[kk].subsample(caps, states)
+                    print(f'... [system {sid_!r}] value-pass subsample: '
+                          f'{len(ep)}/{len(pathensembles[kk])} paths')
+                    out.append(ep)
+                else:
+                    out.append(pathensembles[kk])
+            return out
+
         rounds_done = 0
         while not self.termination_signal:
 
             if must_stop():
                 return
 
-            # (re)compute descriptors + committor values per system
+            # (re)compute descriptors (full ensemble, for fit) + committor values
+            # (on the possibly-subsampled eval ensemble, to bound the value pass)
+            eval_pes = make_eval_pes()
             for k, (subdir, sid) in enumerate(systems):
-                pe = pathensembles[k]
                 if params.compute_descriptors_args is not None:
-                    pe.compute(*params.compute_descriptors_args, system_id=sid)
-                cache_bias(pe, sid)
-                pe.compute(**values_kwargs('values', sid))
+                    pathensembles[k].compute(
+                        *params.compute_descriptors_args, system_id=sid)
+                cache_bias(eval_pes[k], sid)
+                eval_pes[k].compute(**values_kwargs('values', sid))
             if self.termination_signal:
                 return
 
@@ -758,9 +803,11 @@ class WorkerTrain(ABC):
                     source = 'values'
                 if must_stop():
                     return
-                # refresh values with the new network
+                # rebuild the eval ensembles (frames may have grown during fit)
+                # and refresh committor values with the new network
+                eval_pes = make_eval_pes()
                 for k, (subdir, sid) in enumerate(systems):
-                    pe = pathensembles[k]
+                    pe = eval_pes[k]
                     target = 'new' if source == 'new' else 'values'
                     cache_bias(pe, sid)
                     pe.compute(**values_kwargs(target, sid),
@@ -768,9 +815,10 @@ class WorkerTrain(ABC):
                 if self.termination_signal:
                     return
 
-            # per-system bins / densities / rates (in sequence) + persist
+            # per-system bins / densities / rates (in sequence) + persist.
+            # These run on the (possibly subsampled) eval ensemble.
             for k, (subdir, sid) in enumerate(systems):
-                pe = pathensembles[k]
+                pe = eval_pes[k]
                 print(f'\n[system {sid!r}] adaptation bins {now()}')
                 bins = compute_bins(pe, nbins, cutoff_max=cutoff_max,
                                     cutoff_min=cutoff_min,
@@ -778,13 +826,16 @@ class WorkerTrain(ABC):
                                     states=states,
                                     terminal_bin_extension=terminal_bin_extension)
                 rw_p = reweight_parameters.copy()
-                sp_cutoff_min, sp_cutoff_max = bins[0], bins[-1]
-                if sp_cutoff_min == -inf and bins[1] < +inf:
-                    sp_cutoff_min = bins[1]
-                if sp_cutoff_max == +inf and bins[-2] > -inf:
-                    sp_cutoff_max = bins[-2]
-                rw_p.setdefault('sp_cutoff_min', sp_cutoff_min)
-                rw_p.setdefault('sp_cutoff_max', sp_cutoff_max)
+                # nbins<=0 -> compute_bins returns [] (no adaptive bins); skip the
+                # shooting-point cutoff setup (reweight then uses its defaults).
+                if len(bins):
+                    sp_cutoff_min, sp_cutoff_max = bins[0], bins[-1]
+                    if sp_cutoff_min == -inf and bins[1] < +inf:
+                        sp_cutoff_min = bins[1]
+                    if sp_cutoff_max == +inf and bins[-2] > -inf:
+                        sp_cutoff_max = bins[-2]
+                    rw_p.setdefault('sp_cutoff_min', sp_cutoff_min)
+                    rw_p.setdefault('sp_cutoff_max', sp_cutoff_max)
                 w1 = pe.reweight(states, **rw_p, source=source)[0]
                 w2 = pe.reweight(states[::-1], **rw_p, source=source)[0]
                 frame_lengths = pe.n_frames
@@ -815,17 +866,23 @@ class WorkerTrain(ABC):
                     print(f'    [system {sid!r}] k21 bias-reweighted: '
                           f'{k21_rw:.3e} [1/dt]')
 
-                excursions_mask = pe.types(f'.{r}..')
-                pe.weights = (w1 + w2) * excursions_mask
-                densities = pe.project(bins, source=source)
-                densities[densities == 0.] = 1e-15
-                densities /= densities.sum()
+                # densities/bins drive adaptive shooting-point selection; only
+                # meaningful when there are adaptive bins (nbins > 0). The
+                # projection reads source='new' values, so it must run BEFORE
+                # replace_in_cache promotes '...new.npy' to '...values.npy'.
+                if len(bins):
+                    excursions_mask = pe.types(f'.{r}..')
+                    pe.weights = (w1 + w2) * excursions_mask
+                    densities = pe.project(bins, source=source)
+                    densities[densities == 0.] = 1e-15
+                    densities /= densities.sum()
 
                 if source == 'new':
                     replace_in_cache(NPY_CACHE, '.new.npy', '.values.npy',
                                      set(pe.fnames))
-                save_npy(f'{subdir}/bins{states}.npy', bins)
-                save_npy(f'{subdir}/densities{states}.npy', densities)
+                if len(bins):
+                    save_npy(f'{subdir}/bins{states}.npy', bins)
+                    save_npy(f'{subdir}/densities{states}.npy', densities)
 
             # save the (shared or own) network once per successful round
             if source == 'new':

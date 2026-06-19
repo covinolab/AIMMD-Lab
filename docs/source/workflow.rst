@@ -304,6 +304,30 @@ convergence fills the ``k12_rw`` / ``k21_rw`` columns per system.
    clear ``NotImplementedError``; single-system runs retain full support for all
    of them.
 
+Bounding the value pass (``subsample_caps``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each training round the trainer recomputes the committor on **every** reactive
+frame of the ensemble (with the freshly trained network) before binning and
+reweighting. That value pass grows without bound as sampling accumulates — and
+with several ligands feeding one shared trainer it can stop fitting inside a
+job's walltime. Setting ``subsample_caps`` (see :doc:`parameters`) makes the
+trainer run the value pass / bins / reweighting / rate estimate on a **fresh
+random subsample** of the ensemble each round (capped per path category), while
+``fit`` still trains on the full ensemble:
+
+.. code-block:: python
+
+    subsample_caps = {'shot': 100, 'free': 500, 'in_state': 5000}
+    # multi-system: a single dict (all systems) or a list of dicts, one per system
+
+Selection is uniform within each category, so the reweighting remains a
+consistent rate estimate (generous caps keep the variance low); in-state-only
+paths carry zero reweight so dropping them never biases the rate. With
+``nbins == 0`` no adaptive bins are generated, but the (capped) value pass and
+per-round rate estimate still run. ``None`` (default) disables subsampling
+entirely — behaviour is unchanged.
+
 Sweep Mode
 ----------
 

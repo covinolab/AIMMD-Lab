@@ -167,8 +167,6 @@ def test_fit_rejects_invalid_options():
         fit_module.fit(params, pathensemble, batching_strategy="bad")
     with pytest.raises(TypeError):
         fit_module.fit(params, pathensemble, augment="bad")
-    with pytest.raises(TypeError):
-        fit_module.fit(params, pathensemble, sparse_update_max_frames=3)
 
 
 def test_fit_trains_on_synthetic_data_with_validation(monkeypatch):

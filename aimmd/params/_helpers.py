@@ -47,6 +47,34 @@ from ..pathensemble import PathEnsemble
 from ..network.rescalable import Rescalable as RescalableNetwork
 
 
+_SUBSAMPLE_CAP_KEYS = ('shot', 'free', 'in_state')
+
+
+def _check_caps_dict(value):
+    """Validate one ``subsample_caps`` dict (see ``Params.subsample_caps``).
+
+    Allowed keys are ``'shot'``, ``'free'`` and ``'in_state'``; each value must
+    be a positive integer (a per-category cap) or ``None`` (uncapped). Returns a
+    shallow copy with ints coerced to plain ``int``.
+    """
+    if not isinstance(value, dict):
+        raise TypeError("'subsample_caps' must be a dict (or a list of dicts / "
+                        f"None per system), got {type(value).__name__}")
+    out = {}
+    for key, cap in value.items():
+        if key not in _SUBSAMPLE_CAP_KEYS:
+            raise TypeError(f"unknown subsample_caps key {key!r}; allowed keys "
+                            f"are {list(_SUBSAMPLE_CAP_KEYS)}")
+        if cap is None:
+            out[key] = None
+            continue
+        if isinstance(cap, bool) or not isinstance(cap, Integral) or cap <= 0:
+            raise TypeError(f"subsample_caps[{key!r}] must be a positive int or "
+                            f"None, got {cap!r}")
+        out[key] = int(cap)
+    return out
+
+
 # params' helpers
 class ParamsHelpers(ABC):
     def _init(self, *args, **kwargs):
@@ -243,6 +271,16 @@ class ParamsHelpers(ABC):
                     value = [float(v) for v in value]
                 else:
                     value = float(value)
+
+            # optional value-pass subsampling caps: dict (all systems) or a
+            # list of dicts/None (one per system)
+            elif name == 'subsample_caps':
+                if value is not None:
+                    if isinstance(value, (list, tuple)):
+                        value = [None if v is None else _check_caps_dict(v)
+                                 for v in value]
+                    else:
+                        value = _check_caps_dict(value)
 
             # initial paths (converted in real-time)
             elif name == 'initial_paths':
@@ -545,8 +583,8 @@ class ParamsHelpers(ABC):
         self.__dict__['system_ids'] = system_ids
 
         # per-system list-valued fields: if given as a list, it must have one
-        # entry per system (a scalar is broadcast to all systems).
-        for fname in ('bias_reactive_threshold',):
+        # entry per system (a scalar/dict is broadcast to all systems).
+        for fname in ('bias_reactive_threshold', 'subsample_caps'):
             fval = getattr(self, fname, None)
             if isinstance(fval, (list, tuple)) and len(fval) != n_systems:
                 raise TypeError(f"{fname!r} given as a list of length "

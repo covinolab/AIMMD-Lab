@@ -247,8 +247,7 @@ def fit(params,
         max_adjustment_in_bin=10.0,
         transition_path_upweighting=1.0,
         end_state_factor=1.0,
-        sparse_update_max_frames=-1,
-        
+
         # data augmentation
         augment='no',
         
@@ -368,10 +367,6 @@ def fit(params,
     end_state_factor : float, default=1.0
         Base factor used for end-state (in-`a`, in-`b`) selection probability
         before bin-based adjustments.
-
-    sparse_update_max_frames : int, default=-1
-        Currently only ``-1`` is accepted (enforced by a check). Present for
-        forward compatibility with sparse updates.
 
     augment : {'no', 'yes', 'experimental'}, default='no'
         Data augmentation mode.
@@ -521,10 +516,7 @@ def fit(params,
         raise TypeError(f"Invalid batching strategy: {batching_strategy}")
     if augment not in ('no', 'yes', 'experimental'):
         raise TypeError(f"Invalid augment: {augment!r}")
-    if sparse_update_max_frames != -1:
-        raise TypeError('In this version of aimmd, only '
-                        'sparse_update_max_frames = -1 is supported')
-    
+
     # Optional dependency only when graph descriptors are enabled
     if graphs:
         # only need to import this torch_geometric Batch if graphs
