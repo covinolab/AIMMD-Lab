@@ -116,6 +116,42 @@ per-run worker counts ``n``/``n1``/``n2`` apply per system. See
 :doc:`workflow` for the full multi-system workflow and the example notebook
 ``examples/notebooks/2_multi_system.ipynb``.
 
+.. _bias-recording:
+
+Bias Recording (OPES / PLUMED)
+------------------------------
+
+For runs that apply an **in-state bias** during dynamics (e.g. a frozen
+OPES_METAD that flattens a bound well), AIMMD records the per-frame bias and
+recovers unbiased kinetics with the Tiwary-Parrinello correction. All of these
+default to *off*, so unbiased runs are unaffected.
+
+``record_bias``
+   Bool, default ``False``. When ``True``, the per-frame bias is cached as
+   ``<traj>.bias.npy`` and the trainer prints bias-reweighted rate estimates
+   ``k = 1 / Σ(wᵢ·Lᵢ·γᵢ)`` with ``γᵢ = ⟨exp(bias)⟩`` per path.
+
+``bias_function`` / ``bias_source``
+   The callable that returns the per-frame bias in ``kT``. With
+   ``bias_source='reader'`` it is called ``bias_function(reader)`` (toy /
+   position-based); with ``bias_source='file'`` it is called
+   ``bias_function(fname)`` and reads the associated PLUMED COLVAR file. In a
+   multi-system run a ``system_id`` keyword is forwarded when the signature
+   accepts it; the bias itself usually enters GROMACS through the per-system
+   ``gmx_mdrun`` string (``gmx mdrun -plumed <system>/plumed.dat``).
+
+``bias_reactive_threshold``
+   Float, default ``0.5``. Maximum acceptable mean ``|bias|`` (in ``kT``) inside
+   the reactive region R (the Tiwary-Parrinello assumption). In multi-system mode
+   this may be a single float (applied to every system) or a **list**, one per
+   ``system_ids`` entry.
+
+.. important::
+
+   When biasing with PLUMED, each system's ``PRINT STRIDE`` (COLVAR output stride)
+   must equal that system's ``nstxout-compressed`` so that COLVAR row *i* lines up
+   with trajectory frame *i*; a mismatch silently misaligns the cached bias.
+
 Engine Integration
 ------------------
 

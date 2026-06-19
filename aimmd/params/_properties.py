@@ -207,6 +207,28 @@ class ParamsProperties(ABC):
             return
         return guess_masses(universe.atoms)
 
+    def _per_system_value(self, value, system_id):
+        """Resolve a scalar-or-per-system-list field for ``system_id``.
+
+        If ``value`` is a list/tuple it is indexed by the position of
+        ``system_id`` in ``system_ids``; otherwise ``value`` is returned as-is
+        (a scalar is broadcast to every system). ``system_id=None`` (single
+        system) always returns ``value`` unchanged.
+        """
+        if system_id is None or not isinstance(value, (list, tuple)):
+            return value
+        system_ids = list(self.system_ids or [])
+        try:
+            idx = system_ids.index(system_id)
+        except ValueError:
+            return value
+        return value[idx]
+
+    def bias_reactive_threshold_of(self, system_id=None):
+        """Reactive-bias threshold for a given system (see
+        ``bias_reactive_threshold``); a scalar is broadcast to all systems."""
+        return self._per_system_value(self.bias_reactive_threshold, system_id)
+
     @property
     def compute_states_args(self):
         """

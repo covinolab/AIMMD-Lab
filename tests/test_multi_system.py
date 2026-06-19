@@ -109,14 +109,37 @@ def fit(params, pathensemble, verbose=False, worker=None):
 '''
 
 
-def _setup(folder, share_network):
+# Optional OPES-style in-state bias (reader mode). The per-frame bias is nonzero
+# only inside state A (and per-system via system_id), so it is negligible in the
+# reactive region R (Tiwary-Parrinello assumption) and the bias check passes.
+# bias_reactive_threshold is given as a per-system LIST to exercise that path.
+BIAS_SUFFIX = '''
+record_bias = True
+bias_source = 'reader'
+bias_reactive_threshold = [0.5, 0.3]
+
+
+def bias_function(trajectory, system_id=None):
+    cut_a = 2.0 if system_id == 's1' else 2.5
+    result = []
+    for frame in trajectory:
+        x = frame.positions[0, 0]
+        result.append(0.7 if x < cut_a else 0.0)   # bias in kT, inside A only
+    return np.array(result, dtype=float)
+'''
+
+
+def _setup(folder, share_network, with_bias=False):
     import os
     os.makedirs(folder, exist_ok=True)
     _write_initial_xtc(f'{folder}/s1.xtc', n_atoms=1)
     _write_initial_xtc(f'{folder}/s2.xtc', n_atoms=2)
+    source = PARAMS_SOURCE.replace(
+        'SHARE_NETWORK', 'True' if share_network else 'False')
+    if with_bias:
+        source = source + BIAS_SUFFIX
     with open(f'{folder}/params.py', 'w') as handle:
-        handle.write(PARAMS_SOURCE.replace(
-            'SHARE_NETWORK', 'True' if share_network else 'False'))
+        handle.write(source)
 
 
 def test_multi_system_shared_network(tmp_path):
@@ -229,11 +252,71 @@ def test_multi_system_kinetics_convergence(tmp_path):
         os.chdir(cwd)
 
 
+def test_multi_system_bias_shared_network(tmp_path):
+    """OPES-style in-state bias with a shared multi-system network: the trainer
+    builds a per-system bias cache (reader mode, system_id forwarded) and runs
+    the Tiwary-Parrinello rate correction. Asserts per-system `<traj>.bias.npy`
+    caches appear and the shared network is written."""
+    import os
+    import glob
+    import aimmd
+
+    folder = str(tmp_path / 'bias_shared')
+    _setup(folder, share_network=True, with_bias=True)
+    cwd = os.getcwd()
+    os.chdir(folder)
+    try:
+        params = aimmd.Params.load('params.py')
+        assert params.record_bias and params.bias_source == 'reader'
+        # per-system threshold resolves from the list
+        assert params.bias_reactive_threshold_of('s1') == 0.5
+        assert params.bias_reactive_threshold_of('s2') == 0.3
+
+        aimmd.Launcher('params.py', 'run1').run(
+            n=1, n1=1, n2=1, nsteps=8, walltime=180)
+
+        assert os.path.isfile('run1/networkARB.h5'), 'shared network missing'
+        # the per-system bias cache must have been written for both systems
+        for sid in ('s1', 's2'):
+            caches = glob.glob(f'run1/{sid}/**/*.bias.npy', recursive=True)
+            assert caches, f'no bias cache written for system {sid}'
+    finally:
+        os.chdir(cwd)
+
+
+def test_multi_system_bias_kinetics_convergence(tmp_path):
+    """Kinetics convergence with a shared network + in-state bias fills the
+    per-system Tiwary-Parrinello k12_rw/k21_rw columns (finite, not nan)."""
+    import os
+    import aimmd
+    import numpy as np
+
+    folder = str(tmp_path / 'bias_kcv')
+    _setup(folder, share_network=True, with_bias=True)
+    cwd = os.getcwd()
+    os.chdir(folder)
+    try:
+        params = aimmd.Params.load('params.py')
+        aimmd.Launcher('params.py', 'run1').run(
+            n=1, n1=1, n2=1, nsteps=8, walltime=180)
+        worker = aimmd.Worker(params, 'run1', walltime=180)
+        results = worker.kinetics_convergence(fractions=[1.0])
+        assert set(results['system']) == {'s1', 's2'}
+        # the bias-reweighted columns are populated (would stay nan without the
+        # multi-system bias path)
+        assert np.isfinite(results['k12_rw']).all(), results
+        assert np.isfinite(results['k21_rw']).all(), results
+    finally:
+        os.chdir(cwd)
+
+
 if __name__ == '__main__':
     import tempfile, pathlib
     for fn in (test_multi_system_shared_network,
                test_multi_system_separate_networks,
-               test_multi_system_kinetics_convergence):
+               test_multi_system_kinetics_convergence,
+               test_multi_system_bias_shared_network,
+               test_multi_system_bias_kinetics_convergence):
         with tempfile.TemporaryDirectory() as d:
             fn(pathlib.Path(d))
             print(f'{fn.__name__} OK')

@@ -266,13 +266,43 @@ system 2 shooting + 1 freeA + 1 freeB worker). Launching is otherwise identical:
 the list of per-system ensembles and the result array gains a ``system`` field
 (one row per ``(fraction, system)``).
 
+Biased (OPES) multi-system runs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Multi-system runs support **in-state biases** (e.g. a frozen OPES_METAD that
+flattens each ligand's bound well) exactly as single-system runs do — set
+``record_bias = True`` and a ``bias_function`` (see :ref:`bias-recording`). The
+bias enters GROMACS through the per-system ``gmx_mdrun`` string, which is already
+list-valued in multi-system mode, so each system gets its own PLUMED input:
+
+.. code-block:: python
+
+    record_bias = True
+    bias_source = 'file'                     # read each frame's bias from COLVAR
+    gmx_mdrun = ['gmx mdrun -plumed /abs/G2/plumed.dat',
+                 'gmx mdrun -plumed /abs/G4/plumed.dat']
+    bias_reactive_threshold = [0.5, 0.3]     # per-system (scalar also allowed)
+
+The trainer builds the per-frame bias cache **per system** (forwarding
+``system_id`` to ``bias_function`` when its signature accepts it), runs the
+reactive-region bias check against each system's
+``bias_reactive_threshold_of(system_id)``, and prints **per-system**
+Tiwary-Parrinello bias-reweighted rates next to the raw ones. Kinetics
+convergence fills the ``k12_rw`` / ``k21_rw`` columns per system.
+
+.. important::
+
+   Each system's PLUMED ``PRINT STRIDE`` (COLVAR output) must equal that system's
+   ``nstxout-compressed`` so COLVAR row *i* corresponds to trajectory frame *i*;
+   otherwise the cached per-frame bias is misaligned with the trajectory.
+
 .. note::
 
    The first release of multi-system support targets ``chain_type='rfps'`` with
-   the committor balancing described above. LSR/MAR regularization,
-   ``record_bias`` and ``rescale_committor`` are not yet combined with
-   ``multi_system`` and raise a clear ``NotImplementedError``; single-system runs
-   retain full support for all of them.
+   the committor balancing described above. LSR/MAR regularization and
+   ``rescale_committor`` are not yet combined with ``multi_system`` and raise a
+   clear ``NotImplementedError``; single-system runs retain full support for all
+   of them.
 
 Sweep Mode
 ----------

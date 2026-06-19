@@ -237,6 +237,13 @@ class ParamsHelpers(ABC):
                                         f'{type(value).__name__}')
                     value = [str(v) for v in value]
 
+            # reactive-bias threshold: scalar (all systems) or per-system list
+            elif name == 'bias_reactive_threshold':
+                if isinstance(value, (list, tuple)):
+                    value = [float(v) for v in value]
+                else:
+                    value = float(value)
+
             # initial paths (converted in real-time)
             elif name == 'initial_paths':
                 # Multi-system runs pass one *group* of initial paths per
@@ -536,6 +543,14 @@ class ParamsHelpers(ABC):
         if len(set(system_ids)) != n_systems:
             raise TypeError(f"system_ids must be unique, got {system_ids}")
         self.__dict__['system_ids'] = system_ids
+
+        # per-system list-valued fields: if given as a list, it must have one
+        # entry per system (a scalar is broadcast to all systems).
+        for fname in ('bias_reactive_threshold',):
+            fval = getattr(self, fname, None)
+            if isinstance(fval, (list, tuple)) and len(fval) != n_systems:
+                raise TypeError(f"{fname!r} given as a list of length "
+                                f"{len(fval)} but there are {n_systems} systems")
 
         # build (and cache) one universe per system
         universes = {}

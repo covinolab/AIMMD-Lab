@@ -72,7 +72,7 @@ from math import inf, nan
 from .utils import rescale_bins
 from .._config import NPY_CACHE, MDA_CACHE, print
 from ..cache.npy import save_npy
-from ..core.utils import now, replace_in_cache
+from ..core.utils import now, replace_in_cache, accepts_system_id
 from ..pathensemble import PathEnsemble
 from ..analysis.utils import compute_bins
 from ..pathensemble.utils import assemble_pathensemble
@@ -82,7 +82,7 @@ from ..path.utils import get_cache_fname
 # WorkerTrain mixin class
 class WorkerTrain(ABC):
 
-    def _cache_bias_files(self, pathensemble, bias_function):
+    def _cache_bias_files(self, pathensemble, bias_function, system_id=None):
         """Cache per-file bias arrays (file-mode bias tracking).
 
         For each unique trajectory file in ``pathensemble``, ensure
@@ -107,6 +107,11 @@ class WorkerTrain(ABC):
             bias caches.
         bias_function : callable
             ``params.bias_function`` (``bias_source='file'``).
+        system_id : hashable or None
+            In a multi-system run, the id of the system whose trajectories are
+            being cached. It is forwarded to ``bias_function(fname,
+            system_id=...)`` only when the function's signature accepts it (so a
+            single file-driven bias function that ignores it keeps working).
 
         Notes
         -----
@@ -115,6 +120,7 @@ class WorkerTrain(ABC):
         happened.
         """
         print(f'\nComputing bias cache (file mode) {now()}')
+        pass_sid = system_id is not None and accepts_system_id(bias_function)
         seen = set()
         n_cached = 0
         for _path in pathensemble:
@@ -135,7 +141,8 @@ class WorkerTrain(ABC):
                 if (_existing is not None
                         and len(_existing) >= _n_traj_frames):
                     continue
-                _bias = bias_function(_fname)
+                _bias = (bias_function(_fname, system_id=system_id) if pass_sid
+                         else bias_function(_fname))
                 if _bias is None:
                     continue  # no COLVAR for this file; skip
                 save_npy(_cache_fname, np.asarray(_bias, dtype=float))
@@ -606,7 +613,13 @@ class WorkerTrain(ABC):
         estimates are computed PER system, in sequence, and written into each
         system's own subfolder.
 
-        Limitations (raise clearly): ``chain_type='tps'``, ``record_bias`` and
+        When ``params.record_bias`` is set the per-frame bias cache is built per
+        system (reader or file mode, with ``system_id`` forwarded), the
+        reactive-region bias check uses each system's
+        ``bias_reactive_threshold_of(system_id)``, and per-system Tiwary-Parrinello
+        bias-reweighted rates are printed alongside the raw ones.
+
+        Limitations (raise clearly): ``chain_type='tps'`` and
         ``rescale_committor`` are not yet supported together with multi_system.
         """
         nrounds = float(nrounds)
@@ -625,14 +638,16 @@ class WorkerTrain(ABC):
         compute_values_args = params.compute_values_args
         save_interval = params.network_save_interval
         share = bool(params.multi_system_share_network)
+        record_bias = params.record_bias
+        bias_function = params.bias_function
+        bias_source = params.bias_source
 
         if params.chain_type == 'tps':
             raise NotImplementedError(
                 "multi_system training currently supports chain_type='rfps' only")
-        if params.record_bias or params.rescale_committor:
+        if params.rescale_committor:
             raise NotImplementedError(
-                "record_bias / rescale_committor are not yet supported with "
-                "multi_system")
+                "rescale_committor is not yet supported with multi_system")
 
         systems = self._multi_system_layout()
         compute_condition = {'states': lambda state: state == r}
@@ -642,6 +657,17 @@ class WorkerTrain(ABC):
                     'source': compute_values_args[2],
                     'conditions': compute_condition,
                     'batch_size': batch_size, 'system_id': system_id}
+
+        def cache_bias(pe, system_id):
+            """Per-system bias cache (mirror of the single-system `_train`)."""
+            if not (record_bias and bias_function is not None):
+                return
+            if bias_source == 'reader':
+                pe.compute(function=bias_function, target='bias',
+                           source='reader', batch_size=batch_size,
+                           system_id=system_id)
+            elif bias_source == 'file':
+                self._cache_bias_files(pe, bias_function, system_id=system_id)
 
         # per-system margin frames (transitions only), from each subfolder's
         # initial paths
@@ -698,6 +724,7 @@ class WorkerTrain(ABC):
                 pe = pathensembles[k]
                 if params.compute_descriptors_args is not None:
                     pe.compute(*params.compute_descriptors_args, system_id=sid)
+                cache_bias(pe, sid)
                 pe.compute(**values_kwargs('values', sid))
             if self.termination_signal:
                 return
@@ -735,6 +762,7 @@ class WorkerTrain(ABC):
                 for k, (subdir, sid) in enumerate(systems):
                     pe = pathensembles[k]
                     target = 'new' if source == 'new' else 'values'
+                    cache_bias(pe, sid)
                     pe.compute(**values_kwargs(target, sid),
                                overwrite=(source == 'new'))
                 if self.termination_signal:
@@ -766,6 +794,26 @@ class WorkerTrain(ABC):
                 k21 = 1 / k21 if k21 else nan
                 print(f'    [system {sid!r}] k12 estimate: {k12:.3e} [1/dt]')
                 print(f'    [system {sid!r}] k21 estimate: {k21:.3e} [1/dt]')
+
+                # Bias-reweighted rates (Tiwary-Parrinello), per system
+                if record_bias:
+                    if bias_source == 'file' and bias_function is not None:
+                        self._cache_bias_files(pe, bias_function, system_id=sid)
+                    from ..pathensemble.bias_utils import (
+                        check_reactive_bias, compute_bias_corrections)
+                    check_reactive_bias(
+                        pe, states,
+                        params.bias_reactive_threshold_of(sid))
+                    gamma1 = compute_bias_corrections(pe, w1)
+                    gamma2 = compute_bias_corrections(pe, w2)
+                    k12_rw = np.sum(w1 * frame_lengths * gamma1)
+                    k12_rw = 1 / k12_rw if k12_rw else nan
+                    k21_rw = np.sum(w2 * frame_lengths * gamma2)
+                    k21_rw = 1 / k21_rw if k21_rw else nan
+                    print(f'    [system {sid!r}] k12 bias-reweighted: '
+                          f'{k12_rw:.3e} [1/dt]')
+                    print(f'    [system {sid!r}] k21 bias-reweighted: '
+                          f'{k21_rw:.3e} [1/dt]')
 
                 excursions_mask = pe.types(f'.{r}..')
                 pe.weights = (w1 + w2) * excursions_mask
@@ -1221,6 +1269,10 @@ class WorkerTrain(ABC):
 
         Not-shared multi-system runs should analyze each system's subfolder with
         the ordinary single-system kinetics convergence instead.
+
+        When ``params.record_bias`` is set, the per-system bias cache is built and
+        the ``k12_rw`` / ``k21_rw`` columns are filled with the per-system
+        Tiwary-Parrinello bias-reweighted estimates (left ``nan`` otherwise).
         """
         params = self.params
         if not params.multi_system_share_network:
@@ -1228,9 +1280,9 @@ class WorkerTrain(ABC):
                 'multi-system kinetics_convergence is implemented for a shared '
                 'network; for separate networks run the single-system '
                 'kinetics_convergence per system subfolder')
-        if params.record_bias or params.rescale_committor:
+        if params.rescale_committor:
             raise NotImplementedError(
-                'record_bias / rescale_committor not supported with '
+                'rescale_committor not supported with '
                 'multi-system kinetics_convergence')
         if fractions is None:
             fractions = [0.2, 0.4, 0.6, 0.8, 1.0]
@@ -1248,6 +1300,9 @@ class WorkerTrain(ABC):
         batch_size = params.network_batch_size
         compute_values_args = params.compute_values_args
         compute_condition = {'states': lambda state: state == r}
+        record_bias = params.record_bias
+        bias_function = params.bias_function
+        bias_source = params.bias_source
         kwargs['worker'] = self
         systems = self._multi_system_layout()
 
@@ -1256,6 +1311,17 @@ class WorkerTrain(ABC):
                     'source': compute_values_args[2],
                     'conditions': compute_condition,
                     'batch_size': batch_size, 'system_id': system_id}
+
+        def cache_bias(pe, system_id):
+            """Per-system bias cache (mirror of the single-system `_train`)."""
+            if not (record_bias and bias_function is not None):
+                return
+            if bias_source == 'reader':
+                pe.compute(function=bias_function, target='bias',
+                           source='reader', batch_size=batch_size,
+                           system_id=system_id)
+            elif bias_source == 'file':
+                self._cache_bias_files(pe, bias_function, system_id=system_id)
 
         # save / restore the trained shared network around the experiment
         print(f'\nSaving current network state {now()}')
@@ -1298,6 +1364,7 @@ class WorkerTrain(ABC):
                 pe = assemble_pathensemble(sub_chains, sub_free)
                 if params.compute_descriptors_args is not None:
                     pe.compute(*params.compute_descriptors_args, system_id=sid)
+                cache_bias(pe, sid)
                 pe.compute(**values_kwargs('values', sid))
                 sub_pes.append(pe)
             if self.termination_signal:
@@ -1345,6 +1412,21 @@ class WorkerTrain(ABC):
                 results['k21'][row] = k21
                 print(f'    [system {sid!r}] k12={k12:.3e} k21={k21:.3e} '
                       f'[1/dt], {frame_lengths.sum()} frames')
+
+                # Bias-reweighted (Tiwary-Parrinello) rates, per system
+                if record_bias:
+                    if bias_source == 'file' and bias_function is not None:
+                        self._cache_bias_files(pe, bias_function, system_id=sid)
+                    from ..pathensemble.bias_utils import (
+                        check_reactive_bias, compute_bias_corrections)
+                    check_reactive_bias(
+                        pe, states, params.bias_reactive_threshold_of(sid))
+                    gamma1 = compute_bias_corrections(pe, w1)
+                    gamma2 = compute_bias_corrections(pe, w2)
+                    k12_rw = np.sum(w1 * frame_lengths * gamma1)
+                    results['k12_rw'][row] = 1 / k12_rw if k12_rw else nan
+                    k21_rw = np.sum(w2 * frame_lengths * gamma2)
+                    results['k21_rw'][row] = 1 / k21_rw if k21_rw else nan
                 for fname in set(pe.fnames):
                     kcv_fname = get_cache_fname(fname, 'kcv')
                     NPY_CACHE.remove(kcv_fname)

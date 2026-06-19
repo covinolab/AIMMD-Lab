@@ -2,6 +2,7 @@ from pathlib import Path
 import shutil
 
 import numpy as np
+import pytest
 
 import aimmd
 from tests._helpers_unit import build_params_file, build_path, simple_descriptors_function
@@ -104,6 +105,53 @@ network = Network()
     assert reloaded.multi_system is True
     assert reloaded.multi_system_share_network is True
     assert reloaded.atom_types == ['H', 'C', 'N', 'O', 'NA', 'BR']
+
+
+def test_multi_system_bias_reactive_threshold_per_system(tmp_path):
+    """A per-system `bias_reactive_threshold` list is validated, resolved via
+    `bias_reactive_threshold_of`, and survives a save/reload round-trip."""
+    source = '''
+import numpy as np
+import torch
+
+engine = 'toy'
+multi_system = True
+multi_system_share_network = True
+system_ids = ['G2', 'G4']
+topology = ['G2.gro', 'G4.gro']
+record_bias = True
+bias_source = 'file'
+bias_reactive_threshold = [0.5, 0.3]
+
+def states_function(trajectory, system_id=None):
+    return np.array(['R'] * len(trajectory), dtype='<U1')
+
+class Network(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(1, 1)
+    def forward(self, x):
+        return self.lin(x[:, :1])
+network = Network()
+'''
+    params_file = tmp_path / "params.py"
+    params_file.write_text(source)
+
+    params = aimmd.Params.load(str(params_file), save=False)
+    assert params.bias_reactive_threshold == [0.5, 0.3]
+    assert params.bias_reactive_threshold_of('G2') == 0.5
+    assert params.bias_reactive_threshold_of('G4') == 0.3
+
+    saved = Path(params.save(tmp_path / "saved.py"))
+    reloaded = aimmd.Params.load(str(saved), save=False)
+    assert reloaded.bias_reactive_threshold == [0.5, 0.3]
+    assert reloaded.bias_reactive_threshold_of('G4') == 0.3
+
+    # a wrong-length list is rejected
+    bad = source.replace('[0.5, 0.3]', '[0.5, 0.3, 0.1]')
+    (tmp_path / "bad.py").write_text(bad)
+    with pytest.raises(TypeError):
+        aimmd.Params.load(str(tmp_path / "bad.py"), save=False)
 
 
 def test_params_validation_rejects_bad_network(tmp_path):

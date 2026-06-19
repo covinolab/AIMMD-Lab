@@ -566,7 +566,11 @@ See `bias_function` for details on each mode."""
 After bias computation, the training worker checks the mean absolute bias over all
 frames whose state label equals the reactive-region label (e.g. 'R' in 'ARB').
 If the mean exceeds this threshold, a warning is printed. This validates the
-Tiwary-Parrinello assumption that the bias is negligible inside R."""
+Tiwary-Parrinello assumption that the bias is negligible inside R.
+
+In a multi-system run this may be a single float (applied to every system) or a
+list of floats, one per entry of `system_ids` (each system's bias is checked
+against its own threshold)."""
                  })
 
     # ------------------------------------------------------------------

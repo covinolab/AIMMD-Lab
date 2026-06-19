@@ -101,6 +101,7 @@ Critical fields:
 - `max_length`, `gen_temperature`
 - `slurm_header` → list of SBATCH directives for HPC submission
 - **Multi-system (multi-ligand)**: `multi_system` (bool), `multi_system_share_network` (bool), `system_ids` (per-system labels), `atom_types` (fixed shared graph encoding), `trainers_share_gpu` (bool). When `multi_system=True`, `topology`/`initial_paths` become lists (one per system), the data functions receive a `system_id=` keyword, and each system runs in `<run>/<system_id>/`. See `docs/source/workflow.rst` ("Multi-System Runs") and `examples/notebooks/2_multi_system.ipynb`.
+- **Bias recording (OPES/PLUMED)**: `record_bias` (bool), `bias_function`, `bias_source` (`'reader'`|`'file'`), `bias_reactive_threshold` (float). The trainer caches per-frame bias (`<traj>.bias.npy`) and prints Tiwary-Parrinello bias-reweighted rates `k = 1/Σ(wᵢ·Lᵢ·γᵢ)`. **Works with `multi_system`**: the bias enters GROMACS via the per-system (list-valued) `gmx_mdrun` `-plumed` string, `bias_reactive_threshold` may be a per-system list, and per-system bias-reweighted rates are reported. Each system's PLUMED `PRINT STRIDE` must equal its `nstxout-compressed` (COLVAR↔frame alignment).
 
 **Important:** GROMACS executables are found at runtime via `aimmd._init.py`. If running via subprocess or SLURM, the PATH must include `gmx`/`gmx_mpi`. Set this explicitly — it is not inherited automatically.
 

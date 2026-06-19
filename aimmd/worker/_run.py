@@ -230,7 +230,8 @@ class WorkerRun(ABC):
             return
         self._system_id = system_id
         for name in ('states_function', 'descriptors_function',
-                     'values_function', 'descriptor_transform'):
+                     'values_function', 'descriptor_transform',
+                     'bias_function'):
             function = getattr(params, name, None)
             if function is not None and accepts_system_id(function):
                 params.__dict__[name] = _system_id_binder(function, system_id)
