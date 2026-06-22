@@ -647,9 +647,17 @@ class WorkerTrain(ABC):
         -------
         numpy.ndarray
             Structured array with dtype
-            ``[('fraction', float), ('k12', float), ('k21', float)]`` and one
-            row per requested fraction.  Entries for fractions where training
-            failed are left as ``nan``.
+            ``[('fraction', float), ('n_frames', float), ('k12', float),
+            ('k21', float), ('k12_rw', float), ('k21_rw', float)]`` and one
+            row per requested fraction.  ``n_frames`` is the total frame
+            count of the sub-sampled ensemble at that fraction (useful for
+            converting fraction-of-training to physical sampling time).
+            ``k12``/``k21`` hold the uncorrected AIMMD rate estimates in
+            units of ``[1/dt]``; ``k12_rw``/``k21_rw`` hold the
+            Tiwary-Parrinello bias-reweighted estimates (filled only when
+            ``params.record_bias`` is ``True``, left as ``nan`` otherwise).
+            Entries for fractions where training failed are also left as
+            ``nan``.
 
         Fraction sampling
         -----------------
@@ -676,6 +684,12 @@ class WorkerTrain(ABC):
           the call.
         * Temporary ``*.kcv.npy`` cache files are written to disk during value
           computation and removed again before the method returns.
+        * When ``params.record_bias`` is ``True``, the per-frame bias cache
+          is populated for the sub-sampled ensemble before reweighting, the
+          reactive-region bias check (:func:`check_reactive_bias`) is applied,
+          and the bias-reweighted rates are computed via
+          :func:`compute_bias_corrections` and stored in the ``k12_rw`` /
+          ``k21_rw`` fields of the result.
 
         Examples
         --------
@@ -757,6 +771,10 @@ class WorkerTrain(ABC):
         batch_size = params.network_batch_size
         compute_values_args = params.compute_values_args
         compute_condition = {'states': lambda state: state == r}
+        record_bias = params.record_bias
+        bias_function = params.bias_function
+        bias_source = params.bias_source
+        bias_reactive_threshold = params.bias_reactive_threshold
 
         def _compute_kwargs(target):
             return {
@@ -797,9 +815,18 @@ class WorkerTrain(ABC):
         free_lengths  = [len(t) for t in self._free_trajectories]
 
         # ── result container ───────────────────────────────────────────────
+        # k12_rw/k21_rw are filled only when params.record_bias=True; they stay
+        # nan otherwise. Keeping the fields always-present means downstream
+        # code can load any kinetics_convergence.npy without branching.
+        # n_frames is the total frame count of the sub-sampled ensemble at
+        # each fraction; downstream analyses use it to convert fraction-of-
+        # training to physical sampling time.
         results = np.full(
             len(fractions), nan,
-            dtype=[('fraction', float), ('k12', float), ('k21', float)])
+            dtype=[('fraction', float),
+                   ('n_frames', float),
+                   ('k12', float), ('k21', float),
+                   ('k12_rw', float), ('k21_rw', float)])
         results['fraction'] = fractions
 
         # ── main loop over fractions ───────────────────────────────────────
@@ -884,6 +911,21 @@ class WorkerTrain(ABC):
             if 'sp_cutoff_max' not in rw_p:
                 rw_p['sp_cutoff_max'] = sp_cutoff_max
 
+            # populate per-frame bias cache for the sub-sampled ensemble so
+            # `compute_bias_corrections` below can compute γ = <exp(bias)> per
+            # path. Mirrors the cache step in `_train` (see L341-L356, L482-L488).
+            if record_bias and bias_function is not None:
+                if bias_source == 'reader':
+                    n = pathensemble.compute(
+                        function=bias_function,
+                        target='bias',
+                        source='reader',
+                        batch_size=batch_size)
+                    if n:
+                        print(f'... computed {n} bias frames')
+                elif bias_source == 'file':
+                    self._cache_bias_files(pathensemble, bias_function)
+
             # reweight and estimate rates
             result1 = pathensemble.reweight(states, **rw_p, source='kcv')
             result2 = pathensemble.reweight(states[::-1], **rw_p,
@@ -901,8 +943,27 @@ class WorkerTrain(ABC):
             print(f'    k21 estimate: {k21:.3e} [1/dt]')
             print(f'    {lengths.sum()} frames in sub-sampled ensemble')
 
+            results['n_frames'][i] = float(lengths.sum())
             results['k12'][i] = k12
             results['k21'][i] = k21
+
+            # Bias-reweighted rates (Tiwary-Parrinello) — only when record_bias
+            # is enabled. Same formula as `_train` at L480-L500.
+            if record_bias:
+                from ..pathensemble.bias_utils import (
+                    check_reactive_bias, compute_bias_corrections)
+                check_reactive_bias(
+                    pathensemble, states, bias_reactive_threshold)
+                gamma1 = compute_bias_corrections(pathensemble, w1)
+                gamma2 = compute_bias_corrections(pathensemble, w2)
+                k12_rw = np.sum(w1 * lengths * gamma1)
+                k12_rw = 1 / k12_rw if k12_rw else nan
+                k21_rw = np.sum(w2 * lengths * gamma2)
+                k21_rw = 1 / k21_rw if k21_rw else nan
+                print(f'    k12 bias-reweighted: {k12_rw:.3e} [1/dt]')
+                print(f'    k21 bias-reweighted: {k21_rw:.3e} [1/dt]')
+                results['k12_rw'][i] = k12_rw
+                results['k21_rw'][i] = k21_rw
 
             # save per-fraction network checkpoint (if requested)
             if network_save_pattern is not None:

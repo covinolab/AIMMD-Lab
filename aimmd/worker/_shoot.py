@@ -340,29 +340,46 @@ class WorkerShoot(ABC):
                 # initialize simulation
                 params.initialize_simulation(shooting_point,
                     f'{self._folder}/back', f'{self._folder}/forw')
-            
-            # update existing paths: backward
-            if not back_simulation_completed:
-                (stop_frame, nframes, last_state, last_length) = \
-                    self._simulate(f'{self._folder}/back', back, t, mode)
-                back_simulation_completed = stop_frame is not None
-                nframes_back = (stop_frame or 0) + last_length
-                if nframes_back >= max_length:
-                    forw = Path()  #  no need to simulate at all
-                    forw_simulation_completed = True
-                    nframes_back = max_length
 
-            # check mid cycle
-            if self.must_stop:
-                return
+            try:
+                # update existing paths: backward
+                if not back_simulation_completed:
+                    (stop_frame, nframes, last_state, last_length) = \
+                        self._simulate(f'{self._folder}/back', back, t, mode)
+                    back_simulation_completed = stop_frame is not None
+                    nframes_back = (stop_frame or 0) + last_length
+                    if nframes_back >= max_length:
+                        forw = Path()  #  no need to simulate at all
+                        forw_simulation_completed = True
+                        nframes_back = max_length
 
-            if back_simulation_completed and not forw_simulation_completed:
-                offset = nframes_back - 1
-                (stop_frame, nframes, last_state, last_length) = \
-                    self._simulate(f'{self._folder}/forw', forw, t, mode, offset)
-                forw_simulation_completed = stop_frame is not None
-                nframes_forw = (stop_frame or 0) + last_length
-                nframes_forw = min(nframes_forw, max_length - offset)
+                # check mid cycle
+                if self.must_stop:
+                    return
+
+                if back_simulation_completed and not forw_simulation_completed:
+                    offset = nframes_back - 1
+                    (stop_frame, nframes, last_state, last_length) = \
+                        self._simulate(
+                            f'{self._folder}/forw', forw, t, mode, offset
+                            )
+                    forw_simulation_completed = stop_frame is not None
+                    nframes_forw = (stop_frame or 0) + last_length
+                    nframes_forw = min(nframes_forw, max_length - offset)
+            except RuntimeError as exc:
+                if (params.retry_with_state_definition_glitches
+                        and 'should be in' in str(exc)):
+                    print(f'WARNING: state-definition glitch in {self._folder}:'
+                          f' {exc}. Deleting back*/forw* and reselecting a '
+                          f'new shooting point '
+                          f'(retry_with_state_definition_glitches=True).')
+                    remove(f'{self._folder}/*back*', f'{self._folder}/*forw*')
+                    back_simulation_completed = False
+                    forw_simulation_completed = False
+                    back = Path()
+                    forw = Path()
+                    continue
+                raise
 
             # check mid cycle
             if self.must_stop:
