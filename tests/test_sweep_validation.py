@@ -342,6 +342,49 @@ def test_shoot_sweep_round_robin_tags_and_global_stop(tmp_path, monkeypatch):
     assert read_sweep_marker(folder) is None
 
 
+def test_shoot_sweep_neutralizes_inherited_per_worker_caps(tmp_path, monkeypatch):
+    """Sweep ignores any per-worker nsteps/nframes inherited from the worker
+    args (e.g. an old job.sh that hard-coded nsteps), so an already-"full"
+    folder does not instant-stop the worker. Governed only by the global target.
+    """
+    initial = _all_R_frames(tmp_path, n_frames=4, stem="cval_caps")
+    params = _sweep_params()
+    chain = PathEnsemble()
+    params.__dict__["shot_paths"] = lambda directory, prefix, t, k=None: chain
+    worker = _TinySweepWorker(params, aimmd.PathEnsemble(initial), tmp_path)
+    # simulate the per-worker caps an old job.sh would pass (e.g. nsteps=2)
+    worker.nsteps = 2
+    worker.nframes = 2
+    folder = os.path.join(str(tmp_path), "sweepR0")
+
+    monkeypatch.setattr(worker, "_simulate",
+                        lambda *a, **k: (0, 1, "B", 1), raising=False)
+    monkeypatch.setattr("aimmd.worker._shoot.remove", lambda *a, **k: None)
+    seg = initial.copy()
+    monkeypatch.setattr("aimmd.worker._shoot.Path",
+                        lambda *a, **k: seg.copy() if not a else aimmd.Path(*a, **k))
+
+    counter = {"n": 0}
+
+    def fake_register(path, chain_, eneconv, **kwargs):
+        counter["n"] += 1
+        fname = write_trajectory(folder, stem=f"path{counter['n']:06d}")
+        path._fnames = [fname]
+        path._first = [0]
+        path._last = [0]
+        chain_.append(path)
+
+    monkeypatch.setattr("aimmd.worker._shoot.register_path", fake_register)
+
+    # target of 3 > the inherited nsteps=2: if the cap were still honoured the
+    # real must_stop would fire at 2; here we assert sweep got 3 shots and the
+    # caps were lifted to inf.
+    worker._shoot(target_state="R", k=0, sweep=True, sweep_target=3)
+    assert counter["n"] == 3
+    assert worker.nsteps == inf
+    assert worker.nframes == inf
+
+
 def test_shoot_sweep_resume_recovers_frame_from_marker(tmp_path, monkeypatch):
     """On resume mid-shot (back/forw already initialized), the worker recovers
     the in-flight frame from its marker and tags the finished shot with it."""

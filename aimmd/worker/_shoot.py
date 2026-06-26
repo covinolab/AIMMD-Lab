@@ -261,6 +261,15 @@ class WorkerShoot(ABC):
                 raise RuntimeError(f'all initial paths frames must be in {t}')
             ext = params.trajectory_extension
             sweep_target = float(sweep_target)
+            # Sweep is governed solely by the GLOBAL committed-shot target
+            # (sweep_target) plus walltime/termination -- never a per-worker
+            # step/frame cap. Neutralize any per-worker nsteps/nframes inherited
+            # from the worker arguments so that an already-"full" folder (e.g. a
+            # campaign whose pre-existing job.sh hard-coded nsteps) does NOT make
+            # this worker stop the instant it loads its chain -- which, with the
+            # old `wait -n; scancel` job tail, would tear down the whole job.
+            self.nsteps = inf
+            self.nframes = inf
             # cache {committed path fname -> source frame} so each shot's tag is
             # read at most once across the many coverage scans.
             sweep_seen = {}
