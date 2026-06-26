@@ -333,10 +333,40 @@ Sweep Mode
 
 The launcher and worker also support a validation-oriented sweep mode through
 ``reactive_region_mode='sweep'`` or calling :meth:`aimmd.Worker.shoot` with
-``sweep=True``. In this
-mode the code cycles deterministically through a fixed frame set and repeatedly
-shoots from those frames, which gives a brute-force estimate of the committor
-for validating the learned model. See the example notebook for details of how to use this in practice.
+``sweep=True``. In this mode the workers repeatedly shoot unbiased trajectories
+from a fixed frame set, giving a brute-force estimate of the committor for
+validating the learned model. See the example notebook for details of how to
+use this in practice.
+
+Sweep workers coordinate purely through the shared filesystem -- there is no
+trainer and no central coordinator. Each worker writes only into its own
+``sweep{t}{k}`` folder and tags every committed shot with the validation frame
+it was launched from (a ``...sweep_frame.npy`` sidecar). Before each shot a
+worker reads *all* workers' committed shots (plus their in-flight markers) and
+shoots whichever frame is currently **least covered across all workers**. This
+round-robin-by-coverage keeps the per-frame shot counts flat no matter how
+unevenly the workers progress, and replaces the older per-worker cycle that
+started every worker at frame 0 (and therefore over-sampled early frames when a
+run was cut short).
+
+Termination is governed by a **global** target rather than a per-worker step
+cap. ``create_job``/``run`` interpret the configured ``nsteps`` as each worker's
+share of the total, so ``n`` sweep workers run until the *combined* committed
+shot count reaches ``n * nsteps``; the generated job script ends with a plain
+``wait`` (every worker exits on the shared target or walltime) instead of the
+``wait -n; scancel`` used for trainer-coordinated runs. Consequences:
+
+- an uneven set of workers still produces exactly the intended number of shots;
+- a campaign resumes cleanly -- including one started before frame tagging
+  existed, whose untagged shots are attributed positionally (``i % n_frames``),
+  exactly the frame the old sequential code shot;
+- a finished campaign can be extended simply by raising the target (e.g. a
+  larger ``shots_per_frame`` / ``nsteps``) and resubmitting -- only the deficit
+  is shot, and the extra shots land on the least-covered frames.
+
+Aggregation (:meth:`aimmd.PathEnsemble.shooting_results`) attributes each shot
+to its tagged frame, falling back to positional ``i % sweep_size`` for untagged
+(legacy) shots, so existing analyses keep working unchanged.
 
 Important Output Files
 ----------------------

@@ -48,9 +48,25 @@ Two execution modes are supported:
 
 2) **Sweep mode for committor validation** (``sweep=True``)
    Sweep mode serves *model validation* rather than adaptive sampling. It
-   deterministically cycles through a predefined set of frames (taken from the
-   concatenated ``initial_paths`` ensemble) and repeatedly shoots from them
-   to obtain brute-force committor estimates.
+   repeatedly shoots from a predefined set of frames (taken from the
+   concatenated ``initial_paths`` ensemble) to obtain brute-force committor
+   estimates.
+
+   Frames are chosen **round-robin by global coverage**: before each shot a
+   worker scans every ``sweep{t}*`` folder, builds the per-frame shot histogram
+   (each committed shot tagged with its source frame), and shoots whichever
+   frame is currently least covered across *all* workers. This keeps coverage
+   flat regardless of how unevenly the workers progress, replacing the older
+   fixed per-worker cycle (which started every worker at frame 0 and so
+   over-sampled early frames whenever the campaign was cut short). Coordination
+   is filesystem-only and single-writer-per-folder: a worker writes solely into
+   its own folder and only *reads* the others'.
+
+   The campaign stops on a **global** shot target (``sweep_target``, the total
+   number of committed shots summed over all workers) rather than a per-worker
+   step cap, so an uneven set of workers still reaches the intended total, the
+   run resumes cleanly (no worker dies the instant its own folder is "full"),
+   and a finished campaign can be extended just by raising the target.
 
    Over many shots from the same starting frame, the empirical committor to end
    state 1 is estimated as:
@@ -121,13 +137,17 @@ Notes
 # external
 import os
 from abc import ABC
+from math import inf
 
 # aimmd imports
 from .utils import register_path
 from .utils import select_shooting_point
 from .utils import update_selection_pool
 from .utils import accept_or_reject_last_path
+from .utils import (sweep_coverage, least_covered_frame, write_sweep_marker,
+                    read_sweep_marker, clear_sweep_marker)
 from ..path import Path
+from ..path.utils import write_sweep_frame
 from .._config import print
 from ..cache.npy import save_npy
 from ..core.utils import now, remove, cycle, process_state
@@ -136,7 +156,7 @@ from ..pathensemble import PathEnsemble
 # worker "shoot" run method
 class WorkerShoot(ABC):
 
-    def shoot(self, target_state=1, k=0, sweep=False):
+    def shoot(self, target_state=1, k=0, sweep=False, sweep_target=inf):
         """
         Public convenience wrapper for the shooting task.
         
@@ -161,19 +181,30 @@ class WorkerShoot(ABC):
             (enhanced sampling in the reactive region).
 
             If ``True``, run sweep-mode shooting intended for *committor
-            validation*: deterministically cycle through a predefined set of
-            frames (from the merged initial ensemble) and repeatedly shoot from
-            them to empirically estimate outcome probabilities (e.g., fraction
-            reaching state 1 vs state 0). Default is ``False``.
+            validation*: repeatedly shoot from a predefined set of frames (from
+            the merged initial ensemble) to empirically estimate outcome
+            probabilities (e.g. fraction reaching state 1 vs state 0). Frames
+            are picked **round-robin** by global least-covered coverage shared
+            across all sweep workers (not a fixed per-worker cycle), and the
+            campaign stops on a **global** shot target (see ``sweep_target``).
+            Default is ``False``.
+        sweep_target : float, optional
+            Sweep mode only: total number of committed shots, summed across all
+            ``sweep{t}*`` worker folders, at which the campaign is complete. Each
+            worker stops once the global committed count reaches this value (so
+            an uneven set of workers still hits the intended total exactly, and
+            a finished campaign can be extended just by raising the target and
+            resubmitting). Default is ``inf`` (run until walltime). Ignored when
+            ``sweep`` is ``False``.
 
         Returns
         -------
         object
             Whatever :meth:`Worker.run` returns for the ``'shoot'`` task.
         """
-        return self.run('shoot', target_state, k, sweep)
+        return self.run('shoot', target_state, k, sweep, sweep_target)
 
-    def _shoot(self, target_state=1, k=0, sweep=False):
+    def _shoot(self, target_state=1, k=0, sweep=False, sweep_target=inf):
         """
         Internal implementation of the ``'shoot'`` worker task.
 
@@ -185,6 +216,8 @@ class WorkerShoot(ABC):
             See :meth:`shoot`.
         sweep : bool, optional
             See :meth:`shoot`.
+        sweep_target : float, optional
+            See :meth:`shoot`.
 
         Returns
         -------
@@ -192,9 +225,16 @@ class WorkerShoot(ABC):
 
         Notes
         -----
-        The method exits cooperatively when :attr:`must_stop` becomes ``True``.
-        Paths are generated iteratively and appended to the on-disk chain managed
-        by :class:`~aimmd.params.Params` accessors.
+        The method exits cooperatively when :attr:`must_stop` becomes ``True``,
+        or (in sweep mode) when the global committed-shot count reaches
+        ``sweep_target``. Paths are generated iteratively and appended to the
+        on-disk chain managed by :class:`~aimmd.params.Params` accessors.
+
+        Sweep coordination is filesystem-only: each worker writes solely into
+        its own ``sweep{t}{k}`` folder and reads every worker's committed shots
+        (tagged with their source frame) to decide both which frame to shoot
+        next (least-covered) and whether the global target is met. See
+        :func:`aimmd.worker.utils.sweep_coverage`.
         """
         # get/process params
         mode = 'shoot'
@@ -219,6 +259,11 @@ class WorkerShoot(ABC):
             sweep_size = len(sweep_frames)
             if not (sweep_frames.states == t).all():
                 raise RuntimeError(f'all initial paths frames must be in {t}')
+            ext = params.trajectory_extension
+            sweep_target = float(sweep_target)
+            # cache {committed path fname -> source frame} so each shot's tag is
+            # read at most once across the many coverage scans.
+            sweep_seen = {}
         else:
             # only transitions
             initial_paths = initial_paths.extract(states, states[::-1])
@@ -297,6 +342,9 @@ class WorkerShoot(ABC):
                         return
 
         # initialize
+        # sweep: source frame of the shot currently being assembled (recovered
+        # from the on-disk marker when resuming a process mid-shot).
+        current_frame = None
         back_simulation_completed = False
         forw_simulation_completed = False
         back = Path()
@@ -308,10 +356,11 @@ class WorkerShoot(ABC):
             # need to initialize?
             if not params.check_if_initialized(
                 f'{folder}/back', f'{folder}/forw'):
-                print(f'\nSelecting shooting point for '
-                      f'{folder}/path{len(chain) + 1:06g} {now()}')
 
                 if not sweep:
+                    print(f'\nSelecting shooting point for '
+                          f'{folder}/path{len(chain) + 1:06g} {now()}')
+
                     # update selection pool
                     # (add last chain path to pool if not already there)
                     update_selection_pool(
@@ -326,10 +375,33 @@ class WorkerShoot(ABC):
                         target_state=t)
 
                 else:  # sweep
-                    index = len(chain) % len(sweep_frames)
+                    # global, round-robin selection: read EVERY sweep worker's
+                    # committed shots (+ in-flight markers) and shoot the
+                    # least-covered validation frame. The campaign stops on the
+                    # GLOBAL committed total, so uneven workers still reach the
+                    # intended number of shots and a finished campaign can be
+                    # extended by raising sweep_target and resubmitting.
+                    committed, effective, committed_total = sweep_coverage(
+                        directory, t, ext, sweep_size, seen=sweep_seen)
+                    if committed_total >= sweep_target:
+                        print(f'\nSweep target reached: {committed_total} '
+                              f'>= {sweep_target:g} committed shots across all '
+                              f'sweep workers. Stopping {now()}')
+                        clear_sweep_marker(folder)
+                        return
+                    index = least_covered_frame(effective, k)
+                    current_frame = index
+                    # announce the in-flight frame so concurrent workers spread
+                    # out (and so this shot can be recovered on resume).
+                    write_sweep_marker(folder, index)
                     fname_index, loc = sweep_frames._get_local_loc(index)
+                    print(f'\nSelecting shooting point for '
+                          f'{folder}/path{len(chain) + 1:06g} {now()}')
                     print(f'=== selecting frame '
-                          f'{sweep_frames._fnames[fname_index]}, {loc}')
+                          f'{sweep_frames._fnames[fname_index]}, {loc} '
+                          f'(global coverage: total {committed_total}, '
+                          f'min {int(committed.min())}, '
+                          f'max {int(committed.max())})')
                     shooting_point = sweep_frames[index:index + 1]
 
                 # clean
@@ -341,6 +413,16 @@ class WorkerShoot(ABC):
 
                 if not sweep:  # save pool status (removed SP's source)
                     pool.save(f'{folder}/pool.log')
+
+            elif sweep and current_frame is None:
+                # resuming a shot already in progress when the process
+                # (re)started: recover the frame it was launched from so the
+                # registered shot is tagged correctly. A missing marker means an
+                # in-flight shot from the old strictly-sequential sweep code,
+                # whose frame was len(chain) % sweep_size.
+                current_frame = read_sweep_marker(folder)
+                if current_frame is None:
+                    current_frame = len(chain) % sweep_size
 
             try:
                 # update existing paths: backward
@@ -427,6 +509,12 @@ class WorkerShoot(ABC):
                         si = path.shooting_index
                         path[si:si + 1].compute(*params.compute_values_args, return_result=True)
                 
-                else:  # print sweep summary
+                else:  # sweep: tag the shot with its source frame, then report
+                    # tag the registered shot with the validation frame it was
+                    # launched from, so attribution survives round-robin (and
+                    # out-of-order) shooting and any later resume/aggregation.
+                    write_sweep_frame(path.fname, current_frame)
+                    clear_sweep_marker(folder)
+                    current_frame = None
                     print(f'\nReport after {len(chain)} paths')
                     chain.report_shooting_results(states, sweep_size)

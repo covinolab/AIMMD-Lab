@@ -41,6 +41,9 @@ from pathlib import PosixPath
 from collections.abc import Iterable
 
 # aimmd imports
+from ..cache.npy import save_npy, load_npy
+
+# aimmd imports
 from ..cache.npy import update_npy
 from .chainreader import ChainReader
 
@@ -129,6 +132,59 @@ def get_cache_fname(fname, attribute):
     """
     """From fname to cache fname"""
     return f'{fname}.{attribute}.npy'
+
+
+def write_sweep_frame(fname, index):
+    """Tag a sweep-shot trajectory with the validation frame it was shot from.
+
+    Brute-force committor *sweep* shooting repeatedly fires unbiased
+    trajectories from a fixed set of validation frames. This records, next to a
+    registered sweep path, the index of the validation frame that seeded it, so
+    that downstream aggregation can attribute the shot to the correct frame
+    regardless of the order in which shots were written (e.g. when workers pick
+    frames round-robin rather than strictly 0, 1, 2, ...).
+
+    Parameters
+    ----------
+    fname : str
+        Trajectory filename of the registered sweep shot.
+    index : int
+        Source validation-frame index (into the concatenated initial-paths
+        ensemble) from which the shot was launched.
+
+    Side Effects
+    ------------
+    Writes ``f"{fname}.sweep_frame.npy"`` (atomic, lock-guarded via
+    :func:`aimmd.cache.npy.save_npy`).
+    """
+    save_npy(get_cache_fname(fname, 'sweep_frame'),
+             np.array([int(index)], dtype=int))
+
+
+def read_sweep_frame(fname):
+    """Read the source validation-frame index tagged on a sweep shot.
+
+    Inverse of :func:`write_sweep_frame`.
+
+    Parameters
+    ----------
+    fname : str
+        Trajectory filename of a (possibly tagged) sweep shot.
+
+    Returns
+    -------
+    int or None
+        The tagged validation-frame index, or ``None`` if no tag is present
+        (e.g. shots produced by an older code path that wrote no tag). Callers
+        fall back to positional attribution (``i % sweep_size``) in that case.
+    """
+    array = load_npy(get_cache_fname(fname, 'sweep_frame'))
+    if array is None:
+        return None
+    try:
+        return int(np.asarray(array).reshape(-1)[0])
+    except (IndexError, ValueError, TypeError):
+        return None
 
 
 def split(states):

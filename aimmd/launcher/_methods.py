@@ -192,6 +192,14 @@ class LauncherMethods(ABC):
             Otherwise, it refers to the number of steps of each single worker
             in the launcher run. The first worker reaching nsteps stops all
             the others.
+            Exception -- ``reactive_region_mode='sweep'``: ``nsteps`` is each
+            sweep worker's *share* of a global target, so the campaign runs
+            until the combined committed-shot count over all ``n`` sweep workers
+            reaches ``n * nsteps`` (the per-worker step/frame caps are disabled
+            and the job waits for all workers rather than scancel-ing on the
+            first to finish). This keeps the intended total exact even when
+            workers are uneven, and lets a finished campaign be extended by
+            raising ``nsteps`` and resubmitting.
         nframes : float or iterable of float, optional
             Maximum number of simulated frames (worker stop condition). Default
             is ``inf``. Attention! If "train" runs, then
@@ -322,8 +330,10 @@ class LauncherMethods(ABC):
             file.write('set -m\n')
 
             # launch commands
+            built_args, built_descriptions = self._build()
             file.write('\n# workers')
-            for i, (args, description) in enumerate(zip(*self._build())):
+            for i, (args, description) in enumerate(
+                    zip(built_args, built_descriptions)):
                 file.write(f'\n# {description}\n')
                 args = ' '.join([f'"{arg}"'
                                  if not isinstance(arg, (bool, bool_)) else
@@ -333,8 +343,25 @@ class LauncherMethods(ABC):
                            f'--gpus-per-task={gpus_per_task} \\\n')
                 file.write(f'  "${{PYTHON}}" "${{WORKER}}" {args} &\n')
 
-            # wait until any process exits
-            file.write('\n# wait until any process exits\n')
-            file.write('wait -n\n')
-            file.write('scancel ${SLURM_JOB_ID}\n')
-            file.write('wait\n')
+            # Termination policy depends on whether a trainer coordinates the
+            # workers (task name lives at the fixed index 10 of each worker's
+            # argument tuple). With a trainer, the workers are interdependent
+            # and the run ends when the trainer finishes: the first process to
+            # exit triggers `scancel` to tear everything down. Without one
+            # (e.g. a committor sweep, which forces nrounds=0), the workers are
+            # independent and each exits cleanly on its own stop condition --
+            # the global sweep target or walltime -- so we simply wait for ALL
+            # of them. This also means one worker crashing no longer scancels
+            # the whole sweep.
+            has_trainer = any(len(a) > 10 and a[10] == 'train'
+                              for a in built_args)
+            if has_trainer:
+                # wait until any process exits, then cancel the rest
+                file.write('\n# wait until any process exits\n')
+                file.write('wait -n\n')
+                file.write('scancel ${SLURM_JOB_ID}\n')
+                file.write('wait\n')
+            else:
+                # independent workers: let every one finish on its own
+                file.write('\n# wait for all workers to finish\n')
+                file.write('wait\n')

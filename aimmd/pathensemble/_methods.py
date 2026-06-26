@@ -40,6 +40,7 @@ from numbers import Integral
 # aimmd imports
 from .utils import match_patterns
 from ..path import Path
+from ..path.utils import read_sweep_frame
 from ._helpers import PathEnsembleHelpers
 from ..core.utils import merge_ranges
 
@@ -308,14 +309,21 @@ class PathEnsembleMethods(ABC):
 
         Notes
         -----
-        Paths are assigned to sweep points by `i % sweep_size`.
+        Each path is assigned to the sweep point (validation frame) it was shot
+        from: the frame index tagged on the trajectory by
+        :func:`aimmd.path.utils.write_sweep_frame`, if present. Shots written by
+        an older code path carry no tag and fall back to positional assignment
+        `i % sweep_size` -- which is exactly the frame the old strictly-sequential
+        sweep shot, so legacy data is attributed correctly without modification.
         """
         if sweep_size <= 0:
             sweep_size = len(self)
 
         results = np.zeros((sweep_size, 2))
         for i, path in enumerate(self._paths):
-            results[i % sweep_size] += path.shooting_result(states)
+            frame = read_sweep_frame(path.fname) if path.fname else None
+            index = i if frame is None else frame
+            results[index % sweep_size] += path.shooting_result(states)
         return results
 
     def copy(self):

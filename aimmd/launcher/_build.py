@@ -277,11 +277,26 @@ class LauncherBuild(ABC):
                         else:
                             log_file = 'stdout'
                         noappend = False
+                        if sweep:
+                            # Sweep stops on the GLOBAL committed-shot total, not
+                            # a per-worker step cap: disable this worker's
+                            # nsteps/nframes limits and pass the global target
+                            # (m sweep workers x nsteps each = the intended total
+                            # number of shots; create_jobscript-style configs that
+                            # set nsteps = ceil(shots_per_frame * n_frames / m)
+                            # therefore map to shots_per_frame * n_frames).
+                            sweep_target = (inf if nsteps == inf
+                                            else int(m) * float(nsteps))
+                            worker_conditions = (conditions[0], inf, inf)
+                            run_args = ('shoot', t, k, sweep, sweep_target)
+                        else:
+                            worker_conditions = conditions
+                            run_args = ('shoot', t, k, sweep)
                         args.append(
                             (params_path, work_dir, localid,
                              self._cpus_per_task, self._gpus_per_task,
-                             log_file, *conditions, termination_timeout,
-                             'shoot', t, k, sweep))
+                             log_file, *worker_conditions, termination_timeout,
+                             *run_args))
                         descriptions.append(f'"{work_dir}" {folder}')
                         i += 1
 
