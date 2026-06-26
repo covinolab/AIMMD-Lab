@@ -69,14 +69,13 @@ Notes
 
 # external
 import numpy as np
-from math import inf
-from pathlib import PosixPath
+from tqdm import tqdm
+from pathlib import Path as PosixPath
 from collections.abc import Iterable
-from MDAnalysis.coordinates.memory import MemoryReader
-from MDAnalysis.coordinates.timestep import Timestep
 
 # aimmd imports
 from ..path import Path
+from ..core.utils import memory_reader_from_timesteps
 from ..path.utils import get_fnames
 from ..path.chainreader import ChainReader
 
@@ -167,7 +166,9 @@ def get_paths(*instances, initialize=True, **kwargs):
             without initializing Path objects.
 
     **kwargs
-        Keyword arguments forwarded to Path initialization:
+        Optional keyword arguments. If `verbose=True` is passed, it will
+        display a progress bar over the loaded paths.
+        The remaining arguments will be forwarded to Path initialization:
 
             Path(fname, **kwargs)
 
@@ -189,15 +190,17 @@ def get_paths(*instances, initialize=True, **kwargs):
     from . import PathEnsemble
     from ..path import Path
     result = []
+    verbose = kwargs.pop("verbose", False)
     for instance in instances:
         if isinstance(instance, Path):
             result.append(instance.copy())
         elif isinstance(instance, PathEnsemble):
-            result += [path.copy() for path in instance._paths]
+            result += [path.copy() for path in
+                       tqdm(instance._paths, disable=not verbose)]
         elif isinstance(instance, (str, PosixPath)):
             fnames = get_fnames(str(instance))
             if initialize:
-                for fname in fnames:
+                for fname in tqdm(fnames, disable=not verbose):
                     path = Path(fname, **kwargs)
                     if path:
                         result.append(path)

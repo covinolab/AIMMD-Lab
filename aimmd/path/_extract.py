@@ -60,6 +60,7 @@ Notes and caveats
 """
 
 # external
+import os
 import numpy as np
 from abc import ABC
 from math import inf
@@ -234,16 +235,16 @@ class PathExtract(ABC):
                 return [ts.copy() for ts in reader]
             if attribute == 'times':
                 result = np.array([ts.time for ts in reader])
-            if attribute == 'positions':
+            elif attribute == 'positions':
                 result = np.array([ts.positions.copy() for ts in reader])
-            if attribute == 'coordinates':
+            elif attribute == 'coordinates':
                 result = np.array([ts.positions.flatten() for ts in reader])
-            if attribute == 'velocities':
+            elif attribute == 'velocities':
                 n_atoms = reader.trajectory.n_atoms
                 result = np.array([ts.velocities.copy()
                                    if hasattr(ts, 'velocities') else
                                    np.zeros((n_atoms, 3)) for ts in reader])
-            if attribute == 'dimensions':
+            elif attribute == 'dimensions':
                 result = np.array([ts.dimensions.copy()
                                    if ts.dimensions is not None else
                                    DEFAULT_DIMENSIONS for ts in reader])

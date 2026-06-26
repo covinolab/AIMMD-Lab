@@ -29,9 +29,9 @@ Notes
 # external
 import os
 import numpy as np
-import torch
 import inspect
 from abc import ABC
+from math import inf
 from types import MethodType as Method
 from typing import List, Callable
 from numbers import Integral
@@ -256,12 +256,19 @@ class ParamsHelpers(ABC):
             elif name == 'free_overriding_bins':
                 if isinstance(value, Iterable):
                     value = [int(v) for v in np.array(value, dtype=int)]
-                elif isisntance(value, Integral):
+                elif isinstance(value, Integral):
                     value = [value]
                 elif value is None:
                     pass
                 else:
                     raise TypeError(f'{name!r} must index bins, got {value!r}')
+            
+            # density adjustment True -> inf, False -> 0
+            elif name == 'density_adjustment':
+                if isinstance(name, bool):
+                    value = inf if value else 0
+                elif value < inf:
+                    value = round(value)
             
             # path
             elif name == 'path':

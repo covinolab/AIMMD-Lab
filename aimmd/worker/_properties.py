@@ -34,13 +34,12 @@ Notes
 # external
 import sys
 import time
+import numpy as np
 from abc import ABC
-from math import inf
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 
 # aimmd imports
 from ..pathensemble import PathEnsemble
-
 
 class WorkerProperties(ABC):
     """

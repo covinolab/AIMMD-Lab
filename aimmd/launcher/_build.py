@@ -67,13 +67,14 @@ import os
 import numpy as np
 from abc import ABC
 from math import inf
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from itertools import islice
 
 # aimmd imports
 from ..cache.npy import save_npy
 from ..core.utils import remove, unique_path
 from ..path.utils import get_cache_fname
+from ..pathensemble import PathEnsemble
 
 
 class LauncherBuild(ABC):
@@ -115,7 +116,6 @@ class LauncherBuild(ABC):
         ensure the worker has a chance to terminate gracefully before the
         launcher-level timeout budget is exhausted.
         """
-        offset = 0
         args = []
         descriptions = []
         process_identifiers = []  # keep track of what you will initialize
@@ -130,18 +130,20 @@ class LauncherBuild(ABC):
 
         for run_id in range(len(self)):
             params = self._params[run_id]
-            if not params.initial_paths:
+            initial_paths = params.initial_paths
+            if not initial_paths:
                 raise TypeError("'initial_paths' missing in aimmd.Params")
             a, r, b = params.states
             sorted_states = params.sorted_states
             params_path = os.path.relpath(params.save())
-            directory = self._directories[run_id]
+            directory = self._directories[run_id] or '.'
             n = self._n[run_id]
             n1 = self._n1[run_id]
             n2 = self._n2[run_id]
             reactive_region_mode = self._reactive_region_mode[run_id]
             state1_mode = self._state1_mode[run_id]
             state2_mode = self._state2_mode[run_id]
+            nchains_per_worker = self._nchains_per_worker[run_id]
             nsteps = self._nsteps[run_id]
             nframes = self._nframes[run_id]
             nrounds = self._nrounds[run_id]
@@ -158,7 +160,7 @@ class LauncherBuild(ABC):
                 os.makedirs(directory)
                 print(f'+++ created {directory!r}')
 
-            # initial paths
+            # process initial paths
             folder = f'{directory}/initial{sorted_states}'
             if not os.path.exists(folder):
                 os.makedirs(folder)
@@ -166,7 +168,7 @@ class LauncherBuild(ABC):
             remove(f'{folder}/*')
             for path in params.initial_paths:
                 old = path.fname
-                fname = unique_path(f'{folder}/{PosixPath(old).name}', '.trr')
+                fname = unique_path(f'{folder}/{PosixPath(old).name}')
                 path.write(fname)
                 print(f'+++ saved {str(fname)!r} (from: {old!r})')
                 for attribute, series in islice(
@@ -184,6 +186,7 @@ class LauncherBuild(ABC):
                     continue
                 if t == r and reactive_region_mode != 'free':
                     continue
+
                 # folders
                 folder = f'free{t}'
                 dfolder = f'{directory}/{folder}'
@@ -208,21 +211,24 @@ class LauncherBuild(ABC):
                          log_file, *conditions, termination_timeout,
                          'free', t, k, m, nrounds > 0 or n > 0))
                     descriptions.append(f'"{directory}" {folder} (worker{k})')
-                    i += 1
+                    i += 1  # advance the task id
 
-            # shot simulations
+            # shooting simulations
             for t, m in zip([r, a, b], [n, n1, n2]):
                 if t == r and reactive_region_mode == 'free':
                     continue
                 if ((t == a and state1_mode != 'shoot') or
                     (t == b and state2_mode != 'shoot')):
                     continue
-                for k in range(m):
-                    if t == r and reactive_region_mode == 'sweep':
+                sweep = (t == r and reactive_region_mode == 'sweep')
+                for k in range(m * nchains_per_worker):
+                    if sweep:
                         folder = f'sweep{t}{k}'
                     else:
                         folder = f'chain{t}{k}'
                     dfolder = f'{directory}/{folder}'
+
+                    # check that you can initialize the process
                     process_identifier = dfolder
                     if process_identifier in process_identifiers:
                         raise RuntimeError(f"can't initialize process {i} "
@@ -231,25 +237,23 @@ class LauncherBuild(ABC):
                     if not os.path.exists(dfolder):
                         os.makedirs(dfolder)
                         print(f'+++ created {dfolder}')
-                    sweep = False
-                    if t == r:
-                        if reactive_region_mode == 'sweep':
-                            sweep = True
-                        else:
-                            os.system(f'touch {dfolder}/pool.log')
+                    
+                    # for now, just pick the first chain associated to worker
+                    if k % nchains_per_worker:
+                        continue
+
                     localid = i % self._ntasks_per_node
                     if num_processes > 1:
                         log_file = f'{folder}/worker.log'
                     else:
                         log_file = 'stdout'
-                    noappend = False
                     args.append(
                         (params_path, directory, localid,
-                         self._cpus_per_task, self._gpus_per_task,
-                         log_file, *conditions, termination_timeout,
-                         'shoot', t, k, sweep))
+                        self._cpus_per_task, self._gpus_per_task,
+                        log_file, *conditions, termination_timeout,
+                        'shoot', t, k, sweep, nchains_per_worker))
                     descriptions.append(f'"{directory}" {folder}')
-                    i += 1
+                    i += 1  # advance the task id
 
             # trainer
             if nrounds:
@@ -271,7 +275,7 @@ class LauncherBuild(ABC):
                      log_file, walltime, nsteps, nframes,
                      termination_timeout, 'train', nrounds, keep_running))
                 descriptions.append(f'"{directory}" {sorted_states} trainer')
-                i += 1
+                i += 1  # advance the task id
 
         # combine
         return args, descriptions

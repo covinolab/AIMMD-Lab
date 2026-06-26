@@ -29,7 +29,7 @@ This dual behavior is implemented by :func:`aimmd.core.decorators.class_or_insta
 # external
 import os
 from abc import ABC
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 
 # aimmd imports
 from ..core.decorators import class_or_instancemethod

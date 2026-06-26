@@ -173,13 +173,17 @@ class PathHelpers(ABC):
         -------
         object
             The value of `attribute` at the selected frame.
+            If `attribute == 'self'`: returns a `aimmd.path.Path`.
         """
         start, stop = self._range(where)
         values = self._get(source, start, stop)
         if attribute == source:
             series = values
         series = self._get(attribute, start, stop)
-        return series[operation(values)]
+        i = operation(values)
+        if attribute == 'self':
+            return series[i:i + 1]  # a path
+        return series[i]
 
     def _range(self, where):
         """Resolve region selectors into `(start, stop)` bounds.
@@ -253,6 +257,7 @@ class PathHelpers(ABC):
             Value at the requested index. For unknown series, returns a default:
             - '' for 'states'
             - NaN for numeric series (best-effort)
+            If `attribute == 'self'`: returns a `aimmd.path.Path`.
 
         Notes
         -----
@@ -266,6 +271,8 @@ class PathHelpers(ABC):
             return self.locs[i]
         if attribute in ('reader', 'frames'):
             return self[i]
+        if attribute == 'self':
+            return self[i:i + 1]  # a path
         if (attribute == 'states' and
             self._exclude_from >= 0 and
             i >= self._exclude_from):

@@ -15,9 +15,9 @@ trajectory segments written under a folder:
 
 - ``{directory}/free{t}/traj??????...``
 
-where ``t`` is a chosen "target" state label (string) and ``??????`` is a 6-digits
-trajectory index that is stepped by ``total`` to support multiple workers
-writing non-overlapping trajectory names.
+where ``t`` is a chosen "target" state label (string) and ``??????`` is a
+6-digits trajectory index that is stepped by ``total`` to support multiple
+workers writing non-overlapping trajectory names.
 
 The core loop proceeds as follows:
 
@@ -63,8 +63,10 @@ Expected collaborators
 This mixin assumes:
 
 - :meth:`run` dispatch exists (from :class:`~aimmd.worker._run.WorkerRun`),
-- :meth:`_simulate` exists (from :class:`~aimmd.worker._simulate.WorkerSimulate`),
-- :attr:`initial_paths` exists (from :class:`~aimmd.worker._properties.WorkerProperties`),
+- :meth:`_simulate` exists
+  (from :class:`~aimmd.worker._simulate.WorkerSimulate`),
+- :attr:`initial_paths` exists
+  (from :class:`~aimmd.worker._properties.WorkerProperties`),
 - cooperative stop checks via :attr:`must_stop` / :attr:`termination_signal`.
 
 Notes
@@ -82,11 +84,13 @@ import numpy as np
 from abc import ABC
 
 # aimmd imports
+from .utils import get_initial_frames_for_free_simulations
 from ..path import Path
 from .._config import print
 from ..cache.npy import save_npy
 from ..core.utils import now, remove, process_state
 from ..path.utils import get_cache_fname
+from ..pathensemble import PathEnsemble
 from ..pathensemble.utils import assemble_pathensemble
 
 # WorkerFree mixin class
@@ -153,35 +157,31 @@ class WorkerFree(ABC):
         # get/process params
         k = int(k)
         total = int(total)
+        directory = self.directory or '.'
+        _directory = self._directory or '.'
         params = self.params
         ext = params.trajectory_extension
-        len_ext = len(ext)
-        batch_size = params.trajectory_update_batch_size
-        pipeline = params.pipeline[:-1]  # except for values
         extra_frames = params.extra_free_frames
-        # which state are we talking about?
         states = params.states
         t = process_state(target_state, states)
         r = states[1]
-        tr = f'{t}{r}'  # allowed states: target & reactive
-        
+        # retrieve and process paths
+        initial_paths = get_initial_frames_for_free_simulations(
+                self.initial_paths, t, r)
         restart_with_transition = (
             params.restart_free_simulations_with_transitions == 'all' or
             t in params.restart_free_simulations_with_transitions)
-        initial_paths = self.initial_paths
-        # only transitions
-        initial_paths = initial_paths.extract(states, states[::-1])
-        if not initial_paths:
-            raise RuntimeError('some initial paths must be transitions')
+
+        # get folders
+        folder = f'free{t}'
 
         # exclusively for progress bar
         # location can be different from folder if the params file does not live
         # in the current working directory
-        self._location = f'{self.directory}/free{t}'
+        self._location = f'{directory}/{folder}'
         
         # create folder if not existing (along with all intermediate paths)
-        directory = self._directory
-        folder = f'{directory}/free{t}'
+        folder = self.folder = f'{_directory}/{folder}'
         os.system(f'mkdir -p {folder}')
         
         # must have network, bins, and descriptors
@@ -236,29 +236,24 @@ class WorkerFree(ABC):
                 # need to find initial_frames
                 if restart_with_transition or not initial_frames:
 
-                    # take initial_frames from a list of transitions
+                    # take initial_frames from a sampled transition
                     if restart_with_transition:
                         chains = params.shot_chains(directory, r, old=chains)
                         transitions = assemble_pathensemble(chains).extract(
                             states, states[::-1])
-                        if not transitions:
-                            transitions = initial_paths
-                        i = np.random.choice(len(transitions))
-                        path = transitions[i]
-                    else:
-
-                        # take initial_frames from initial paths (in order)
-                        path = initial_paths[k % len(initial_paths)]
-                    
-                    if t == r:
-                        if np.random.random() > .5:
-                            initial_frames = path[:+2]
+                        if transitions:
+                            initial_frames = transitions[
+                                np.random.choice(len(transitions))]
+                            if initial_frames.states[0] != t:
+                                initial_frames = initial_frames[::-1]
+                            initial_frames = initial_frames[:2]
                         else:
-                            initial_frames = path[:-3:-1]
-                    elif path.initial('states') == t:
-                        initial_frames = path[1::-1]
+                            # take initial frames from initial_paths (random)
+                            initial_frames = initial_paths[
+                                np.random.choice(len(initial_paths))]
                     else:
-                        initial_frames = path[-2:]                
+                        # take initial_frames from initial paths (in order)
+                        initial_frames = initial_paths[k % len(initial_paths)]             
                 
                 # wipe out garbage
                 remove(f'{folder}/*{name}*')

@@ -41,7 +41,8 @@ class PathEnsembleHelpers(ABC):
     :class:`aimmd.pathensemble.PathEnsemble`.
     """
 
-    def _init(self, *paths, find_shooting_indices=False, pipeline=()):
+    def _init(self, *paths,
+              find_shooting_indices=False, pipeline=(), verbose=True):
         """
         Initialize the ensemble by normalizing all inputs into `Path` objects.
 
@@ -53,7 +54,8 @@ class PathEnsembleHelpers(ABC):
             If True, pass ``shooting_index='find'`` into `Path` initialization.
         pipeline : tuple, default=()
             Optional pipeline forwarded to `Path` initialization.
-
+        verbose : bool, default=True
+            If True, display a progress bar over the loaded paths.
         Notes
         -----
         - This method is aliased as `PathEnsemble.__init__`.
@@ -67,6 +69,8 @@ class PathEnsembleHelpers(ABC):
             path_kwargs["pipeline"] = tuple(pipeline)
         if find_shooting_indices:
             path_kwargs["shooting_index"] = "find"
+        if verbose:
+            path_kwargs["verbose"] = True
 
         # hash: build the underlying list of Path objects
         self._paths = get_paths(paths, initialize=True, **path_kwargs)
@@ -85,7 +89,7 @@ class PathEnsembleHelpers(ABC):
             values include (depending on `Path` implementation): "internal",
             "all", "forward", "backward", etc.
         verbose : bool, default=False
-            If True, display a progress bar over the paths.
+            If True, display a progress bar over the loaded paths.
 
         Returns
         -------

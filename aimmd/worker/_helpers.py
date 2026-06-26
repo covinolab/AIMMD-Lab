@@ -39,8 +39,6 @@ from tqdm.auto import tqdm
 # aimmd imports
 from ..params import Params
 from ..resources import bind_resources
-from ..core.utils import now, remove
-
 
 class WorkerHelpers(ABC):
 
@@ -362,6 +360,7 @@ class WorkerHelpers(ABC):
             if tty:
                 # Add terminal-specific positioning and stream routing
                 kwargs.update({
+                    "desc": str(self._location),  # for nchains_per_worker > 1
                     "position": (self.localid * 2 + offset),
                     "dynamic_ncols": True,
                     "file": self.original_stdout,

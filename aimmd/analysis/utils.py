@@ -78,6 +78,7 @@ statistics to transition statistics when required.
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from re import split
 from math import inf, nan
 from tqdm import tqdm
 from scipy.stats import beta
@@ -439,6 +440,7 @@ def merge_empty_bins(bins, keepers, *histograms, center=0):
         defined on the original bins. Each histogram is merged to match
         the returned ``merged_bins`` by summing the values of all original
         bins contributing to each merged bin.
+        If one of the histograms is `None`, just leave unchanged.
     center : float, default=0
         Reference value defining the outward merge direction. Bins whose
         centers are less than or equal to ``center`` merge toward smaller
@@ -500,7 +502,9 @@ def merge_empty_bins(bins, keepers, *histograms, center=0):
 
     # merge all histograms by summation
     merged_histograms = tuple(
-        np.add.reduceat(histogram, starts) for histogram in histograms
+        np.add.reduceat(histogram, starts)
+        if histogram is not None else None
+        for histogram in histograms
     )
 
     return merged_bins, merged_bin_counts, *merged_histograms
@@ -876,17 +880,20 @@ def find_path_lineages(*shooting_chains, verbose=False):
             return
         
         # current folder
-        folder = '/'.join(fnames[-1].split('/')[:-1])
+        folder = '/'.join(split(r'[\\/]', fnames[-1])[:-1])
         suffix = '.' + fnames[-1].split('.')[-1]
         
         # --- 2. LOG PARSING HELPER ---
-        def extract_name(line, prefix, add_suffix=''):
+        def extract_name(line, prefixes, add_suffix=''):
             """Extracts and cleans a path name from a log line."""
-            if prefix in line:
-                # Splits by prefix, takes name before '(', removes quotes
-                part = line.split(prefix)[1].split('(')[0]
-                clean_name = part.strip().replace("'", "").replace('"', "")
-                return f"{clean_name}{add_suffix}"
+            if isinstance(prefixes, str):
+                prefixes = [prefixes]
+            for prefix in prefixes:
+                if prefix in line:
+                    # Splits by prefix, takes name before '(', removes quotes
+                    part = line.split(prefix)[1].split('(')[0]
+                    clean_name = part.strip().replace("'", "").replace('"', "")
+                    return f"{clean_name}{add_suffix}"
             return None
         
         # --- 3. MULTI-LOG TRAVERSAL ---
@@ -913,7 +920,11 @@ def find_path_lineages(*shooting_chains, verbose=False):
                 ) or current_path
                 
                 # Identify the 'parent' being shot
-                selecting_path = extract_name(line, '=== selecting path')
+                selecting_path = extract_name(
+                    line,
+                    ['=== selecting path',
+                     '*** choosing from']
+                )  # two options for backward compatibility
                 selected_path = selecting_path or selected_path
                 parent_path = (selecting_path or
                                extract_name(line, '=== overriding with')

@@ -56,6 +56,7 @@ Notes
 """
 
 # external
+import sys
 import numpy as np
 import signal
 from abc import ABC
@@ -63,7 +64,6 @@ from math import inf
 from collections.abc import Iterable
 
 # aimmd imports
-from ._run import run_task
 from ..params import Params
 from .._config import print
 from ..resources import get_num_cpus, get_num_gpus
@@ -73,7 +73,8 @@ from ..execute.processes import ProcessExecutor
 
 class LauncherHelpers(ABC):
 
-    def _init(self, params, directories, termination_timeout=60.):
+    def _init(self, params, directories,
+              termination_timeout=60., save_params=True):
         """
         Initialize a launcher instance.
 
@@ -98,6 +99,8 @@ class LauncherHelpers(ABC):
             Grace period (seconds) for terminating worker processes, after which
             they may be killed by the executor. Stored as
             :attr:`termination_timeout`. Default is ``60.``.
+        save_params : bool, optional
+            If True: save params to file. Default is True.
 
         Returns
         -------
@@ -134,7 +137,7 @@ class LauncherHelpers(ABC):
             if not params[i].initial_paths:
                 raise TypeError(f'{i}-th input params have no initial paths')
             # params need a saved file
-            if not params[i].path.is_file():
+            if save_params and not params[i].path.is_file():
                 params[i].save()
 
         # process directories
@@ -246,6 +249,7 @@ class LauncherHelpers(ABC):
                 reactive_region_mode='chain',
                 state1_mode='free',
                 state2_mode='free',
+                nchains_per_worker=1,
                 nsteps=inf,
                 nframes=inf,
                 nrounds=None,
@@ -278,6 +282,11 @@ class LauncherHelpers(ABC):
             Mode used for state 1 processes for each run. Default is ``'free'``.
         state2_mode : {'free', 'shoot'} or iterable, optional
             Mode used for state 2 processes for each run. Default is ``'free'``.
+        nchains_per_worker : int, optional, default = 1
+            If > 1, the worker will manage more than one chain. A higher value
+            of `nchains_per_worker` tends to regularize the training set and
+            thus improve performance. If running only one shooting worker,
+            `nchains_per_worker=10` is recommended.
         nsteps : float or iterable of float, optional
             Maximum number of simulated independent trajectories (worker stop
             condition). Default is ``inf``. Attention! If "train" runs, then
@@ -335,6 +344,8 @@ class LauncherHelpers(ABC):
         nsteps = self._process_input('nsteps', nsteps, float)
         nframes = self._process_input('nframes', nframes, float)
         nrounds = self._process_input('nrounds', nrounds, object)
+        nchains_per_worker = self._process_input(
+            'nchains_per_worker', nchains_per_worker, int)
         walltime = float(walltime)
 
         # process nrounds according to specification
@@ -373,6 +384,7 @@ class LauncherHelpers(ABC):
         self._nsteps = nsteps
         self._nframes = nframes
         self._nrounds = nrounds
+        self._nchains_per_worker = nchains_per_worker
         self._walltime = walltime
 
         # get number of processes

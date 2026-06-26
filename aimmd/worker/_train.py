@@ -69,7 +69,7 @@ from abc import ABC
 from math import inf, nan
 
 # aimmd imports
-from .utils import rescale_bins
+from .utils import rescale_bins, get_initial_frames_for_training
 from .._config import NPY_CACHE, MDA_CACHE, print
 from ..cache.npy import save_npy
 from ..core.utils import now, replace_in_cache
@@ -208,6 +208,9 @@ class WorkerTrain(ABC):
 
         # get/process params
         directory = self._directory
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+            print(f'+++ created {directory}')
         params = self.params
         states = params.sorted_states
         r = states[1]
@@ -236,19 +239,21 @@ class WorkerTrain(ABC):
         bias_function = params.bias_function
         bias_source = params.bias_source
         bias_reactive_threshold = params.bias_reactive_threshold
-        initial_paths = self.initial_paths
-        # only transitions
-        initial_paths = initial_paths.extract(states, states[::-1])
-        margins = PathEnsemble([path[1::-1] for path in initial_paths] +
-                               [path[-2::1] for path in initial_paths])
+
+        # get frames in first and last state for training
+        margins = get_initial_frames_for_training(self.initial_paths)
         
         # update kwargs to fit function
         kwargs['worker'] = self
         
-        # load the network if it is already possible
+        # load the network and bins if it is already possible
         print(f'\nLoading pre-existing network parameters {now()}')
         network_fname = f'{directory}/network{states}.h5'
         params.update_network(directory, timeout=0, raise_if_failure=False)
+        try:
+            bins = NPY_CACHE.load(f'{directory}/bins{states}.h5')
+        except:
+            bins = None
 
         # do you need to stop already?
         if self.must_stop:
@@ -331,12 +336,10 @@ class WorkerTrain(ABC):
                 if n:
                     print(f'... (re)computed {n} missing descriptor frames')
                 # also recompute initial path descriptor frames, if not present
-                initial_paths_pe = assemble_pathensemble(
-                    self.initial_paths
-                )
-                n = initial_paths_pe.compute(*params.compute_descriptors_args)
+                n = margins.compute(*params.compute_descriptors_args)
                 if n:
-                    print(f"... (re)computed {n} missing inital path descriptor frames")
+                    print(f"... (re)computed {n} missing "
+                          "inital path descriptor frames")
 
             # Compute bias potential per frame (only when record_bias is enabled)
             if record_bias and bias_function is not None:
@@ -545,6 +548,10 @@ class WorkerTrain(ABC):
             densities[densities == 0.] = 1e-15
             densities /= densities.sum()
             print(f'    densities: {densities}')
+
+            # check mid-cycle
+            if self.termination_signal:
+                return
             
             if source == 'new':
                 # replace values (as much as possible) all at once
@@ -559,7 +566,7 @@ class WorkerTrain(ABC):
                 torch.save(network.state_dict(), network_fname)
 
             # save bins and densities
-            print(f'\nSaving bins and densities {now()}')
+            print(f'\nSaving selection bins and densities {now()}')
             save_npy(f'{directory}/bins{states}.npy', bins)
             save_npy(f'{directory}/densities{states}.npy', densities)
 
@@ -786,11 +793,7 @@ class WorkerTrain(ABC):
         self._free_trajectories = params.free_trajectories(directory)
 
         # ── build margins from initial paths (same as _train) ─────────────
-        initial_paths = self.initial_paths
-        initial_paths = initial_paths.extract(states, states[::-1])
-        margins = PathEnsemble(
-            [path[1::-1] for path in initial_paths] +
-            [path[-2::1] for path in initial_paths])
+        margins = get_initial_frames_for_training(self.initial_paths)
 
         # ── pre-compute sizes for fraction arithmetic ──────────────────────
         chain_lengths = [len(c) for c in self._shot_chains]
@@ -838,8 +841,7 @@ class WorkerTrain(ABC):
                 n = pathensemble.compute(*params.compute_descriptors_args)
                 if n:
                     print(f'... (re)computed {n} missing descriptor frames')
-                initial_paths_pe = assemble_pathensemble(self.initial_paths)
-                n = initial_paths_pe.compute(*params.compute_descriptors_args)
+                n = margins.compute(*params.compute_descriptors_args)
                 if n:
                     print(f'... (re)computed {n} missing initial path '
                           f'descriptor frames')

@@ -189,7 +189,7 @@ class ParamsMagic(ABC):
                 lines.append(value.__source__.rstrip('\n'))
 
             # selected path-like fields are serialized relative to `go_to`
-            elif name in ('topology', 'gmx_mdp'):
+            elif name in ('topology', 'gmx_mdp') and value:
                 lines.append(f'{name} = {os.path.relpath(value, go_to)!r}')
 
             # initial paths: write as list of filenames (if reload is enabled)

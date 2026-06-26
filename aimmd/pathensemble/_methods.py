@@ -115,6 +115,7 @@ class PathEnsembleMethods(ABC):
             Selected paths as a new ensemble.
         """
         if not len(types):
+            from . import PathEnsemble
             return PathEnsemble()
         return self[self.types(*types)]
 
@@ -330,6 +331,7 @@ class PathEnsembleMethods(ABC):
         result._fnames = fnames
         result._first = first
         result._last = last
+        result._weight = 1.
         result._exclude_from = exclude_from
         if len(self):
             result._shooting_index = self._paths[0]._shooting_index

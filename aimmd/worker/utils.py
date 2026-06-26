@@ -10,14 +10,15 @@ primarily :mod:`aimmd.worker._shoot` and :mod:`aimmd.worker._train`.
 Scope and role in AIMMD
 -----------------------
 The functions in this file support **path sampling simulations**, which are the
-core of AIMMD’s enhanced-sampling strategy. In particular, they implement the
+core of AIMMD's enhanced-sampling strategy. In particular, they implement the
 mechanics needed to:
 
+- process the initial paths for shooting chains, sweeping, and free simulations,
 - maintain a *selection pool* of candidate paths/frames,
 - select shooting points in a way that is guided by the current committor model
   (typically a neural network) and by adaptive density targets,
 - register newly generated paths on disk and in memory,
-- (optionally) apply TPS-style acceptance/rejection steps,
+- (optionally) apply TPS-style acceptance/rejection steps.
 
 Importantly, the objective is not simply to generate equilibrium transition
 events, but to produce a **diverse set of reactive trajectories** and enrich
@@ -79,12 +80,11 @@ Notes
 
 # external
 import os
-import time
 import numpy as np
 import torch
-import random
+from glob import glob
 from math import inf
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 
 # aimmd imports
 from ..path import Path
@@ -95,13 +95,152 @@ from ..path.utils import get_cache_fname
 from ..pathensemble import PathEnsemble
 from ..execute.utils import execute_command
 from ..analysis.utils import bin_centers, merge_empty_bins
-from ..pathensemble.utils import match_patterns, assemble_pathensemble
 from ..network.rescale_utils import rescale
+
+
+def get_initial_transitions_for_shooting_chain(initial_paths, states='ARB'):
+    """
+    Given an `aimmd.path.PathEnsemble instance`, extract a transition from
+    each path for the purpose of initializing a shooting chain.
+
+    Parameters
+    ----------
+    initial_paths : aimmd.path.PathEnsemble or aimmd.path.Path
+        The pathensemble from which the transitions is extracted.
+    states : str, optional
+        3-char string containing the initial, reactive, and final states in
+        order, default is `'ARB'`.
+    
+    Returns
+    -------
+    transitions : aimmd.path.PathEnsemble
+        The transition segments collected in a `PathEnsemble` instance.
+    
+    Notes
+    -----
+    If each path contains more than one transition, only the first one will be
+    considered.
+    """
+    initial_paths = PathEnsemble(initial_paths)
+    transitions = PathEnsemble()
+    for path in initial_paths:
+        try:
+            transition = path.split().extract(states, states[::-1])[0]
+        except Exception as exception:
+            raise RuntimeError(f'could not extract {states} transition '
+                               f'from {path}: {exception}')
+        transitions._paths.append(transition)
+    return transitions
+
+
+def get_initial_frames_for_free_simulations(
+        initial_paths, target_state, reactive_state):
+    """
+    Given an `aimmd.path.PathEnsemble` instance, extract two consecutive frames
+    from each path for the purporse of launching free simulations. The first
+    frame of each couple is always reactive, and the second is internal to
+    `target_state`.
+
+    Parameters
+    ----------
+    initial_paths : aimmd.path.PathEnsemble or aimmd.path.Path
+        The paths from which the frames are extracted.
+    target_state : str of size 1
+        The state of the second frame, e.g. `'A'`.
+    reactive_state : str of size 1
+        The state of the first frame, e.g. `'R'`.
+
+    Returns
+    -------
+    initial_frames : aimmd.path.PathEnsemble
+        `PathEnsemble` with the same length of `initial_paths`, where each
+        element contains the frame couples extracted from the paths.
+    
+    Notes
+    -----
+    The two frames in a couple are either at the beginning or at the end of the
+    origin path. If the path does not allow for it, this function throws an
+    error.
+    """
+    initial_paths = PathEnsemble(initial_paths)
+    initial_frames = PathEnsemble()
+
+    # extract frames for each path
+    for path in initial_paths:
+        if target_state == reactive_state:
+            if np.random.random() > .5:
+                initial_frames._paths.append(path[:+2])
+            else:
+                initial_frames._paths.append(path[:-3:-1])
+        elif path.initial('states') == target_state:
+            initial_frames._paths.append(path[1::-1])
+        else:
+            initial_frames._paths.append(path[-2:])
+
+        # check
+        states = initial_frames[-1].states
+        if states[0] != reactive_state and states[1] != target_state:
+            raise RuntimeError(f'{path.fname} must allow to extract a'
+                            f'"{reactive_state}{target_state}" segment')
+    return initial_frames
+
+
+def get_initial_frames_for_training(initial_paths, states='ARB'):
+    """
+    Given an `aimmd.path.PathEnsemble` instance, extract all frames in the
+    reactive and product states for the purpose of priming a machine learning
+    model of the committor between the two.
+
+    Parameters
+    ----------
+    initial_paths : aimmd.path.PathEnsemble or aimmd.path.Path
+        The pathensemble from which the frames are extracted.
+    states : str, optional
+        3-char string containing the initial, reactive, and final states in
+        order, default is `'ARB'`. The middle character is not considered.
+    
+    Returns
+    -------
+    frames : aimmd.path.PathEnsemble
+        The training set frames collected in a `PathEnsemble` instance.
+    
+    Notes
+    -----
+    If there are no frames in either state, the function throws an error.
+    """
+    initial_paths = PathEnsemble(initial_paths).join()
+    initial_states = initial_paths.states
+    keepers1 = np.flatnonzero(initial_states == states[+0])
+    keepers2 = np.flatnonzero(initial_states == states[-1])
+    if not len(keepers1):
+        raise RuntimeError(f'no frames in state {states[+0]} for input paths')
+    if not len(keepers2):
+        raise RuntimeError(f'no frames in state {states[-1]} for input paths')
+    return PathEnsemble(
+        [initial_paths[k:k+1] for k in keepers1] +
+        [initial_paths[k:k+1] for k in keepers2]
+    )
+
+
+def is_initial_path(path):
+    """
+    Checks wether `path` comes from the initial paths' folder.
+
+    Parameters
+    ----------
+    path : aimmd.path.Path
+
+    Returns
+    -------
+    is_initial : bool
+    """
+    return PosixPath(path.fname).root.startswith('initial')
 
 
 def update_selection_pool(pool, size, chain,
                           initial_paths=None,
-                          at_least_one=''):
+                          at_least_one='',
+                          boundaries=[-inf, +inf]):
     """
     Update a selection pool of candidate paths.
 
@@ -134,6 +273,9 @@ def update_selection_pool(pool, size, chain,
         checked for at least one transition of type ``at_least_one`` or its
         reverse. If absent, a transition is searched in ``chain`` (from newest
         to oldest) and prepended to the pool. Default is ``''`` (no constraint).
+    boundaries : [float, float] iterable, optional
+        Paths in pool must have at least one frame between boundaries.
+        Default is [-inf, +inf].
 
     Returns
     -------
@@ -172,6 +314,52 @@ def update_selection_pool(pool, size, chain,
             if path.type[:3] in (at_least_one, at_least_one[::-1]):
                 pool._paths = [path] + pool._paths
                 break
+    
+    # replace elements without values between vmin, vmax
+    if boundaries is not None:
+        vmin, vmax = boundaries[0], boundaries[-1]
+    else:
+        vmin, vmax = -inf, +inf
+    if vmin > -inf or vmax < +inf:
+        pool_fnames = [path.fname for path in pool] 
+        j = len(chain) - 1  # current chain index
+        for i in range(len(pool)):
+            if is_initial_path(pool[i]):
+                continue
+            values = pool[i].internal('values')
+            if not ((values >= vmin) * (values <= vmax)).any():
+                # find new element going backwards
+                replaced = False
+                for j in range(j, -1, -1):
+                    path = chain._paths[j]
+                    # do not re-add old elements
+                    if path.fname in pool_fnames:
+                        continue
+                    values = path.values
+                    if not ((values >= vmin) * (values <= vmax)).any():
+                        continue
+                    # replace
+                    print(pool[i].values[1:-1], 'AAAAAA') # TODO
+                    print(f'!!! replacing selection pool element '
+                          f'{pool_fnames[i]} with values outside the '
+                          f'[{vmin:.3f}, {vmax:.3f}] range with {path.fname}')
+                    pool[i] = path
+                    replaced = True
+                    j -= 1
+                    break
+                # no replacement? use one of the initial paths (if any)
+                if not replaced:
+                    if initial_paths:
+                        path = initial_paths[
+                            np.random.choice(len(initial_paths))]
+                        print(f'!!! replacing selection pool element '
+                          f'{pool_fnames[i]} with values inside the '
+                          f'[{vmin:.3f}, {vmax:.3f}] range with {path.fname}')
+                        pool[i] = path
+                    else:
+                        print(f'!!! warning: could not replace selection pool '
+                              f'element {pool_fnames[i]} with values inside '
+                              f'the [{vmin:.3f}, {vmax:.3f}] range')
 
     return pool
 
@@ -477,6 +665,7 @@ def register_path(path, chain, eneconv=None, bias_function=None):
 def select_shooting_point(pool, params, folder,
                           chain=None,
                           free_trajectories=[],
+                          shooting_chains=[],
                           target_state=1):
     """
     Select a shooting point (frame) for committor-guided path sampling.
@@ -524,11 +713,14 @@ def select_shooting_point(pool, params, folder,
         network/bins/densities state and, for TPS, to persist selection-time
         artifacts).
     chain : aimmd.pathensemble.PathEnsemble, optional
-        Current shooting chain. When provided, only accepted paths are used to
-        estimate current "populations" in value bins.
+        Current shooting chain. Used to adjust selection probabilities based on
+        `params.density_adjustment`.
     free_trajectories : list, optional
         List of free trajectories that may provide additional candidate frames
         for "overriding" selection.
+    shooting_chains : list, optional
+        List of shooting chains. Used to adjust selection probabilities based on
+        `params.shared_density_adjustment`.
     target_state : int or str, optional
         Target state label or index, normalized via :func:`process_state`.
 
@@ -551,13 +743,29 @@ def select_shooting_point(pool, params, folder,
     states = params.states
     t = process_state(target_state, states)
     states = params.sorted_states
+    pool_size = params.selection_pool_size
 
     # easy situation: internal shooting
     if t != states[1]:
-        path = pool.pop()
-        index = np.random.choice(path.internal('indices'))
+        pool_index = np.random.choice(len(pool))
+        path = pool[pool_index]
+        fname = path.fname
+        if path.middle('states') == t:
+            indices = path.internal('indices')
+        else:
+            indices = np.flatnonzero(path.states == t)
+        if not len(indices):
+            raise RuntimeError(f'no frames available for {fname} in {t}')
+        index = np.random.choice(indices)
         k, loc = path._get_local_loc(index)
-        print(f'=== selecting frame {path._fnames[k]}, {loc}')
+        print(f'=== selecting path {fname!r}')
+        print(f'=== selecting frame {loc}')
+
+        # remove from pool and return
+        if len(pool) >= pool_size:
+            print(f'xxx removed {fname} from pool')
+            pool.pop(pool_index)
+
         return path[index]
 
     # next params
@@ -568,10 +776,13 @@ def select_shooting_point(pool, params, folder,
     overriding_attempts = params.free_overriding_attempts
     overriding_rate = params.free_overriding_recovery_rate
     compute_values_args = params.compute_values_args
-    density_adjustment = params.density_adjustment
-    pool_size = params.selection_pool_size
-    len_ext = len(params.trajectory_extension)
+    ext = params.trajectory_extension
     nbins = params.nbins
+    density_adjustment = max(params.density_adjustment, 0)
+    shared_density_adjustment = params.shared_density_adjustment
+    if nbins <= 1:  # no density adjustment in this case
+        density_adjustment = 0
+        shared_density_adjustment = False
     overriding_bins = np.zeros(nbins, dtype=bool)
     overriding_bins[params.free_overriding_bins] = True
     
@@ -580,6 +791,14 @@ def select_shooting_point(pool, params, folder,
         chain = chain[chain.accepted]
     else:
         chain = PathEnsemble()
+    
+    # shared density adjustment: obtain shared_shooting_points
+    shared_shooting_points = Path()
+    if shared_density_adjustment:
+        shooting_chains = PathEnsemble(shooting_chains)
+        shared_shooting_points = shooting_chains.shooting('self').join()
+        for fname in glob(f'{folder}/../chain{t}*/back{ext}'):
+            shared_shooting_points += Path(fname, stop=1)
 
     # overriding configurations
     candidate_paths = PathEnsemble()
@@ -600,11 +819,18 @@ def select_shooting_point(pool, params, folder,
         params.update_network(f'{folder}/..')
         bins, densities = params.load_bins_and_densities(f'{folder}/..')
 
-        # compute only where there are no values (yet)
+        # compute simulated values only where there are none (yet)
         n1 = pool.compute(*compute_values_args,
                           raise_if_error=True)
         n2 = overriding_unique.compute(*compute_values_args,
                                        raise_if_error=True)
+        
+        # also recompute initial paths' values if they still feature in pool
+        initial_paths_in_pool = PathEnsemble(
+            [path for path in pool if is_initial_path(path)])
+        n1 += initial_paths_in_pool.compute(
+            *compute_values_args, overwrite=True)
+
         print(f'*** updated {n1 + n2} frame values ({n1} from pool)')
         # need to compute overriding values already here to be sure that
         # both pool and overriding values are evaluated on the same NN model
@@ -614,13 +840,34 @@ def select_shooting_point(pool, params, folder,
         bins = np.array([-inf, +inf])
         densities = np.array([1.])
 
-    # immediately get all values & populations histogram
+    # immediately get all values & population histograms
     # (such that there is a lower risk of desync)
     pool_values = pool.values
     pool_shooting_values = pool.shooting('values')
     overriding_values = overriding.values
     chain_shooting_values = chain.shooting('values')
     populations = np.histogram(chain_shooting_values, bins)[0]
+    # for the purpose of density adjustment
+    if 0 < density_adjustment < inf:
+        populations_for_adjustment = np.histogram(
+            chain_shooting_values[-density_adjustment:], bins)[0]
+    elif density_adjustment:
+        populations_for_adjustment = populations
+    else:
+        populations_for_adjustment = np.zeros_like(populations)
+    if shared_density_adjustment:
+        try:  # catch instabilities in try/except loop
+            shared_populations_for_adjustment = np.histogram(
+                shared_shooting_points.compute(
+                    compute_values_args[0], '',
+                    *compute_values_args[2:]),
+                bins)[0]
+        except Exception as exception:
+            shared_populations_for_adjustment = np.zeros_like(populations)
+            print("!!! Warning: in computing shared_populations_for_adjustment:"
+                  f" {exception}")
+    else:
+        shared_populations_for_adjustment = np.zeros_like(populations)
 
     # report selection pool
     report, histograms = pool.report(bins=bins, values=pool_values)
@@ -628,6 +875,8 @@ def select_shooting_point(pool, params, folder,
     if nbins > 1:
         print(f'*** current pool shooting interfaces: {pool_shooting_values}')
         print(f'*** populations  {populations}')
+        print(f'*** for adjust.  {populations_for_adjustment}')
+        print(f'*** shared adj.  {shared_populations_for_adjustment}')
     
     # normalize histograms, average in "combined" histogram
     norms = np.maximum(histograms.sum(axis=1), 1.0)
@@ -642,10 +891,6 @@ def select_shooting_point(pool, params, folder,
         densities *= centers ** 2 + lorentzian ** 2
         densities /= densities.sum()
         print(f'    (after applying the Loretzian) {densities}')
-
-    # report also overriding
-    if overriding_bins.any() and overriding_attempts:
-        print(f'*** overriding   {overriding_bins}')
     
     # merge empty bins, update histograms and densities
     keepers = combined_histograms > 0
@@ -657,33 +902,44 @@ def select_shooting_point(pool, params, folder,
         ) = merge_empty_bins(
             bins, keepers, overriding_bins,
             *histograms, combined_histograms,
-            densities, populations
+            densities, populations,
+            populations_for_adjustment, shared_populations_for_adjustment
         )
         processed_overriding_bins = processed_overriding_bins.astype(bool)
         histograms = merged_histograms[:len(histograms)]
-        combined_histograms, densities, populations = merged_histograms[-3:]
+        combined_histograms, densities, populations = merged_histograms[-5:-2]
+        populations_for_adjustment = merged_histograms[-2]
+        shared_populations_for_adjustment = merged_histograms[-1]
         if len(bins) - 1 < nbins:
             print(f'*** merged {nbins - len(bins) + 1} internal empty bins:')
             print(f'    bins         {bins}')
             print(f'    merged count {merged_bin_counts}')
             print(f'    populations  {populations}')
-            print(f'    densities    {densities}')
-            if overriding_bins.any() and overriding_attempts:
-                print(f'    overriding   {processed_overriding_bins}')            
+            print(f'    for adjust.  {populations_for_adjustment}')
+            print(f'    shared adj.  {shared_populations_for_adjustment}')
+            print(f'    densities    {densities}')          
         
         # to preserve target distribution: divide densities by merged bin counts
         densities /= merged_bin_counts
     
     # density adjustment (populations)
     if density_adjustment:
-        densities *= populations + merged_bin_counts
+        densities *= populations_for_adjustment + merged_bin_counts
+        densities *= shared_populations_for_adjustment + merged_bin_counts
     densities /= densities.sum()
     print(f'    (adjusted)   {densities}')
+
+    # report also overriding
+    if overriding_bins.any() and overriding_attempts:
+        print(f'*** overriding   {processed_overriding_bins}')
     
     # choose path
     pool_index = np.random.choice(len(pool))
     path = pool[pool_index]
     values = pool_values[pool_index]
+    if not path.is_excursion(states):  # check for consistency
+        raise RuntimeError(
+            f'{path.fname!r} should be an excursion, found {path.type} instead')
     indices = path.internal('indices')
     locs = path.internal('locs')
     fname = path.fname

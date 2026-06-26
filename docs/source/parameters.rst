@@ -71,9 +71,22 @@ Several parameters directly control how AIMMD explores path space:
 ``at_least_one_transition_in_pool``
    Optional heuristic that may improve sampling in early rounds by ensuring that at least one path in the selection pool is reactive.
 
+``always_select_inside_the_bins``
+   Do not select shooting points from paths entirely outside the selection
+   bins range.
+
 ``nbins``, ``cutoff_min``, ``cutoff_max``, ``marginal_bins``
    Define how value space is discretized for adaptive sampling and density
    estimation.
+
+``density_adjustment`` and ``shared_density_adjustment``
+   Optional heuristics that may improve convergence by reweighting the density
+   of shooting points in each bin.
+
+When launching AIMMD, the ``nchains_per_worker`` parameter controls how many
+independent shooting chains are run in parallel on each worker. This can be used
+to improve sampling efficiency and reduce correlation between chains when
+``selection_pool_size=1``.
 
 Engine Integration
 ------------------

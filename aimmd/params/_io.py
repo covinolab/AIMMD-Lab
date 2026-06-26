@@ -44,7 +44,7 @@ import os
 import sys
 from abc import ABC
 from types import ModuleType
-from pathlib import PosixPath
+from pathlib import Path as PosixPath
 from dataclasses import MISSING
 
 # aimmd imports
@@ -365,9 +365,10 @@ class ParamsIO(ABC):
             filename = self.path
         if filename == self.parent:
             filename = PosixPath(f'{filename}/params.py')
-        if filename.parent != self.parent:
+        elif filename.parent.resolve() != self.parent.resolve():
             raise TypeError(
-                f'can only save to original parent folder: {self.parent}')
+                f'can only save to original parent folder: {self.parent}, '
+                f'got {filename.parent}')
         filename = unique_path(filename)
 
         # create text object

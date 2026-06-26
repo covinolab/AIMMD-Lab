@@ -24,7 +24,8 @@ Notes
 from abc import ABC
 from math import inf
 from typing import List, Callable
-from pathlib import PosixPath
+from numbers import Number
+from pathlib import Path as PosixPath
 from torch.nn import Module as NeuralNetworkModule
 from dataclasses import dataclass, field
 
@@ -269,8 +270,10 @@ Supported values:
         metadata={'description':
 """Number of candidate paths for shooting point selection considered
 at each selection step. For standard TPS (`chain_type='tps'`), this must be 1.
-For RFPS, values > 1 enable pool-based selection and bin rebalancing, while
-improving the homogeneity of the sampled chain."""
+For RFPS, when running with `nchains_per_worker=1`, `selection_pool_size>1`
+enables pool-based selection and bin rebalancing, while improving the
+homogeneity of the sampled chain. As an alternative, you can run multiple
+chains per worker (`nchains_per_worker>1`)"""
                  })
 
     at_least_one_transition_in_pool: bool = field(
@@ -278,7 +281,18 @@ improving the homogeneity of the sampled chain."""
         metadata={'description':
 """If True: ensure each selection pool contains at least 1 transition.
 If True, detailed balance is not strictly preserved, but it can reduce
-stagnation near state boundaries and improve exploration."""
+stagnation near state boundaries and improve exploration.
+When `selection_pool_size=1`, this option effectively reduces to TPS-like
+selection, where transitions have 100% acceptance rate in the pool, and
+non-transitions are always rejected.""" 
+                 })
+    
+    always_select_inside_the_bins: bool = field(
+        default=False,
+        metadata={'description':
+"""If True: ensure you always select from paths with values in the current
+selection bins. This to prevent the simulations from getting stuck close to the
+state boundaries."""
                  })
 
     retry_with_state_definition_glitches: bool = field(
@@ -333,12 +347,24 @@ Recommended for `selection_pool_size > 1`. Values: '' (disable),
 want the extension to happen ("A", "B", "AB", etc.)."""
                  })
     
-    density_adjustment: bool = field(
-        default=True,
+    density_adjustment: Number = field(
+        default=inf,
+        metadata={'description':
+"""Apply a correction to the density during selection to accelerate
+convergence. For each shooting chain, in each bin: multiply the density by
+the number of the latest `density_adjustment` shooting points already
+selected in the bin. It can be combined with `density_adjustment`."""
+                 })
+    
+    shared_density_adjustment: bool = field(
+        default=False,
         metadata={'description':
 """If True: apply a correction to the density during selection to accelerate
 convergence. For each shooting chain, in each bin: multiply the density by
-the number of points already selected in the bin."""
+the number of shooting points already selected in the bin from all chains
+managed by the same worker, plus with that of all the shooting points currently
+being employed in a path sampling simulation. It can be combined with
+`local_density_adjustment`."""
                  })
     
     lorentzian: float = field(
@@ -399,8 +425,8 @@ the last frames of randomly sampled transition paths rather than from the most
 recent state crossing observed in the previous free simulation.
 Accepted elements include:
 - a list of states in capital letters (eg. 'AB'),
-- 'all', which means that you consider *all* free simulations, regardless of their
-target state."""
+- 'all', which means that you consider *all* free simulations, regardless of
+their target state."""
                  })
 
     # ------------------------------------------------------------------

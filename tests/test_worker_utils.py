@@ -50,11 +50,13 @@ def test_register_select_and_accept_path(tmp_path, monkeypatch):
     params = aimmd.Params.placeholder
     params.__dict__["states"] = "ARB"
     params.__dict__["selection_pool_size"] = 1
+    target_state = ''.join(path.states).replace('R', '')[0]  # just not reactive
     shooting_point = select_shooting_point(
-        PathEnsemble(chain[0]), params, str(tmp_path), target_state="A"
+        PathEnsemble(chain[0]), params, str(tmp_path),
+        target_state=target_state
     )
-    # For non-reactive targets the selector picks a random internal frame from
-    # the pool, so the returned timestep simply needs to be a valid frame.
+    # For non-reactive targets the selector picks a random frame in the target
+    # from the pool, so the returned timestep simply needs to be a valid frame.
     assert shooting_point.n_atoms > 0
 
     last = build_path(tmp_path, stem="last")

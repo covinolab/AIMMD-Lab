@@ -27,6 +27,8 @@ def test_params():
             os.system('mkdir run1 run2')
             os.system('cp params.py run1')
             os.system(f'cp {initial} run1')
+            os.system(f'rm params?.py')
+            os.system(f'rm params??.py')
             
             print('Test 1: loading "params.py" into "params" object')
             params = aimmd.Params('params.py')

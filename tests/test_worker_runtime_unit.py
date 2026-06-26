@@ -106,6 +106,8 @@ class TinyFreeWorker(WorkerFree):
         self.total_steps = 0
         self.total_frames = 0
         self._location = ""
+        self.log_file = ""
+        self.original_stdout = ""
 
 
 class TinyShootWorker(WorkerShoot):
@@ -120,6 +122,8 @@ class TinyShootWorker(WorkerShoot):
         self.total_steps = 0
         self.total_frames = 0
         self._location = ""
+        self.log_file = ""
+        self.original_stdout = ""
 
 
 class TinyTrainWorker(WorkerTrain):

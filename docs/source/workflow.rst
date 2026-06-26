@@ -80,6 +80,15 @@ sampling logic described in the latest reference paper. When
 ``chain_type='tps'``, AIMMD instead follows a more traditional TPS-style
 accept/reject chain.
 
+The same worker can handle one or more shooting chains sequentially, and
+different workers also run simultaneusly. Constantly updating the path ensemble
+with many diverse shooting paths and free simulations is important for
+regularizing the training set and improving the training performance. One can
+achieve this by tuning the number of workers, `nchains_per_worker`, and
+`selection_pool_size` per chain. In this way, the `train` worker provides
+frequent updates to the committor model, using always the most recent available
+training data.
+
 Step 5: Analyze the Resulting Path Ensemble
 -------------------------------------------
 
