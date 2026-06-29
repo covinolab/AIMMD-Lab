@@ -88,6 +88,114 @@ independent shooting chains are run in parallel on each worker. This can be used
 to improve sampling efficiency and reduce correlation between chains when
 ``selection_pool_size=1``.
 
+Multi-System (Multi-Ligand) Parameters
+---------------------------------------
+
+These fields turn one params file into a multi-system run that trains a single
+shared committor model across several chemical systems. They all default to the
+single-system behavior, so existing params files are unaffected.
+
+``multi_system``
+   Bool, default ``False``. Enables multi-system mode. When on, the per-system
+   fields below become lists (one entry per system), each system runs in its own
+   subfolder ``<run>/<system_id>/``, and the user data functions receive a
+   ``system_id`` keyword (passed only if their signature accepts it).
+
+``multi_system_share_network``
+   Bool, default ``False``. If ``True``, one shared network is trained by a
+   single trainer that hands ``fit`` a *list* of per-system PathEnsembles
+   (pooled balanced, ``1/N`` per system per bin); the shared network is stored at
+   the run root. If ``False``, each system trains its own network with its own
+   trainer.
+
+``system_ids``
+   List of per-system labels (e.g. ``['G2', 'G4']``); they name the per-system
+   subfolders and index the list-valued fields. Defaults to ``['0', '1', ...]``.
+
+``atom_types``
+   Fixed, ordered list of MDAnalysis atom-type strings defining a *shared* one-hot
+   graph node encoding (e.g.
+   ``['H','C','N','O','F','NA','P','S','CL','BR','I']``). This is what lets one
+   graph network consume graphs from multiple systems. ``None`` (default) keeps
+   the legacy per-universe encoding.
+
+``trainers_share_gpu``
+   Bool, default ``True``. When training separate networks (share OFF), controls
+   whether the per-system trainers bind the same GPU or distinct GPUs.
+
+In multi-system mode ``topology`` and ``initial_paths`` accept lists (one
+topology file per system; one *group* of initial paths per system), and the
+per-run worker counts ``n``/``n1``/``n2`` apply per system. See
+:doc:`workflow` for the full multi-system workflow and the example notebook
+``examples/notebooks/2_multi_system.ipynb``.
+
+.. _bias-recording:
+
+Bias Recording (OPES / PLUMED)
+------------------------------
+
+For runs that apply an **in-state bias** during dynamics (e.g. a frozen
+OPES_METAD that flattens a bound well), AIMMD records the per-frame bias and
+recovers unbiased kinetics with the Tiwary-Parrinello correction. All of these
+default to *off*, so unbiased runs are unaffected.
+
+``record_bias``
+   Bool, default ``False``. When ``True``, the per-frame bias is cached as
+   ``<traj>.bias.npy`` and the trainer prints bias-reweighted rate estimates
+   ``k = 1 / Σ(wᵢ·Lᵢ·γᵢ)`` with ``γᵢ = ⟨exp(bias)⟩`` per path.
+
+``bias_function`` / ``bias_source``
+   The callable that returns the per-frame bias in ``kT``. With
+   ``bias_source='reader'`` it is called ``bias_function(reader)`` (toy /
+   position-based); with ``bias_source='file'`` it is called
+   ``bias_function(fname)`` and reads the associated PLUMED COLVAR file. In a
+   multi-system run a ``system_id`` keyword is forwarded when the signature
+   accepts it; the bias itself usually enters GROMACS through the per-system
+   ``gmx_mdrun`` string (``gmx mdrun -plumed <system>/plumed.dat``).
+
+``bias_reactive_threshold``
+   Float, default ``0.5``. Maximum acceptable mean ``|bias|`` (in ``kT``) inside
+   the reactive region R (the Tiwary-Parrinello assumption). In multi-system mode
+   this may be a single float (applied to every system) or a **list**, one per
+   ``system_ids`` entry.
+
+.. important::
+
+   When biasing with PLUMED, each system's ``PRINT STRIDE`` (COLVAR output stride)
+   must equal that system's ``nstxout-compressed`` so that COLVAR row *i* lines up
+   with trajectory frame *i*; a mismatch silently misaligns the cached bias.
+
+Value-Pass Subsampling
+----------------------
+
+Each training round the trainer recomputes the committor on every reactive frame
+of the (growing) path ensemble before binning and reweighting. With several
+ligands feeding one trainer this value pass can outgrow the job walltime. The
+optional ``subsample_caps`` bounds it by running the value pass / bin generation
+/ reweighting / rate estimate on a fresh **random subsample** of the ensemble
+each round, while ``fit`` (network training) still sees the full ensemble.
+
+``subsample_caps``
+   ``None`` (default) means no subsampling — behaviour is unchanged. Otherwise a
+   dict with any of:
+
+   - ``'shot'`` — max PATHS kept *per shot-excursion direction-type*. The four
+     direction-types ``sAA``, ``sAB``, ``sBA``, ``sBB`` are capped
+     **independently**, so ``'shot': 100`` keeps up to ``4 * 100 = 400`` shot
+     paths per system.
+   - ``'free'`` — max PATHS kept *per free-excursion direction-type* (``fAA``,
+     ``fAB``, ``fBA``, ``fBB`` each), so ``'free': 500`` keeps up to ``2000`` free
+     paths per system.
+   - ``'in_state'`` — max FRAMES kept per state (the in-A and in-B paths are kept
+     until this many frames accumulate, per state).
+
+   A missing key leaves that category uncapped. In a multi-system run this may be
+   a single dict (broadcast to all systems) or a list of dicts/``None`` (one per
+   ``system_ids`` entry). Pick caps generously (e.g. ``shot=100, free=500``):
+   selection is uniform within each category so the reweighting stays a
+   consistent rate estimate, and in-state-only paths carry zero reweight so
+   dropping them never biases the rate.
+
 Engine Integration
 ------------------
 

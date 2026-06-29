@@ -592,7 +592,102 @@ See `bias_function` for details on each mode."""
 After bias computation, the training worker checks the mean absolute bias over all
 frames whose state label equals the reactive-region label (e.g. 'R' in 'ARB').
 If the mean exceeds this threshold, a warning is printed. This validates the
-Tiwary-Parrinello assumption that the bias is negligible inside R."""
+Tiwary-Parrinello assumption that the bias is negligible inside R.
+
+In a multi-system run this may be a single float (applied to every system) or a
+list of floats, one per entry of `system_ids` (each system's bias is checked
+against its own threshold)."""
+                 })
+
+    # ------------------------------------------------------------------
+    # Multi-system (multi-ligand) shared-committor options
+    # ------------------------------------------------------------------
+
+    multi_system: bool = field(
+        default=False,
+        metadata={'description':
+"""Enable multi-system (multi-ligand) mode. When False (default) AIMMD behaves
+exactly as a single-system run. When True, one params file orchestrates several
+chemical systems at once: per-system fields (`topology`, `initial_paths`) become
+lists (one entry per system), each system runs in its own subfolder
+`<run>/<system_id>/`, and the user data functions (`states_function`,
+`descriptors_function`, `values_function`) receive an extra `system_id` keyword
+(passed only if their signature accepts it, so existing single-system functions
+keep working unchanged)."""
+                 })
+
+    multi_system_share_network: bool = field(
+        default=False,
+        metadata={'description':
+"""Train ONE shared committor network across all systems (only meaningful when
+`multi_system=True`). When False, every system gets its own network file and its
+own trainer (the trainers may share a GPU, see `trainers_share_gpu`). When True,
+a single network is trained by one trainer that passes the `fit` function a LIST
+of per-system PathEnsembles; the shared network is stored once at the run-folder
+root and read by every system's shooting workers. Rates/kinetics are still
+computed per system, in sequence."""
+                 })
+
+    system_ids: List = field(
+        default_factory=lambda: [],
+        metadata={'description':
+"""Per-system labels for a multi-system run (e.g. ['G2', 'G4']). They name the
+per-system subfolders `<run>/<system_id>/` and index the per-system entries of
+list-valued fields (`topology`, `initial_paths`). If left empty in multi-system
+mode, defaults to ['0', '1', ...] inferred from the number of topologies."""
+                 })
+
+    atom_types: List = field(
+        default=None,
+        metadata={'description':
+"""Fixed, ordered list of MDAnalysis atom-type strings defining the shared
+one-hot graph node encoding (e.g. ['H','C','N','O','F','NA','P','S','CL','BR','I']).
+When None (default) the graph encoding is derived per-universe from
+`sorted(set(universe.atoms.types))` (legacy single-system behaviour). A fixed
+table is what lets one graph network consume graphs from multiple systems: every
+system encodes into the same columns and the network input width must equal
+`len(atom_types)`. Forwarded to `aimmd.network.graph_utils.get_graphs_pyg`."""
+                 })
+
+    trainers_share_gpu: bool = field(
+        default=True,
+        metadata={'description':
+"""When `multi_system=True` and `multi_system_share_network=False`, each system
+has its own trainer. If True (default), all of a run's per-system trainers are
+bound to the SAME GPU (one shared device); if False they are spread across
+distinct GPUs. Ignored when a single shared network is trained (then there is
+only one trainer)."""
+                 })
+
+    # ------------------------------------------------------------------
+    # Training-time value-pass subsampling (optional; speeds up large runs)
+    # ------------------------------------------------------------------
+
+    subsample_caps: dict = field(
+        default=None,
+        metadata={'description':
+"""Optional caps that bound the per-round committor *value pass* (and the bin
+generation / reweighting / rate estimate that consume it) by evaluating them on a
+randomly subsampled slice of the path ensemble instead of every reactive frame.
+`fit` (network training) is unaffected and still sees the full ensemble.
+
+When None (default) NO subsampling happens and behaviour is identical to before.
+When a dict, the recognised keys are:
+
+- 'shot'     : max number of PATHS kept *per shot-excursion direction-type*.
+               Each of sAA, sAB, sBA, sBB is capped independently, so a value of
+               100 keeps up to 4*100 = 400 shot paths per system.
+- 'free'     : max number of PATHS kept *per free-excursion direction-type*.
+               Each of fAA, fAB, fBA, fBB is capped independently, so a value of
+               500 keeps up to 4*500 = 2000 free paths per system.
+- 'in_state' : max number of FRAMES kept per state (the in-A and in-B paths are
+               kept until this many frames are reached, per state, per system).
+
+A missing key means that category is left uncapped. The subsample is drawn fresh
+each round (uniformly within each category, so reweighting stays consistent;
+in-state-only paths carry zero reweight so never bias the rate). In a multi-system
+run this may be a single dict (applied to every system) or a list of dicts/None,
+one per entry of `system_ids`. Pick caps generously (e.g. shot=100, free=500)."""
                  })
 
     # ------------------------------------------------------------------

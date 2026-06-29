@@ -2,6 +2,7 @@ from pathlib import Path
 import shutil
 
 import numpy as np
+import pytest
 
 import aimmd
 from tests._helpers_unit import build_params_file, build_path, simple_descriptors_function
@@ -53,6 +54,150 @@ def test_params_load_save_update_and_paths(tmp_path):
     shutil.copy2(initial.fname, chain_dir / "path000001.xtc")
     ensemble = params.pathensemble(run_dir)
     assert len(ensemble) >= 1
+
+
+def test_multi_system_params_fields_and_roundtrip(tmp_path):
+    """Multi-system params: list topology, per-system universes, system_id-aware
+    functions, shared-network path resolution, and a save/reload round-trip."""
+    source = '''
+import numpy as np
+import torch
+
+engine = 'toy'
+multi_system = True
+multi_system_share_network = True
+system_ids = ['G2', 'G4']
+topology = ['G2.gro', 'G4.gro']
+atom_types = ['H', 'C', 'N', 'O', 'NA', 'BR']
+
+def states_function(trajectory, system_id=None):
+    cut = 1.0 if system_id == 'G2' else 1.5
+    return np.array(['R'] * len(trajectory), dtype='<U1')
+
+class Network(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(1, 1)
+    def forward(self, x):
+        return self.lin(x[:, :1])
+network = Network()
+'''
+    params_file = tmp_path / "params.py"
+    params_file.write_text(source)
+
+    params = aimmd.Params.load(str(params_file), save=False)
+    assert params.multi_system and params.multi_system_share_network
+    assert params.system_ids == ['G2', 'G4']
+    assert params.topology == ['G2.gro', 'G4.gro']
+    assert params.atom_types == ['H', 'C', 'N', 'O', 'NA', 'BR']
+    # per-system universe cache exists (dummy topologies -> None, but keyed)
+    assert set(params.__dict__['_universes']) == {'G2', 'G4'}
+    # shared network resolves to the run root from a per-system subfolder
+    assert params._network_fname('run1/G2') == 'run1/networkARB.h5'
+    assert params._network_fname('run1') == 'run1/networkARB.h5'
+
+    # save and reload round-trips the list/grouped fields (topology entries are
+    # rewritten to paths relative to the saved file, exactly as single-system)
+    saved = Path(params.save(tmp_path / "saved.py"))
+    reloaded = aimmd.Params.load(str(saved), save=False)
+    assert reloaded.system_ids == ['G2', 'G4']
+    assert isinstance(reloaded.topology, list) and len(reloaded.topology) == 2
+    assert reloaded.multi_system is True
+    assert reloaded.multi_system_share_network is True
+    assert reloaded.atom_types == ['H', 'C', 'N', 'O', 'NA', 'BR']
+
+
+def test_multi_system_bias_reactive_threshold_per_system(tmp_path):
+    """A per-system `bias_reactive_threshold` list is validated, resolved via
+    `bias_reactive_threshold_of`, and survives a save/reload round-trip."""
+    source = '''
+import numpy as np
+import torch
+
+engine = 'toy'
+multi_system = True
+multi_system_share_network = True
+system_ids = ['G2', 'G4']
+topology = ['G2.gro', 'G4.gro']
+record_bias = True
+bias_source = 'file'
+bias_reactive_threshold = [0.5, 0.3]
+
+def states_function(trajectory, system_id=None):
+    return np.array(['R'] * len(trajectory), dtype='<U1')
+
+class Network(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(1, 1)
+    def forward(self, x):
+        return self.lin(x[:, :1])
+network = Network()
+'''
+    params_file = tmp_path / "params.py"
+    params_file.write_text(source)
+
+    params = aimmd.Params.load(str(params_file), save=False)
+    assert params.bias_reactive_threshold == [0.5, 0.3]
+    assert params.bias_reactive_threshold_of('G2') == 0.5
+    assert params.bias_reactive_threshold_of('G4') == 0.3
+
+    saved = Path(params.save(tmp_path / "saved.py"))
+    reloaded = aimmd.Params.load(str(saved), save=False)
+    assert reloaded.bias_reactive_threshold == [0.5, 0.3]
+    assert reloaded.bias_reactive_threshold_of('G4') == 0.3
+
+    # a wrong-length list is rejected
+    bad = source.replace('[0.5, 0.3]', '[0.5, 0.3, 0.1]')
+    (tmp_path / "bad.py").write_text(bad)
+    with pytest.raises(TypeError):
+        aimmd.Params.load(str(tmp_path / "bad.py"), save=False)
+
+
+def test_subsample_caps_validation_and_roundtrip(tmp_path):
+    """subsample_caps validates keys/values, resolves per system, and round-trips
+    through save/reload."""
+    source = '''
+import numpy as np
+import torch
+
+engine = 'toy'
+multi_system = True
+multi_system_share_network = True
+system_ids = ['G2', 'G4']
+topology = ['G2.gro', 'G4.gro']
+subsample_caps = [{'shot': 100, 'free': 500, 'in_state': 5000}, None]
+
+def states_function(trajectory, system_id=None):
+    return np.array(['R'] * len(trajectory), dtype='<U1')
+
+class Network(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(1, 1)
+    def forward(self, x):
+        return self.lin(x[:, :1])
+network = Network()
+'''
+    params_file = tmp_path / "params.py"
+    params_file.write_text(source)
+
+    params = aimmd.Params.load(str(params_file), save=False)
+    assert params.subsample_caps_of('G2') == {'shot': 100, 'free': 500,
+                                              'in_state': 5000}
+    assert params.subsample_caps_of('G4') is None     # per-system None = uncapped
+
+    saved = Path(params.save(tmp_path / "saved.py"))
+    reloaded = aimmd.Params.load(str(saved), save=False)
+    assert reloaded.subsample_caps_of('G2')['shot'] == 100
+
+    # bad key and non-positive value are rejected
+    for bad_caps in ("{'bogus': 1}", "{'shot': 0}", "{'shot': -5}"):
+        bad = source.replace(
+            "[{'shot': 100, 'free': 500, 'in_state': 5000}, None]", bad_caps)
+        (tmp_path / "bad.py").write_text(bad)
+        with pytest.raises(TypeError):
+            aimmd.Params.load(str(tmp_path / "bad.py"), save=False)
 
 
 def test_params_validation_rejects_bad_network(tmp_path):

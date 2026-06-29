@@ -40,6 +40,7 @@ from numbers import Integral
 # aimmd imports
 from .utils import match_patterns
 from ..path import Path
+from ..path.utils import read_sweep_frame
 from ._helpers import PathEnsembleHelpers
 from ..core.utils import merge_ranges
 
@@ -118,6 +119,92 @@ class PathEnsembleMethods(ABC):
             from . import PathEnsemble
             return PathEnsemble()
         return self[self.types(*types)]
+
+    def subsample(self, caps, states='ARB', rng=None):
+        """Return a randomly down-sampled sub-ensemble with per-category caps.
+
+        This bounds the cost of an expensive per-round value pass (and the bins /
+        reweighting that consume it) by keeping only a capped, uniformly drawn
+        subset of paths in each category, while leaving the *full* ensemble for
+        training. Selection is uniform within each category so the reweighting
+        per-category renormalisation stays consistent; in-state-only paths carry
+        zero reweight, so dropping them never biases the rate estimate.
+
+        Categories use the 4-character ``Path.type`` (initial, middle, final,
+        shooting state). With ``states='ARB'`` (a=A, r=R, b=B):
+
+        - *shot* excursions  : middle == r and shooting == r,
+        - *free* excursions  : middle == r and shooting != r,
+        - *in-state* paths   : middle != r (grouped by the initial state).
+
+        Parameters
+        ----------
+        caps : dict or None
+            Validated ``Params.subsample_caps`` for this system. Recognised keys:
+
+            - ``'shot'`` / ``'free'`` : max PATHS kept *per direction-type*
+              (``oXdX``, i.e. each of AA/AB/BA/BB capped independently),
+            - ``'in_state'`` : max FRAMES kept per state.
+
+            A missing key leaves that category uncapped. ``None``/empty returns
+            ``self`` unchanged.
+        states : str, default 'ARB'
+            Three-character state string ``(A, R, B)``.
+        rng : numpy.random.Generator or None
+            Source of randomness. A fresh default generator is used if ``None``.
+
+        Returns
+        -------
+        PathEnsemble
+            A new ensemble (a real slice of ``self``). Returns ``self`` if no cap
+            applies or the ensemble is empty.
+        """
+        if not caps:
+            return self
+        n = len(self._paths)
+        if n == 0:
+            return self
+        if rng is None:
+            rng = np.random.default_rng()
+
+        a, r, b = states[0], states[1], states[2]
+        codes = self.types().view('U1').reshape(n, 4)   # init, mid, final, shoot
+        init, mid, final, shoot = codes[:, 0], codes[:, 1], codes[:, 2], codes[:, 3]
+        n_frames = self.n_frames
+
+        keep = np.ones(n, dtype=bool)
+
+        def cap_paths(mask, cap):
+            idx = np.flatnonzero(mask)
+            if cap is not None and len(idx) > cap:
+                drop = rng.choice(idx, size=len(idx) - cap, replace=False)
+                keep[drop] = False
+
+        excursion = (mid == r)
+        is_shot = excursion & (shoot == r)
+        is_free = excursion & (shoot != r)
+
+        shot_cap = caps.get('shot')
+        free_cap = caps.get('free')
+        for origin in (a, b):
+            for dest in (a, b):
+                cap_paths(is_shot & (init == origin) & (final == dest), shot_cap)
+                cap_paths(is_free & (init == origin) & (final == dest), free_cap)
+
+        in_cap = caps.get('in_state')
+        if in_cap is not None:
+            in_state = ~excursion & ((init == a) | (init == b))
+            for state in (a, b):
+                idx = np.flatnonzero(in_state & (init == state))
+                if len(idx) == 0:
+                    continue
+                order = rng.permutation(idx)
+                # keep paths whose cumulative frame total (before this path) is
+                # still below the budget -> always keeps >= 1 path per state.
+                prefix = np.cumsum(n_frames[order]) - n_frames[order]
+                keep[order[prefix >= in_cap]] = False
+
+        return self[keep]
 
     def pop(self, i=None):
         """
@@ -223,14 +310,21 @@ class PathEnsembleMethods(ABC):
 
         Notes
         -----
-        Paths are assigned to sweep points by `i % sweep_size`.
+        Each path is assigned to the sweep point (validation frame) it was shot
+        from: the frame index tagged on the trajectory by
+        :func:`aimmd.path.utils.write_sweep_frame`, if present. Shots written by
+        an older code path carry no tag and fall back to positional assignment
+        `i % sweep_size` -- which is exactly the frame the old strictly-sequential
+        sweep shot, so legacy data is attributed correctly without modification.
         """
         if sweep_size <= 0:
             sweep_size = len(self)
 
         results = np.zeros((sweep_size, 2))
         for i, path in enumerate(self._paths):
-            results[i % sweep_size] += path.shooting_result(states)
+            frame = read_sweep_frame(path.fname) if path.fname else None
+            index = i if frame is None else frame
+            results[index % sweep_size] += path.shooting_result(states)
         return results
 
     def copy(self):

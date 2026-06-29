@@ -112,8 +112,9 @@ class LauncherRun(ABC):
     def run(self, n=1, n1=0, n2=0,
             reactive_region_mode='chain',
             state1_mode='free', state2_mode='free',
-            nchains_per_worker=1, nsteps=inf, nframes=inf, nrounds=None,
-            walltime=inf, cpus_per_task='share', gpus_per_task='share'):
+            nsteps=inf, nframes=inf, nrounds=None,
+            walltime=inf, cpus_per_task='share', gpus_per_task='share',
+            nchains_per_worker=1):
         """
         Launch AIMMD runs locally by spawning multiple worker processes.
 

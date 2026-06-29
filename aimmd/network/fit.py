@@ -50,7 +50,7 @@ from scipy.special import expit
 
 # aimmd imports
 from .utils import extract_indices_and_series, extract_lsr_pairs, extract_mar_sequences
-from ..core.utils import concatenate, now
+from ..core.utils import concatenate, now, accepts_system_id
 from ..analysis.utils import compute_bins, merge_marginal_bins
 from ..path.utils import get_cache_fname
 from .._config import NPY_CACHE
@@ -87,6 +87,160 @@ def _load_batch_descriptors(npy_paths, locs):
     return np.array(result)
 
 
+# ----------------------------------------------------------------------------
+# Multi-system (multi-ligand) helpers
+#
+# ``fit`` accepts either a single PathEnsemble (single-system, unchanged
+# behaviour) or a LIST of PathEnsembles (one per chemical system). For a list,
+# every system's frames are pooled into the same flat training arrays and a
+# parallel ``system_id`` array tags each frame, so the existing
+# selection-probability machinery balances the systems (each carries 1/N of the
+# selection weight in every bin, including the in-state anchors). The helpers
+# below factor the per-system extraction and the per-batch / per-block
+# descriptor handling so that systems with *different atom counts* never get
+# stacked into a single dense array before they are featurized into the shared
+# network's input space.
+# ----------------------------------------------------------------------------
+
+# The 10 frame categories, in the fixed order used by every flat training array
+# (selection_probabilities, results, system_id, ...).
+CATEGORY_NAMES = ['in1', 'in2', 'free1to1', 'free2to2', 'free1to2',
+                  'free2to1', 'shot1to1', 'shot2to2', 'shot1to2', 'shot2to1']
+
+
+def _category_specs(i, t, f, s, a, r, b):
+    """Return ``(name, frame_mask, has_values)`` for each of the 10 categories.
+
+    ``has_values`` marks the reactive (free/shot) categories that carry committor
+    'values'; the two in-state anchor categories (in1/in2) do not.
+
+    The in-state anchors select *all* in-a / in-b frames regardless of path
+    history (so aa*/bb* paths contribute too); this pins the basins from the
+    start even before reactive (ra*/rb*) paths exist. Since these anchors carry
+    no 'values', broadening them does not affect reweighting or rates.
+    """
+    return [
+        ('in1',      (t == a),                                  False),
+        ('in2',      (t == b),                                  False),
+        ('free1to1', (i == a) & (t == r) & (f != b) & (s == a), True),
+        ('free2to2', (i == b) & (t == r) & (f != a) & (s == b), True),
+        ('free1to2', (i == a) & (t == r) & (f == b) & (s == a), True),
+        ('free2to1', (i == b) & (t == r) & (f == a) & (s == b), True),
+        ('shot1to1', (i == a) & (t == r) & (f != b) & (s == r), True),
+        ('shot2to2', (i == b) & (t == r) & (f != a) & (s == r), True),
+        ('shot1to2', (i == a) & (t == r) & (f == b) & (s == r), True),
+        ('shot2to1', (i == b) & (t == r) & (f == a) & (s == r), True),
+    ]
+
+
+def _extract_categories(pathensemble, a, r, b, desc_series, must_stop):
+    """Extract the per-frame arrays for all 10 categories from ONE PathEnsemble.
+
+    Returns ``{name: {back, forw, values, desc_ref, npaths, n}}`` (``values`` is
+    None for the in-state categories) or None if the worker requested
+    termination. This is the per-PathEnsemble unit that ``fit`` concatenates
+    across systems for multi-system (list-of-PathEnsembles) training.
+    """
+    types = pathensemble.types()
+    i, t, f, s = types.view('U1').reshape(len(types), 4).T
+    out = {}
+    for name, mask, has_values in _category_specs(i, t, f, s, a, r, b):
+        series = ('values', *desc_series) if has_values else desc_series
+        result = extract_indices_and_series(
+            pathensemble, np.flatnonzero(mask), *series)
+        if has_values:
+            indices, back, forw, values, *desc_ref, npaths = result
+        else:
+            indices, back, forw, *desc_ref, npaths = result
+            values = None
+        back = np.asarray(back)
+        out[name] = dict(back=back, forw=np.asarray(forw), values=values,
+                         desc_ref=desc_ref, npaths=npaths, n=len(back))
+        if must_stop():
+            return None
+    return out
+
+
+def _assign_balanced_uniform(selection_probabilities, start, stop,
+                             system_id, total_mass):
+    """Spread ``total_mass`` uniformly over a contiguous block of frames, split
+    equally across the systems present in the block.
+
+    Each present system carries ``total_mass / n_present`` (uniform over its own
+    frames). With a single system this reduces exactly to the plain
+    ``total_mass / block_size`` uniform weighting used in single-system fits.
+    """
+    if stop <= start:
+        return
+    sids = system_id[start:stop]
+    present = np.unique(sids)
+    share = total_mass / len(present)
+    for sid in present:
+        sub = np.flatnonzero(sids == sid)
+        selection_probabilities[start + sub] = share / len(sub)
+
+
+def _load_batch_descriptors_routed(npy_paths, locs, system_id, system_labels,
+                                   descriptor_transform, transform_takes_sid,
+                                   graphs):
+    """Per-batch descriptor build for multi-system, ``in_memory=False``.
+
+    A training batch mixes frames from several systems (different topologies /
+    atom counts), so they cannot be stacked and transformed together. Frames are
+    grouped by system, each group is loaded and transformed with its own
+    ``system_id`` into the shared network's input space, then reassembled in the
+    original batch order. Returns a list of ``Data`` (graphs) or a 2D array
+    (dense).
+    """
+    out = [None] * len(npy_paths)
+    for j in np.unique(system_id):
+        sel = np.flatnonzero(system_id == j)
+        raw = _load_batch_descriptors(npy_paths[sel], locs[sel])
+        label = system_labels[j]
+        if transform_takes_sid:
+            transformed = descriptor_transform(raw, system_id=label)
+        else:
+            transformed = descriptor_transform(raw)
+        for k, idx in enumerate(sel):
+            out[idx] = transformed[k]
+    if graphs:
+        return out
+    return np.asarray(out)
+
+
+def _assemble_inmemory_multi(desc_raw_blocks, keepers, descriptor_transform,
+                             transform_takes_sid, system_labels, graphs):
+    """Build the upfront-transformed descriptors for multi-system, in_memory=True.
+
+    ``desc_raw_blocks`` is a list of ``(system_index, raw_2D_array)`` in the same
+    global frame order as ``keepers``/``selection_probabilities``. Each block is
+    homogeneous (one system), so we filter it by its slice of ``keepers``,
+    transform it with that system's ``system_id`` (graphs -> list of Data; dense
+    -> fixed-width rows), and concatenate. This keeps the in_memory benefit
+    (transform once, up front) while never stacking different atom counts raw.
+    """
+    parts = []
+    offset = 0
+    for system_index, raw in desc_raw_blocks:
+        length = len(raw)
+        sub = keepers[offset:offset + length]
+        offset += length
+        if not sub.any():
+            continue
+        block = raw[sub]
+        label = system_labels[system_index]
+        if transform_takes_sid:
+            transformed = descriptor_transform(block, system_id=label)
+        else:
+            transformed = descriptor_transform(block)
+        parts.append(transformed)
+    if graphs:
+        return [graph for part in parts for graph in part]
+    if parts:
+        return np.concatenate(parts, axis=0)
+    return np.array([])
+
+
 def fit(params,
         pathensemble,
         
@@ -98,8 +252,7 @@ def fit(params,
         max_adjustment_in_bin=10.0,
         transition_path_upweighting=1.0,
         end_state_factor=1.0,
-        sparse_update_max_frames=-1,
-        
+
         # data augmentation
         augment='no',
         
@@ -219,10 +372,6 @@ def fit(params,
     end_state_factor : float, default=1.0
         Base factor used for end-state (in-`a`, in-`b`) selection probability
         before bin-based adjustments.
-
-    sparse_update_max_frames : int, default=-1
-        Currently only ``-1`` is accepted (enforced by a check). Present for
-        forward compatibility with sparse updates.
 
     augment : {'no', 'yes', 'experimental'}, default='no'
         Data augmentation mode.
@@ -372,10 +521,7 @@ def fit(params,
         raise TypeError(f"Invalid batching strategy: {batching_strategy}")
     if augment not in ('no', 'yes', 'experimental'):
         raise TypeError(f"Invalid augment: {augment!r}")
-    if sparse_update_max_frames != -1:
-        raise TypeError('In this version of aimmd, only '
-                        'sparse_update_max_frames = -1 is supported')
-    
+
     # Optional dependency only when graph descriptors are enabled
     if graphs:
         # only need to import this torch_geometric Batch if graphs
@@ -401,7 +547,33 @@ def fit(params,
     descriptor_transform = params.descriptor_transform
     if params.descriptor_transform is None:
         descriptor_transform = lambda x: x
-    
+
+    # Multi-system: ``pathensemble`` may be a LIST of PathEnsembles, one per
+    # system. Normalize to a list and detect the multi-system case. The single
+    # PathEnsemble case (``multi`` False) runs the original code paths verbatim.
+    pes = (list(pathensemble)
+           if isinstance(pathensemble, (list, tuple)) else [pathensemble])
+    n_systems = len(pes)
+    multi = n_systems > 1
+    if not multi:
+        # a single PathEnsemble (or a 1-element list) runs the original,
+        # single-system code paths below operating on this one ensemble.
+        pathensemble = pes[0]
+    system_labels = list(getattr(params, 'system_ids', None) or range(n_systems))
+    if len(system_labels) < n_systems:                  # pad missing labels
+        system_labels = list(range(n_systems))
+    transform_takes_sid = accepts_system_id(descriptor_transform)
+    if multi and (lsr_weight or mar_weight):
+        raise NotImplementedError(
+            'LSR/MAR regularization is not yet supported for multi-system '
+            '(list of PathEnsembles) fits; set lsr_weight=mar_weight=0')
+    if multi and train_validation_early_stopping:
+        raise NotImplementedError(
+            'train/validation early stopping is not yet supported for '
+            'multi-system fits')
+    # system_id tags each pooled frame; built in the extraction step below.
+    system_id = None
+
     # legacy placeholders (kept as-is; only set when `augment` is falsy)
     if not augment:
         th1 = None
@@ -411,7 +583,7 @@ def fit(params,
     must_stop = lambda : getattr(worker, 'termination_signal', False)
     
     # Classify paths by their type codes
-    types = pathensemble.types()
+    types = pes[0].types()
     i, t, f, s = types.view('U1').reshape(len(types), 4).T
     # i: initial states of path
     # f: final states of path
@@ -422,85 +594,171 @@ def fit(params,
     # instead of the full raw descriptor array. Raw data is loaded per batch.
     _desc_series = (descriptors_source,) if in_memory else ('filenames', 'locs')
 
-    # Collect indices + descriptors/values for each relevant category
-    # (each call may skip paths that cannot provide the requested series)
-    (in1, in1_back, in1_forw, *in1_desc_ref,
-     npaths_in1) = extract_indices_and_series(pathensemble,
-        np.flatnonzero(t == a), *_desc_series)
-    # Select in-a frames (regardless of the path history).
-    # In this way, aa* paths are included, which can be useful in the initial
-    # stage of a run when there may be no ra* paths yet.
-    # The same applies to the in-b frames below.
-    if must_stop():  # responsiveness
-        return [], [], [], [], []
-    (in2, in2_back, in2_forw, *in2_desc_ref,
-     npaths_in2) = extract_indices_and_series(pathensemble,
-        np.flatnonzero(t == b), *_desc_series)
-    if must_stop():
-        return [], [], [], [], []
-    (free1to1, free1to1_back, free1to1_forw,
-     free1to1_values, *free1to1_desc_ref,
-     npaths_free1to1) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == a) & (t == r) & (f != b) & (s == a)),
-        'values', *_desc_series)
-    if must_stop():
-        return [], [], [], [], []
-    (free2to2, free2to2_back, free2to2_forw,
-     free2to2_values, *free2to2_desc_ref,
-     npaths_free2to2) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == b) & (t == r) & (f != a) & (s == b)),
-        'values', *_desc_series)
-    if must_stop():
-        return [], [], [], [], []
-    (free1to2, free1to2_back, free1to2_forw,
-     free1to2_values, *free1to2_desc_ref,
-     npaths_free1to2) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == a) & (t == r) & (f == b) & (s == a)),
-        'values', *_desc_series)
-    if must_stop():
-        return [], [], [], [], []
-    (free2to1, free2to1_back, free2to1_forw,
-     free2to1_values, *free2to1_desc_ref,
-     npaths_free2to1) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == b) & (t == r) & (f == a) & (s == b)),
-        'values', *_desc_series)
-    if must_stop():
-        return [], [], [], [], []
-    (shot1to1, shot1to1_back, shot1to1_forw,
-     shot1to1_values, *shot1to1_desc_ref,
-     npaths_shot1to1) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == a) & (t == r) & (f != b) & (s == r)),
-        'values', *_desc_series)
-    if must_stop():
-        return [], [], [], [], []
-    (shot2to2, shot2to2_back, shot2to2_forw,
-     shot2to2_values, *shot2to2_desc_ref,
-     npaths_shot2to2) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == b) & (t == r) & (f != a) & (s == r)),
-        'values', *_desc_series)
-    if must_stop():
-        return [], [], [], [], []
-    (shot1to2, shot1to2_back, shot1to2_forw,
-     shot1to2_values, *shot1to2_desc_ref,
-     npaths_shot1to2) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == a) & (t == r) & (f == b) & (s == r)),
-        'values', *_desc_series)
-    if must_stop():
-        return [], [], [], [], []
-    (shot2to1, shot2to1_back, shot2to1_forw,
-     shot2to1_values, *shot2to1_desc_ref,
-     npaths_shot2to1) = extract_indices_and_series(pathensemble,
-        np.flatnonzero((i == b) & (t == r) & (f == a) & (s == r)),
-        'values', *_desc_series)
-    if must_stop():
-        return [], [], [], [], []
-    
+    # desc_raw_blocks (in_memory multi) holds (system_index, raw_array) in the
+    # global frame order; built only in the multi branch.
+    desc_raw_blocks = None
+
+    if not multi:
+        # ---- single-system extraction ----
+        # Collect indices + descriptors/values for each relevant category
+        # (each call may skip paths that cannot provide the requested series)
+        # Select in-a frames (regardless of the path history). In this way,
+        # aa* paths are included, which can be useful in the initial stage of a
+        # run when there may be no ra* paths yet. Same for the in-b frames below.
+        (in1, in1_back, in1_forw, *in1_desc_ref,
+         npaths_in1) = extract_indices_and_series(pathensemble,
+            np.flatnonzero(t == a), *_desc_series)
+        if must_stop():  # responsiveness
+            return [], [], [], [], []
+        (in2, in2_back, in2_forw, *in2_desc_ref,
+         npaths_in2) = extract_indices_and_series(pathensemble,
+            np.flatnonzero(t == b), *_desc_series)
+        if must_stop():
+            return [], [], [], [], []
+        (free1to1, free1to1_back, free1to1_forw,
+         free1to1_values, *free1to1_desc_ref,
+         npaths_free1to1) = extract_indices_and_series(pathensemble,
+            np.flatnonzero((i == a) & (t == r) & (f != b) & (s == a)),
+            'values', *_desc_series)
+        if must_stop():
+            return [], [], [], [], []
+        (free2to2, free2to2_back, free2to2_forw,
+         free2to2_values, *free2to2_desc_ref,
+         npaths_free2to2) = extract_indices_and_series(pathensemble,
+            np.flatnonzero((i == b) & (t == r) & (f != a) & (s == b)),
+            'values', *_desc_series)
+        if must_stop():
+            return [], [], [], [], []
+        (free1to2, free1to2_back, free1to2_forw,
+         free1to2_values, *free1to2_desc_ref,
+         npaths_free1to2) = extract_indices_and_series(pathensemble,
+            np.flatnonzero((i == a) & (t == r) & (f == b) & (s == a)),
+            'values', *_desc_series)
+        if must_stop():
+            return [], [], [], [], []
+        (free2to1, free2to1_back, free2to1_forw,
+         free2to1_values, *free2to1_desc_ref,
+         npaths_free2to1) = extract_indices_and_series(pathensemble,
+            np.flatnonzero((i == b) & (t == r) & (f == a) & (s == b)),
+            'values', *_desc_series)
+        if must_stop():
+            return [], [], [], [], []
+        (shot1to1, shot1to1_back, shot1to1_forw,
+         shot1to1_values, *shot1to1_desc_ref,
+         npaths_shot1to1) = extract_indices_and_series(pathensemble,
+            np.flatnonzero((i == a) & (t == r) & (f != b) & (s == r)),
+            'values', *_desc_series)
+        if must_stop():
+            return [], [], [], [], []
+        (shot2to2, shot2to2_back, shot2to2_forw,
+         shot2to2_values, *shot2to2_desc_ref,
+         npaths_shot2to2) = extract_indices_and_series(pathensemble,
+            np.flatnonzero((i == b) & (t == r) & (f != a) & (s == r)),
+            'values', *_desc_series)
+        if must_stop():
+            return [], [], [], [], []
+        (shot1to2, shot1to2_back, shot1to2_forw,
+         shot1to2_values, *shot1to2_desc_ref,
+         npaths_shot1to2) = extract_indices_and_series(pathensemble,
+            np.flatnonzero((i == a) & (t == r) & (f == b) & (s == r)),
+            'values', *_desc_series)
+        if must_stop():
+            return [], [], [], [], []
+        (shot2to1, shot2to1_back, shot2to1_forw,
+         shot2to1_values, *shot2to1_desc_ref,
+         npaths_shot2to1) = extract_indices_and_series(pathensemble,
+            np.flatnonzero((i == b) & (t == r) & (f == a) & (s == r)),
+            'values', *_desc_series)
+        if must_stop():
+            return [], [], [], [], []
+        in1_n = len(in1_back)
+
+    else:
+        # ---- multi-system extraction: pool all systems, tag each frame ----
+        # Extract every system independently, then concatenate per category in
+        # the fixed [category: system0, system1, ...] order so that values,
+        # results, system_id and descriptors all share one global frame order.
+        per_pe = []
+        for pe in pes:
+            cats = _extract_categories(pe, a, r, b, _desc_series, must_stop)
+            if cats is None:
+                return [], [], [], [], []
+            per_pe.append(cats)
+
+        def _cat(name, key):
+            arrs = [np.asarray(pp[name][key]) for pp in per_pe
+                    if pp[name][key] is not None]
+            nonempty = [x for x in arrs if len(x)]
+            if nonempty:
+                return np.concatenate(nonempty)
+            return arrs[0] if arrs else np.array([])
+
+        # back/forw masks and (reactive) values, per category, pooled
+        in1_back, in1_forw = _cat('in1', 'back'), _cat('in1', 'forw')
+        in2_back, in2_forw = _cat('in2', 'back'), _cat('in2', 'forw')
+        free1to1_back, free1to1_forw = _cat('free1to1', 'back'), _cat('free1to1', 'forw')
+        free2to2_back, free2to2_forw = _cat('free2to2', 'back'), _cat('free2to2', 'forw')
+        free1to2_back, free1to2_forw = _cat('free1to2', 'back'), _cat('free1to2', 'forw')
+        free2to1_back, free2to1_forw = _cat('free2to1', 'back'), _cat('free2to1', 'forw')
+        shot1to1_back, shot1to1_forw = _cat('shot1to1', 'back'), _cat('shot1to1', 'forw')
+        shot2to2_back, shot2to2_forw = _cat('shot2to2', 'back'), _cat('shot2to2', 'forw')
+        shot1to2_back, shot1to2_forw = _cat('shot1to2', 'back'), _cat('shot1to2', 'forw')
+        shot2to1_back, shot2to1_forw = _cat('shot2to1', 'back'), _cat('shot2to1', 'forw')
+        free1to1_values = _cat('free1to1', 'values')
+        free2to2_values = _cat('free2to2', 'values')
+        free1to2_values = _cat('free1to2', 'values')
+        free2to1_values = _cat('free2to1', 'values')
+        shot1to1_values = _cat('shot1to1', 'values')
+        shot2to2_values = _cat('shot2to2', 'values')
+        shot1to2_values = _cat('shot1to2', 'values')
+        shot2to1_values = _cat('shot2to1', 'values')
+        npaths_in1 = sum(pp['in1']['npaths'] for pp in per_pe)
+        npaths_in2 = sum(pp['in2']['npaths'] for pp in per_pe)
+        npaths_free1to1 = sum(pp['free1to1']['npaths'] for pp in per_pe)
+        npaths_free2to2 = sum(pp['free2to2']['npaths'] for pp in per_pe)
+        npaths_free1to2 = sum(pp['free1to2']['npaths'] for pp in per_pe)
+        npaths_free2to1 = sum(pp['free2to1']['npaths'] for pp in per_pe)
+        npaths_shot1to1 = sum(pp['shot1to1']['npaths'] for pp in per_pe)
+        npaths_shot2to2 = sum(pp['shot2to2']['npaths'] for pp in per_pe)
+        npaths_shot1to2 = sum(pp['shot1to2']['npaths'] for pp in per_pe)
+        npaths_shot2to1 = sum(pp['shot2to1']['npaths'] for pp in per_pe)
+        in1_n = len(in1_back)
+
+        # per-frame system_id in the global [category: system0, system1, ...] order
+        sid_chunks = []
+        for name in CATEGORY_NAMES:
+            for j, pp in enumerate(per_pe):
+                sid_chunks.append(np.full(pp[name]['n'], j, dtype=int))
+        system_id = (np.concatenate(sid_chunks) if sid_chunks
+                     else np.array([], dtype=int))
+
+        # descriptor handling (never stacks different atom counts raw)
+        if in_memory:
+            desc_raw_blocks = []
+            for name in CATEGORY_NAMES:
+                for j, pp in enumerate(per_pe):
+                    desc_raw_blocks.append(
+                        (j, np.asarray(pp[name]['desc_ref'][0])))
+        else:
+            fn_chunks, loc_chunks = [], []
+            for name in CATEGORY_NAMES:
+                for j, pp in enumerate(per_pe):
+                    fn_chunks.append(np.asarray(pp[name]['desc_ref'][0]))
+                    loc_chunks.append(np.asarray(pp[name]['desc_ref'][1]))
+            _fn = [c for c in fn_chunks if len(c)]
+            _lc = [c for c in loc_chunks if len(c)]
+            desc_fnames = np.concatenate(_fn) if _fn else np.array([])
+            desc_locs = (np.concatenate(_lc) if _lc
+                         else np.array([], dtype=int))
+            desc_npy_paths = np.array(
+                [get_cache_fname(f, 'descriptors') for f in desc_fnames])
+
     # Report collection statistics
-    lengths = [len(in1), len(in2),
-               len(free1to1), len(free2to2),
-               len(free1to2), len(free2to1),
-               len(shot1to1), len(shot2to2),
-               len(shot1to2), len(shot2to1)]
+    lengths = [len(in1_back), len(in2_back),
+               len(free1to1_back), len(free2to2_back),
+               len(free1to2_back), len(free2to1_back),
+               len(shot1to1_back), len(shot2to2_back),
+               len(shot1to2_back), len(shot2to1_back)]
     print(f'\nCollected {lengths[0]:9} in {a} frames '
                    f'({npaths_in1:6} paths),\n'
             f'          {lengths[1]:9} in {b} frames '
@@ -522,7 +780,21 @@ def fit(params,
             f'          {lengths[9]:9} shot {b} to {a} frames '
                    f'({npaths_shot2to1:6} paths)\n'
             f'   TOTAL: {sum(lengths):9} frames')
-    
+
+    # Multi-system: per-system breakdown of the pooled totals above (one compact
+    # line per system: per-category frame counts + that system's totals).
+    if multi:
+        codes = [f'in{a}', f'in{b}', f'f{a}{a}', f'f{b}{b}', f'f{a}{b}',
+                 f'f{b}{a}', f's{a}{a}', f's{b}{b}', f's{a}{b}', f's{b}{a}']
+        print('   Per-system breakdown:')
+        for j, pp in enumerate(per_pe):
+            cells = ' '.join(f'{codes[k]}={pp[name]["n"]}'
+                             for k, name in enumerate(CATEGORY_NAMES))
+            total_frames = sum(pp[name]['n'] for name in CATEGORY_NAMES)
+            total_paths = sum(pp[name]['npaths'] for name in CATEGORY_NAMES)
+            print(f'     [system {system_labels[j]}] {cells}  '
+                  f'| TOTAL {total_frames} frames ({total_paths} paths)')
+
     print(f'\nCalculating shooting results and sel. probabilities {now()}')
     
     # Allocate per-category result arrays (fractional outcomes to a/b)
@@ -670,22 +942,25 @@ def fit(params,
     # in_memory=False: two compact arrays storing per-frame file references
     #                  (desc_npy_paths[i], desc_locs[i]) so raw data is
     #                  loaded on demand per batch via _load_batch_descriptors.
-    _all_desc_ref0 = [in1_desc_ref[0], in2_desc_ref[0],
-                      free1to1_desc_ref[0], free2to2_desc_ref[0],
-                      free1to2_desc_ref[0], free2to1_desc_ref[0],
-                      shot1to1_desc_ref[0], shot2to2_desc_ref[0],
-                      shot1to2_desc_ref[0], shot2to1_desc_ref[0]]
-    if in_memory:
-        descriptors = concatenate(_all_desc_ref0)
-    else:
-        desc_fnames   = concatenate(_all_desc_ref0)
-        desc_locs     = concatenate([in1_desc_ref[1], in2_desc_ref[1],
-                                     free1to1_desc_ref[1], free2to2_desc_ref[1],
-                                     free1to2_desc_ref[1], free2to1_desc_ref[1],
-                                     shot1to1_desc_ref[1], shot2to2_desc_ref[1],
-                                     shot1to2_desc_ref[1], shot2to1_desc_ref[1]])
-        desc_npy_paths = np.array(
-            [get_cache_fname(f, 'descriptors') for f in desc_fnames])
+    # Multi-system already built desc_raw_blocks / desc_npy_paths above (it must
+    # not stack different atom counts into one raw array).
+    if not multi:
+        _all_desc_ref0 = [in1_desc_ref[0], in2_desc_ref[0],
+                          free1to1_desc_ref[0], free2to2_desc_ref[0],
+                          free1to2_desc_ref[0], free2to1_desc_ref[0],
+                          shot1to1_desc_ref[0], shot2to2_desc_ref[0],
+                          shot1to2_desc_ref[0], shot2to1_desc_ref[0]]
+        if in_memory:
+            descriptors = concatenate(_all_desc_ref0)
+        else:
+            desc_fnames   = concatenate(_all_desc_ref0)
+            desc_locs     = concatenate([in1_desc_ref[1], in2_desc_ref[1],
+                                         free1to1_desc_ref[1], free2to2_desc_ref[1],
+                                         free1to2_desc_ref[1], free2to1_desc_ref[1],
+                                         shot1to1_desc_ref[1], shot2to2_desc_ref[1],
+                                         shot1to2_desc_ref[1], shot2to1_desc_ref[1]])
+            desc_npy_paths = np.array(
+                [get_cache_fname(f, 'descriptors') for f in desc_fnames])
     results = concatenate([in1_results, in2_results,
                            free1to1_results, free2to2_results,
                            free1to2_results, free2to1_results,
@@ -695,8 +970,16 @@ def fit(params,
     if must_stop():
         return [], [], [], [], []
 
-    # Compute committor-space bins to drive selection probability shaping
-    bins = compute_bins(pathensemble, max(nbins, 1),
+    # Compute committor-space bins to drive selection probability shaping.
+    # Multi-system pools all systems (one shared binning) by computing extremes
+    # over the concatenation of the per-system ensembles.
+    if multi:
+        bins_pe = pes[0]
+        for pe in pes[1:]:
+            bins_pe = bins_pe + pe
+    else:
+        bins_pe = pathensemble
+    bins = compute_bins(bins_pe, max(nbins, 1),
                         cutoff_max, cutoff_min,
                         find_extremes_with='transitions',
                         source='values',
@@ -704,15 +987,22 @@ def fit(params,
                         terminal_bin_extension='all')
     if must_stop():
         return [], [], [], [], []
-    
+
     # uniformize in bins
-    # in 1, in 2 data
+    # in 1, in 2 data: each system carries 1/N of the in-state (anchor) mass
+    # (multi); a single system gets the plain uniform end_state_factor/length.
     n_internal_frames = lengths[0] + lengths[1]
-    if lengths[0]:
-        selection_probabilities[:lengths[0]] = end_state_factor / lengths[0]
-    if lengths[1]:
-        selection_probabilities[lengths[0]:n_internal_frames
-            ] = end_state_factor / lengths[1]
+    if multi:
+        _assign_balanced_uniform(selection_probabilities, 0, lengths[0],
+                                 system_id, end_state_factor)
+        _assign_balanced_uniform(selection_probabilities, lengths[0],
+                                 n_internal_frames, system_id, end_state_factor)
+    else:
+        if lengths[0]:
+            selection_probabilities[:lengths[0]] = end_state_factor / lengths[0]
+        if lengths[1]:
+            selection_probabilities[lengths[0]:n_internal_frames
+                ] = end_state_factor / lengths[1]
 
     # merge sparse bins together
     print(f'\nBins {bins}')
@@ -752,6 +1042,19 @@ def fit(params,
             results[mask2] /= adjust2
             selection_probabilities[mask2] = adjust2
         results[mask] /= results[mask].mean()
+        # multi-system balancing: within this bin, give each system present an
+        # equal share (1/n_present) of the bin's selection mass, preserving the
+        # outcome-imbalance weighting *within* each system. Single-system is a
+        # no-op. The existing per-bin normalization below then carries through.
+        if multi:
+            bin_sids = system_id[mask]
+            present_systems = np.unique(bin_sids)
+            for sid in present_systems:
+                sub = mask[bin_sids == sid]
+                sub_sum = selection_probabilities[sub].sum()
+                if sub_sum > 0:
+                    selection_probabilities[sub] *= (
+                        (1.0 / len(present_systems)) / sub_sum)
         selection_probabilities[mask] /= selection_probabilities.sum()
         selection_probabilities[mask] *= bin_counts
         # while merged together, preserve measure
@@ -792,7 +1095,18 @@ def fit(params,
     keepers = selection_probabilities > 0
     selection_probabilities = selection_probabilities[keepers]
     values = values[keepers[n_internal_frames:]]
-    if in_memory:
+    if multi:
+        # Build the upfront-transformed descriptors per system (in_memory) and
+        # filter the per-frame system_id, BEFORE filtering by keepers.
+        if in_memory:
+            descriptors = _assemble_inmemory_multi(
+                desc_raw_blocks, keepers, descriptor_transform,
+                transform_takes_sid, system_labels, graphs)
+        else:
+            desc_npy_paths = desc_npy_paths[keepers]
+            desc_locs      = desc_locs[keepers]
+        system_id = system_id[keepers]
+    elif in_memory:
         descriptors = descriptors[keepers]
     else:
         desc_npy_paths = desc_npy_paths[keepers]
@@ -850,8 +1164,9 @@ def fit(params,
     print(f'\nTraining set size {training_set_size}')
     selection_probabilities /= selection_probabilities.sum()
     
-    # optional global transform
-    if in_memory:
+    # optional global transform (single-system only; multi-system already
+    # transformed per system in _assemble_inmemory_multi above).
+    if in_memory and not multi:
         print(f'Transforming descriptors {now()}')
         descriptors = descriptor_transform(descriptors)
         if lsr_weight and n_lsr_pairs > 0 and not graphs:
@@ -981,6 +1296,11 @@ def fit(params,
         if not graphs:
             if in_memory:
                 d = descriptors[indices]          # already transformed upfront
+            elif multi:  # mixed-system batch: load + transform per system
+                d = _load_batch_descriptors_routed(
+                    desc_npy_paths[indices], desc_locs[indices],
+                    system_id[indices], system_labels, descriptor_transform,
+                    transform_takes_sid, graphs=False)
             else:  # load raw frames on-the-fly from NPY_CACHE, then transform
                 d = descriptor_transform(
                     _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))
@@ -992,6 +1312,11 @@ def fit(params,
             if in_memory:
                 # descriptors is already a list of Data objects after the pre-transform
                 d = [descriptors[i] for i in indices]
+            elif multi:  # mixed-system batch: load + transform per system
+                d = _load_batch_descriptors_routed(
+                    desc_npy_paths[indices], desc_locs[indices],
+                    system_id[indices], system_labels, descriptor_transform,
+                    transform_takes_sid, graphs=True)
             else:  # load raw frames on-the-fly from NPY_CACHE
                 d = descriptor_transform(
                     _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))

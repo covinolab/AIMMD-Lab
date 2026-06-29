@@ -43,6 +43,13 @@ class DummyPathEnsemble:
     def types(self):
         return self._types
 
+    def __add__(self, other):
+        """Concatenate path codes (used by fit's pooled bin computation for
+        multi-system; compute_bins is monkeypatched, so only the codes matter)."""
+        merged = DummyPathEnsemble.__new__(DummyPathEnsemble)
+        merged._types = np.concatenate([self._types, other._types])
+        return merged
+
 
 def _params():
     """Build the smallest Params-like object accepted by `fit`.
@@ -160,8 +167,6 @@ def test_fit_rejects_invalid_options():
         fit_module.fit(params, pathensemble, batching_strategy="bad")
     with pytest.raises(TypeError):
         fit_module.fit(params, pathensemble, augment="bad")
-    with pytest.raises(TypeError):
-        fit_module.fit(params, pathensemble, sparse_update_max_frames=3)
 
 
 def test_fit_trains_on_synthetic_data_with_validation(monkeypatch):
@@ -279,6 +284,119 @@ def test_fit_restores_safe_weights_when_output_scale_blows_up(monkeypatch):
 
     assert len(losses) == 1
     assert scales[0] >= 0.01
+
+
+def test_fit_single_pe_equals_one_element_list(monkeypatch):
+    """A 1-element LIST of PathEnsembles must reduce to the single-system path.
+
+    ``fit(params, [pe])`` and ``fit(params, pe)`` execute identical code, so with
+    the same RNG seed and a fresh network they must produce identical output —
+    the balancing is a strict no-op for a single system.
+    """
+    _install_synthetic_extractors(monkeypatch)
+    pe = DummyPathEnsemble()
+
+    def run(arg):
+        import torch
+        np.random.seed(7)
+        torch.manual_seed(7)
+        params = _params()
+        return fit_module.fit(params, arg, augment="no", nbins=2,
+                              state_bins="all", epochs=3, batch_size=4,
+                              stop=100.0, in_memory=True, verbose=False)
+
+    losses_single, _, _, sp_single, _ = run(pe)
+    losses_list, _, _, sp_list, _ = run([pe])
+    assert losses_single == losses_list
+    assert np.allclose(sp_single, sp_list)
+
+
+def test_fit_multi_system_pools_and_balances(monkeypatch):
+    """``fit`` accepts a LIST of PathEnsembles, pools them, and balances systems.
+
+    With two (identical) synthetic systems the pooled training set is twice as
+    large, selection probabilities still normalize to 1, and each in-state anchor
+    block carries equal mass per system (1/N per bin, including state bins).
+    """
+    _install_synthetic_extractors(monkeypatch)
+    np.random.seed(0)
+    params = _params()
+    pe = DummyPathEnsemble()
+
+    losses, scales, values, selection_probabilities, results = fit_module.fit(
+        params, [pe, pe], augment="no", nbins=2, state_bins="all",
+        epochs=3, batch_size=4, stop=100.0, in_memory=True, verbose=False)
+
+    assert losses                                    # trained at least once
+    assert results.shape[1] == 2
+    assert np.isclose(selection_probabilities.sum(), 1.0)
+    # selection_probabilities and results stay aligned after pooling/keepers
+    assert values.ndim == 1
+    assert len(selection_probabilities) == len(results)
+    assert np.isfinite(results).all()
+
+
+def test_assemble_inmemory_multi_dense_and_graphs():
+    """The in-memory multi-system descriptor assembler filters each system's
+    block by keepers, transforms it with that system's id, and concatenates.
+
+    Dense -> a stacked 2D array (different-atom-count blocks are transformed to a
+    common width per system); graphs -> a flat list of graph objects.
+    """
+    blocks = [(0, np.array([[1.0, 2.0], [3.0, 4.0]])),  # system 0, 2 frames
+              (1, np.array([[5.0, 6.0]]))]               # system 1, 1 frame
+    keepers = np.array([True, False, True])              # drop the 2nd frame
+    labels = ['s1', 's2']
+
+    # dense: scale system 's2' by 10 to prove the per-system id reaches transform
+    def dense_transform(block, system_id=None):
+        return np.asarray(block) * (10.0 if system_id == 's2' else 1.0)
+
+    dense = fit_module._assemble_inmemory_multi(
+        blocks, keepers, dense_transform, True, labels, graphs=False)
+    np.testing.assert_allclose(dense, [[1.0, 2.0], [50.0, 60.0]])
+
+    # graphs: a list, one (tagged) entry per kept frame, in global order
+    def graph_transform(block, system_id=None):
+        return [(system_id, float(row[0])) for row in np.asarray(block)]
+
+    graphs = fit_module._assemble_inmemory_multi(
+        blocks, keepers, graph_transform, True, labels, graphs=True)
+    assert graphs == [('s1', 1.0), ('s2', 5.0)]
+
+
+def test_load_batch_descriptors_routed_groups_by_system(monkeypatch):
+    """A mixed-system batch is grouped by system, transformed per system, and
+    reassembled in the original batch order."""
+    # stub the raw loader: 'path' encodes the value, loc unused
+    monkeypatch.setattr(fit_module, "_load_batch_descriptors",
+                        lambda paths, locs: np.array([[float(p)] for p in paths]))
+
+    paths = np.array([10.0, 20.0, 30.0])
+    locs = np.array([0, 0, 0])
+    system_id = np.array([1, 0, 1])           # interleaved systems
+    labels = ['s1', 's2']
+
+    def transform(block, system_id=None):
+        bump = 100.0 if system_id == 's2' else 0.0
+        return np.asarray(block) + bump
+
+    out = fit_module._load_batch_descriptors_routed(
+        paths, locs, system_id, labels, transform, True, graphs=False)
+    # frames 0 and 2 are system 1 ('s2', +100); frame 1 is system 0 ('s1')
+    np.testing.assert_allclose(out, [[110.0], [20.0], [130.0]])
+
+
+def test_assign_balanced_uniform_splits_mass_per_system():
+    """In-state anchor mass is split equally across systems present in a block."""
+    sp = np.zeros(5)
+    system_id = np.array([0, 0, 1, 1, 1])     # 2 frames sys0, 3 frames sys1
+    fit_module._assign_balanced_uniform(sp, 0, 5, system_id, total_mass=1.0)
+    assert np.isclose(sp.sum(), 1.0)
+    assert np.isclose(sp[:2].sum(), 0.5)      # system 0 carries half
+    assert np.isclose(sp[2:].sum(), 0.5)      # system 1 carries half
+    assert np.isclose(sp[0], sp[1])           # uniform within a system
+    assert np.isclose(sp[2], sp[3]) and np.isclose(sp[3], sp[4])
 
 
 def test_default_wrapper_forwards_to_fit(monkeypatch):

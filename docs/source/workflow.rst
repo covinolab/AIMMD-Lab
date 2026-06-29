@@ -190,15 +190,192 @@ You can also override training hyperparameters for a faster exploratory run::
    :meth:`aimmd.Params.update_network`.  Temporary ``*.kcv.npy`` cache files
    written during the analysis are removed automatically.
 
+Multi-System (Multi-Ligand) Runs
+--------------------------------
+
+A single params file can drive **several chemical systems at once** (for example
+two ligands binding the same host) and train **one shared committor model** that
+takes a graph/descriptor from *either* system and returns its committor. This is
+fully backward compatible: it is enabled only when ``multi_system=True``;
+otherwise everything behaves exactly as the single-system workflow above.
+
+**Enabling multi-system mode.** Set ``multi_system=True`` and provide one entry
+per system for the fields that are otherwise single-valued:
+
+.. code-block:: python
+
+    multi_system = True
+    multi_system_share_network = True            # one shared network (see below)
+    system_ids   = ['G2', 'G4']                  # per-system labels
+    topology     = ['G2.gro', 'G4.gro']          # one topology per system
+    initial_paths = [['G2_tp.trr'], ['G4_tp.trr']]   # one group per system
+    atom_types   = ['H', 'C', 'N', 'O', 'F', 'NA', 'P', 'S', 'CL', 'BR', 'I']
+
+The ``system_ids`` name the per-system subfolders ``<run>/<system_id>/`` and index
+the per-system entries of the list-valued fields. If ``system_ids`` is left
+empty it defaults to ``['0', '1', ...]``.
+
+**The ``system_id`` keyword.** In multi-system mode the user data functions
+receive an extra ``system_id`` keyword so a single function can encode
+per-ligand differences (e.g. different state cutoffs or atom selections):
+
+.. code-block:: python
+
+    def states_function(trajectory, system_id=None):
+        cutoff = 4.5 if system_id == 'G2' else 4.1   # per-ligand state boundary
+        ...
+
+``system_id`` is passed **only if a function declares it** (detected via
+:func:`aimmd.core.utils.accepts_system_id`), so existing single-system functions
+keep working unchanged. The same applies to ``descriptors_function``,
+``values_function`` and ``descriptor_transform``.
+
+**Shared graph encoding.** For a single network to consume graphs from several
+systems, set ``atom_types`` to a fixed, ordered atom-type table. Every system is
+then encoded into the same one-hot node columns (unused columns stay zero) and
+the network's input width equals ``len(atom_types)``. With ``atom_types=None``
+the legacy per-universe encoding (``sorted(set(types))``) is used.
+
+**Directory layout.** A multi-system run nests one level: each system gets its
+own subfolder, reusing the ordinary per-directory worker machinery::
+
+    run1/
+      G2/  initialARB/ chainR0/ freeA/ freeB/ binsARB.npy densitiesARB.npy
+      G4/  initialARB/ chainR0/ freeA/ freeB/ binsARB.npy densitiesARB.npy
+      networkARB.h5            # the ONE shared network (share-network mode)
+
+**Shared vs separate networks** (``multi_system_share_network``):
+
+* **True** — one shared network is trained by a single trainer that hands the
+  params ``fit`` function a **list** of per-system PathEnsembles. The default
+  AIMMD ``fit`` pools them in a *balanced* way (each system carries ``1/N`` of the
+  selection weight in every bin, including the in-state anchor bins), so neither
+  ligand dominates regardless of how much data each has. The shared network is
+  written once at the run root (``run1/networkARB.h5``) and read by every
+  system's shooting workers. Rates/kinetics are still computed **per system, in
+  sequence**.
+* **False** — each system trains its own network (``run1/<system_id>/networkARB.h5``)
+  with its own trainer. The params flag ``trainers_share_gpu`` (default ``True``)
+  controls whether those trainers share one GPU or are spread across GPUs.
+
+**Worker counts.** The per-run worker counts ``n`` / ``n1`` / ``n2`` apply **per
+system** in multi-system mode (e.g. ``launcher.run(n=2, n1=1, n2=1)`` gives every
+system 2 shooting + 1 freeA + 1 freeB worker). Launching is otherwise identical:
+
+.. code-block:: python
+
+    import aimmd
+    params   = aimmd.Params.load('params.py')   # multi_system=True
+    launcher = aimmd.Launcher(params, 'run1')
+    launcher.run(n=2, n1=1, n2=1, nframes=25000)
+    # or generate a SLURM script (per-system srun lines):
+    launcher.create_job('job.sh', n=2, n1=1, n2=1, walltime=86400)
+
+**Kinetics convergence** works with a shared model: the per-fraction retrain uses
+the list of per-system ensembles and the result array gains a ``system`` field
+(one row per ``(fraction, system)``).
+
+Biased (OPES) multi-system runs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Multi-system runs support **in-state biases** (e.g. a frozen OPES_METAD that
+flattens each ligand's bound well) exactly as single-system runs do — set
+``record_bias = True`` and a ``bias_function`` (see :ref:`bias-recording`). The
+bias enters GROMACS through the per-system ``gmx_mdrun`` string, which is already
+list-valued in multi-system mode, so each system gets its own PLUMED input:
+
+.. code-block:: python
+
+    record_bias = True
+    bias_source = 'file'                     # read each frame's bias from COLVAR
+    gmx_mdrun = ['gmx mdrun -plumed /abs/G2/plumed.dat',
+                 'gmx mdrun -plumed /abs/G4/plumed.dat']
+    bias_reactive_threshold = [0.5, 0.3]     # per-system (scalar also allowed)
+
+The trainer builds the per-frame bias cache **per system** (forwarding
+``system_id`` to ``bias_function`` when its signature accepts it), runs the
+reactive-region bias check against each system's
+``bias_reactive_threshold_of(system_id)``, and prints **per-system**
+Tiwary-Parrinello bias-reweighted rates next to the raw ones. Kinetics
+convergence fills the ``k12_rw`` / ``k21_rw`` columns per system.
+
+.. important::
+
+   Each system's PLUMED ``PRINT STRIDE`` (COLVAR output) must equal that system's
+   ``nstxout-compressed`` so COLVAR row *i* corresponds to trajectory frame *i*;
+   otherwise the cached per-frame bias is misaligned with the trajectory.
+
+.. note::
+
+   The first release of multi-system support targets ``chain_type='rfps'`` with
+   the committor balancing described above. LSR/MAR regularization and
+   ``rescale_committor`` are not yet combined with ``multi_system`` and raise a
+   clear ``NotImplementedError``; single-system runs retain full support for all
+   of them.
+
+Bounding the value pass (``subsample_caps``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each training round the trainer recomputes the committor on **every** reactive
+frame of the ensemble (with the freshly trained network) before binning and
+reweighting. That value pass grows without bound as sampling accumulates — and
+with several ligands feeding one shared trainer it can stop fitting inside a
+job's walltime. Setting ``subsample_caps`` (see :doc:`parameters`) makes the
+trainer run the value pass / bins / reweighting / rate estimate on a **fresh
+random subsample** of the ensemble each round (capped per path category), while
+``fit`` still trains on the full ensemble:
+
+.. code-block:: python
+
+    subsample_caps = {'shot': 100, 'free': 500, 'in_state': 5000}
+    # multi-system: a single dict (all systems) or a list of dicts, one per system
+
+Selection is uniform within each category, so the reweighting remains a
+consistent rate estimate (generous caps keep the variance low); in-state-only
+paths carry zero reweight so dropping them never biases the rate. With
+``nbins == 0`` no adaptive bins are generated, but the (capped) value pass and
+per-round rate estimate still run. ``None`` (default) disables subsampling
+entirely — behaviour is unchanged.
+
 Sweep Mode
 ----------
 
 The launcher and worker also support a validation-oriented sweep mode through
 ``reactive_region_mode='sweep'`` or calling :meth:`aimmd.Worker.shoot` with
-``sweep=True``. In this
-mode the code cycles deterministically through a fixed frame set and repeatedly
-shoots from those frames, which gives a brute-force estimate of the committor
-for validating the learned model. See the example notebook for details of how to use this in practice.
+``sweep=True``. In this mode the workers repeatedly shoot unbiased trajectories
+from a fixed frame set, giving a brute-force estimate of the committor for
+validating the learned model. See the example notebook for details of how to
+use this in practice.
+
+Sweep workers coordinate purely through the shared filesystem -- there is no
+trainer and no central coordinator. Each worker writes only into its own
+``sweep{t}{k}`` folder and tags every committed shot with the validation frame
+it was launched from (a ``...sweep_frame.npy`` sidecar). Before each shot a
+worker reads *all* workers' committed shots (plus their in-flight markers) and
+shoots whichever frame is currently **least covered across all workers**. This
+round-robin-by-coverage keeps the per-frame shot counts flat no matter how
+unevenly the workers progress, and replaces the older per-worker cycle that
+started every worker at frame 0 (and therefore over-sampled early frames when a
+run was cut short).
+
+Termination is governed by a **global** target rather than a per-worker step
+cap. ``create_job``/``run`` interpret the configured ``nsteps`` as each worker's
+share of the total, so ``n`` sweep workers run until the *combined* committed
+shot count reaches ``n * nsteps``; the generated job script ends with a plain
+``wait`` (every worker exits on the shared target or walltime) instead of the
+``wait -n; scancel`` used for trainer-coordinated runs. Consequences:
+
+- an uneven set of workers still produces exactly the intended number of shots;
+- a campaign resumes cleanly -- including one started before frame tagging
+  existed, whose untagged shots are attributed positionally (``i % n_frames``),
+  exactly the frame the old sequential code shot;
+- a finished campaign can be extended simply by raising the target (e.g. a
+  larger ``shots_per_frame`` / ``nsteps``) and resubmitting -- only the deficit
+  is shot, and the extra shots land on the least-covered frames.
+
+Aggregation (:meth:`aimmd.PathEnsemble.shooting_results`) attributes each shot
+to its tagged frame, falling back to positional ``i % sweep_size`` for untagged
+(legacy) shots, so existing analyses keep working unchanged.
 
 Important Output Files
 ----------------------

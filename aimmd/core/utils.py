@@ -76,6 +76,7 @@ imports from MDAnalysis (but that would be a code change).
 # external
 import os
 import time
+import inspect
 import numpy as np
 import bisect
 from glob import glob
@@ -722,8 +723,46 @@ def guess_masses(atoms):
     """atoms: atomsgroup
     martini: all get 72 by default, better than underestimating masses
     """
-    for atom in atoms[:50]:
-        if atom.name.startswith(('BB', 'SC', 'PO4')):
-            # assign martini beads
-            return np.full(len(atoms), 72.0)
-    return atoms.masses
+    # Some topologies (e.g. coordinate-only .xtc universes used by the toy
+    # engine) carry no atom names or masses; MDAnalysis then raises NoDataError
+    # on `atom.name` / `atoms.masses`. Degrade gracefully to uniform masses
+    # rather than crash -- the masses are only used for velocity randomization.
+    try:
+        names = atoms.names
+    except Exception:
+        names = None
+    if names is not None:
+        for name in names[:50]:
+            if str(name).startswith(('BB', 'SC', 'PO4')):
+                # assign martini beads
+                return np.full(len(atoms), 72.0)
+    try:
+        return atoms.masses
+    except Exception:
+        return np.ones(len(atoms))
+
+
+def accepts_system_id(function):
+    """Whether ``function`` can be called with a ``system_id`` keyword argument.
+
+    Used to thread the multi-system ``system_id`` through the user data
+    functions (`states_function`, `descriptors_function`, `values_function`)
+    and `descriptor_transform` in a fully backward-compatible way: functions
+    written for single-system runs (which take only the data argument) are
+    detected here and keep being called without ``system_id``.
+
+    Returns True if the function declares an explicit ``system_id`` parameter
+    (positional-or-keyword or keyword-only) or accepts arbitrary ``**kwargs``.
+    Returns False for anything whose signature cannot be inspected.
+    """
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return False
+    for parameter in parameters.values():
+        if parameter.kind is parameter.VAR_KEYWORD:
+            return True
+        if (parameter.name == 'system_id' and parameter.kind in (
+                parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY)):
+            return True
+    return False

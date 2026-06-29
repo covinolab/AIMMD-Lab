@@ -89,9 +89,9 @@ from pathlib import Path as PosixPath
 # aimmd imports
 from ..path import Path
 from .._config import NPY_CACHE, MDA_CACHE, print
-from ..cache.npy import save_npy
-from ..core.utils import now, process_state
-from ..path.utils import get_cache_fname
+from ..cache.npy import save_npy, load_npy
+from ..core.utils import now, process_state, remove
+from ..path.utils import get_cache_fname, read_sweep_frame, write_sweep_frame
 from ..pathensemble import PathEnsemble
 from ..execute.utils import execute_command
 from ..analysis.utils import bin_centers, merge_empty_bins
@@ -339,7 +339,6 @@ def update_selection_pool(pool, size, chain,
                     if not ((values >= vmin) * (values <= vmax)).any():
                         continue
                     # replace
-                    print(pool[i].values[1:-1], 'AAAAAA') # TODO
                     print(f'!!! replacing selection pool element '
                           f'{pool_fnames[i]} with values outside the '
                           f'[{vmin:.3f}, {vmax:.3f}] range with {path.fname}')
@@ -1139,3 +1138,130 @@ def accept_or_reject_last_path(chain, params):
     else:
         leading.weight += 1.
         print(f'*** rejected')
+
+
+# ----------------------------------------------------------------------------
+# Sweep-mode coordination (brute-force committor validation)
+# ----------------------------------------------------------------------------
+# Sweep workers cooperate purely through the shared filesystem (no central
+# coordinator, no shared mutable ledger): each worker writes only into its own
+# ``sweep{t}{k}`` folder, and derives global progress by reading every worker's
+# committed shots (the ``path??????`` files, tagged with their source frame via
+# :func:`aimmd.path.utils.write_sweep_frame`). This mirrors how the trainer
+# already computes a global total by scanning all chain folders.
+
+
+def sweep_marker_fname(folder):
+    """Filename of a worker's in-flight 'currently shooting this frame' marker.
+
+    Single-writer per folder, so it never contends on the filesystem.
+    """
+    return f'{folder}/.current_frame.npy'
+
+
+def write_sweep_marker(folder, index):
+    """Record (in ``folder``) the validation frame this worker is now shooting.
+
+    Read by *other* workers as in-flight coverage so concurrent shots spread
+    across frames instead of piling onto the same one; read by *this* worker on
+    resume to recover the frame of an interrupted, not-yet-registered shot.
+    """
+    save_npy(sweep_marker_fname(folder), np.array([int(index)], dtype=int))
+
+
+def read_sweep_marker(folder):
+    """Read a worker's in-flight frame marker, or ``None`` if absent."""
+    array = load_npy(sweep_marker_fname(folder))
+    if array is None:
+        return None
+    try:
+        return int(np.asarray(array).reshape(-1)[0])
+    except (IndexError, ValueError, TypeError):
+        return None
+
+
+def clear_sweep_marker(folder):
+    """Remove a worker's in-flight frame marker (shot finished / not running)."""
+    remove(sweep_marker_fname(folder), verbose=False)
+
+
+def sweep_coverage(directory, t, ext, sweep_size, seen=None,
+                   include_in_flight=True):
+    """Global per-frame shot counts across all sweep workers of state ``t``.
+
+    Scans every ``{directory}/sweep{t}*`` folder for committed shots
+    (``path??????{ext}``) and attributes each to a validation frame: the frame
+    tag written by :func:`aimmd.path.utils.write_sweep_frame` when present, else
+    the legacy positional rule ``i % sweep_size`` (the i-th shot of a folder),
+    which is exactly the frame the old strictly-sequential sweep code shot. So
+    campaigns started before frame tagging existed are attributed correctly
+    without any backfill.
+
+    Parameters
+    ----------
+    directory : str
+        Run directory containing the ``sweep{t}{k}`` folders.
+    t : str
+        Reactive-region state label (folder infix, e.g. ``'R'``).
+    ext : str
+        Trajectory extension (e.g. ``'.xtc'``), including the dot.
+    sweep_size : int
+        Number of validation frames.
+    seen : dict, optional
+        Cache ``{path_fname: frame_index}`` reused across calls so each shot's
+        tag is read at most once (committed shots never change frame). Mutated
+        in place when provided.
+    include_in_flight : bool, optional
+        If True (default) the returned ``effective`` histogram also counts each
+        worker's in-flight marker (frames being shot right now). The
+        ``committed`` histogram never counts in-flight shots.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray, int]
+        ``(committed, effective, committed_total)`` where ``committed`` and
+        ``effective`` have shape ``(sweep_size,)`` and ``committed_total`` is
+        ``int(committed.sum())`` (the global stop criterion).
+    """
+    sweep_size = int(sweep_size)
+    if seen is None:
+        seen = {}
+    committed = np.zeros(sweep_size, dtype=int)
+    folders = sorted(glob(f'{directory}/sweep{t}*'))
+    for folder in folders:
+        for i, fname in enumerate(sorted(glob(f'{folder}/path??????{ext}'))):
+            if fname not in seen:
+                frame = read_sweep_frame(fname)
+                seen[fname] = frame if frame is not None else (i % sweep_size)
+            committed[seen[fname] % sweep_size] += 1
+    effective = committed.copy()
+    if include_in_flight:
+        for folder in folders:
+            marker = read_sweep_marker(folder)
+            if marker is not None:
+                effective[marker % sweep_size] += 1
+    return committed, effective, int(committed.sum())
+
+
+def least_covered_frame(effective, k):
+    """Pick the next sweep frame: least-covered, decorrelated across workers.
+
+    Among the frames currently at the minimum (effective) coverage, worker ``k``
+    takes the ``k``-th (cyclically). When coverage is flat -- notably at a cold
+    start where every count is zero -- this spreads the workers across distinct
+    frames immediately instead of all starting at frame 0 (the original bug).
+
+    Parameters
+    ----------
+    effective : numpy.ndarray
+        Per-frame coverage histogram (committed + in-flight).
+    k : int
+        Worker index (within this reactive-region state).
+
+    Returns
+    -------
+    int
+        Chosen validation-frame index.
+    """
+    candidates = np.flatnonzero(effective == effective.min())
+    return int(candidates[int(k) % len(candidates)])

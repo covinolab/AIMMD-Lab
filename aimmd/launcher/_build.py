@@ -148,9 +148,30 @@ class LauncherBuild(ABC):
             nframes = self._nframes[run_id]
             nrounds = self._nrounds[run_id]
             walltime = self._walltime
+
+            # Multi-system: one per-system subfolder <run>/<system_id>/. The
+            # per-run worker counts (n/n1/n2) apply PER SYSTEM -- each may be a
+            # scalar (same for every system) or a per-system list (e.g. n=[6, 5]
+            # for an extra shooter on the first ligand). Each system's
+            # shoot/free workers run in its subfolder (existing per-directory
+            # logic). Single-system keeps the original flat layout.
+            multi = getattr(params, 'multi_system', False)
+            share = multi and params.multi_system_share_network
+            if multi:
+                n_systems = len(params.system_ids)
+                n_sys = self._per_system_counts(n, n_systems)
+                n1_sys = self._per_system_counts(n1, n_systems)
+                n2_sys = self._per_system_counts(n2, n_systems)
+                total_workers = int(n_sys.sum() + n1_sys.sum() + n2_sys.sum())
+                subtasks = [(f'{directory}/{sid}', sidx, sid)
+                            for sidx, sid in enumerate(params.system_ids)]
+            else:
+                total_workers = int(n) + int(n1) + int(n2)
+                subtasks = [(directory, None, None)]
+
             if nrounds:
                 conditions = (inf, inf, inf)
-            elif n + n1 + n2:
+            elif total_workers:
                 conditions = (walltime, nsteps, nframes)
             else:  # not running anything here
                 continue
@@ -160,103 +181,174 @@ class LauncherBuild(ABC):
                 os.makedirs(directory)
                 print(f'+++ created {directory!r}')
 
-            # process initial paths
-            folder = f'{directory}/initial{sorted_states}'
-            if not os.path.exists(folder):
-                os.makedirs(folder)
-                print(f'+++ created {folder!r}')
-            remove(f'{folder}/*')
-            for path in params.initial_paths:
-                old = path.fname
-                fname = unique_path(f'{folder}/{PosixPath(old).name}')
-                path.write(fname)
-                print(f'+++ saved {str(fname)!r} (from: {old!r})')
-                for attribute, series in islice(
-                    path.__dict__.items(), 6, None):
-                    name = get_cache_fname(fname, attribute)
-                    save_npy(name, series)
-                    print(f'+++ saved {name!r}')
+            shared_trainer_localid = None  # for trainers_share_gpu (share OFF)
 
-            # free simulations
-            for t, m in zip([r, a, b], [n, n1, n2]):
-                if not m:
-                    continue
-                if ((t == a and state1_mode == 'shoot') or
-                    (t == b and state2_mode == 'shoot')):
-                    continue
-                if t == r and reactive_region_mode != 'free':
-                    continue
+            for work_dir, sidx, sid in subtasks:
+                if multi:                       # per-system worker counts
+                    n, n1, n2 = (int(n_sys[sidx]), int(n1_sys[sidx]),
+                                 int(n2_sys[sidx]))
+                if work_dir != directory and not os.path.exists(work_dir):
+                    os.makedirs(work_dir)
+                    print(f'+++ created {work_dir!r}')
 
-                # folders
-                folder = f'free{t}'
-                dfolder = f'{directory}/{folder}'
-                if not os.path.exists(dfolder):
-                    os.makedirs(dfolder)
-                    print(f'+++ created {dfolder}')
-                for k in range(m):
-                    process_identifier = f'{dfolder}{k}'
-                    if process_identifier in process_identifiers:
-                        raise RuntimeError(f"can't initialize process {i} "
-                              f"(free {k}) in {dfolder!r} more than once")
-                    process_identifiers.append(process_identifier)
+                # initial paths (one group per system in multi-system mode)
+                init_paths = (params.initial_paths[sidx] if multi
+                              else params.initial_paths)
+                folder = f'{work_dir}/initial{sorted_states}'
+                if not os.path.exists(folder):
+                    os.makedirs(folder)
+                    print(f'+++ created {folder!r}')
+                remove(f'{folder}/*')
+                for path in init_paths:
+                    old = path.fname
+                    fname = unique_path(f'{folder}/{PosixPath(old).name}')
+                    path.write(fname)
+                    print(f'+++ saved {str(fname)!r} (from: {old!r})')
+                    for attribute, series in islice(
+                        path.__dict__.items(), 6, None):
+                        name = get_cache_fname(fname, attribute)
+                        save_npy(name, series)
+                        print(f'+++ saved {name!r}')
 
-                    localid = i % self._ntasks_per_node
-                    if num_processes > 1:
-                        log_file = f'{folder}/worker{k}.log'
-                    else:
-                        log_file = 'stdout'
-                    args.append(
-                        (params_path, directory, localid,
-                         self._cpus_per_task, self._gpus_per_task,
-                         log_file, *conditions, termination_timeout,
-                         'free', t, k, m, nrounds > 0 or n > 0))
-                    descriptions.append(f'"{directory}" {folder} (worker{k})')
-                    i += 1  # advance the task id
-
-            # shooting simulations
-            for t, m in zip([r, a, b], [n, n1, n2]):
-                if t == r and reactive_region_mode == 'free':
-                    continue
-                if ((t == a and state1_mode != 'shoot') or
-                    (t == b and state2_mode != 'shoot')):
-                    continue
-                sweep = (t == r and reactive_region_mode == 'sweep')
-                for k in range(m * nchains_per_worker):
-                    if sweep:
-                        folder = f'sweep{t}{k}'
-                    else:
-                        folder = f'chain{t}{k}'
-                    dfolder = f'{directory}/{folder}'
-
-                    # check that you can initialize the process
-                    process_identifier = dfolder
-                    if process_identifier in process_identifiers:
-                        raise RuntimeError(f"can't initialize process {i} "
-                              f"(shoot) in {dfolder!r} more than once")
-                    process_identifiers.append(process_identifier)
+                # free simulations
+                for t, m in zip([r, a, b], [n, n1, n2]):
+                    if not m:
+                        continue
+                    if ((t == a and state1_mode == 'shoot') or
+                        (t == b and state2_mode == 'shoot')):
+                        continue
+                    if t == r and reactive_region_mode != 'free':
+                        continue
+                    # folders
+                    folder = f'free{t}'
+                    dfolder = f'{work_dir}/{folder}'
                     if not os.path.exists(dfolder):
                         os.makedirs(dfolder)
                         print(f'+++ created {dfolder}')
-                    
-                    # for now, just pick the first chain associated to worker
-                    if k % nchains_per_worker:
-                        continue
+                    for k in range(m):
+                        process_identifier = f'{dfolder}{k}'
+                        if process_identifier in process_identifiers:
+                            raise RuntimeError(f"can't initialize process {i} "
+                                  f"(free {k}) in {dfolder!r} more than once")
+                        process_identifiers.append(process_identifier)
 
-                    localid = i % self._ntasks_per_node
-                    if num_processes > 1:
-                        log_file = f'{folder}/worker.log'
+                        localid = i % self._ntasks_per_node
+                        if num_processes > 1:
+                            log_file = f'{folder}/worker{k}.log'
+                        else:
+                            log_file = 'stdout'
+                        args.append(
+                            (params_path, work_dir, localid,
+                             self._cpus_per_task, self._gpus_per_task,
+                             log_file, *conditions, termination_timeout,
+                             'free', t, k, m, nrounds > 0 or n > 0))
+                        descriptions.append(
+                            f'"{work_dir}" {folder} (worker{k})')
+                        i += 1
+
+                # shot simulations
+                for t, m in zip([r, a, b], [n, n1, n2]):
+                    if t == r and reactive_region_mode == 'free':
+                        continue
+                    if ((t == a and state1_mode != 'shoot') or
+                        (t == b and state2_mode != 'shoot')):
+                        continue
+                    # one worker per nchains_per_worker chains: create every
+                    # chain folder, but only spawn a worker for the first chain
+                    # of each group (that worker manages nchains_per_worker
+                    # chains). With nchains_per_worker=1 this is the original
+                    # one-worker-per-chain layout (chain{t}0, chain{t}1, ...).
+                    for k in range(m * nchains_per_worker):
+                        if t == r and reactive_region_mode == 'sweep':
+                            folder = f'sweep{t}{k}'
+                        else:
+                            folder = f'chain{t}{k}'
+                        dfolder = f'{work_dir}/{folder}'
+                        process_identifier = dfolder
+                        if process_identifier in process_identifiers:
+                            raise RuntimeError(f"can't initialize process {i} "
+                                  f"(shoot) in {dfolder!r} more than once")
+                        process_identifiers.append(process_identifier)
+                        if not os.path.exists(dfolder):
+                            os.makedirs(dfolder)
+                            print(f'+++ created {dfolder}')
+                        sweep = False
+                        if t == r:
+                            if reactive_region_mode == 'sweep':
+                                sweep = True
+                            else:
+                                os.system(f'touch {dfolder}/pool.log')
+                        # for now, just pick the first chain associated to worker
+                        if k % nchains_per_worker:
+                            continue
+                        localid = i % self._ntasks_per_node
+                        if num_processes > 1:
+                            log_file = f'{folder}/worker.log'
+                        else:
+                            log_file = 'stdout'
+                        if sweep:
+                            # Sweep stops on the GLOBAL committed-shot total, not
+                            # a per-worker step cap: disable this worker's
+                            # nsteps/nframes limits and pass the global target
+                            # (m sweep workers x nsteps each = the intended total
+                            # number of shots; create_jobscript-style configs that
+                            # set nsteps = ceil(shots_per_frame * n_frames / m)
+                            # therefore map to shots_per_frame * n_frames).
+                            # nchains_per_worker is ignored in sweep mode (each
+                            # sweep worker manages a single chain).
+                            sweep_target = (inf if nsteps == inf
+                                            else int(m) * float(nsteps))
+                            worker_conditions = (conditions[0], inf, inf)
+                            run_args = ('shoot', t, k, sweep,
+                                        sweep_target, nchains_per_worker)
+                        else:
+                            worker_conditions = conditions
+                            # sweep_target=inf (unused when sweep is False); the
+                            # consistent layout keeps nchains_per_worker last to
+                            # match Worker._shoot's positional signature.
+                            run_args = ('shoot', t, k, sweep,
+                                        inf, nchains_per_worker)
+                        args.append(
+                            (params_path, work_dir, localid,
+                             self._cpus_per_task, self._gpus_per_task,
+                             log_file, *worker_conditions, termination_timeout,
+                             *run_args))
+                        descriptions.append(f'"{work_dir}" {folder}')
+                        i += 1
+
+                # per-system trainer (multi-system with SEPARATE networks):
+                # one trainer per subfolder. With trainers_share_gpu they all
+                # bind the same GPU (same localid); otherwise distinct GPUs.
+                if nrounds and multi and not share:
+                    if getattr(params, 'trainers_share_gpu', True):
+                        if shared_trainer_localid is None:
+                            shared_trainer_localid = i % self._ntasks_per_node
+                        localid = shared_trainer_localid
                     else:
+                        localid = i % self._ntasks_per_node
+                    process_identifier = f'{work_dir}{sorted_states}'
+                    if process_identifier in process_identifiers:
+                        raise RuntimeError(f"can't initialize process {i} (train "
+                              f"{sorted_states}) in {work_dir!r} more than once")
+                    process_identifiers.append(process_identifier)
+                    if num_processes > 1:
+                        keep_running = True
+                        log_file = f'train{sorted_states}.log'
+                    else:
+                        keep_running = False
                         log_file = 'stdout'
                     args.append(
-                        (params_path, directory, localid,
-                        self._cpus_per_task, self._gpus_per_task,
-                        log_file, *conditions, termination_timeout,
-                        'shoot', t, k, sweep, nchains_per_worker))
-                    descriptions.append(f'"{directory}" {folder}')
-                    i += 1  # advance the task id
+                        (params_path, work_dir, localid,
+                         self._cpus_per_task, self._gpus_per_task,
+                         log_file, walltime, nsteps, nframes,
+                         termination_timeout, 'train', nrounds, keep_running))
+                    descriptions.append(
+                        f'"{work_dir}" {sorted_states} trainer')
+                    i += 1
 
-            # trainer
-            if nrounds:
+            # trainer at the run root: single-system, OR the ONE shared
+            # multi-system trainer (which gathers all per-system subfolders).
+            if nrounds and (not multi or share):
                 localid = i % self._ntasks_per_node
                 process_identifier = f'{directory}{sorted_states}'
                 if process_identifier in process_identifiers:

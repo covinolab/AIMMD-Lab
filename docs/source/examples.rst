@@ -18,6 +18,12 @@ helpers.
    lightweight example when you want to understand the control flow without a
    full GROMACS setup.
 
+``tests/test_multi_system.py``
+   Runs end-to-end MULTI-SYSTEM (multi-ligand) workflows on the toy engine: two
+   systems with different atom counts in one run, trained with a shared network
+   and with separate networks, plus per-system kinetics convergence. A compact
+   reference for the multi-system control flow without GROMACS.
+
 ``tests/test_retinal.py``
    Runs a more realistic integration workflow using the retinal test system and
    GROMACS-based dynamics.
@@ -30,3 +36,10 @@ Notebook Example
 
 The repository includes ``examples/notebooks/1_toy_1d.ipynb``. It complements
 the toy-engine test by showing how to run AIMMD, in addition to how to analyse the outputs.
+
+``examples/notebooks/2_multi_system.ipynb`` extends this to a **multi-system
+(multi-ligand)** run: it configures one params file for two toy systems with
+different atom counts, trains a single shared committor network on both
+(balanced), contrasts the separate-network mode, and analyses the per-system
+committor and rates. Like the single-system notebook it runs end-to-end on the
+toy engine (no GROMACS/GPU).

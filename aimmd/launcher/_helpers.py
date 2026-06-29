@@ -244,6 +244,20 @@ class LauncherHelpers(ABC):
             value = np.repeat(value, len(self)).astype(dtype)
         return value
 
+    def _per_system_counts(self, value, n_systems):
+        """Resolve a multi-system per-run worker count into a per-system int
+        array. ``value`` (``self._n[run_id]`` etc.) may be a scalar (the same
+        count for every system) or a list/array of length ``n_systems`` (e.g.
+        ``[6, 5]`` to give the first ligand an extra shooter)."""
+        arr = np.atleast_1d(np.asarray(value, dtype=int))
+        if arr.size == 1:
+            arr = np.repeat(arr, n_systems)
+        if len(arr) != n_systems:
+            raise TypeError(
+                f"multi-system worker count {value!r} must be a scalar or a "
+                f"list of length n_systems={n_systems}")
+        return arr
+
     def _update(self,
                 n=1, n1=0, n2=0,
                 reactive_region_mode='chain',
@@ -387,9 +401,29 @@ class LauncherHelpers(ABC):
         self._nchains_per_worker = nchains_per_worker
         self._walltime = walltime
 
-        # get number of processes
-        self._num_processes = (self._n1 + self._n2 + self._n +
-                               self._nrounds.astype(bool))
+        # get number of processes. In multi-system runs the per-run worker
+        # counts (n/n1/n2) apply PER SYSTEM (scalar = uniform, or a per-system
+        # list) and there is one trainer per system (separate networks) or a
+        # single shared trainer (shared network).
+        has_trainer = self._nrounds.astype(bool).astype(int)
+        num_processes = []
+        for run_id in range(len(self)):
+            params = self._params[run_id]
+            if getattr(params, 'multi_system', False):
+                n_systems = max(1, len(params.system_ids))
+                workers = int(
+                    self._per_system_counts(self._n[run_id], n_systems).sum()
+                    + self._per_system_counts(self._n1[run_id], n_systems).sum()
+                    + self._per_system_counts(self._n2[run_id], n_systems).sum())
+                n_trainers = (1 if params.multi_system_share_network
+                              else n_systems)
+                num_processes.append(workers
+                                     + n_trainers * int(has_trainer[run_id]))
+            else:
+                workers = (int(self._n[run_id]) + int(self._n1[run_id])
+                           + int(self._n2[run_id]))
+                num_processes.append(workers + int(has_trainer[run_id]))
+        self._num_processes = np.array(num_processes)
         total_num_processes = sum(self._num_processes)
 
         # determine number of CPUs per task

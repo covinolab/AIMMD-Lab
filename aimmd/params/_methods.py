@@ -579,6 +579,27 @@ class ParamsMethods(ABC):
             os.system(f'rm -f .params_check_engine*')
             os.chdir(cwd)
 
+    def _network_fname(self, directory):
+        """
+        Resolve the network checkpoint filename for a worker directory.
+
+        Single-system (and multi-system without a shared network): the network
+        lives in the given directory, ``<directory>/network{states}.h5``.
+
+        Multi-system with a shared network (`multi_system_share_network=True`):
+        the ONE shared network lives at the run-folder root, so when
+        ``directory`` is a per-system subfolder (its basename is one of
+        ``system_ids``) the filename is resolved one level up. The trainer runs
+        at the run root, so it already resolves to the root directly.
+        """
+        states = self.sorted_states
+        if (getattr(self, 'multi_system', False)
+                and getattr(self, 'multi_system_share_network', False)
+                and os.path.basename(os.path.normpath(directory))
+                    in (self.system_ids or [])):
+            directory = os.path.dirname(os.path.normpath(directory))
+        return f'{directory}/network{states}.h5'
+
     def update_network(self, path, timeout=20.,
                        raise_if_failure=True):
         """
@@ -612,8 +633,7 @@ class ParamsMethods(ABC):
         if os.path.isfile(path):
             network_fname = path
         elif os.path.isdir(path):
-            states = self.sorted_states
-            network_fname = f'{path}/network{states}.h5'
+            network_fname = self._network_fname(path)
         elif raise_if_failure:
             raise FileNotFoundError(f'{path!r} does not exist')
         else:
