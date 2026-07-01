@@ -370,6 +370,17 @@ class ParamsMethods(ABC):
             plumed_out = os.path.join(deffnm_dir, 'PLUMED.OUT')
             if os.path.exists(plumed_out):
                 os.remove(plumed_out)
+            # Same rationale for PLUMED's per-file backups: PLUMED rotates any
+            # existing output file (COLVAR, KERNELS, ...) to bck.N.<file> and
+            # hard-aborts at 100 backups. Shooting dirs never hit this (their
+            # COLVAR is renamed to {deffnm}_COLVAR after each segment, below),
+            # but every free{t} folder shares one COLVAR that PLUMED reopens
+            # non-restart at each new trajectory, so bck.N.COLVAR would pile up
+            # to 100 and crash the run. The per-part _COLVAR slices are cached
+            # before any backup is made and nothing in AIMMD reads bck.* files,
+            # so clear them before every mdrun.
+            for _bck in glob(os.path.join(deffnm_dir, 'bck.*')):
+                os.remove(_bck)
             result = execute_command(command, **kwargs)
             # PLUMED bias: rename COLVAR → {deffnm}_COLVAR so that back and
             # forward segments (and successive free-traj parts) never clobber
