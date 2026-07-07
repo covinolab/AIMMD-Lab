@@ -32,20 +32,43 @@ better performance and cluster-specific tuning.
 Installing AIMMD
 ----------------
 
-The package is not published on PyPI yet. Install it from a local clone in
-editable mode:
+Install the latest release from PyPI:
 
 .. code-block:: bash
 
-   pip install -e .
+   pip install aimmd-lab
+
+The distribution is named ``aimmd-lab``, but the import name is ``aimmd``:
+
+.. code-block:: python
+
+   import aimmd
+
+To work on AIMMD itself, install from a local clone in editable mode with the
+optional test and documentation dependencies:
+
+.. code-block:: bash
+
+   git clone https://github.com/covinolab/AIMMD.git
+   cd AIMMD
+   pip install -e ".[tests,docs]"
 
 Optional Graph-Network Dependencies
 -----------------------------------
 
-Graph-neural-network workflows require additional packages that are not
-installed by default. The following stack is confirmed to work
-for Linux with an NVIDIA GPU compatible with CUDA 11.8 in a Python 3.13
-environment:
+Graph-neural-network workflows need extra packages that are not installed by
+default (``torch-cluster`` in particular can be awkward to build). The ``graphs``
+extra pulls in ``torch-geometric`` and ``torch-cluster``:
+
+.. code-block:: bash
+
+   pip install "aimmd-lab[graphs]"
+   pip install mlcolvar
+
+If the default wheels do not match your CUDA / Python build, install them
+explicitly. The following is **one confirmed-working example** for Linux with an
+NVIDIA GPU on CUDA 11.8 and Python 3.13 — adjust the versions and index URLs for
+your own setup:
 
 .. code-block:: bash
 
@@ -54,7 +77,7 @@ environment:
    pip install torch-cluster==1.6.3 -f https://data.pyg.org/whl/torch-2.7.0%2Bcu118/torch_cluster-1.6.3%2Bpt27cu118-cp313-cp313-linux_x86_64.whl
    pip install mlcolvar
 
-These packages matter only if you are using the optional graph utilities in
+These packages matter only if you use the optional graph utilities in
 ``aimmd.network.graph_utils`` or graph-based descriptor pipelines.
 
 Verifying the Installation
@@ -71,11 +94,14 @@ The installation can be verified by running the test suite.
 Building the Documentation
 --------------------------
 
-The Sphinx sources live under ``docs/source`` and the docs can be built from
-``docs`` with:
+The Sphinx sources live under ``docs/source``. Install the documentation
+dependencies and build from the ``docs`` directory:
 
 .. code-block:: bash
 
+   pip install -r docs/requirements.txt
    make html
 
-The generated HTML will be written to ``docs/build/html``.
+The generated HTML is written to ``docs/build/html``. See the
+:doc:`developer_guide` for how the build imports the package without the heavy
+runtime dependencies.

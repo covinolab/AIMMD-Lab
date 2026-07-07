@@ -1,40 +1,42 @@
-Network Package
-===============
+Network
+=======
 
-Primary Role
-------------
+The :mod:`aimmd.network` subpackage trains and applies the committor model and
+provides output rescaling. The committor network itself is a user-supplied
+:class:`torch.nn.Module` passed via :attr:`Params.network`; AIMMD supplies the
+training loop, a placeholder network, and rescaling utilities.
 
-The :mod:`aimmd.network` package contains the model-fitting and output-rescaling
-logic used by AIMMD committor learning.
-
-Key Modules
------------
-
-:mod:`aimmd.network.fit`
-   Main training routine used by default in AIMMD runs.
-
-:mod:`aimmd.network.rescalable`
-   Defines the ``Rescalable`` mixin used by AIMMD-compatible networks.
-
-:mod:`aimmd.network.rescale_utils`
-   Numerical helpers for fitting and applying piecewise-linear output
-   rescaling.
-
-:mod:`aimmd.network.utils`
-   Placeholder network and small data-extraction helpers.
-
-Optional Graph Workflow
------------------------
-
-The repository also contains :mod:`aimmd.network.graph_utils` for graph-based
-descriptor pipelines. That module is optional and depends on the additional
-packages described in the installation guide:
-
-- ``torch-geometric``
-- ``torch-cluster``
-- ``mlcolvar``
-
-See Also
+Training
 --------
 
-The full autodoc pages for these modules live in :doc:`lowlevel/network`.
+.. automodule:: aimmd.network.fit
+   :members:
+   :show-inheritance:
+
+Output rescaling
+----------------
+
+.. automodule:: aimmd.network.rescalable
+   :members:
+   :show-inheritance:
+
+.. automodule:: aimmd.network.rescale_utils
+   :members:
+   :show-inheritance:
+
+Utilities
+---------
+
+.. automodule:: aimmd.network.utils
+   :members:
+   :show-inheritance:
+
+Graph-neural-network support
+----------------------------
+
+The module ``aimmd.network.graph_utils`` provides optional support for
+graph-neural-network committor models (atom-coordinate descriptors, PyG graph
+construction and SQLite graph caching, and a shared ``atom_types`` one-hot
+encoding for multi-system runs). It requires the optional ``graphs`` extras
+(``torch-geometric``, ``torch-cluster``) plus ``mlcolvar`` and ``lz4``; install
+them with ``pip install "aimmd-lab[graphs]"`` and see :doc:`../advanced`.

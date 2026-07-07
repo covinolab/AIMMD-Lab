@@ -8,12 +8,13 @@ import os
 import shutil
 import sys
 import types
-from pathlib import Path
 import re
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).parent / "_ext"))  # local Sphinx extensions
 
 
 def _ensure_module(name: str) -> types.ModuleType:
@@ -347,19 +348,33 @@ def _install_doc_stubs() -> None:
 _install_doc_stubs()
 
 
+# -- Project information -----------------------------------------------------
+
 project = "AIMMD"
-copyright = "2026, AIMMD contributors"
-author = "AIMMD contributors"
+copyright = "2025, Gianmarco Lazzeri, Simon Lichtinger"
+author = "Gianmarco Lazzeri, Simon Lichtinger"
+release = "0.1.0"
+version = "0.1.0"
+
+# -- General configuration ---------------------------------------------------
 
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
+    "sphinx.ext.intersphinx",
+    "sphinx.ext.mathjax",
+    "myst_nb",           # registers myst_parser as well — do NOT also list myst_parser
+    "sphinx_copybutton",
+    "sphinx_design",
+    "aimmd_params",      # local extension in _ext/ (generated Params field reference)
 ]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build"]
+exclude_patterns = ["_build", "**.ipynb_checkpoints"]
+
+# -- autodoc / autosummary / napoleon ----------------------------------------
 
 autosummary_generate = True
 autoclass_content = "both"
@@ -374,19 +389,56 @@ napoleon_google_docstring = True
 napoleon_numpy_docstring = True
 napoleon_include_init_with_doc = True
 
-html_theme = "sphinx_rtd_theme"
-html_title = "AIMMD Documentation"
+# -- MyST / notebooks (myst-nb) ----------------------------------------------
+
+myst_enable_extensions = ["dollarmath", "amsmath", "colon_fence", "deflist"]
+# The example notebooks are committed with their saved outputs. Read the Docs
+# has neither GROMACS nor a GPU, so never execute at build time — the docs
+# render the stored outputs instead.
+nb_execution_mode = "off"
+
+# -- intersphinx / copybutton ------------------------------------------------
+
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "numpy": ("https://numpy.org/doc/stable/", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
+    "torch": ("https://pytorch.org/docs/stable/", None),
+}
+copybutton_prompt_text = r">>> |\.\.\. |\$ "
+copybutton_prompt_is_regexp = True
+
+# -- HTML output (Furo) ------------------------------------------------------
+
+html_theme = "furo"
+html_title = "AIMMD"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
+# Enable these once the assets exist in _static/ (a missing file fails a -W build):
+# html_logo = "_static/logo.svg"
+# html_favicon = "_static/favicon.ico"
 html_theme_options = {
-    "logo_only": False,
-    "style_external_links": True,
-    "collapse_navigation": False,
-    "sticky_navigation": True,
-    "navigation_depth": 4,
-    "titles_only": False,
+    "navigation_with_keys": True,
+    "light_css_variables": {
+        "color-brand-primary": "#0f8b8d",
+        "color-brand-content": "#0f8b8d",
+    },
+    "dark_css_variables": {
+        "color-brand-primary": "#2bb3b5",
+        "color-brand-content": "#2bb3b5",
+    },
+    "source_repository": "https://github.com/covinolab/AIMMD",
+    "source_branch": "main",
+    "source_directory": "docs/source/",
 }
 
+
+# -- Docstring normalization -------------------------------------------------
+# Several docstrings begin with an RST title + underline and mix prose with
+# loose reStructuredText. This handler runs *after* napoleon (conf.py's setup()
+# is connected last), so it only cleans residual title underlines / stray
+# indentation left after napoleon has converted the NumPy sections — it does not
+# touch napoleon's generated field lists.
 
 _UNDERLINE_RE = re.compile(r"^[=\-~`:#*^]{3,}\s*$")
 
@@ -412,7 +464,26 @@ def _sanitize_docstring(app, what, name, obj, options, lines):
     while cleaned and not cleaned[-1].strip():
         cleaned.pop()
 
-    lines[:] = cleaned
+    # Ensure bullet/enumerated lists are separated from surrounding prose by
+    # blank lines, which docutils requires (the raw docstrings frequently omit
+    # them, producing "list ends without a blank line" warnings under autodoc).
+    def _is_item(s):
+        return bool(re.match(r"\s*[-*+]\s", s)) or bool(re.match(r"\s*\d+[.)]\s", s))
+
+    padded = []
+    for i, line in enumerate(cleaned):
+        prev = padded[-1] if padded else ""
+        # blank line before a list that directly follows non-list prose
+        if _is_item(line) and prev.strip() and not _is_item(prev):
+            padded.append("")
+        padded.append(line)
+        nxt = cleaned[i + 1] if i + 1 < len(cleaned) else ""
+        # blank line after a list item when the next line dedents to base prose
+        if (_is_item(line) and nxt.strip() and not _is_item(nxt)
+                and not nxt[:1].isspace()):
+            padded.append("")
+
+    lines[:] = padded
 
 
 def setup(app):

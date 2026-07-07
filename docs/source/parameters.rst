@@ -228,7 +228,16 @@ callables such as:
 That design is why ``Params`` includes helper code for tracking Python source
 and why the tests pay special attention to relative imports and reloading.
 
+Full Parameter Reference
+------------------------
+
+The list below is generated directly from the :class:`aimmd.Params` field
+definitions, so it always matches the code. Each entry shows the field's type,
+default value, and description.
+
+.. aimmd-params::
+
 See Also
 --------
 
-For the field-by-field API, see :doc:`api/params` and :doc:`api/lowlevel/params`.
+For the ``Params`` class methods and properties, see :doc:`api/params`.

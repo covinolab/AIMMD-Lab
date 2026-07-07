@@ -1,35 +1,55 @@
 API Reference
 =============
 
-This section has two layers:
+AIMMD has a deliberately small public surface: five high-level classes plus a
+handful of helper subpackages. Each class is assembled internally from several
+mixin modules (see :doc:`../developer_guide`), but is documented here as the
+single composed class you actually use, including its inherited members.
 
-- a repository guide organized by subsystem, useful for learning how the code
-  fits together,
-- and a low-level autodoc reference that exposes the full module docstrings and
-  members.
+Core classes
+------------
+
+.. autosummary::
+   :nosignatures:
+
+   aimmd.Params
+   aimmd.Path
+   aimmd.PathEnsemble
+   aimmd.Worker
+   aimmd.Launcher
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Class
+     - Role
+   * - :class:`aimmd.Params`
+     - Central run configuration: states, engine, network, data functions, sampling controls.
+   * - :class:`aimmd.Path`
+     - A single trajectory-backed transition path (segment-aware, lazily cached).
+   * - :class:`aimmd.PathEnsemble`
+     - A collection of paths with projection, reporting, and reweighting.
+   * - :class:`aimmd.Worker`
+     - Atomic execution unit running one ``shoot`` / ``free`` / ``train`` task.
+   * - :class:`aimmd.Launcher`
+     - Orchestrates runs: builds directories, allocates resources, launches workers or emits SLURM scripts.
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Repository Guide
+   :hidden:
+   :caption: Core classes
 
-   public
-   core
    params
    path
    pathensemble
-   execution
-   network
-   analysis
+   worker
+   launcher
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Low-Level API
+   :hidden:
+   :caption: Subpackages
 
-   lowlevel/public
-   lowlevel/core
-   lowlevel/params
-   lowlevel/path
-   lowlevel/pathensemble
-   lowlevel/execution
-   lowlevel/network
-   lowlevel/analysis
+   network
+   analysis
+   utilities
+   config
