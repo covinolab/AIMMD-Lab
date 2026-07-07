@@ -1,5 +1,6 @@
 [![pytest](https://github.com/covinolab/AIMMD/actions/workflows/pytest.yml/badge.svg)](https://github.com/covinolab/AIMMD/actions/workflows/pytest.yml)
 [![Documentation Status](https://readthedocs.org/projects/aimmd-lab/badge/?version=latest)](https://aimmd-lab.readthedocs.io/en/latest/?badge=latest)
+[![Read the Docs](https://img.shields.io/badge/Read_the_Docs-8CA1AF?logo=readthedocs&logoColor=white)](https://aimmd-lab.readthedocs.io/en/latest/)
 
 # AIMMD
 
