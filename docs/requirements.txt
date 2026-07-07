@@ -1,5 +1,5 @@
 # Documentation build requirements for Read the Docs (Python 3.13).
-# Pinned to the versions resolved locally for reproducible builds. See:
+# Pinned to the versions verified to build the docs, for reproducible builds:
 # https://docs.readthedocs.io/en/stable/guides/reproducible-builds.html
 #
 # The AIMMD package is NOT installed for the docs build; docs/source/conf.py
@@ -8,10 +8,10 @@
 # numpy and scipy are the only unstubbed hard dependencies of `import aimmd`.
 #
 # Theme: furo. Notebooks: myst-nb (execution disabled, saved outputs rendered).
-sphinx
-furo
-myst-nb
-sphinx-copybutton
-sphinx-design
-numpy
-scipy
+sphinx==9.1.0
+furo==2025.12.19
+myst-nb==1.4.0
+sphinx-copybutton==0.5.2
+sphinx-design==0.7.0
+numpy==2.5.1
+scipy==1.18.0
