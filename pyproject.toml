@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aimmd-lab"
+version = "0.1.0"
+description = "AI-guided path sampling for data generation and analysis of molecular systems characterized by rare-event transitions."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Gianmarco Lazzeri" },
+    { name = "Simon Lichtinger" },
+]
+keywords = [
+    "molecular-dynamics",
+    "ai",
+    "enhanced-sampling",
+    "path-sampling",
+    "committor",
+    "gromacs",
+    "biophysics",
+    "rare-event-transitions",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "tqdm",
+    "numpy",
+    "scipy",
+    "mdtraj",
+    "psutil",
+    "torch",
+    "filelock",
+    "matplotlib",
+    "MDAnalysis",
+]
+
+[project.optional-dependencies]
+graphs = [
+    "torch-geometric",
+    "torch-cluster",
+]
+tests = [
+    "pytest",
+    "pytest-cov",
+    "mlcolvar",
+]
+docs = [
+    "sphinx",
+    "furo",
+    "myst-nb",
+    "sphinx-copybutton",
+    "sphinx-design",
+]
+
+[project.urls]
+Homepage = "https://github.com/covinolab/AIMMD"
+Documentation = "https://aimmd-lab.readthedocs.io"
+Repository = "https://github.com/covinolab/AIMMD"
+Issues = "https://github.com/covinolab/AIMMD/issues"
+
+[tool.setuptools.packages.find]
+include = ["aimmd*"]
+exclude = ["tests*", "docs*", "examples*", "devtools*", "dev*", "implementation_trials*"]
+
+[tool.setuptools.package-data]
+aimmd = ["engines/*.mdp"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: end-to-end tests that run full AIMMD simulations (slow)",
+]
