@@ -1,0 +1,13 @@
+# Documentation build requirements for Read the Docs.
+# Pinned to the versions used to build the docs locally (Python 3.13) for
+# reproducible builds. See:
+# https://docs.readthedocs.io/en/stable/guides/reproducible-builds.html
+#
+# The AIMMD package is NOT installed for the docs build; docs/source/conf.py
+# adds the repo root to sys.path and stubs the heavy runtime dependencies
+# (torch, MDAnalysis, mdtraj, matplotlib, torch_geometric, mlcolvar, ...).
+# numpy and scipy are the only unstubbed hard dependencies of `import aimmd`.
+sphinx==8.2.3
+sphinx-rtd-theme==3.0.2
+numpy==2.4.3
+scipy==1.17.1

@@ -1,0 +1,28 @@
+# Read the Docs configuration file for AIMMD
+# See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
+
+# Required
+version: 2
+
+# Set the OS, Python version, and other tools you might need
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.13"
+
+# Build the Sphinx documentation.
+# The AIMMD docs live in docs/source/, so the config file is
+# docs/source/conf.py (not the default docs/conf.py).
+sphinx:
+  configuration: docs/source/conf.py
+
+# Declare the Python requirements needed to build the documentation.
+# The AIMMD package itself is intentionally NOT installed here:
+# docs/source/conf.py adds the repository root to sys.path and installs
+# lightweight stubs for the heavy runtime dependencies (torch, MDAnalysis,
+# mdtraj, matplotlib, torch_geometric, ...), so autodoc can import the package
+# without them. numpy and scipy are the only unstubbed hard dependencies and
+# are declared, together with Sphinx and the theme, in docs/requirements.txt.
+python:
+  install:
+    - requirements: docs/requirements.txt
