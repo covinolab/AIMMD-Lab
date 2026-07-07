@@ -1,6 +1,6 @@
 name: pytest
 
-on: [push]
+on: [push, pull_request]
 
 defaults:
   run:
@@ -28,14 +28,16 @@ jobs:
       run: pip install --upgrade pip setuptools
     - name: Install AIMMD
       run: |
-        python setup.py install
+        pip install -e .
     - name: Test with pytest
       run: |
         pytest -v --cov=aimmd --cov-report=xml --color=yes tests/
-        
-    - name: CodeCov
-      uses: codecov/codecov-action@v1
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v5
       with:
-        file: ./coverage.xml
+        files: ./coverage.xml
         flags: unittests
         name: codecov-AIMMD
+        token: ${{ secrets.CODECOV_TOKEN }}
+        fail_ci_if_error: false

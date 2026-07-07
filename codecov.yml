@@ -1,0 +1,31 @@
+# Codecov configuration for AIMMD
+# https://docs.codecov.com/docs/codecov-yaml
+
+coverage:
+  # Report coverage but do not fail CI on coverage changes (informational only).
+  status:
+    project:
+      default:
+        target: auto        # compare against the parent commit
+        threshold: 1%        # allow a 1% drop without a red status
+        informational: true # never block a PR/merge on coverage
+    patch:
+      default:
+        informational: true
+
+comment:
+  layout: "reach, diff, files"
+  require_changes: false
+
+# Paths excluded from coverage reporting.
+ignore:
+  - "tests/**"
+  - "docs/**"
+  - "devtools/**"
+  - "examples/**"
+  - "implementation_trials/**"
+  # Standalone CLI / SLURM entry points that are executed as separate OS
+  # processes (python -m aimmd, srun worker launcher) and are not exercised
+  # by the pytest suite, so they would otherwise skew the reported percentage.
+  - "aimmd/__main__.py"
+  - "aimmd/worker/run.py"
