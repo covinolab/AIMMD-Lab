@@ -1,104 +1,155 @@
+# AIMMD
+
 [![pytest](https://github.com/covinolab/AIMMD/actions/workflows/pytest.yml/badge.svg)](https://github.com/covinolab/AIMMD/actions/workflows/pytest.yml)
 [![codecov](https://codecov.io/github/covinolab/AIMMD/graph/badge.svg?token=0B7E24VODY)](https://codecov.io/github/covinolab/AIMMD)
 [![Documentation Status](https://readthedocs.org/projects/aimmd-lab/badge/?version=latest)](https://aimmd-lab.readthedocs.io/en/latest/?badge=latest)
 [![Read the Docs](https://img.shields.io/badge/Read_the_Docs-8CA1AF?logo=readthedocs&logoColor=white)](https://aimmd-lab.readthedocs.io/en/latest/)
+[![PyPI](https://img.shields.io/pypi/v/aimmd-lab.svg)](https://pypi.org/project/aimmd-lab/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 
-# AIMMD
+**AI for Molecular Mechanism Discovery** — AI-enhanced path sampling for rare
+molecular transitions.
 
-AIMMD (AI for Molecular Mechanism Discovery) implements **AI-enhanced path sampling** for molecular systems in a parallel way to run both on local systems and HPC clusters, interfacing with the gromacs MD engine. For details, please see our publications:
+AIMMD shoots short unbiased simulations from points chosen by a learned
+committor model, building a diverse ensemble of reactive trajectories — often
+many more transition events than plain equilibrium sampling at comparable cost.
+That ensemble is reweighted to recover **free-energy profiles** and **transition
+rates**, while the learned committor doubles as an interpretable **reaction
+coordinate**. Runs scale from a laptop (multiprocessing) to HPC clusters (SLURM
+`srun`), driving the GROMACS MD engine or a built-in toy engine.
 
+📖 **Documentation:** <https://aimmd-lab.readthedocs.io>
 
-(1)	Jung, H.; Covino, R.; Arjun, A.; Leitold, C.; Dellago, C.; Bolhuis, P. G.; Hummer, G. Machine-Guided Path Sampling to Discover Mechanisms of Molecular Self-Organization. Nat. Comput. Sci. 2023, 3 (4), 334–345. https://doi.org/10.1038/s43588-023-00428-z.
+## Features
 
-(2)	Lazzeri, G.; Jung, H.; Bolhuis, P. G.; Covino, R. Molecular Free Energies, Rates, and Mechanisms from Data-Efficient Path Sampling Simulations. J. Chem. Theory Comput. 2023, 19 (24), 9060–9076. https://doi.org/10.1021/acs.jctc.3c00821.
+- **Committor-guided two-way shooting** in the reactive region.
+- **Rejection-free path sampling** (`rfps`) *and* classic TPS acceptance (`tps`).
+- **On-the-fly training and reweighting** — the committor model, adaptive bins,
+  and densities update continuously as data arrives.
+- **Free energies and rates** from a single self-consistent path ensemble.
+- **Multi-system / multi-ligand runs** trained with one shared committor network.
+- **Biased dynamics** (OPES/PLUMED) with Tiwary–Parrinello rate reweighting.
+- **Graph-neural-network** committor models (optional).
+- **Local or HPC** execution from the same parameter file.
 
-(3)		Lazzeri, G.; Bolhuis, P. G.; Covino, R. Optimal Rejection-Free Path Sampling. arXiv. https://arxiv.org/html/2503.21037v1.
+## Installation
 
+### From PyPI
 
-# Installation instructions
+```bash
+pip install aimmd-lab
+```
 
-AIMMD is a python package, and we recommend installing 
-it in a fresh conda environment.
+The distribution is named `aimmd-lab`, but the import name is `aimmd`:
+
+```python
+import aimmd
+```
+
+We recommend a clean conda environment (Python 3.13 is tested):
 
 ```bash
 conda create -n aimmd python=3.13
+conda activate aimmd
+pip install aimmd-lab
 ```
 
-## Prerequisites
+### Prerequisites: GROMACS
 
-AIMMD depends on the gromacs MD engine. Any installation that adds working `gmx` or `gmx_mpi` to your path will do. For testing purposes and lightweight tasks, gromacs can be installed via conda:
+AIMMD drives the GROMACS MD engine and expects `gmx` or `gmx_mpi` on your
+`PATH`. For testing and lightweight work it can be installed from conda-forge:
 
-```
+```bash
 conda install conda-forge::gromacs
 ```
 
-For production runs and optimal performnace, however, it is highly recommended to install gromacs from source. See [here](https://manual.gromacs.org/2025.4/install-guide/index.html) for instructions.
+For production runs we recommend building GROMACS from source for optimal
+performance; see the [GROMACS install guide](https://manual.gromacs.org/current/install-guide/index.html).
+(The built-in toy engine needs no GROMACS.)
 
-Additionally, if you wish to use AIMMD with graph neural networks (GNNs), ```torch-geometric```, ```torch-cluster``` and ```mlcolvar``` are additional dependencies. Since ```torch-cluster``` can be tricky to install depending on your machine's configuration, AIMMD will not install these dependencies by default. On a Linux machine with an NVIDIA GPU compatible with cuda 11.8, we have confirmed that the following works in a python 3.13 environment:
+### Optional: graph neural networks
 
-```
-pip install torch==2.7.1 -f https://download.pytorch.org/whl/cu118/torch-2.7.1%2Bcu118-cp313-cp313-manylinux_2_28_x86_64.whl
-pip install torch-geometric==2.7.0
-pip install torch-cluster==1.6.3 -f https://data.pyg.org/whl/torch-2.7.0%2Bcu118/torch_cluster-1.6.3%2Bpt27cu118-cp313-cp313-linux_x86_64.whl
+Graph-based committor models need extra packages (`torch-cluster` can be awkward
+to build). Install the `graphs` extra plus `mlcolvar`:
+
+```bash
+pip install "aimmd-lab[graphs]"
 pip install mlcolvar
 ```
 
-### Installing AIMMD
+If the default wheels do not match your CUDA/Python build, install them
+explicitly — see the [installation guide](https://aimmd-lab.readthedocs.io/en/latest/installation.html)
+for a confirmed-working CUDA 11.8 / Python 3.13 example.
 
-The package has not yet been deposited on PyPi. To install it, you can clone the github repository, and - once in the folder - do:
+### Development install
 
-```
-pip install -e .
-```
-
-### Verification of the installation
-
-Lastly, we recommend you run the tests to verify that AIMMD was installed correctly.
-
-```
-pip install pytest
-pytest tests/
+```bash
+git clone https://github.com/covinolab/AIMMD.git
+cd AIMMD
+pip install -e ".[tests,docs]"
+pytest tests/          # verify the installation
 ```
 
+## Quickstart
 
-# Introduction to the implementation
+An AIMMD run is defined by a `params.py` file (states, features, network,
+engine, sampling controls) and a short launch script:
 
-The core task implemented in this package is **committor-guided shooting** in the reactive region of molecular systems. Short unbiased simulations
-are launched from **shooting points** selected using a learned committor model
-(typically a neural network). This produces a **diverse ensemble of reactive
-trajectories**, and - in most cases - **more transition events than equilibrium**
-sampling at comparable cost.
+```python
+import aimmd
 
-The resulting path ensemble can be inspected and reweighted to obtain estimates
-of **free-energy profiles** and **transition rates** and, together with the
-learned reaction coordinate (committor model), to support mechanistic
-interpretation. For rejection-free path sampling workflows, reweighting and
-bin/density adaptation are also performed **on the fly**. We provide tools
-(and example notebooks) to support this analysis.
+params   = aimmd.Params.load('params.py')   # load the run configuration
+launcher = aimmd.Launcher(params, 'run1')   # attach a working directory
 
-AIMMD organizes computation into **workers** launched by a **launcher**, either using multiprocessing or ```srun``` on HPC architectures.
+# 5 shooting workers, 1 free-A, 1 free-B; stop after 25k frames.
+launcher.run(5, 1, 1, nframes=25000)
 
-## Worker tasks
-Workers execute exactly one task at a time:
+# Reload and analyze the resulting path ensemble.
+ensemble = params.pathensemble('run1')
+ensemble.report()
+ensemble.reweight()      # free energies / rates
+```
 
-- **`shoot`**: the core path-sampling loop.  
-  Selects a shooting point from a selection pool (committor-guided), runs a backward and forward simulation, merges them into a new path, and registers it in a shooting chain. Supports TPS-style acceptance, or the rejection-free sampling algorithm.
+See the [Quickstart](https://aimmd-lab.readthedocs.io/en/latest/quickstart.html)
+and the runnable [tutorial notebooks](https://aimmd-lab.readthedocs.io/en/latest/tutorials/index.html)
+(a 1-D toy system and a multi-ligand run, both GROMACS-free) for complete
+examples.
 
-- **`free`**: runs equilibrium MD simulations around a chosen state.  
-  Used to provide additional sampling/statistics and (optionally) candidate frames for shooting-point selection (“overriding” frames).
+## Documentation
 
-- **`train`**: updates the committor model and adaptive sampling state.  
-  Trains the network on the current ensemble, computes/updates values on frames, builds adaptive bins, estimates densities, and writes artifacts.
+Full documentation is hosted at <https://aimmd-lab.readthedocs.io>, including:
 
-These workers run simultaneously, so that the **`train`** worker provides frequent updates to the committor model, using always the most recent available training data.
+- [Concepts](https://aimmd-lab.readthedocs.io/en/latest/concepts.html) and the
+  [scientific background](https://aimmd-lab.readthedocs.io/en/latest/scientific_background.html),
+- the [workflow](https://aimmd-lab.readthedocs.io/en/latest/workflow.html) and
+  [advanced usage](https://aimmd-lab.readthedocs.io/en/latest/advanced.html)
+  (multi-system, biased dynamics, validation),
+- the full [parameter reference](https://aimmd-lab.readthedocs.io/en/latest/parameters.html) and
+  [API reference](https://aimmd-lab.readthedocs.io/en/latest/api/index.html).
 
-## Setting parameters
+## Citation
 
-Parameters guiding the AIMMD execution, including state definitions, neural network architectures, etc., are set in parameter python files. See the tutorials for examples.
+If you use AIMMD in your work, please cite the relevant papers:
 
-## Sweep mode (validation)
-The launcher can set `reactive_region_mode='sweep'`. In this mode, workers
-deterministically cycle through a fixed set of frames and repeatedly shoot from
-them to estimate committor values by brute force (ratio of outcomes reaching one
-end state vs the other). This is mainly for **validating** the committor model.
+1. Jung, H.; Covino, R.; Arjun, A.; Leitold, C.; Dellago, C.; Bolhuis, P. G.;
+   Hummer, G. *Machine-Guided Path Sampling to Discover Mechanisms of Molecular
+   Self-Organization.* Nat. Comput. Sci. **2023**, 3 (4), 334–345.
+   <https://doi.org/10.1038/s43588-023-00428-z>
+2. Lazzeri, G.; Jung, H.; Bolhuis, P. G.; Covino, R. *Molecular Free Energies,
+   Rates, and Mechanisms from Data-Efficient Path Sampling Simulations.*
+   J. Chem. Theory Comput. **2023**, 19 (24), 9060–9076.
+   <https://doi.org/10.1021/acs.jctc.3c00821>
+3. Lazzeri, G.; Bolhuis, P. G.; Covino, R. *Optimal Rejection-Free Path
+   Sampling.* arXiv **2025**. <https://arxiv.org/abs/2503.21037>
 
+A `CITATION.cff` file is included for GitHub's "Cite this repository" feature.
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[developer guide](https://aimmd-lab.readthedocs.io/en/latest/developer_guide.html).
+
+## License
+
+AIMMD is released under the MIT License. See [LICENSE](LICENSE).

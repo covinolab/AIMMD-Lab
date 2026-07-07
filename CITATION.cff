@@ -1,0 +1,49 @@
+cff-version: 1.2.0
+message: "If you use AIMMD, please cite the software and the relevant papers below."
+title: "AIMMD: AI for Molecular Mechanism Discovery"
+abstract: >-
+  AI-enhanced path sampling for rare molecular transitions: committor-guided
+  two-way shooting, on-the-fly committor-model training, and reweighting of the
+  resulting path ensemble into free energies and transition rates.
+type: software
+authors:
+  - family-names: Lazzeri
+    given-names: Gianmarco
+  - family-names: Lichtinger
+    given-names: Simon
+license: MIT
+version: 0.1.0
+repository-code: "https://github.com/covinolab/AIMMD"
+url: "https://aimmd-lab.readthedocs.io"
+keywords:
+  - molecular dynamics
+  - path sampling
+  - enhanced sampling
+  - committor
+  - machine learning
+  - rare events
+preferred-citation:
+  type: article
+  title: "Machine-guided path sampling to discover mechanisms of molecular self-organization"
+  authors:
+    - family-names: Jung
+      given-names: Hendrik
+    - family-names: Covino
+      given-names: Roberto
+    - family-names: Arjun
+      given-names: A.
+    - family-names: Leitold
+      given-names: Christian
+    - family-names: Dellago
+      given-names: Christoph
+    - family-names: Bolhuis
+      given-names: Peter G.
+    - family-names: Hummer
+      given-names: Gerhard
+  journal: "Nature Computational Science"
+  year: 2023
+  volume: 3
+  issue: 4
+  start: 334
+  end: 345
+  doi: "10.1038/s43588-023-00428-z"
