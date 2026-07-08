@@ -1,4 +1,4 @@
-# AIMMD
+# AIMMD-Lab
 
 [![pytest](https://github.com/covinolab/AIMMD/actions/workflows/pytest.yml/badge.svg)](https://github.com/covinolab/AIMMD/actions/workflows/pytest.yml)
 [![codecov](https://codecov.io/github/covinolab/AIMMD/graph/badge.svg?token=0B7E24VODY)](https://codecov.io/github/covinolab/AIMMD)
@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 
-**AI for Molecular Mechanism Discovery** — AI-enhanced path sampling for rare
+This repository implements **AI for Molecular Mechanism Discovery (AIMMD)** — AI-enhanced path sampling for rare
 molecular transitions.
 
 AIMMD shoots short unbiased simulations from points chosen by a learned
@@ -20,6 +20,10 @@ coordinate**. Runs scale from a laptop (multiprocessing) to HPC clusters (SLURM
 `srun`), driving the GROMACS MD engine or a built-in toy engine.
 
 📖 **Documentation:** <https://aimmd-lab.readthedocs.io>
+
+⚠️ **Note:** The AIMMD method has been developed and expanded over a series of publications, see citations below. This package implements
+AIMMD based on Jung _et al._ (2023) with the extensions of Lazzeri _et al._ (2023/2025) and Lichtinger _et al._ (2026, in preparation). A package implementing AIMMD as published in
+Jung _et al._ (2023) is available at <https://github.com/bio-phys/aimmd>.
 
 ## Features
 
