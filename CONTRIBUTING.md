@@ -13,8 +13,8 @@ environment:
 ```bash
 conda create -n aimmd python=3.13
 conda activate aimmd
-git clone https://github.com/covinolab/AIMMD.git
-cd AIMMD
+git clone https://github.com/covinolab/AIMMD-Lab.git
+cd AIMMD-Lab
 pip install -e ".[tests,docs]"
 ```
 
@@ -58,7 +58,7 @@ renders.
 2. Make your change, with tests where practical.
 3. Ensure `pytest tests/` passes and the docs build.
 4. Open a pull request against `main` at
-   <https://github.com/covinolab/AIMMD>.
+   <https://github.com/covinolab/AIMMD-Lab>.
 
 By contributing, you agree that your contributions are licensed under the
 project's [MIT License](LICENSE).

@@ -1,7 +1,7 @@
 # AIMMD-Lab
 
-[![pytest](https://github.com/covinolab/AIMMD/actions/workflows/pytest.yml/badge.svg)](https://github.com/covinolab/AIMMD/actions/workflows/pytest.yml)
-[![codecov](https://codecov.io/github/covinolab/AIMMD/graph/badge.svg?token=0B7E24VODY)](https://codecov.io/github/covinolab/AIMMD)
+[![pytest](https://github.com/covinolab/AIMMD-Lab/actions/workflows/pytest.yml/badge.svg)](https://github.com/covinolab/AIMMD-Lab/actions/workflows/pytest.yml)
+[![codecov](https://codecov.io/github/covinolab/AIMMD-Lab/graph/badge.svg?token=0B7E24VODY)](https://codecov.io/github/covinolab/AIMMD-Lab)
 [![Documentation Status](https://readthedocs.org/projects/aimmd-lab/badge/?version=latest)](https://aimmd-lab.readthedocs.io/en/latest/?badge=latest)
 [![Read the Docs](https://img.shields.io/badge/Read_the_Docs-8CA1AF?logo=readthedocs&logoColor=white)](https://aimmd-lab.readthedocs.io/en/latest/)
 [![PyPI](https://img.shields.io/pypi/v/aimmd-lab.svg)](https://pypi.org/project/aimmd-lab/)
@@ -87,8 +87,8 @@ for a confirmed-working CUDA 11.8 / Python 3.13 example.
 ### Development install
 
 ```bash
-git clone https://github.com/covinolab/AIMMD.git
-cd AIMMD
+git clone https://github.com/covinolab/AIMMD-Lab.git
+cd AIMMD-Lab
 pip install -e ".[tests,docs]"
 pytest tests/          # verify the installation
 ```

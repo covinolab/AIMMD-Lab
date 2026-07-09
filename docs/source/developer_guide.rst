@@ -152,6 +152,6 @@ Contributions are welcome. A typical workflow:
 4. Follow the existing style: NumPy-style docstrings (rendered by
    ``sphinx.ext.napoleon``), and keep the mixin layering described above when
    extending the major classes.
-5. Open a pull request against ``main`` at https://github.com/covinolab/AIMMD.
+5. Open a pull request against ``main`` at https://github.com/covinolab/AIMMD-Lab.
 
 See ``CONTRIBUTING.md`` in the repository root for the short version.

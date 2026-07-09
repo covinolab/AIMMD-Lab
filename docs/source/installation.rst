@@ -49,8 +49,8 @@ optional test and documentation dependencies:
 
 .. code-block:: bash
 
-   git clone https://github.com/covinolab/AIMMD.git
-   cd AIMMD
+   git clone https://github.com/covinolab/AIMMD-Lab.git
+   cd AIMMD-Lab
    pip install -e ".[tests,docs]"
 
 Optional Graph-Network Dependencies

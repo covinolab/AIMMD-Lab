@@ -13,7 +13,7 @@ authors:
     given-names: Simon
 license: MIT
 version: 0.1.0
-repository-code: "https://github.com/covinolab/AIMMD"
+repository-code: "https://github.com/covinolab/AIMMD-Lab"
 url: "https://aimmd-lab.readthedocs.io"
 keywords:
   - molecular dynamics

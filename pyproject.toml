@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "AI-guided path sampling for data generation and analysis of molecular systems characterized by rare-event transitions."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Gianmarco Lazzeri" },
     { name = "Simon Lichtinger" },
@@ -28,7 +29,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Physics",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -68,10 +68,10 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/covinolab/AIMMD"
+Homepage = "https://github.com/covinolab/AIMMD-Lab"
 Documentation = "https://aimmd-lab.readthedocs.io"
-Repository = "https://github.com/covinolab/AIMMD"
-Issues = "https://github.com/covinolab/AIMMD/issues"
+Repository = "https://github.com/covinolab/AIMMD-Lab"
+Issues = "https://github.com/covinolab/AIMMD-Lab/issues"
 
 [tool.setuptools.packages.find]
 include = ["aimmd*"]

@@ -427,7 +427,7 @@ html_theme_options = {
         "color-brand-primary": "#2bb3b5",
         "color-brand-content": "#2bb3b5",
     },
-    "source_repository": "https://github.com/covinolab/AIMMD",
+    "source_repository": "https://github.com/covinolab/AIMMD-Lab",
     "source_branch": "main",
     "source_directory": "docs/source/",
 }
