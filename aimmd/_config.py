@@ -38,3 +38,31 @@ _initialized : bool
 
 # Will become True once initialization is completed.
 _initialized = False
+
+
+# Canonical message shown when no GROMACS executable can be resolved. Kept here
+# (rather than in _init) so the import-time warning and the sampling-time guard
+# share identical wording, and so launcher/worker can import the guard without a
+# circular import (_config imports nothing).
+_GROMACS_NOT_FOUND_MSG = (
+    "GROMACS exec not found in PATH. Please install GROMACS and "
+    "ensure 'gmx' or 'gmx_mpi' is accessible in your environment.")
+
+
+def require_gromacs():
+    """Fail fast if no GROMACS executable was resolved at initialization.
+
+    A no-op when a GROMACS executable is available. Sampling entry points that
+    drive the GROMACS engine call this so sampling raises the same
+    ``EnvironmentError`` that ``import aimmd`` used to raise, while import,
+    analysis, training, and toy-engine sampling stay usable without GROMACS.
+
+    Raises
+    ------
+    EnvironmentError
+        If no ``gmx``/``gmx_mpi`` executable was found on PATH.
+    """
+    # Read the module attribute at call time so the current value is always
+    # seen (and so this is safe even if initialize() never ran).
+    if globals().get('GROMACS') is None:
+        raise EnvironmentError(_GROMACS_NOT_FOUND_MSG)

@@ -47,6 +47,28 @@ Notes
 
 from . import _config
 
+
+def _resolve_gromacs():
+    """Resolve the GROMACS executable from PATH; warn (do not raise) if absent.
+
+    Sets ``_config.GROMACS`` to the resolved path or ``None`` and returns it.
+    Extracted from :func:`initialize` so the resolution/warning behavior can be
+    unit-tested without triggering the rest of initialization.
+    """
+    import shutil
+    import warnings
+    _config.GROMACS = shutil.which('gmx') or shutil.which('gmx_mpi')
+    if _config.GROMACS is None:
+        warnings.warn(
+            _config._GROMACS_NOT_FOUND_MSG
+            + " AIMMD imported successfully; analysis and training will work,"
+              " but any GROMACS-engine sampling operation (Launcher.run,"
+              " Launcher.create_job, or a shoot/free worker) will raise until"
+              " GROMACS is installed and on PATH.",
+            RuntimeWarning, stacklevel=2)
+    return _config.GROMACS
+
+
 def initialize():
     """
     Initialize the AIMMD runtime environment (idempotent).
@@ -62,7 +84,9 @@ def initialize():
     -----
     - The function is safe to call multiple times; it will return immediately if
       initialization has already completed.
-    - Fail-fast behavior: if GROMACS cannot be found, an EnvironmentError is raised.
+    - If GROMACS cannot be found, a ``RuntimeWarning`` is emitted and
+      ``_config.GROMACS`` is left ``None``; GROMACS-engine sampling entry points
+      then raise ``EnvironmentError`` via :func:`aimmd._config.require_gromacs`.
     """
     # Idempotency guard: initialization should run once per interpreter.
     if _config._initialized:
@@ -95,12 +119,11 @@ def initialize():
     # Path to the current Python interpreter (useful when spawning workers).
     _config.PYTHON = sys.executable
 
-    # Resolve GROMACS executable from PATH.
-    _config.GROMACS = shutil.which('gmx') or shutil.which('gmx_mpi')
-    if _config.GROMACS is None:
-        raise EnvironmentError(
-            "GROMACS exec not found in PATH. Please install GROMACS and "
-            "ensure 'gmx' or 'gmx_mpi' is accessible in your environment.")
+    # Resolve GROMACS executable from PATH. Missing GROMACS now warns (rather
+    # than raising) so import / analysis / training work without it; the hard
+    # requirement is enforced at the GROMACS-engine sampling entry points via
+    # _config.require_gromacs().
+    _resolve_gromacs()
 
     # Package root directory (absolute path).
     _config.PARENT = str(PosixPath(__file__).resolve().parent)

@@ -80,7 +80,7 @@ from math import inf
 from numpy import bool_
 
 # aimmd imports
-from .._config import PYTHON, WORKER
+from .._config import PYTHON, WORKER, require_gromacs
 
 
 class LauncherMethods(ABC):
@@ -258,6 +258,12 @@ class LauncherMethods(ABC):
         - The script uses ``srun --exclusive --nodes=1 --ntasks=1`` for each
           worker to ensure processes do not share a task allocation.
         """
+        # A GROMACS-engine job script only makes sense if `gmx` is available to
+        # the workers it launches; require it at generation time. Toy-engine job
+        # scripts need no GROMACS.
+        if any(getattr(p, 'engine', None) == 'gromacs' for p in self.params):
+            require_gromacs()
+
         # retrieve run information: slurm header
         slurm_header = self.params[0].slurm_header + ''
 

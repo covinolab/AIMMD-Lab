@@ -59,6 +59,7 @@ from math import inf
 # aimmd imports
 from ..worker import Worker
 from ..core.utils import now
+from .._config import require_gromacs
 
 
 def run_task(params_file, directory,
@@ -196,6 +197,13 @@ class LauncherRun(ABC):
         consistent with AIMMD workflows where workers share on-disk state and
         should not keep running after another worker has stopped or failed.
         """
+        # Sampling spawns workers that drive the MD engine; if any run uses the
+        # GROMACS engine, require `gmx` up front so a missing install fails here
+        # with a clear error rather than deep inside a worker. Toy-engine runs
+        # need no GROMACS.
+        if any(getattr(p, 'engine', None) == 'gromacs' for p in self.params):
+            require_gromacs()
+
         # update run settings
         self._update(n, n1, n2,
                      reactive_region_mode, state1_mode, state2_mode,

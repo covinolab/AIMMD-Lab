@@ -72,7 +72,7 @@ import traceback
 from abc import ABC
 
 # aimmd imports
-from .._config import MDA_CACHE, NPY_CACHE, print
+from .._config import MDA_CACHE, NPY_CACHE, print, require_gromacs
 from ..core.utils import now, accepts_system_id
 
 
@@ -149,6 +149,13 @@ class WorkerRun(ABC):
         """
         # initialize
         self.task = task
+
+        # Shooting / free MD with the GROMACS engine invokes `gmx`; fail fast
+        # with the same error import used to raise. Training and analysis, and
+        # toy-engine sampling, do not require GROMACS. (Placed before the try so
+        # the finally block, which references `cwd`, is not entered.)
+        if task in ('shoot', 'free') and getattr(self.params, 'engine', None) == 'gromacs':
+            require_gromacs()
 
         try:
             # Always run from the parameters' directory.
