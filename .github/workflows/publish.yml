@@ -1,0 +1,63 @@
+name: Publish to PyPI
+
+# Publishes the aimmd-lab distribution to PyPI when a GitHub Release is
+# published. Uses PyPI "Trusted Publishing" (OpenID Connect) so NO API token
+# or password is stored as a repository secret.
+
+on:
+  release:
+    types: [published]
+
+permissions: {}  # tighten the default token; jobs opt in to what they need
+
+jobs:
+  build:
+    name: Build sdist and wheel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # aimmd-lab requires-python >=3.9; a recent Python builds the
+          # pure-Python (py3-none-any) wheel just fine.
+          python-version: "3.12"
+
+      - name: Install the build frontend
+        run: python -m pip install --upgrade pip build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Upload the distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI (Trusted Publishing)
+    needs: build
+    runs-on: ubuntu-latest
+    # This environment name MUST match the one entered in the PyPI
+    # pending-publisher form.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/aimmd-lab
+    permissions:
+      # Mandatory for OIDC trusted publishing; this is the ONLY credential used.
+      id-token: write
+    steps:
+      - name: Download the distribution artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No 'with:' credentials needed. OIDC exchanges a short-lived token
+        # scoped to this repo/workflow/environment for a PyPI upload token.
