@@ -18,10 +18,10 @@ rates**, while the learned committor doubles as an interpretable **reaction
 coordinate**. Runs scale from a laptop (multiprocessing) to HPC clusters (SLURM
 `srun`), driving the GROMACS MD engine or a built-in toy engine.
 
+📖 **Documentation:** <https://aimmd-lab.readthedocs.io>
+
 A **alternative** package implementing AIMMD as published in
 Jung _et al._ (2023) is available at <https://github.com/bio-phys/aimmd>.
-
-📖 **Documentation:** <https://aimmd-lab.readthedocs.io>
 
 ## Features
 
