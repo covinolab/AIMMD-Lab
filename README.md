@@ -12,7 +12,7 @@ This repository implements **AI for Molecular Mechanism Discovery (AIMMD)** — 
 molecular transitions.
 
 AIMMD generates **short unbiased simulations** from configurations chosen by a **machine-learned** 
-committor model, building a diverse ensemble of trajectories that approximates a **long equilibrium trajecotory** at a **fraction of the computational cost**.
+committor model, building a diverse ensemble of trajectories that approximates a **long equilibrium trajectory** at a **fraction of the computational cost**.
 That ensemble is reweighted to recover **free-energy profiles** and **transition
 rates**, while the learned committor doubles as an interpretable **reaction
 coordinate**. Runs scale from a laptop (multiprocessing) to HPC clusters (SLURM
