@@ -537,8 +537,11 @@ class WorkerTrain(ABC):
                     check_reactive_bias, compute_bias_corrections)
                 check_reactive_bias(
                     eval_pe, states, bias_reactive_threshold)
-                gamma1 = compute_bias_corrections(eval_pe, w1)
-                gamma2 = compute_bias_corrections(eval_pe, w2)
+                # compute_bias_corrections reports its own bias-cache coverage;
+                # check=False on the second call avoids repeating it.
+                gamma1 = compute_bias_corrections(eval_pe, w1, lengths=lengths)
+                gamma2 = compute_bias_corrections(eval_pe, w2, lengths=lengths,
+                                                  check=False)
                 k12_rw = np.sum(w1 * lengths * gamma1)
                 k12_rw = 1 / k12_rw if k12_rw else nan
                 k21_rw = np.sum(w2 * lengths * gamma2)
@@ -880,8 +883,11 @@ class WorkerTrain(ABC):
                     check_reactive_bias(
                         pe, states,
                         params.bias_reactive_threshold_of(sid))
-                    gamma1 = compute_bias_corrections(pe, w1)
-                    gamma2 = compute_bias_corrections(pe, w2)
+                    gamma1 = compute_bias_corrections(pe, w1,
+                                                      lengths=frame_lengths)
+                    gamma2 = compute_bias_corrections(pe, w2,
+                                                      lengths=frame_lengths,
+                                                      check=False)
                     k12_rw = np.sum(w1 * frame_lengths * gamma1)
                     k12_rw = 1 / k12_rw if k12_rw else nan
                     k21_rw = np.sum(w2 * frame_lengths * gamma2)
@@ -1278,8 +1284,10 @@ class WorkerTrain(ABC):
                     check_reactive_bias, compute_bias_corrections)
                 check_reactive_bias(
                     pathensemble, states, bias_reactive_threshold)
-                gamma1 = compute_bias_corrections(pathensemble, w1)
-                gamma2 = compute_bias_corrections(pathensemble, w2)
+                gamma1 = compute_bias_corrections(pathensemble, w1,
+                                                  lengths=lengths)
+                gamma2 = compute_bias_corrections(pathensemble, w2,
+                                                  lengths=lengths, check=False)
                 k12_rw = np.sum(w1 * lengths * gamma1)
                 k12_rw = 1 / k12_rw if k12_rw else nan
                 k21_rw = np.sum(w2 * lengths * gamma2)
@@ -1491,8 +1499,11 @@ class WorkerTrain(ABC):
                         check_reactive_bias, compute_bias_corrections)
                     check_reactive_bias(
                         pe, states, params.bias_reactive_threshold_of(sid))
-                    gamma1 = compute_bias_corrections(pe, w1)
-                    gamma2 = compute_bias_corrections(pe, w2)
+                    gamma1 = compute_bias_corrections(pe, w1,
+                                                      lengths=frame_lengths)
+                    gamma2 = compute_bias_corrections(pe, w2,
+                                                      lengths=frame_lengths,
+                                                      check=False)
                     k12_rw = np.sum(w1 * frame_lengths * gamma1)
                     results['k12_rw'][row] = 1 / k12_rw if k12_rw else nan
                     k21_rw = np.sum(w2 * frame_lengths * gamma2)
