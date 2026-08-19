@@ -120,9 +120,11 @@ class WorkerTrain(ABC):
         happened.
         """
         print(f'\nComputing bias cache (file mode) {now()}')
+        from ..pathensemble.bias_utils import derive_bias_from_cumulative_colvar
         pass_sid = system_id is not None and accepts_system_id(bias_function)
         seen = set()
         n_cached = 0
+        n_derived = 0
         for _path in pathensemble:
             for _fname in _path._fnames:
                 if _fname in seen:
@@ -141,15 +143,29 @@ class WorkerTrain(ABC):
                 if (_existing is not None
                         and len(_existing) >= _n_traj_frames):
                     continue
-                _bias = (bias_function(_fname, system_id=system_id) if pass_sid
-                         else bias_function(_fname))
+                _call = ((lambda f: bias_function(f, system_id=system_id))
+                         if pass_sid else bias_function)
+                _bias = _call(_fname)
+                if _bias is None or len(_bias) < _n_traj_frames:
+                    # No per-part _COLVAR slice yet (the free segment's mdrun has
+                    # not returned), or it is short. Derive the bias straight from
+                    # the trajectory's cumulative COLVAR instead — read-only, and
+                    # without touching the slicing machinery.
+                    _derived = derive_bias_from_cumulative_colvar(
+                        _fname, self.params.trajectory_extension, _call)
+                    if _derived is not None and (
+                            _bias is None or len(_derived) > len(_bias)):
+                        _bias = _derived
+                        n_derived += 1
                 if _bias is None:
                     continue  # no COLVAR for this file; skip
                 save_npy(_cache_fname, np.asarray(_bias, dtype=float))
                 NPY_CACHE.remove(_cache_fname)
                 n_cached += 1
         if n_cached:
-            print(f'... wrote bias cache for {n_cached} trajectory files')
+            print(f'... wrote bias cache for {n_cached} trajectory files'
+                  + (f' ({n_derived} derived out-of-cache from the cumulative '
+                     f'COLVAR)' if n_derived else ''))
 
     def train(self, nrounds=1, keep_running=False, **kwargs):
         """

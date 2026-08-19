@@ -4,7 +4,7 @@ aimmd.pathensemble.bias_utils
 
 Bias reweighting utilities for :class:`aimmd.pathensemble.PathEnsemble`.
 
-This module provides three public functions used by the AIMMD training worker when
+This module provides four public functions used by the AIMMD training worker when
 ``params.record_bias = True``:
 
 - :func:`check_reactive_bias` — validates that the applied bias is negligible inside
@@ -16,6 +16,9 @@ This module provides three public functions used by the AIMMD training worker wh
 
 - :func:`format_bias_cache_coverage` — renders that coverage diagnostic for the
   training log.
+
+- :func:`derive_bias_from_cumulative_colvar` — read-only fallback that recovers a
+  still-running free trajectory's bias from the cumulative PLUMED ``COLVAR``.
 
 Physical background
 -------------------
@@ -69,14 +72,30 @@ PLUMED ``_COLVAR`` slice that ``bias_function`` reads only once an ``mdrun``
 segment returns, so a free-basin worker that never escapes its state within a job
 never produces one — and that is exactly the deepest, most heavily biased dwell
 time. The failure therefore grows with residence time, hitting hardest the slow
-systems the in-basin bias exists to accelerate. :func:`compute_bias_corrections`
-therefore runs this check on every call by default — printing the covered
-fraction and warning when it is problematic — so the gap cannot pass unnoticed.
+systems the in-basin bias exists to accelerate. It is easy to miss because
+unrelated things hide it: a short queue limit keeps coverage complete simply by
+recycling the job, as does a free trajectory that reaches the other state every
+few tens of nanoseconds. A long queue limit combined with a long residence time
+removes both, and coverage can then fall to a few per cent.
+
+Two things address it. :func:`derive_bias_from_cumulative_colvar` recovers the
+bias for a still-running part directly from the cumulative ``COLVAR``, so the
+correction no longer waits for the segment to end — read-only, and without
+touching the slicing machinery. And :func:`compute_bias_corrections` runs the
+coverage check on every call by default, printing the covered fraction and
+warning when it is problematic, so any gap the fallback cannot close is visible.
+Coverage is counted in frames, and frames with no bias value contribute
+``exp(bias) = 1`` to ``γ`` rather than inheriting the covered frames' average.
 """
 
 # external
+import os
+import re
+import shutil
+import tempfile
 import textwrap
 import warnings
+from glob import glob
 import numpy as np
 
 # aimmd imports — kept lazy to avoid import-time coupling
@@ -171,11 +190,16 @@ def _path_label(path):
 
 
 _REMEDIATION_NOTE = (
-    'Usually the uncached data is a free-basin trajectory that never left its '
-    'state, so its COLVAR was never sliced: revisit the state definition and/or '
-    'the bias deposition threshold so that from-basin excursions are frequent '
-    'enough, and check that the bias fill reaches the state boundary.')
-"""One-sentence remediation shared by the warning and the printed report."""
+    'A still-running free trajectory is normally not bias-cached yet; the trainer '
+    'derives its bias out-of-cache from the cumulative COLVAR, so a high figure '
+    'here means that fallback also failed.')
+"""One-sentence note shared by the warning and the printed report.
+
+Deliberately says nothing about the state definition or the bias fill. Coverage is
+set by how often a free ``mdrun`` segment returns (reaching another state,
+``params.max_length``, or a worker restart), not by where the state boundary sits:
+a short queue limit alone is enough to keep coverage complete.
+"""
 
 
 def _inflation_text(inflation):
@@ -183,6 +207,158 @@ def _inflation_text(inflation):
     if not np.isfinite(inflation):
         return 'an unbounded factor'
     return f'{inflation:.1f}x'
+
+
+_PART_RE = re.compile(r'^(?P<base>.+)\.part(?P<part>\d{4})$')
+
+
+def _default_frame_counter(fname):
+    """Frame count of a trajectory file, via AIMMD's reader cache.
+
+    Uses the same idiom as :func:`aimmd.params._methods._split_cumulative_colvar`
+    (``len(MDA_CACHE.get(f))``); the cache rebuilds offsets on every open, so a
+    file still being written by ``mdrun`` reports its currently readable length.
+    Returns 0 if the file cannot be opened.
+    """
+    from .._config import MDA_CACHE
+    try:
+        reader = MDA_CACHE.get(fname)
+    except Exception:
+        return 0
+    if reader is None:
+        return 0
+    try:
+        return len(reader)
+    except TypeError:
+        return 0
+
+
+def derive_bias_from_cumulative_colvar(fname, trajectory_extension,
+                                       bias_function, frame_counter=None):
+    """
+    Derive a free-trajectory part's bias from the cumulative PLUMED COLVAR.
+
+    A per-part ``_COLVAR`` slice is only written once the part's ``mdrun``
+    returns, so a still-running free segment has no bias cache and would enter
+    the rate estimate with ``γ = 1.0``. This reads the rows belonging to *fname*
+    straight out of the trajectory's cumulative ``COLVAR`` instead.
+
+    It is a **read-only** fallback: nothing is written into the trajectory's
+    directory, and :func:`aimmd.params._methods._split_cumulative_colvar` is
+    neither called nor affected. The extracted rows are handed to
+    *bias_function* through a throwaway file in a temporary directory, so the
+    ``params.bias_function`` contract (it receives a trajectory filename and
+    reads the sibling ``_COLVAR``) is unchanged.
+
+    Parameters
+    ----------
+    fname : str
+        Trajectory part, e.g. ``run1/freeA/traj000002.part0001.xtc``.
+    trajectory_extension : str
+        Extension including the dot, e.g. ``'.xtc'`` (``params.trajectory_extension``).
+    bias_function : callable
+        Called as ``bias_function(tmp_trajectory_path)``; must return the
+        per-frame bias in kT for the rows it finds, or None.
+    frame_counter : callable, optional
+        ``frame_counter(path) -> int`` frame count. Defaults to AIMMD's reader
+        cache; injectable for testing.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        Per-frame bias in kT, aligned with the part's frames from frame 0. May
+        be **shorter** than the part if PLUMED has not flushed all rows yet —
+        callers must treat the uncovered tail as ``exp(bias) = 1``. None when
+        the alignment cannot be established (see Notes).
+
+    Notes
+    -----
+    Returns None, warning where the cause is ambiguous, when:
+
+    - *fname* is not a ``.partNNNN`` file (shooting paths have their own cache);
+    - the cumulative ``COLVAR`` is absent, or the part is not on disk;
+    - the ``COLVAR`` holds **more** rows than the trajectory's parts account for.
+      That means it is not this trajectory's COLVAR (it is rotated to
+      ``bck.0.COLVAR`` when a new trajectory starts) or ``PRINT STRIDE`` does not
+      match ``nstxout-compressed``. Guessing an offset here would silently
+      misalign bias with frames, which is worse than no correction at all.
+    """
+    if frame_counter is None:
+        frame_counter = _default_frame_counter
+
+    stem = os.path.basename(fname)
+    if not stem.endswith(trajectory_extension):
+        return None
+    match = _PART_RE.match(stem[:-len(trajectory_extension)])
+    if match is None:
+        return None  # not a free-trajectory part
+    base = match.group('base')
+    part = int(match.group('part'))
+
+    deffnm_dir = os.path.dirname(fname) or '.'
+    cum_colvar = os.path.join(deffnm_dir, 'COLVAR')
+    if not os.path.exists(cum_colvar):
+        return None
+
+    # Parts in order, excluding the python-written part0000 seed (no PLUMED rows).
+    parts = []
+    for pf in sorted(glob(os.path.join(
+            deffnm_dir, f'{base}.part????{trajectory_extension}'))):
+        n = int(os.path.basename(pf)[len(base) + len('.part'):][:4])
+        if n == 0:
+            continue
+        parts.append((n, frame_counter(pf)))
+    if part not in [n for n, _ in parts]:
+        return None  # our part is not on disk (yet)
+
+    offset = sum(c for n, c in parts if n < part)
+    n_frames = dict(parts)[part]
+    total = sum(c for _, c in parts)
+    if n_frames <= 0:
+        return None
+
+    header = '#! FIELDS time'
+    with open(cum_colvar) as fh:
+        for line in fh:
+            if line.startswith('#'):
+                header = line.rstrip('\n')
+                break
+    rows = np.loadtxt(cum_colvar, comments='#')
+    if rows.ndim == 1:
+        rows = rows[None, :]
+    if len(rows) == 0:
+        return None
+
+    if len(rows) > total:
+        warnings.warn(
+            f'{cum_colvar!r} has {len(rows)} rows but the parts of {base!r} '
+            f'account for only {total} frames, so the row-to-frame alignment is '
+            f'unknown (a rotated COLVAR from another trajectory, or PRINT STRIDE '
+            f'not matching nstxout-compressed). Not deriving bias out-of-cache '
+            f'for {os.path.basename(fname)!r}.',
+            UserWarning,
+            stacklevel=2)
+        return None
+
+    available = len(rows) - offset
+    if available <= 0:
+        return None
+    sel = rows[offset:offset + min(n_frames, available)]
+
+    tmpdir = tempfile.mkdtemp(prefix='aimmd_bias_')
+    try:
+        tmp_traj = os.path.join(tmpdir, stem)
+        with open(tmp_traj.replace(trajectory_extension, '_COLVAR'), 'w') as fh:
+            fh.write(header + '\n')
+            for row in sel:
+                fh.write(' '.join(f'{v:.6f}' for v in row) + '\n')
+        result = bias_function(tmp_traj)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    if result is None:
+        return None
+    return np.asarray(result, dtype=float)
 
 
 def compute_bias_corrections(pathensemble, weights, lengths=None,
@@ -234,12 +410,14 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
         ``n_paths``
             Number of paths with non-zero weight (the ones that reach the rate).
         ``n_missing``
-            How many of those had no usable bias array.
+            How many of those had no usable bias array, or only a partial one.
         ``frac_paths``
             ``n_missing / n_paths``.
         ``frac_weighted_length``
-            Share of ``Σ |w| · L`` carried by paths running on ``γ = 1.0``.
-            **This is the number that matters** — see Notes.
+            Share of ``Σ |w| · L`` carried by **frames** running on
+            ``exp(bias) = 1`` for want of a bias value. **This is the number
+            that matters** — see Notes. Counted per frame, so a path whose bias
+            array covers only part of it contributes its uncovered fraction.
         ``max_inflation``
             ``1 / (1 - frac_weighted_length)``: the largest factor by which the
             reweighted rate can be overestimated because of the gap.
@@ -299,9 +477,25 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
                 missing_examples.append(_path_label(path))
             continue
 
-        # γᵢ = mean(exp(bias)) over all frames of this path
-        # For unbiased paths (bias = 0 everywhere), exp(0) = 1, so γ = 1 naturally.
-        gammas[i] = float(np.mean(np.exp(bias)))
+        n_bias = len(bias)
+        if n_bias >= n_frames or n_frames <= 0:
+            # Fully covered. Note `pathensemble.n_frames` excludes boundary
+            # frames, so len(bias) > n_frames is the normal case; γ stays the
+            # mean over the whole path exactly as it always was.
+            # For unbiased paths (bias = 0 everywhere), exp(0) = 1, so γ = 1.
+            gammas[i] = float(np.mean(np.exp(bias)))
+        else:
+            # Partially covered — e.g. the out-of-cache fallback found the
+            # cumulative COLVAR still short of the part's frames. Frames with no
+            # bias information carry exp(0) = 1 rather than inheriting the
+            # covered frames' average.
+            gammas[i] = float(
+                (np.sum(np.exp(bias)) + (n_frames - n_bias)) / n_frames)
+            n_missing += 1
+            length_missing += weighted_length * (n_frames - n_bias) / n_frames
+            if len(missing_examples) < 3:
+                missing_examples.append(
+                    f'{_path_label(path)} ({n_bias}/{int(n_frames)} frames)')
 
     frac_weighted = (length_missing / length_total) if length_total > 0 else 0.0
     coverage = {
