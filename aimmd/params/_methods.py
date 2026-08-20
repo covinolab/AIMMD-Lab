@@ -72,6 +72,91 @@ from ..pathensemble import PathEnsemble
 from ..execute.utils import execute_command
 
 
+def _colvar_rowcount(fname):
+    """Number of data (non-comment) rows in a COLVAR-style file."""
+    with open(fname) as fh:
+        return sum(1 for line in fh if not line.startswith('#'))
+
+
+def _part_frame_count(pf):
+    """Readable frame count of a trajectory part, or 0 if it cannot be opened."""
+    reader = MDA_CACHE.get(pf)
+    if reader is None:
+        return 0
+    try:
+        return len(reader)
+    except TypeError:
+        return 0
+
+
+def _part_row_ranges(deffnm_dir, deffnm_base, ext, n_rows,
+                     allow_partial=False):
+    """Map each trajectory part to its row range in the cumulative COLVAR.
+
+    The part-to-row bookkeeping that :func:`_split_cumulative_colvar` performs,
+    factored out so the training worker's out-of-cache bias fallback shares it
+    rather than carrying a parallel implementation that can drift.
+
+    Parameters
+    ----------
+    deffnm_dir : str
+        Directory holding the cumulative ``COLVAR`` and the part files.
+    deffnm_base : str
+        Trajectory basename, e.g. ``'traj000002'``.
+    ext : str
+        Trajectory extension including the dot, e.g. ``'.xtc'``.
+    n_rows : int
+        Row count of the cumulative COLVAR. Required, so both callers agree on
+        one row budget read one way.
+    allow_partial : bool, default False
+        When the cumulative COLVAR has fewer rows than the parts need, the
+        default is to stop at that part — matching the slicer, for which a
+        short slice would be taken as final and would shift every later part.
+        With True, the **last** part may instead be truncated to the rows that
+        exist, so a read-only caller loses a flush lag's worth of frames rather
+        than the whole segment. Earlier parts are never truncated.
+
+    Returns
+    -------
+    dict
+        ``{part_number: (start, stop, already_sliced)}``, ``stop`` exclusive.
+        ``already_sliced`` marks parts whose ``_COLVAR`` is on disk and whose
+        row count was therefore taken as authoritative. ``part0000`` (the
+        python-written seed, for which PLUMED produced no rows) is absent, as
+        are parts the row budget cannot reach.
+    """
+    parts = []
+    for pf in sorted(glob(os.path.join(
+            deffnm_dir, f'{deffnm_base}.part????{ext}'))):
+        num = int(os.path.basename(pf)[len(deffnm_base) + len('.part'):][:4])
+        if num == 0:
+            continue  # seed frame: written by python, no PLUMED rows
+        parts.append((num, pf))
+
+    ranges = {}
+    cursor = 0
+    for i, (num, pf) in enumerate(parts):
+        per_part_colvar = pf.replace(ext, '_COLVAR')
+        if os.path.exists(per_part_colvar):
+            n = _colvar_rowcount(per_part_colvar)
+            ranges[num] = (cursor, cursor + n, True)
+            cursor += n
+            continue
+
+        n = _part_frame_count(pf)
+        if n == 0:
+            continue  # unopenable or empty: contributes no rows either way
+
+        if cursor + n > n_rows:
+            if allow_partial and i == len(parts) - 1 and cursor < n_rows:
+                ranges[num] = (cursor, n_rows, False)
+            break
+        ranges[num] = (cursor, cursor + n, False)
+        cursor += n
+
+    return ranges
+
+
 def _split_cumulative_colvar(deffnm_dir, deffnm_base, ext):
     """Slice a cumulative PLUMED COLVAR file into per-part `_COLVAR` files.
 
@@ -85,24 +170,12 @@ def _split_cumulative_colvar(deffnm_dir, deffnm_base, ext):
 
     AIMMD's bias-tracking pipeline expects one ``{deffnm}.partNNNN_COLVAR``
     file per trajectory part (so ``bias_function(traj.partNNNN.xtc)`` can
-    locate it). This helper bridges the gap by slicing the cumulative
-    ``{deffnm_dir}/COLVAR`` into per-part files using the assumption that
-    PLUMED writes one row per xtc-output frame (PRINT STRIDE matches
-    nstxout-compressed) and rows are time-ordered.
+    locate it). This helper bridges the gap, using :func:`_part_row_ranges`
+    to resolve which rows belong to which part.
 
-    Algorithm
-    ---------
-    Walks ``{deffnm_base}.part????{ext}`` in part-number order, maintaining
-    a cursor into the cumulative COLVAR row array:
-
-    - For parts that already have a `_COLVAR` file, advance the cursor by
-      that file's existing data-row count (so previous slicing is honored).
-    - Skip ``part0000`` entirely: it is the python-written seed frame
-      (see :meth:`ParamsMethods.initialize_simulation`) for which GROMACS
-      never ran and PLUMED produced no data. Its bias cache is written
-      directly by the free worker (``_free.py``).
-    - For the remaining parts, take the next ``n_frames`` rows from the
-      cumulative COLVAR and write them as ``{deffnm}.partNNNN_COLVAR``.
+    Only parts that do not already have a ``_COLVAR`` are written, and never from
+    fewer rows than they have frames: a published slice is treated as final by
+    later calls, so a partial one would shift every later part's offset.
 
     The cumulative ``COLVAR`` is left in place: subsequent GROMACS restarts
     keep appending to it, and a later call needs to see all rows.
@@ -134,49 +207,34 @@ def _split_cumulative_colvar(deffnm_dir, deffnm_base, ext):
     if len(rows) == 0:
         return
 
-    # All trajectory parts in part-number order
-    pattern = os.path.join(deffnm_dir, f'{deffnm_base}.part????{ext}')
-    part_files = sorted(glob(pattern))
-    if not part_files:
-        return
+    ranges = _part_row_ranges(deffnm_dir, deffnm_base, ext, len(rows))
 
-    cursor = 0
-    for pf in part_files:
-        per_part_colvar = pf.replace(ext, '_COLVAR')
-
-        # Skip the python-written seed; bias.npy is written by _free.py.
-        if pf.endswith(f'.part0000{ext}'):
+    for num, (start, stop, already_sliced) in sorted(ranges.items()):
+        if already_sliced:
             continue
-
-        # Already sliced in a previous run: advance cursor by its row count
-        if os.path.exists(per_part_colvar):
-            with open(per_part_colvar) as fh:
-                cursor += sum(1 for line in fh if not line.startswith('#'))
-            continue
-
-        # Need to know this part's frame count
-        reader = MDA_CACHE.get(pf)
-        if reader is None:
-            continue  # could not open trajectory; skip silently
-        n_frames = len(reader)
-        if n_frames == 0:
-            continue
-
-        # Not enough cumulative rows yet (e.g. PLUMED is still flushing)
-        if cursor + n_frames > len(rows):
-            print(f'!!! cumulative COLVAR {cum_colvar!r} has only '
-                  f'{len(rows) - cursor} unconsumed rows but {pf!r} has '
-                  f'{n_frames} frames; skipping (will retry next call)')
-            return
-
-        sel_rows = rows[cursor:cursor + n_frames]
-        cursor += n_frames
-
-        # Write per-part _COLVAR (header + space-joined 6-digit floats)
+        per_part_colvar = os.path.join(
+            deffnm_dir, f'{deffnm_base}.part{num:04d}_COLVAR')
         with open(per_part_colvar, 'w') as fh:
             fh.write(header + '\n')
-            for row in sel_rows:
+            for row in rows[start:stop]:
                 fh.write(' '.join(f'{v:.6f}' for v in row) + '\n')
+
+    # Report a part the row budget could not reach, so a persistent shortfall
+    # (e.g. PRINT STRIDE not matching nstxout-compressed) is visible.
+    consumed = max((stop for _, stop, _ in ranges.values()), default=0)
+    for pf in sorted(glob(os.path.join(
+            deffnm_dir, f'{deffnm_base}.part????{ext}'))):
+        num = int(os.path.basename(pf)[len(deffnm_base) + len('.part'):][:4])
+        if num == 0 or num in ranges:
+            continue
+        n = _part_frame_count(pf)
+        if n:
+            print(f'!!! cumulative COLVAR {cum_colvar!r} has only '
+                  f'{len(rows) - consumed} unconsumed rows but {pf!r} has '
+                  f'{n} frames; skipping (will retry next call)')
+            break
+        # A zero-frame or unopenable part is also absent from `ranges`; it is not
+        # the shortfall, so keep looking rather than silencing the diagnostic.
 
 
 # params' methods

@@ -22,9 +22,8 @@ test_coverage_counts_empty_bias_array_as_missing — empty array counts as uncac
 test_coverage_ignores_zero_weight_paths      — zero-weight paths excluded entirely
 test_coverage_falls_back_to_len_when_lengths_omitted — len(path) fallback
 test_coverage_all_missing_is_infinite_inflation — nothing corrected → inf
-test_coverage_warning_reads_well_when_nothing_is_cached — 'unbounded', not 'infx'
+test_report_reads_well_when_nothing_is_cached — 'unbounded', not 'infx'
 test_coverage_empty_ensemble_is_safe         — no weighted paths → no ZeroDivisionError
-test_coverage_warning_quantifies_the_gap     — UserWarning carries the fraction
 test_report_clean_run_is_one_reassuring_line — no remediation note when healthy
 test_report_flags_high_missing_fraction_with_remediation — names cause and remedies
 test_report_threshold_is_respected           — threshold controls escalation
@@ -33,14 +32,17 @@ The check is default behaviour, not opt-in
 test_check_runs_by_default_and_prints_coverage — plain call reports coverage
 test_check_by_default_escalates_when_problematic — plain call escalates
 test_check_can_be_suppressed                 — check=False silences print+warning
-test_warning_carries_remediation_only_when_problematic — warning text escalates
+test_warning_is_silent_below_threshold       — small gaps are logged, not warned
+test_warning_does_not_repeat_the_printed_report — one channel per message
+test_uncovered_file_list_has_no_duplicates   — each file named once
 test_check_threshold_is_configurable         — caller can tighten the threshold
 test_no_bias_anywhere_stays_quiet_about_remediation — unbiased run not flagged
 
 Out-of-cache bias derivation (fallback for a still-running free segment)
 test_derive_happy_path_middle_part           — a middle part gets its own rows
 test_derive_trailing_part_under_colvar_lag   — short slice, never borrowed rows
-test_derive_refuses_when_colvar_longer_than_parts — unknown alignment -> None
+test_derive_tolerates_surplus_colvar_rows    — surplus rows are simply unreached
+test_derive_refuses_a_part_of_an_older_trajectory — rotated COLVAR is not ours
 test_derive_returns_none_without_colvar      — no COLVAR, no derivation
 test_derive_skips_the_part0000_seed          — seed part carries no PLUMED rows
 test_derive_writes_nothing_into_the_trajectory_directory — read-only
@@ -49,9 +51,8 @@ test_derive_handles_single_row_colvar        — 1-D loadtxt result
 test_derive_returns_none_when_part_not_yet_on_disk — no crash
 test_cache_bias_files_falls_back_to_out_of_cache   — trainer wiring
 
-Frame-weighted gamma for partially covered paths
-test_gamma_is_frame_weighted_for_a_short_bias_array — uncovered frames -> exp(0)
-test_short_bias_array_counts_as_partial_coverage    — coverage counted in frames
+Gamma over a path's bias array
+test_a_short_bias_cache_needs_no_special_handling  — _get pads, so one branch suffices
 test_gamma_unchanged_when_bias_covers_the_whole_path — regression
 test_gamma_unchanged_when_bias_longer_than_margin_excluded_length — regression
 """
@@ -407,18 +408,21 @@ def test_coverage_all_missing_is_infinite_inflation():
     assert np.isinf(cov['max_inflation'])
 
 
-def test_coverage_warning_reads_well_when_nothing_is_cached():
-    """An infinite inflation factor must not render as 'infx' in the warning."""
-    from aimmd.pathensemble.bias_utils import compute_bias_corrections
+def test_report_reads_well_when_nothing_is_cached():
+    """An infinite inflation factor must not render as 'infx' in the report."""
+    from aimmd.pathensemble.bias_utils import (
+        compute_bias_corrections, format_bias_cache_coverage)
 
     pe = MockPathEnsemble([MockPathMissingBias(list('A' * 10))])
-    with warnings.catch_warnings(record=True) as caught:
+    with warnings.catch_warnings(record=True):
         warnings.simplefilter('always')
-        compute_bias_corrections(pe, np.ones(1), lengths=np.array([10]))
+        _, cov = compute_bias_corrections(pe, np.ones(1),
+                                          lengths=np.array([10]),
+                                          return_coverage=True)
 
-    msg = str(caught[0].message)
-    assert 'infx' not in msg, f'unreadable inflation factor: {msg!r}'
-    assert 'unbounded' in msg, f'expected an explicit wording, got: {msg!r}'
+    text = format_bias_cache_coverage(cov)
+    assert 'infx' not in text, f'unreadable inflation factor: {text!r}'
+    assert 'unbounded' in text, f'expected an explicit wording: {text!r}'
 
 
 def test_coverage_empty_ensemble_is_safe():
@@ -433,24 +437,6 @@ def test_coverage_empty_ensemble_is_safe():
     assert cov['n_paths'] == 0
     assert cov['frac_weighted_length'] == pytest.approx(0.0)
     assert cov['max_inflation'] == pytest.approx(1.0)
-
-
-def test_coverage_warning_quantifies_the_gap():
-    """The existing UserWarning now carries the weighted fraction."""
-    from aimmd.pathensemble.bias_utils import compute_bias_corrections
-
-    pe = MockPathEnsemble([_biased_path(10),
-                           MockPathMissingBias(list('A' * 90))])
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter('always')
-        compute_bias_corrections(pe, np.ones(2), lengths=np.array([10, 90]),
-                                 return_coverage=True)
-
-    msgs = [str(w.message) for w in caught
-            if issubclass(w.category, UserWarning)]
-    assert msgs, 'expected a UserWarning for the missing cache'
-    assert '90.0%' in msgs[0] or '90%' in msgs[0], \
-        f'warning should quantify the gap, got: {msgs[0]!r}'
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -501,29 +487,65 @@ def test_check_can_be_suppressed(capsys):
         'check=False must not warn'
 
 
-def test_warning_carries_remediation_only_when_problematic():
-    """A small gap warns plainly; a large one warns with what to change."""
+def test_warning_is_silent_below_threshold():
+    """A negligible gap is reported in the log, not raised as a warning.
+
+    A still-running free segment and the deliberate part0000 seed both produce
+    small gaps every round; warning on them trains the reader to ignore warnings.
+    """
     from aimmd.pathensemble.bias_utils import compute_bias_corrections
 
-    def _warn_text(lengths, threshold):
-        pe = MockPathEnsemble([_biased_path(int(lengths[0])),
-                               MockPathMissingBias(list('A' * int(lengths[1])))])
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter('always')
-            compute_bias_corrections(pe, np.ones(2), lengths=np.asarray(lengths),
-                                     threshold=threshold)
-        msgs = [str(w.message) for w in caught
-                if issubclass(w.category, UserWarning)]
-        assert msgs, 'a missing bias cache must always warn'
-        return msgs[0]
+    pe = MockPathEnsemble([_biased_path(99),
+                           MockPathMissingBias(list('A'))])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        compute_bias_corrections(pe, np.ones(2), lengths=np.array([99, 1]),
+                                 threshold=0.05)
 
-    small = _warn_text([99, 1], 0.05)      # 1 % missing — below threshold
-    assert 'out-of-cache' not in small, small
-    assert '1.0%' in small, small
+    assert not [w for w in caught if issubclass(w.category, UserWarning)], \
+        '1 % missing must not warn'
 
-    large = _warn_text([10, 90], 0.05)     # 90 % missing — above threshold
-    assert 'out-of-cache' in large, large
-    assert 'still-running' in large, large
+
+def test_warning_does_not_repeat_the_printed_report():
+    """One channel per message: the warning must not restate the remediation."""
+    from aimmd.pathensemble.bias_utils import compute_bias_corrections
+
+    pe = MockPathEnsemble([_biased_path(10),
+                           MockPathMissingBias(list('A' * 90))])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        compute_bias_corrections(pe, np.ones(2), lengths=np.array([10, 90]),
+                                 threshold=0.05)
+
+    msgs = [str(w.message) for w in caught
+            if issubclass(w.category, UserWarning)]
+    assert msgs, 'a material gap must still raise a catchable warning'
+    assert 'still-running' not in msgs[0], \
+        f'the remediation prose belongs in the printed report only: {msgs[0]!r}'
+    assert '90.0%' in msgs[0], msgs[0]
+    # the actionable numbers must survive in the warnings channel: a caller may
+    # capture warnings while discarding stdout.
+    assert '10.0x' in msgs[0], f'inflation factor lost from the warning: {msgs[0]!r}'
+    assert '1 of 2 paths' in msgs[0], msgs[0]
+
+
+def test_uncovered_file_list_has_no_duplicates():
+    """Several paths can share a first file; the list names each file once."""
+    from aimmd.pathensemble.bias_utils import compute_bias_corrections
+
+    shared = 'freeA/traj000003.part0001.xtc'
+    paths = [MockPathMissingBias(list('A' * 10), fname=shared) for _ in range(4)]
+    paths.append(MockPathMissingBias(list('A' * 10), fname='freeB/other.xtc'))
+    pe = MockPathEnsemble(paths)
+
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter('always')
+        _, cov = compute_bias_corrections(
+            pe, np.ones(5), lengths=np.full(5, 10), return_coverage=True)
+
+    ex = cov['missing_examples']
+    assert len(ex) == len(set(ex)), f'duplicated entries: {ex}'
+    assert shared in ex and 'freeB/other.xtc' in ex
 
 
 def test_check_threshold_is_configurable(capsys):
@@ -635,8 +657,8 @@ def _fake_bias_function(fname, ext='.xtc'):
     return (data[:, 2] + 15.0) / _KT
 
 
-def _make_traj_dir(tmp_path, n_colvar_rows, part_frames, base='traj000001',
-                   ext='.xtc', write_colvar=True):
+def _make_traj_dir(tmp_path, monkeypatch, n_colvar_rows, part_frames,
+                   base='traj000001', ext='.xtc', write_colvar=True):
     """Build a fake free-trajectory directory.
 
     ``part_frames`` maps part number -> frame count; a zero-byte placeholder
@@ -661,166 +683,164 @@ def _make_traj_dir(tmp_path, n_colvar_rows, part_frames, base='traj000001',
         m = _re.search(r'\.part(\d{4})', path)
         return counts.get(int(m.group(1)), 0) if m else 0
 
-    return str(d), base, frame_counter
+    # the shared row-range helper reads frame counts through this
+    monkeypatch.setattr('aimmd.params._methods._part_frame_count', frame_counter)
+    return str(d), base
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # Unit tests — out-of-cache bias derivation
 # ════════════════════════════════════════════════════════════════════════════
 
-def test_derive_happy_path_middle_part(tmp_path):
+def test_derive_happy_path_middle_part(tmp_path, monkeypatch):
     """A middle part gets exactly its own slice of the cumulative COLVAR."""
     from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
 
-    d, base, fc = _make_traj_dir(tmp_path, 30, {1: 10, 2: 10, 3: 10})
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 30, {1: 10, 2: 10, 3: 10})
     bias = derive_bias_from_cumulative_colvar(
-        os.path.join(d, f'{base}.part0002.xtc'), '.xtc', _fake_bias_function,
-        frame_counter=fc)
+        os.path.join(d, f'{base}.part0002.xtc'), '.xtc', _fake_bias_function)
 
     assert bias is not None
     assert len(bias) == 10
     np.testing.assert_allclose(bias * _KT, np.arange(10, 20), atol=1e-6)
 
 
-def test_derive_trailing_part_under_colvar_lag(tmp_path):
+def test_derive_trailing_part_under_colvar_lag(tmp_path, monkeypatch):
     """A lagging COLVAR yields a SHORT slice, never rows from the previous part."""
     from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
 
     # 25 rows on disk but 30 frames across parts -> the last part is 5 rows short
-    d, base, fc = _make_traj_dir(tmp_path, 25, {1: 10, 2: 10, 3: 10})
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 25, {1: 10, 2: 10, 3: 10})
     bias = derive_bias_from_cumulative_colvar(
-        os.path.join(d, f'{base}.part0003.xtc'), '.xtc', _fake_bias_function,
-        frame_counter=fc)
+        os.path.join(d, f'{base}.part0003.xtc'), '.xtc', _fake_bias_function)
 
     assert bias is not None
     assert len(bias) == 5, 'must not pad, and must not borrow earlier rows'
     np.testing.assert_allclose(bias * _KT, np.arange(20, 25), atol=1e-6)
 
 
-def test_derive_refuses_when_colvar_longer_than_parts(tmp_path):
-    """More COLVAR rows than the parts account for => refuse, do not guess.
+def test_derive_tolerates_surplus_colvar_rows(tmp_path, monkeypatch):
+    """Rows beyond what the parts need are simply not reached.
 
-    That happens when the COLVAR belongs to a different trajectory (it is
-    rotated to bck.0.COLVAR when a new one starts) or when PRINT STRIDE does
-    not match nstxout-compressed. Either way the alignment is unknown.
+    PLUMED can be a little ahead of the readable trajectory, so a surplus is a
+    normal steady state. Ranges are resolved from the front, so it is harmless.
     """
     from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
 
-    d, base, fc = _make_traj_dir(tmp_path, 40, {1: 10, 2: 10, 3: 10})
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter('always')
-        bias = derive_bias_from_cumulative_colvar(
-            os.path.join(d, f'{base}.part0003.xtc'), '.xtc', _fake_bias_function,
-            frame_counter=fc)
-
-    assert bias is None
-    assert [w for w in caught if issubclass(w.category, UserWarning)], \
-        'refusing silently would hide a misaligned COLVAR'
-
-
-def test_derive_returns_none_without_colvar(tmp_path):
-    """No cumulative COLVAR => nothing to derive from."""
-    from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
-
-    d, base, fc = _make_traj_dir(tmp_path, 0, {1: 10}, write_colvar=False)
-    assert derive_bias_from_cumulative_colvar(
-        os.path.join(d, f'{base}.part0001.xtc'), '.xtc', _fake_bias_function,
-        frame_counter=fc) is None
-
-
-def test_derive_skips_the_part0000_seed(tmp_path):
-    """part0000 is the python-written seed: no PLUMED rows, so no offset."""
-    from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
-
-    d, base, fc = _make_traj_dir(tmp_path, 20, {0: 1, 1: 10, 2: 10})
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 40, {1: 10, 2: 10, 3: 10})
     bias = derive_bias_from_cumulative_colvar(
-        os.path.join(d, f'{base}.part0002.xtc'), '.xtc', _fake_bias_function,
-        frame_counter=fc)
+        os.path.join(d, f'{base}.part0002.xtc'), '.xtc', _fake_bias_function)
 
     assert bias is not None
     np.testing.assert_allclose(bias * _KT, np.arange(10, 20), atol=1e-6)
 
 
-def test_derive_writes_nothing_into_the_trajectory_directory(tmp_path):
+def test_derive_refuses_a_part_of_an_older_trajectory(tmp_path, monkeypatch):
+    """The live COLVAR belongs to the newest trajectory only.
+
+    When a new trajectory starts, the previous cumulative COLVAR is rotated
+    away. Resolving an older trajectory's part against the live file would read
+    a different trajectory's rows and produce plausible, misaligned bias.
+    """
+    from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
+
+    d, _ = _make_traj_dir(tmp_path, monkeypatch, 30, {1: 30}, base='traj000002')
+    # an older trajectory whose own COLVAR is gone
+    open(os.path.join(d, 'traj000001.part0001.xtc'), 'w').close()
+
+    assert derive_bias_from_cumulative_colvar(
+        os.path.join(d, 'traj000001.part0001.xtc'), '.xtc', _fake_bias_function) is None, \
+        'must not resolve an older trajectory against the live COLVAR'
+
+    # the newest one is still served
+    assert derive_bias_from_cumulative_colvar(
+        os.path.join(d, 'traj000002.part0001.xtc'), '.xtc', _fake_bias_function) is not None
+
+
+def test_derive_returns_none_without_colvar(tmp_path, monkeypatch):
+    """No cumulative COLVAR => nothing to derive from."""
+    from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
+
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 0, {1: 10}, write_colvar=False)
+    assert derive_bias_from_cumulative_colvar(
+        os.path.join(d, f'{base}.part0001.xtc'), '.xtc', _fake_bias_function) is None
+
+
+def test_derive_skips_the_part0000_seed(tmp_path, monkeypatch):
+    """part0000 is the python-written seed: no PLUMED rows, so no offset."""
+    from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
+
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 20, {0: 1, 1: 10, 2: 10})
+    bias = derive_bias_from_cumulative_colvar(
+        os.path.join(d, f'{base}.part0002.xtc'), '.xtc', _fake_bias_function)
+
+    assert bias is not None
+    np.testing.assert_allclose(bias * _KT, np.arange(10, 20), atol=1e-6)
+
+
+def test_derive_writes_nothing_into_the_trajectory_directory(tmp_path, monkeypatch):
     """The whole point: no _COLVAR, no cache, no writes to the worker's dir."""
     from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
 
-    d, base, fc = _make_traj_dir(tmp_path, 30, {1: 10, 2: 10, 3: 10})
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 30, {1: 10, 2: 10, 3: 10})
     before = sorted(os.listdir(d))
     derive_bias_from_cumulative_colvar(
-        os.path.join(d, f'{base}.part0002.xtc'), '.xtc', _fake_bias_function,
-        frame_counter=fc)
+        os.path.join(d, f'{base}.part0002.xtc'), '.xtc', _fake_bias_function)
     assert sorted(os.listdir(d)) == before, 'must not touch the run directory'
 
 
-def test_derive_ignores_non_part_filenames(tmp_path):
+def test_derive_ignores_non_part_filenames(tmp_path, monkeypatch):
     """Shooting paths (path000001.xtc) have no cumulative COLVAR semantics."""
     from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
 
-    d, base, fc = _make_traj_dir(tmp_path, 30, {1: 10})
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 30, {1: 10})
     assert derive_bias_from_cumulative_colvar(
-        os.path.join(d, 'path000001.xtc'), '.xtc', _fake_bias_function,
-        frame_counter=fc) is None
+        os.path.join(d, 'path000001.xtc'), '.xtc', _fake_bias_function) is None
 
 
-def test_derive_handles_single_row_colvar(tmp_path):
+def test_derive_handles_single_row_colvar(tmp_path, monkeypatch):
     """A one-row COLVAR must not collapse to a 1-D indexing error."""
     from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
 
-    d, base, fc = _make_traj_dir(tmp_path, 1, {1: 1})
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 1, {1: 1})
     bias = derive_bias_from_cumulative_colvar(
-        os.path.join(d, f'{base}.part0001.xtc'), '.xtc', _fake_bias_function,
-        frame_counter=fc)
+        os.path.join(d, f'{base}.part0001.xtc'), '.xtc', _fake_bias_function)
     assert bias is not None and len(bias) == 1
 
 
-def test_derive_returns_none_when_part_not_yet_on_disk(tmp_path):
+def test_derive_returns_none_when_part_not_yet_on_disk(tmp_path, monkeypatch):
     """Asking for a part with no trajectory file yet is a no-op, not a crash."""
     from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
 
-    d, base, fc = _make_traj_dir(tmp_path, 30, {1: 10, 2: 10})
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 30, {1: 10, 2: 10})
     assert derive_bias_from_cumulative_colvar(
-        os.path.join(d, f'{base}.part0009.xtc'), '.xtc', _fake_bias_function,
-        frame_counter=fc) is None
+        os.path.join(d, f'{base}.part0009.xtc'), '.xtc', _fake_bias_function) is None
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # Unit tests — frame-weighted γ for partially covered paths
 # ════════════════════════════════════════════════════════════════════════════
 
-def test_gamma_is_frame_weighted_for_a_short_bias_array():
-    """A short bias array must not be averaged as if it covered the path.
+def test_a_short_bias_cache_needs_no_special_handling():
+    """A cache shorter than its path is already weighted correctly.
 
-    The out-of-cache fallback returns a short array when PLUMED has not flushed
-    the tail yet. Averaging exp(bias) over only the covered frames would apply
-    the well's correction to frames that have no bias information at all.
+    `Path._get('bias')` zero-pads to the path length (path/_get.py:167 and :205
+    -> core.utils.extend_array, covered by tests/test_core_utils.py), so the
+    tail of a short cache arrives as zeros and contributes exp(0) = 1. γ is then
+    the same number a frame-weighted formula would produce, which is why
+    `compute_bias_corrections` needs only one branch.
     """
     from aimmd.pathensemble.bias_utils import compute_bias_corrections
 
-    v = np.log(10.0)                      # exp(bias) = 10 on covered frames
-    pe = MockPathEnsemble([MockPath(list('A' * 10), [v] * 4)])
-    with warnings.catch_warnings(record=True):
-        warnings.simplefilter('always')
-        gammas, cov = compute_bias_corrections(
-            pe, np.ones(1), lengths=np.array([10]), return_coverage=True)
+    v = np.log(10.0)
+    padded = [v] * 4 + [0.0] * 6          # what _get hands over for a 4/10 cache
+    pe = MockPathEnsemble([MockPath(list('A' * 10), padded)])
+    gammas, cov = compute_bias_corrections(
+        pe, np.ones(1), lengths=np.array([10]), return_coverage=True)
 
-    # (4 covered frames * 10 + 6 uncovered frames * exp(0)) / 10
     np.testing.assert_allclose(gammas[0], (4 * 10.0 + 6 * 1.0) / 10, rtol=1e-9)
-    assert gammas[0] != pytest.approx(10.0), 'must not be the covered-only mean'
-
-
-def test_short_bias_array_counts_as_partial_coverage():
-    """Coverage is measured in frames, so a short array is partly missing."""
-    from aimmd.pathensemble.bias_utils import compute_bias_corrections
-
-    pe = MockPathEnsemble([MockPath(list('A' * 10), [1.0] * 4)])
-    with warnings.catch_warnings(record=True):
-        warnings.simplefilter('always')
-        _, cov = compute_bias_corrections(
-            pe, np.ones(1), lengths=np.array([10]), return_coverage=True)
-
-    assert cov['frac_weighted_length'] == pytest.approx(6 / 10)
-    assert cov['n_missing'] == 1, 'a partially covered path counts as affected'
+    assert cov['frac_weighted_length'] == pytest.approx(0.0), \
+        'a padded short cache is not a coverage gap'
 
 
 def test_gamma_unchanged_when_bias_covers_the_whole_path():
@@ -867,7 +887,7 @@ def test_cache_bias_files_falls_back_to_out_of_cache(tmp_path, monkeypatch):
     import types
     from aimmd.worker import _train as train_mod
 
-    d, base, fc = _make_traj_dir(tmp_path, 30, {1: 30})
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 30, {1: 30})
     part = os.path.join(d, f'{base}.part0001.xtc')
     assert not os.path.exists(part.replace('.xtc', '_COLVAR')), \
         'the premise is that no slice exists'
@@ -881,8 +901,6 @@ def test_cache_bias_files_falls_back_to_out_of_cache(tmp_path, monkeypatch):
                                               remove=lambda *a, **k: None))
     monkeypatch.setattr(train_mod, 'save_npy',
                         lambda fname, arr: saved.__setitem__(fname, arr))
-    # real frame counts come from MDA_CACHE inside the helper; inject ours
-    monkeypatch.setattr('aimmd.pathensemble.bias_utils._default_frame_counter', fc)
 
     class _P:
         _fnames = [part]
@@ -896,3 +914,25 @@ def test_cache_bias_files_falls_back_to_out_of_cache(tmp_path, monkeypatch):
     (arr,) = saved.values()
     assert len(arr) == 30
     np.testing.assert_allclose(arr * _KT, np.arange(30), atol=1e-6)
+
+
+def test_derive_refuses_a_stride_mismatch(tmp_path, monkeypatch):
+    """PRINT STRIDE not matching nstxout-compressed must not be papered over.
+
+    Then the COLVAR holds an integer multiple of the rows the parts account for,
+    and every offset is wrong by that factor. A small surplus is normal (PLUMED
+    can be a row or two ahead of the readable frames), so the canary sits at the
+    2x floor rather than at any surplus at all.
+    """
+    from aimmd.pathensemble.bias_utils import derive_bias_from_cumulative_colvar
+
+    # 60 rows for 3 parts x 10 frames: one row per half-frame
+    d, base = _make_traj_dir(tmp_path, monkeypatch, 60, {1: 10, 2: 10, 3: 10})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        bias = derive_bias_from_cumulative_colvar(
+            os.path.join(d, f'{base}.part0003.xtc'), '.xtc', _fake_bias_function)
+
+    assert bias is None, 'a 2x row surplus means the offsets are all wrong'
+    assert [w for w in caught if issubclass(w.category, UserWarning)], \
+        'refusing silently would hide a misconfigured PRINT STRIDE'
