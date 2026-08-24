@@ -32,10 +32,11 @@ try:
             _z_table_from_top,
             _names_from_top,
         )
-    import multiprocessing
     from torch_geometric.nn import radius_graph
+    import os
     import time
     import MDAnalysis.transformations as transformations
+    from . import shm_cache
 except ImportError as e:
     raise ImportError(f"Module {e.name} not found. "
                       f"The module 'aimmd.network.graph_utils'"
@@ -80,18 +81,62 @@ def atom_coordinate_descriptors_function(
 
 def init_db(db_path: str = "graphs_cache.sqlite") -> sqlite3.Connection:
     """Initialize the SQLite database for graph caching."""
-    conn = sqlite3.connect(db_path)
+    # `CacheConnection` is a sqlite3.Connection subclass, so this is a drop-in:
+    # isinstance() still holds and every caller is unaffected.  It exists only so
+    # per-connection state (a /dev/shm replica, a blob memo) can be attached --
+    # a plain sqlite3.Connection has no __dict__.  See aimmd.network.shm_cache.
+    conn = sqlite3.connect(db_path, factory=shm_cache.CacheConnection)
     conn.execute("CREATE TABLE IF NOT EXISTS graphs_cache"
                 "(key TEXT PRIMARY KEY, data BLOB)")
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA wal_autocheckpoint=1000;")
     conn.commit()
-    return conn  
+    # `Params.load` chdir's into the params folder before exec'ing it, so a
+    # relative db_path resolves correctly here.
+    conn._aimmd_db_path = os.path.abspath(db_path)
+    shm_cache.register(conn)
+    return conn
+
+
+def _encode(data: torch_geometric.data.Data, compression_lib: str) -> bytes:
+    """Serialize and compress one graph. The single write-side codec."""
+    raw = pickle.dumps(data)
+    if compression_lib == "gzip":
+        return gzip.compress(raw)
+    elif compression_lib == "lz4":
+        return lz4.frame.compress(raw)
+    elif compression_lib == "none":
+        return raw
+    raise ValueError(f"Unknown compression library: {compression_lib}")
+
+
+def _decode(blob: bytes, compression_lib: str = None) -> torch_geometric.data.Data:
+    """Decompress and deserialize one graph, detecting the codec from the bytes.
+
+    Sniffing rather than trusting `compression_lib` closes a real trap: this
+    module's read/write defaults are "gzip" while `process_descriptors_pyg`
+    passes "lz4", so any caller that forgets the argument writes gzip and then
+    fails to read it back. The three container magics are mutually exclusive --
+    gzip 1f 8b, lz4 frame 04 22 4d 18, pickle protocol >=2 starts 0x80 -- so the
+    encoding is unambiguous, and a cache holding a mixture (a campaign whose
+    setting changed part way) becomes readable instead of broken.
+    """
+    if blob[:2] == b'\x1f\x8b':
+        return pickle.loads(gzip.decompress(blob))
+    if blob[:4] == b'\x04\x22\x4d\x18':
+        return pickle.loads(lz4.frame.decompress(blob))
+    return pickle.loads(blob)
 
 
 def load_from_sqlite(key: str, conn: sqlite3.Connection, compression_lib = "gzip") -> torch_geometric.data.Data | None:
     """ Load a graph from SQLite cache.
+
+    Consults, in order, this connection's in-process blob memo, its /dev/shm
+    read-replica if one has been staged, and finally the database itself. The
+    fallback lives here, inside the single read choke point, so that a miss
+    against a stale replica can never escape as None and make the caller
+    recompute a graph that does exist -- see aimmd.network.shm_cache.
 
     Parameters
     ----------
@@ -100,7 +145,8 @@ def load_from_sqlite(key: str, conn: sqlite3.Connection, compression_lib = "gzip
     conn : sqlite3.Connection
         The SQLite connection.
     compression_lib : str, optional
-        The compression library to use, by default "gzip".
+        The compression library to use, by default "gzip". Only used when
+        writing; reads detect the codec from the stored bytes.
         Supported: "gzip", "lz4", "none".
 
     Returns
@@ -108,21 +154,42 @@ def load_from_sqlite(key: str, conn: sqlite3.Connection, compression_lib = "gzip
     torch_geometric.data.Data | None
         The loaded graph, or None if not found.
     """
+    memo = getattr(conn, '_aimmd_memo', None)
+    if memo is not None:
+        blob = memo.get(key)
+        if blob is not None:
+            shm_cache._STATS['memo_hits'] += 1
+            return _decode(blob)
+
+    replica = getattr(conn, '_aimmd_replica', None)
+    if replica is None and getattr(conn, '_aimmd_stage_pending', False):
+        shm_cache.stage_cache(conn)                  # stage on first use
+        replica = getattr(conn, '_aimmd_replica', None)
+    if replica is not None:
+        try:
+            row = replica.execute(
+                "SELECT data FROM graphs_cache WHERE key = ?", (key,)).fetchone()
+        except sqlite3.Error as exc:
+            shm_cache.detach(conn, reason=str(exc))
+            row = None
+        if row is not None:
+            shm_cache._STATS['hits'] += 1
+            if memo is not None:
+                memo.put(key, row[0])
+            return _decode(row[0])
+        shm_cache._STATS['misses'] += 1
+
     cursor = conn.execute("SELECT data FROM graphs_cache WHERE key = ?", (key,))
     row = cursor.fetchone()
     if row is None:
         return None
-    if compression_lib == "gzip":
-        return pickle.loads(gzip.decompress(row[0]))
-    elif compression_lib == "lz4":
-        return pickle.loads(lz4.frame.decompress(row[0]))
-    elif compression_lib == "none":
-        return pickle.loads(row[0])
-    return None
+    if memo is not None:
+        memo.put(key, row[0])
+    return _decode(row[0])
 
 def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Connection, compression_lib = "gzip"):
-    """ Store a graph in SQLite cache. 
-    
+    """ Store a graph in SQLite cache.
+
     Parameters
     ----------
     key : str
@@ -135,21 +202,14 @@ def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Con
         The compression library to use, by default "gzip".
         Supported: "gzip", "lz4", "none".
     """
-    msgpack_bytes = pickle.dumps(data)
-    if compression_lib == "gzip":
-        compressed_data = gzip.compress(msgpack_bytes)
-    elif compression_lib == "lz4":
-        compressed_data = lz4.frame.compress(msgpack_bytes)
-    elif compression_lib == "none":
-        compressed_data = msgpack_bytes
-    else:
-        raise ValueError(f"Unknown compression library: {compression_lib}")
-    
+    compressed_data = _encode(data, compression_lib)
+
     # try storing, if it fails due to database lock, retry a few times with some delay
     for _ in range(10):
         try:
             conn.execute("INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)", (key, compressed_data))
             conn.commit()
+            _after_store(conn, [key], [compressed_data])
             return # success
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e):
@@ -159,7 +219,94 @@ def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Con
 
     # persistent problem
     raise RuntimeError("Failed to store graph in SQLite after multiple attempts due to persistent database lock.")
-    
+
+
+def store_many_in_sqlite(keys: list[str], graphs: list[torch_geometric.data.Data],
+                         conn: sqlite3.Connection, compression_lib = "lz4"):
+    """ Store many graphs in ONE transaction.
+
+    Same contract as `store_in_sqlite`, but a whole batch per commit. A worker
+    featurizes an entire trajectory chunk at once, so committing per graph turns
+    one transaction into hundreds, each appending to the WAL and triggering
+    checkpoints that scatter writes across the whole file -- which is what erodes
+    cache residency for every other process sharing it.
+
+    Parameters
+    ----------
+    keys : list[str]
+        Keys of the graphs, in the same order as `graphs`.
+    graphs : list[torch_geometric.data.Data]
+        The graphs to be stored.
+    conn : sqlite3.Connection
+        The SQLite connection.
+    compression_lib : str, optional
+        The compression library to use, by default "lz4" (what the pyg path
+        uses). Threaded through the same `_encode` helper as `store_in_sqlite`,
+        so a batch written here is always readable by `load_from_sqlite`.
+    """
+    if not keys:
+        return
+    blobs = [_encode(g, compression_lib) for g in graphs]
+
+    # The retry must wrap the WHOLE transaction, and each attempt must roll back
+    # first -- otherwise a partial transaction survives and the next executemany
+    # compounds it.
+    for _ in range(10):
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)",
+                zip(keys, blobs))
+            conn.commit()
+            _after_store(conn, keys, blobs)
+            return
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e):
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                time.sleep(0.05)
+            else:
+                raise
+
+    raise RuntimeError("Failed to store graphs in SQLite after multiple attempts due to persistent database lock.")
+
+
+def _after_store(conn, keys, blobs):
+    """Mirror freshly written graphs into the memo and the /dev/shm replica.
+
+    Without this the trainer's own new graphs miss the replica on every
+    subsequent lookup -- and `fit` re-draws frames across thousands of epochs, so
+    each one would be paid for again and again against the real database.
+    Best-effort: a failure here only costs speed.
+    """
+    memo = getattr(conn, '_aimmd_memo', None)
+    if memo is not None:
+        for key, blob in zip(keys, blobs):
+            memo.put(key, blob)
+    replica = getattr(conn, '_aimmd_replica', None)
+    if replica is None or getattr(conn, '_aimmd_replica_frozen', False):
+        return
+    ok, why = shm_cache._fits(sum(len(b) for b in blobs))
+    if not ok:
+        conn._aimmd_replica_frozen = True
+        shm_cache._warn_once(
+            f'wt-{conn._aimmd_replica_path}',
+            f'{why}; replica frozen -- reads still served from it, new graphs '
+            f'go to the real database only')
+        return
+    try:
+        replica.execute('PRAGMA query_only=OFF')
+        replica.executemany(
+            "INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)",
+            zip(keys, blobs))
+        replica.commit()
+        replica.execute('PRAGMA query_only=ON')
+    except sqlite3.Error as exc:
+        conn._aimmd_replica_frozen = True
+        shm_cache._warn_once(f'wt-err-{conn._aimmd_replica_path}',
+                             f'write-through failed ({exc}); replica frozen')
+
 
 def get_stable_hash(config: mlcolvar.data.graph.atomic.Configurations) -> str:
     """ Get a stable hash for a configuration.
@@ -178,7 +325,7 @@ def get_stable_hash(config: mlcolvar.data.graph.atomic.Configurations) -> str:
     stable_hash = hashlib.sha256(encoded).hexdigest()
     return stable_hash
 
-def create_graph(config: mlcolvar.data.graph.atomic.Configurations, z_table: dict, atomnames: list, cutoff: float) -> torch_geometric.data.Data:
+def create_graph(config: mlcolvar.data.graph.atomic.Configurations, z_table: mlcolvar.data.graph.atomic.AtomicNumberTable, atomnames: list, cutoff: float) -> torch_geometric.data.Data:
     """ Create a graph from a configuration.
     
     Parameters
@@ -203,7 +350,7 @@ def create_graph(config: mlcolvar.data.graph.atomic.Configurations, z_table: dic
     )
     return graph['data_list'][0]
 
-def load_or_create(conn: sqlite3.Connection, config: mlcolvar.data.graph.atomic.Configurations, z_table: dict, atomnames: list, cutoff: float) -> torch_geometric.data.Data:
+def load_or_create(conn: sqlite3.Connection, config: mlcolvar.data.graph.atomic.Configurations, z_table: mlcolvar.data.graph.atomic.AtomicNumberTable, atomnames: list, cutoff: float) -> torch_geometric.data.Data:
     """ Load a graph from SQLite cache, or create it if not present.
     
     Parameters
@@ -301,178 +448,6 @@ def process_descriptors(descriptors: np.ndarray, mdtraj_frame: md.Trajectory, sy
         data_type = "graphs",
     )    
 
-    return dataset
-
-# Suppress noisy SystemExit traces from multiprocessing + GSD cleanup
-def quiet_multiprocessing_cleanup():
-    """ Suppress noisy SystemExit traces from multiprocessing + GSD cleanup. """
-    try:
-        orig_exit_func = multiprocessing.util._exit_function
-        def silent_exit_function(*args, **kwargs):
-            try:
-                orig_exit_func(*args, **kwargs)
-            except SystemExit:
-                pass
-            except Exception:
-                pass
-        multiprocessing.util._exit_function = silent_exit_function
-    except Exception:
-        pass
-
-def create_compressed_graphs(configs: list[mlcolvar.data.graph.atomic.Configurations], z_table: dict, atomnames: list, cutoff: float) -> torch_geometric.data.Data:
-    """ Create a list of graphs from a list of configurations. Also compress the graphs for storage using gzip.
-    
-    Parameters
-    ----------
-    configs : list[mlcolvar.data.graph.atomic.Configurations]
-        The configurations to be converted to graphs.
-    z_table : dict
-        The atomic number table.
-    atomnames : list of str
-        The list of atom names.
-    cutoff : float
-        The cutoff distance for edge creation.
-    
-    Returns
-    -------
-    list of tuple(torch_geometric.data.Data, bytes)
-        The list of tuples containing the graph and its compressed representation.
-    """
-    graphs = create_dataset_from_configurations(
-        config=configs, z_table=z_table, cutoff=cutoff, buffer=0,
-        atom_names=atomnames, remove_isolated_nodes=True, show_progress=False
-    )
-    return [(graph, gzip.compress(pickle.dumps(graph))) for graph in graphs['data_list']]
-
-def store_compressed_list_in_sqlite(keys: list[str], compressed_data: list[bytes], conn: sqlite3.Connection):
-    """ Store a list of compressed graphs in SQLite cache.
-    Parameters
-     ----------
-    keys : list[str]
-        The list of keys for the graphs.
-    compressed_data : list[bytes]
-        The list of compressed graph data.
-    conn : sqlite3.Connection
-        The SQLite connection object.
-    """
-    for key, data in zip(keys, compressed_data):
-        conn.execute("INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)", (key, data))
-    conn.commit()
-
-
-def process_descriptors_multiprocessing(
-        descriptors: np.ndarray, 
-        mdtraj_frame: md.Trajectory,
-        system_selection: str,
-        environment_selection: str,
-        cutoff: float,
-        conn: sqlite3.Connection,
-        verbose: bool = False, 
-        n_workers: int = 8) -> DictDataset:
-    """ Transform the descriptors to network input using multiprocessing.
-    Here, we transform the atomic positions to a graph embedding using mlcolvar.
-
-    Parameters
-    ----------
-    descriptors : np.ndarray
-        The input descriptors to be transformed. Shape (n_frames, n_atoms * 3).
-    mdtraj_frame : md.Trajectory
-        A mdtraj frame with the topology and unit cell information.
-    system_selection : str
-        The selection string for the system atoms.
-    environment_selection : str
-        The selection string for the environment atoms.
-    cutoff : float
-        The cutoff distance for edge creation.
-    conn : sqlite3.Connection
-        The SQLite connection for caching.
-    n_workers : int, optional
-        The number of workers to use for multiprocessing, by default 8.
-    verbose : bool, optional
-        Whether to show a progress bar, by default False.
-
-    Returns
-    -------
-    mlcolvar.data.dataset.DictDataset
-        The transformed descriptors suitable for network input.
-    """
-
-    quiet_multiprocessing_cleanup()
-
-    if verbose:
-        print(f"Processing descriptors with shape: {descriptors.shape} using {n_workers} workers.")
-
-    # First, we need to transform the descriptors to an md.Trajectory object
-    n_atoms = mdtraj_frame.n_atoms
-    n_frames = descriptors.shape[0]
-    assert descriptors.shape[1] == n_atoms * 3, \
-        f"Descriptors should have shape (n_frames, {n_atoms * 3}), got {descriptors.shape}"
-    xyz = descriptors.reshape((n_frames, n_atoms, 3)) / 10.0  # convert from Angstrom to nm
-    # replicate unit cell info
-    unit_cell_lengths = np.tile(mdtraj_frame.unitcell_lengths, (n_frames, 1))
-    unit_cell_angles = np.tile(mdtraj_frame.unitcell_angles, (n_frames, 1))
-    # create trajectory
-    traj = md.Trajectory(xyz=xyz, topology=mdtraj_frame.topology, unitcell_lengths=unit_cell_lengths,
-                        unitcell_angles=unit_cell_angles)
-
-    # now we get mlcolvar.data.graph.atomic.Configurations from this trajectory, this is fast
-    configurations = _configures_from_trajectory(
-        traj,
-        system_selection = system_selection,
-        environment_selection = environment_selection,
-    )
-
-    z_table = _z_table_from_top([traj.topology])
-    atomnames = _names_from_top([traj.topology])
-
-    # precompute hashes
-    stable_hashes = [get_stable_hash(config) for config in configurations]
-    # get indices of configurations in and not in the database
-    loaded_graphs = [load_from_sqlite(stable_hash, conn) for stable_hash in stable_hashes]
-    missing_indices = []
-    for i, graph in enumerate(loaded_graphs):
-        if graph is None:
-            missing_indices.append(i)
-    if verbose:
-        print(f"There are {len(missing_indices)} missing graphs out of {n_frames} total.")
-
-    if len(missing_indices) != 0:
-        from time import time
-        start = time()
-        missing_configs = [configurations[i] for i in missing_indices]
-        missing_configs_split = np.array_split(missing_configs, n_workers)
-
-        with multiprocessing.Pool(n_workers) as pool:
-            graphs_list_new = pool.starmap(create_compressed_graphs, [(missing_configs_split[i], z_table, atomnames, cutoff) for i in range(n_workers)])
-        # concatenate lists
-        graphs_list_new = [graph for sublist in graphs_list_new for graph in sublist]
-        end = time()
-        if verbose:
-            print(f"Created new graphs with multiprocessing in {end - start:.2f} seconds.")
-
-        # Store new graphs in database
-        start = time()
-        new_graphs = [graphs_list_new[i][0] for i in range(len(missing_indices))]
-        compressed_graphs = [graphs_list_new[i][1] for i in range(len(missing_indices))]
-        store_compressed_list_in_sqlite(
-            [stable_hashes[missing_indices[i]] for i in range(len(missing_indices))],
-            compressed_graphs,
-            conn
-        )
-        end = time()
-        if verbose:
-            print(f"Stored new graphs in database in {end - start:.2f} seconds.")
-
-        # now assemble the full graphs list
-        for i, graph in enumerate(new_graphs):
-            loaded_graphs[missing_indices[i]] = graph
-
-    dataset = mlcolvar.data.DictDataset(
-        dictionary={
-            'data_list': loaded_graphs
-        },
-        data_type = "graphs",
-    )  
     return dataset
 
 
@@ -690,13 +665,14 @@ def process_descriptors_pyg(
         if verbose:
             print(f"Created new graphs in {end - start:.2f} seconds.")
 
-        # Store new graphs in database
+        # Store new graphs in database -- one transaction for the whole batch,
+        # not one commit per graph (see store_many_in_sqlite).
         start = time.time()
         new_graphs = [graphs_list_new[i] for i in range(len(missing_indices))]
 
-        for i, graph in enumerate(new_graphs):
-            graph_hash = stable_hashes[missing_indices[i]]
-            store_in_sqlite(graph_hash, graph, conn, compression_lib=compression_lib)
+        store_many_in_sqlite(
+            [stable_hashes[missing_indices[i]] for i in range(len(new_graphs))],
+            new_graphs, conn, compression_lib=compression_lib)
 
         end = time.time()
         if verbose:
