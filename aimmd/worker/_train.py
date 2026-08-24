@@ -77,6 +77,7 @@ from ..pathensemble import PathEnsemble
 from ..analysis.utils import compute_bins
 from ..pathensemble.utils import assemble_pathensemble
 from ..network.rescale_utils import find_knots_and_values, rescale
+from ..network import shm_cache
 from ..path.utils import get_cache_fname
 
 # WorkerTrain mixin class
@@ -359,6 +360,12 @@ class WorkerTrain(ABC):
             if must_stop():
                 return
 
+            # Make the graph cache(s) available in node-local RAM for this cycle.
+            # After must_stop(), so a trainer about to exit does not pay for a
+            # copy it will never read; inside the loop, because the writers keep
+            # appending and a once-per-process replica would go stale.
+            shm_cache.stage_replicas()
+
             # Recompute any missing descriptor cache files (e.g. after deletion)
             if params.compute_descriptors_args is not None:
                 n = pathensemble.compute(*params.compute_descriptors_args)
@@ -461,6 +468,10 @@ class WorkerTrain(ABC):
                 # rebuild the eval subsample (frames may have grown during fit)
                 eval_pe = (pathensemble.subsample(caps, states) if caps
                            else pathensemble)
+
+                # fit ran for a long time and the writers kept appending, so top
+                # the replica up before the re-score reads every frame again
+                shm_cache.refresh_replicas()
 
                 # (re)compute committor values
                 if source == 'new':
@@ -794,6 +805,9 @@ class WorkerTrain(ABC):
             if must_stop():
                 return
 
+            # see the equivalent call in _train()
+            shm_cache.stage_replicas()
+
             # (re)compute descriptors (full ensemble, for fit) + committor values
             # (on the possibly-subsampled eval ensemble, to bound the value pass)
             eval_pes = make_eval_pes()
@@ -849,6 +863,7 @@ class WorkerTrain(ABC):
                         print(f'*** copied {network_fname!r} to {backup!r}')
                 # rebuild the eval ensembles (frames may have grown during fit)
                 # and refresh committor values with the new network
+                shm_cache.refresh_replicas()
                 eval_pes = make_eval_pes()
                 for k, (subdir, sid) in enumerate(systems):
                     pe = eval_pes[k]
