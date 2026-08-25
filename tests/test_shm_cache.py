@@ -445,3 +445,89 @@ def test_memo_disabled_by_env(tmp_path, monkeypatch):
     conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1})
     assert getattr(conn, '_aimmd_memo', None) is None
     assert _get(conn, 'a') == 1
+
+
+# ------------------------------------------- top-up source open (regress) --
+def test_refresh_opens_source_without_uri_interpretation(tmp_path):
+    """The top-up must not route the source path through SQLite URI parsing.
+
+    Regression test for the production failure on JUPITER, where
+    ``ATTACH DATABASE 'file:<path>?mode=ro'`` raised "unable to open database"
+    and froze every replica at its staging row count for the whole run. ATTACH
+    only honours a ``file:`` URI when SQLite's *global* ``SQLITE_USE_URI`` is
+    on -- the per-connection open flag does not cover it -- so the URI form is
+    unusable here.
+
+    A ``#`` in the path makes the bug deterministic everywhere: under URI
+    parsing everything from ``#`` on is a fragment, so the source resolves to a
+    different, non-existent file. A plain path has no such reading.
+    """
+    conn = _make_cache(tmp_path / 'we#ird.sqlite', {'a': 1})
+    shm_cache.stage_cache(conn)
+    conn._aimmd_memo = None
+    conn.execute('INSERT INTO graphs_cache VALUES (?,?)', ('b', pickle.dumps(2)))
+    conn.commit()
+
+    added = shm_cache.refresh_replicas()
+
+    assert added.get(conn._aimmd_db_path) == 1, 'top-up must find the source'
+    assert not getattr(conn, '_aimmd_topup_broken', False)
+    n = conn._aimmd_replica.execute(
+        'SELECT count(*) FROM graphs_cache').fetchone()[0]
+    assert n == 2, 'the new row must be present in the replica itself'
+
+
+def test_topup_failure_does_not_disable_write_through(tmp_path, monkeypatch):
+    """A broken top-up must not take write-through down with it.
+
+    These are independent mechanisms: the top-up copies rows *from* the real
+    database, write-through pushes the trainer's own new graphs *into* the
+    replica and needs no source access at all. In production a single ATTACH
+    failure disabled both, so the replica stayed empty instead of at least
+    accumulating what the trainer created.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1})
+    shm_cache.stage_cache(conn)
+    conn._aimmd_memo = None
+
+    def _boom(*a, **k):
+        raise sqlite3.OperationalError('unable to open database')
+    monkeypatch.setattr(shm_cache, '_open_source', _boom)
+
+    conn.execute('INSERT INTO graphs_cache VALUES (?,?)', ('b', pickle.dumps(2)))
+    conn.commit()
+    shm_cache.refresh_replicas()
+    assert getattr(conn, '_aimmd_topup_broken', False), 'top-up must be marked'
+    assert not conn._aimmd_replica_frozen, 'that is not a space problem'
+
+    assert shm_cache.write_through(conn, ['z'], [pickle.dumps(26)]) is True
+    n = conn._aimmd_replica.execute(
+        "SELECT count(*) FROM graphs_cache WHERE key='z'").fetchone()[0]
+    assert n == 1, 'write-through must still reach the replica'
+
+
+def test_out_of_space_still_blocks_write_through(tmp_path, monkeypatch):
+    """The space freeze is shared on purpose -- tmpfs is one resource."""
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1})
+    shm_cache.stage_cache(conn)
+    conn._aimmd_memo = None
+    monkeypatch.setattr(shm_cache, 'free_bytes', lambda *a, **k: 1)
+
+    assert shm_cache.write_through(conn, ['z'], [pickle.dumps(26)]) is False
+    assert conn._aimmd_replica_frozen
+    assert _get(conn, 'a') == 1, 'reads must survive the freeze'
+
+
+def test_topup_breakage_is_retried_next_cycle(tmp_path, monkeypatch):
+    """A transient source failure must not latch for the process lifetime."""
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1})
+    shm_cache.stage_cache(conn)
+    conn._aimmd_memo = None
+    conn._aimmd_topup_broken = True
+
+    shm_cache.stage_replicas()
+    assert not getattr(conn, '_aimmd_topup_broken', False)
+
+    conn.execute('INSERT INTO graphs_cache VALUES (?,?)', ('b', pickle.dumps(2)))
+    conn.commit()
+    assert shm_cache.refresh_replicas().get(conn._aimmd_db_path) == 1

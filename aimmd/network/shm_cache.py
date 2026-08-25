@@ -129,7 +129,8 @@ class CacheConnection(sqlite3.Connection):
     _aimmd_replica = None
     _aimmd_replica_path = None
     _aimmd_stage_pending = False
-    _aimmd_replica_frozen = False
+    _aimmd_replica_frozen = False   # out of tmpfs: stops top-up AND write-through
+    _aimmd_topup_broken = False     # source unreadable: stops top-up only
     _aimmd_watermark = 0
     _aimmd_memo = None
 
@@ -494,6 +495,7 @@ def stage_replicas(shm_dir=None, lazy=True, verbose=True):
     for conn in conns:
         if getattr(conn, '_aimmd_replica', None) is not None:
             conn._aimmd_replica_frozen = False       # a new cycle may have room
+            conn._aimmd_topup_broken = False         # and the source may be back
             out[conn._aimmd_db_path] = conn._aimmd_replica_path
         elif lazy:
             conn._aimmd_stage_pending = True
@@ -505,6 +507,57 @@ def stage_replicas(shm_dir=None, lazy=True, verbose=True):
         print(f'shm_cache: {len(out)} replica(s) live, '
               f'{sum(_OWNED.values()) / 1e9:.1f} GB in tmpfs')
     return out
+
+
+def _open_source(replica, db_path):
+    """ATTACH the real database as ``src``, without URI interpretation.
+
+    ``ATTACH DATABASE 'file:<path>?mode=ro'`` only honours the URI when
+    SQLite's *global* ``SQLITE_USE_URI`` is enabled; the per-connection
+    ``uri=True`` open flag does not extend to ATTACH. On builds where it is off
+    -- JUPITER's is -- the whole URI is taken as a literal filename and the
+    attach fails with "unable to open database", which froze every replica at
+    its staging row count for an entire production run.
+
+    A bound parameter is used rather than an f-string so that paths containing
+    quotes, ``?`` or ``#`` cannot be misread. Read-only-ness is not needed:
+    ``src`` is only ever SELECTed from.
+    """
+    replica.execute('ATTACH DATABASE ? AS src', (db_path,))
+
+
+def write_through(conn, keys, blobs):
+    """Mirror freshly written graphs straight into the replica.
+
+    Independent of the top-up: this needs no access to the real database, so a
+    broken source must not disable it. Only a *space* freeze does, because
+    tmpfs is one shared resource.
+
+    Returns True if the rows reached the replica.
+    """
+    replica = getattr(conn, '_aimmd_replica', None)
+    if replica is None or getattr(conn, '_aimmd_replica_frozen', False):
+        return False
+    ok, why = _fits(sum(len(b) for b in blobs))
+    if not ok:
+        conn._aimmd_replica_frozen = True
+        _warn_once(f'wt-{conn._aimmd_replica_path}',
+                   f'{why}; replica frozen -- reads still served from it, new '
+                   f'graphs go to the real database only')
+        return False
+    try:
+        replica.execute('PRAGMA query_only=OFF')
+        replica.executemany(
+            'INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)',
+            zip(keys, blobs))
+        replica.commit()
+        replica.execute('PRAGMA query_only=ON')
+        return True
+    except sqlite3.Error as exc:
+        conn._aimmd_replica_frozen = True
+        _warn_once(f'wt-err-{conn._aimmd_replica_path}',
+                   f'write-through failed ({exc}); replica frozen')
+        return False
 
 
 def refresh_replicas(shm_dir=None, verbose=False):
@@ -519,7 +572,9 @@ def refresh_replicas(shm_dir=None, verbose=False):
     added = {}
     for conn in registered_connections():
         replica = getattr(conn, '_aimmd_replica', None)
-        if replica is None or getattr(conn, '_aimmd_replica_frozen', False):
+        if (replica is None
+                or getattr(conn, '_aimmd_replica_frozen', False)
+                or getattr(conn, '_aimmd_topup_broken', False)):
             continue
         db_path = conn._aimmd_db_path
         dst = conn._aimmd_replica_path
@@ -546,7 +601,7 @@ def refresh_replicas(shm_dir=None, verbose=False):
         try:
             replica.execute('PRAGMA query_only=OFF')
             replica.commit()                    # ATTACH fails inside a txn
-            replica.execute(f"ATTACH DATABASE 'file:{db_path}?mode=ro' AS src")
+            _open_source(replica, db_path)
             try:
                 replica.execute(
                     'INSERT OR IGNORE INTO graphs_cache '
@@ -564,9 +619,21 @@ def refresh_replicas(shm_dir=None, verbose=False):
             except OSError:
                 pass
         except sqlite3.Error as exc:
-            conn._aimmd_replica_frozen = True
+            # NOT a space freeze: write-through needs no source access and must
+            # keep running, or the replica cannot grow at all.
+            conn._aimmd_topup_broken = True
+            try:
+                replica.execute('DETACH DATABASE src')
+            except sqlite3.Error:
+                pass
+            try:
+                replica.execute('PRAGMA query_only=ON')
+            except sqlite3.Error:
+                pass
             _warn_once(f'topup-{dst}',
-                       f'top-up failed ({exc}); replica frozen but still readable')
+                       f'top-up failed ({exc}); replica still readable and '
+                       f'still accepting new graphs, but no longer catching up '
+                       f'with rows written by other processes')
     if verbose and added:
         print('shm_cache: topped up ' +
               ', '.join(f'{os.path.basename(k)} +{v:,}' for k, v in added.items()))

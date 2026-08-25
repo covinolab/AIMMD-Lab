@@ -284,28 +284,7 @@ def _after_store(conn, keys, blobs):
     if memo is not None:
         for key, blob in zip(keys, blobs):
             memo.put(key, blob)
-    replica = getattr(conn, '_aimmd_replica', None)
-    if replica is None or getattr(conn, '_aimmd_replica_frozen', False):
-        return
-    ok, why = shm_cache._fits(sum(len(b) for b in blobs))
-    if not ok:
-        conn._aimmd_replica_frozen = True
-        shm_cache._warn_once(
-            f'wt-{conn._aimmd_replica_path}',
-            f'{why}; replica frozen -- reads still served from it, new graphs '
-            f'go to the real database only')
-        return
-    try:
-        replica.execute('PRAGMA query_only=OFF')
-        replica.executemany(
-            "INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)",
-            zip(keys, blobs))
-        replica.commit()
-        replica.execute('PRAGMA query_only=ON')
-    except sqlite3.Error as exc:
-        conn._aimmd_replica_frozen = True
-        shm_cache._warn_once(f'wt-err-{conn._aimmd_replica_path}',
-                             f'write-through failed ({exc}); replica frozen')
+    shm_cache.write_through(conn, keys, blobs)
 
 
 def get_stable_hash(config: mlcolvar.data.graph.atomic.Configurations) -> str:
