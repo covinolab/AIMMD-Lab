@@ -112,3 +112,68 @@ def test_update_exclude_from_reads_log_file(tmp_path):
 
     path.update_exclude_from(log_file)
     assert path._exclude_from == 4
+
+
+# ------------------------------------------------ _extreme: one read only --
+def _count_gets(path, monkeypatch):
+    """Record every attribute `_get` fetches. `_range` reads `states` first."""
+    calls = []
+    orig = type(path)._get
+    monkeypatch.setattr(
+        type(path), '_get',
+        lambda self, attr, *a, **k: (calls.append(attr),
+                                     orig(self, attr, *a, **k))[1])
+    return calls
+
+
+def test_extreme_reads_the_source_once_when_attribute_is_source(tmp_path, monkeypatch):
+    """`path.max('values','values')` must read `values` once, not twice.
+
+    A missing `else:` in PathHelpers._extreme made `series = values` dead, so
+    the same attribute was fetched twice. That is not a cache hit: for anything
+    other than descriptors/states, Path._extract deliberately routes through
+    NPY_CACHE.load, which never short-circuits -- so the duplicate was a second
+    FileLock + np.load, measured at 97.9 ms on the campaign's NFS mount, 81 ms
+    of it the lock alone.
+
+    `min`/`max` select `where='internal'`, so expectations are taken over that
+    range -- and computed *before* the counter is installed, since reading them
+    would otherwise be counted too.
+    """
+    path = build_path(tmp_path, values=[0.0, 3.0, 1.0])
+    vals = path._get('values', *path._range('internal'))
+    want_max, want_min = np.max(vals), np.min(vals)
+
+    calls = _count_gets(path, monkeypatch)
+    assert path.max('values', 'values') == want_max
+    assert calls.count('values') == 1, f'expected one read, got {calls}'
+
+    calls.clear()
+    assert path.min('values', 'values') == want_min
+    assert calls.count('values') == 1, f'expected one read, got {calls}'
+
+
+def test_extreme_still_reads_both_when_attribute_differs(tmp_path, monkeypatch):
+    """The `attribute != source` path must keep fetching both arrays."""
+    path = build_path(tmp_path, values=[0.0, 3.0, 1.0])
+    start, stop = path._range('internal')
+    vals = path._get('values', start, stop)
+    want = path._get('times', start, stop)[np.argmax(vals)]
+
+    calls = _count_gets(path, monkeypatch)
+    got = path.max('times', 'values')
+
+    assert calls.count('values') == 1 and calls.count('times') == 1, calls
+    assert got == want, 'times at the argmax of values'
+
+
+def test_extreme_one_arg_form_is_unchanged(tmp_path):
+    """`path.max(source)` -- the analysis/utils.py:995 shape -- still works.
+
+    Note this defaults to source='values', so it is the *same* branch as the
+    two-argument form above, which is why it must not regress.
+    """
+    path = build_path(tmp_path, values=[0.0, 3.0, 1.0])
+    vals = path._get('values', *path._range('internal'))
+    assert path.max('values') == np.max(vals)
+    assert path.min('values') == np.min(vals)

@@ -179,7 +179,8 @@ class PathHelpers(ABC):
         values = self._get(source, start, stop)
         if attribute == source:
             series = values
-        series = self._get(attribute, start, stop)
+        else:
+            series = self._get(attribute, start, stop)
         i = operation(values)
         if attribute == 'self':
             return series[i:i + 1]  # a path
