@@ -756,6 +756,20 @@ class WorkerTrain(ABC):
 
         pathensembles = [None] * len(systems)
 
+        # Offer each system's Path objects back to `shot_chains` next reload.
+        # `shot_paths` matches on filename and returns the *existing* object, so
+        # nothing is re-read from disk; without this every Path is rebuilt, and
+        # `Path(fname, shooting_index='find')` resolves to `min_length=inf`,
+        # which makes the MDA reader cache a guaranteed miss and re-walks the
+        # whole XTC. The single-system trainer has always done this via
+        # `self._shot_chains`. Kept per system: a pooled `old` would be correct
+        # but would make the linear scan inside `shot_paths` O(total^2).
+        shot_chains_by_system = getattr(self, '_shot_chains_by_system', None)
+        if (shot_chains_by_system is None
+                or len(shot_chains_by_system) != len(systems)):
+            shot_chains_by_system = [[] for _ in systems]
+        self._shot_chains_by_system = shot_chains_by_system
+
         def must_stop():
             nonlocal pathensembles
             if self.must_stop:
@@ -764,7 +778,9 @@ class WorkerTrain(ABC):
             print(f'\nLoading current path ensembles {now()}')
             total_steps = total_frames = 0
             for k, (subdir, sid) in enumerate(systems):
-                chains = params.shot_chains(subdir, None)
+                chains = params.shot_chains(
+                    subdir, None, old=shot_chains_by_system[k])
+                shot_chains_by_system[k] = chains
                 frees = params.free_trajectories(subdir)
                 for chain in chains:
                     total_frames += sum(chain.n_frames)
@@ -1441,8 +1457,13 @@ class WorkerTrain(ABC):
 
         # per-system full chains/free + margins
         sys_chains, sys_free, margins = [], [], []
-        for subdir, sid in systems:
-            chains = params.shot_chains(subdir, None)
+        _reusable = getattr(self, '_shot_chains_by_system', None) or []
+        for _k, (subdir, sid) in enumerate(systems):
+            # One-shot: this loop runs once, so reuse saves a single full
+            # rescan rather than one per round. Cheap, but not the same win.
+            chains = params.shot_chains(
+                subdir, None,
+                old=_reusable[_k] if _k < len(_reusable) else [])
             frees = params.free_trajectories(subdir)
             sys_chains.append(chains)
             sys_free.append(frees)
