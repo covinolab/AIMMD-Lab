@@ -77,6 +77,7 @@ from ..pathensemble import PathEnsemble
 from ..analysis.utils import compute_bins
 from ..pathensemble.utils import assemble_pathensemble
 from ..network.rescale_utils import find_knots_and_values, rescale
+from ..network import shm_cache
 from ..path.utils import get_cache_fname
 
 # WorkerTrain mixin class
@@ -120,9 +121,11 @@ class WorkerTrain(ABC):
         happened.
         """
         print(f'\nComputing bias cache (file mode) {now()}')
+        from ..pathensemble.bias_utils import derive_bias_from_cumulative_colvar
         pass_sid = system_id is not None and accepts_system_id(bias_function)
         seen = set()
         n_cached = 0
+        n_derived = 0
         for _path in pathensemble:
             for _fname in _path._fnames:
                 if _fname in seen:
@@ -141,15 +144,29 @@ class WorkerTrain(ABC):
                 if (_existing is not None
                         and len(_existing) >= _n_traj_frames):
                     continue
-                _bias = (bias_function(_fname, system_id=system_id) if pass_sid
-                         else bias_function(_fname))
+                _call = ((lambda f: bias_function(f, system_id=system_id))
+                         if pass_sid else bias_function)
+                _bias = _call(_fname)
+                if _bias is None or len(_bias) < _n_traj_frames:
+                    # No per-part _COLVAR slice yet (the free segment's mdrun has
+                    # not returned), or it is short. Derive the bias straight from
+                    # the trajectory's cumulative COLVAR instead — read-only, and
+                    # without touching the slicing machinery.
+                    _derived = derive_bias_from_cumulative_colvar(
+                        _fname, self.params.trajectory_extension, _call)
+                    if _derived is not None and (
+                            _bias is None or len(_derived) > len(_bias)):
+                        _bias = _derived
+                        n_derived += 1
                 if _bias is None:
                     continue  # no COLVAR for this file; skip
                 save_npy(_cache_fname, np.asarray(_bias, dtype=float))
                 NPY_CACHE.remove(_cache_fname)
                 n_cached += 1
         if n_cached:
-            print(f'... wrote bias cache for {n_cached} trajectory files')
+            print(f'... wrote bias cache for {n_cached} trajectory files'
+                  + (f' ({n_derived} derived out-of-cache from the cumulative '
+                     f'COLVAR)' if n_derived else ''))
 
     def train(self, nrounds=1, keep_running=False, **kwargs):
         """
@@ -343,6 +360,12 @@ class WorkerTrain(ABC):
             if must_stop():
                 return
 
+            # Make the graph cache(s) available in node-local RAM for this cycle.
+            # After must_stop(), so a trainer about to exit does not pay for a
+            # copy it will never read; inside the loop, because the writers keep
+            # appending and a once-per-process replica would go stale.
+            shm_cache.stage_replicas()
+
             # Recompute any missing descriptor cache files (e.g. after deletion)
             if params.compute_descriptors_args is not None:
                 n = pathensemble.compute(*params.compute_descriptors_args)
@@ -445,6 +468,10 @@ class WorkerTrain(ABC):
                 # rebuild the eval subsample (frames may have grown during fit)
                 eval_pe = (pathensemble.subsample(caps, states) if caps
                            else pathensemble)
+
+                # fit ran for a long time and the writers kept appending, so top
+                # the replica up before the re-score reads every frame again
+                shm_cache.refresh_replicas()
 
                 # (re)compute committor values
                 if source == 'new':
@@ -729,6 +756,20 @@ class WorkerTrain(ABC):
 
         pathensembles = [None] * len(systems)
 
+        # Offer each system's Path objects back to `shot_chains` next reload.
+        # `shot_paths` matches on filename and returns the *existing* object, so
+        # nothing is re-read from disk; without this every Path is rebuilt, and
+        # `Path(fname, shooting_index='find')` resolves to `min_length=inf`,
+        # which makes the MDA reader cache a guaranteed miss and re-walks the
+        # whole XTC. The single-system trainer has always done this via
+        # `self._shot_chains`. Kept per system: a pooled `old` would be correct
+        # but would make the linear scan inside `shot_paths` O(total^2).
+        shot_chains_by_system = getattr(self, '_shot_chains_by_system', None)
+        if (shot_chains_by_system is None
+                or len(shot_chains_by_system) != len(systems)):
+            shot_chains_by_system = [[] for _ in systems]
+        self._shot_chains_by_system = shot_chains_by_system
+
         def must_stop():
             nonlocal pathensembles
             if self.must_stop:
@@ -737,7 +778,9 @@ class WorkerTrain(ABC):
             print(f'\nLoading current path ensembles {now()}')
             total_steps = total_frames = 0
             for k, (subdir, sid) in enumerate(systems):
-                chains = params.shot_chains(subdir, None)
+                chains = params.shot_chains(
+                    subdir, None, old=shot_chains_by_system[k])
+                shot_chains_by_system[k] = chains
                 frees = params.free_trajectories(subdir)
                 for chain in chains:
                     total_frames += sum(chain.n_frames)
@@ -777,6 +820,9 @@ class WorkerTrain(ABC):
 
             if must_stop():
                 return
+
+            # see the equivalent call in _train()
+            shm_cache.stage_replicas()
 
             # (re)compute descriptors (full ensemble, for fit) + committor values
             # (on the possibly-subsampled eval ensemble, to bound the value pass)
@@ -833,6 +879,7 @@ class WorkerTrain(ABC):
                         print(f'*** copied {network_fname!r} to {backup!r}')
                 # rebuild the eval ensembles (frames may have grown during fit)
                 # and refresh committor values with the new network
+                shm_cache.refresh_replicas()
                 eval_pes = make_eval_pes()
                 for k, (subdir, sid) in enumerate(systems):
                     pe = eval_pes[k]
@@ -1410,8 +1457,13 @@ class WorkerTrain(ABC):
 
         # per-system full chains/free + margins
         sys_chains, sys_free, margins = [], [], []
-        for subdir, sid in systems:
-            chains = params.shot_chains(subdir, None)
+        _reusable = getattr(self, '_shot_chains_by_system', None) or []
+        for _k, (subdir, sid) in enumerate(systems):
+            # One-shot: this loop runs once, so reuse saves a single full
+            # rescan rather than one per round. Cheap, but not the same win.
+            chains = params.shot_chains(
+                subdir, None,
+                old=_reusable[_k] if _k < len(_reusable) else [])
             frees = params.free_trajectories(subdir)
             sys_chains.append(chains)
             sys_free.append(frees)

@@ -266,8 +266,10 @@ class AbstractCache(ABC):
         if instance is None:
             return
 
-        # Remove any existing entry for this key (refresh insertion order + size).
-        self.remove(fname)
+        # Remove any existing entry for this key (refresh insertion order +
+        # size). `_discard`, not `remove`: on a miss `remove` would open the
+        # file a second time only to close and drop it.
+        self._discard(fname)
 
         # Estimate the memory cost of the new instance.
         size = self._size(instance)
@@ -341,6 +343,31 @@ class AbstractCache(ABC):
         # Fallback: stringify and retry.
         return self.pop(str(fname))
 
+    def _discard(self, fname):
+        """Evict `fname` if it is resident, without ever opening it.
+
+        `pop()` must keep opening on a miss -- `worker/utils.py` indexes its
+        return value directly -- but the two callers that only want *eviction*
+        (`load()` and `remove(fname)`) then pay a full open for an instance they
+        immediately throw away. On a miss that is an unconditional doubling of
+        the I/O: 2 `_open` calls for a first `get`, and a complete `np.load`
+        (0.374 s on a 200 MB file, against 0.0005 s resident) for a `remove` of
+        a key that was never cached.
+
+        `_close` failures are swallowed to preserve `remove`'s try/finally
+        contract: `MDAReaderCache._close` raises `AttributeError` on every
+        instance it is handed, because `_open` returns a `FrameIteratorAll`,
+        which has no `close()`.
+        """
+        instance = self._cache.pop(fname, None)
+        if instance is None:
+            return
+        self.total_size -= self._size(instance)
+        try:
+            self._close(instance)
+        except Exception:
+            pass
+
     def remove(self, fname=None):
         """
         Remove an entry and call the :meth:`_close` hook.
@@ -360,6 +387,10 @@ class AbstractCache(ABC):
         Errors in :meth:`_close` are intentionally not propagated due to the
         `try/finally` structure (preserved behavior).
         """
+        if isinstance(fname, str):
+            # Eviction only -- never open a key that is not resident.
+            self._discard(fname)
+            return
         try:
             instance = self.pop(fname)
             self._close(instance)

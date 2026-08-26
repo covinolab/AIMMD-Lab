@@ -40,3 +40,18 @@ construction and SQLite graph caching, and a shared ``atom_types`` one-hot
 encoding for multi-system runs). It requires the optional ``graphs`` extras
 (``torch-geometric``, ``torch-cluster``) plus ``mlcolvar`` and ``lz4``; install
 them with ``pip install "aimmd-lab[graphs]"`` and see :doc:`../advanced`.
+
+Graph-cache acceleration
+------------------------
+
+Graph-cache lookups dominate the trainer's wall clock once the cache grows to
+tens of GB on a shared filesystem, because the file never stays resident. The
+module below transparently serves those lookups from a node-local ``/dev/shm``
+replica and an in-process memo, falling back to the database on any miss or
+failure. It is enabled automatically for the trainer and needs no configuration;
+the environment variables in its docstring exist only to constrain or disable it.
+Unlike ``graph_utils`` it has no optional dependencies, so it imports anywhere.
+
+.. automodule:: aimmd.network.shm_cache
+   :members:
+   :show-inheritance:

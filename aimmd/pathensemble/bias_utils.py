@@ -4,7 +4,7 @@ aimmd.pathensemble.bias_utils
 
 Bias reweighting utilities for :class:`aimmd.pathensemble.PathEnsemble`.
 
-This module provides three public functions used by the AIMMD training worker when
+This module provides four public functions used by the AIMMD training worker when
 ``params.record_bias = True``:
 
 - :func:`check_reactive_bias` — validates that the applied bias is negligible inside
@@ -16,6 +16,9 @@ This module provides three public functions used by the AIMMD training worker wh
 
 - :func:`format_bias_cache_coverage` — renders that coverage diagnostic for the
   training log.
+
+- :func:`derive_bias_from_cumulative_colvar` — read-only fallback that recovers a
+  still-running free trajectory's bias from the cumulative PLUMED ``COLVAR``.
 
 Physical background
 -------------------
@@ -69,14 +72,30 @@ PLUMED ``_COLVAR`` slice that ``bias_function`` reads only once an ``mdrun``
 segment returns, so a free-basin worker that never escapes its state within a job
 never produces one — and that is exactly the deepest, most heavily biased dwell
 time. The failure therefore grows with residence time, hitting hardest the slow
-systems the in-basin bias exists to accelerate. :func:`compute_bias_corrections`
-therefore runs this check on every call by default — printing the covered
-fraction and warning when it is problematic — so the gap cannot pass unnoticed.
+systems the in-basin bias exists to accelerate. It is easy to miss because
+unrelated things hide it: a short queue limit keeps coverage complete simply by
+recycling the job, as does a free trajectory that reaches the other state every
+few tens of nanoseconds. A long queue limit combined with a long residence time
+removes both, and coverage can then fall to a few per cent.
+
+Two things address it. :func:`derive_bias_from_cumulative_colvar` recovers the
+bias for a still-running part directly from the cumulative ``COLVAR``, so the
+correction no longer waits for the segment to end — read-only, and without
+touching the slicing machinery. And :func:`compute_bias_corrections` runs the
+coverage check on every call by default, printing the covered fraction and
+warning when it is problematic, so any gap the fallback cannot close is visible.
+Coverage is counted in frames, and frames with no bias value contribute
+``exp(bias) = 1`` to ``γ`` rather than inheriting the covered frames' average.
 """
 
 # external
+import os
+import re
+import shutil
+import tempfile
 import textwrap
 import warnings
+from glob import glob
 import numpy as np
 
 # aimmd imports — kept lazy to avoid import-time coupling
@@ -154,8 +173,9 @@ def check_reactive_bias(pathensemble, states, threshold=0.5):
 
 
 BIAS_CACHE_COVERAGE_THRESHOLD = 0.05
-"""Default missing-fraction above which :func:`format_bias_cache_coverage`
-escalates from a one-line summary to an explicit warning block."""
+"""Default missing weighted fraction above which the coverage check escalates:
+:func:`format_bias_cache_coverage` adds its warning block and
+:func:`compute_bias_corrections` raises a ``UserWarning``."""
 
 
 def _path_label(path):
@@ -171,11 +191,16 @@ def _path_label(path):
 
 
 _REMEDIATION_NOTE = (
-    'Usually the uncached data is a free-basin trajectory that never left its '
-    'state, so its COLVAR was never sliced: revisit the state definition and/or '
-    'the bias deposition threshold so that from-basin excursions are frequent '
-    'enough, and check that the bias fill reaches the state boundary.')
-"""One-sentence remediation shared by the warning and the printed report."""
+    'A still-running free trajectory is normally not bias-cached yet; the trainer '
+    'derives its bias out-of-cache from the cumulative COLVAR, so a high figure '
+    'here means that fallback also failed.')
+"""One-sentence note shared by the warning and the printed report.
+
+Deliberately says nothing about the state definition or the bias fill. Coverage is
+set by how often a free ``mdrun`` segment returns (reaching another state,
+``params.max_length``, or a worker restart), not by where the state boundary sits:
+a short queue limit alone is enough to keep coverage complete.
+"""
 
 
 def _inflation_text(inflation):
@@ -183,6 +208,141 @@ def _inflation_text(inflation):
     if not np.isfinite(inflation):
         return 'an unbounded factor'
     return f'{inflation:.1f}x'
+
+
+_PART_RE = re.compile(r'^(?P<base>.+)\.part(?P<part>\d{4})$')
+
+
+def derive_bias_from_cumulative_colvar(fname, trajectory_extension,
+                                       bias_function):
+    """
+    Derive a free-trajectory part's bias from the cumulative PLUMED COLVAR.
+
+    A per-part ``_COLVAR`` slice is only written once the part's ``mdrun``
+    returns, so a still-running free segment has no bias cache and would enter
+    the rate estimate with ``γ = 1.0``. This reads the rows belonging to *fname*
+    straight out of the trajectory's cumulative ``COLVAR`` instead.
+
+    It is a **read-only** fallback: nothing is written into the trajectory's
+    directory, and :func:`aimmd.params._methods._split_cumulative_colvar` is
+    neither called nor affected. The extracted rows are handed to
+    *bias_function* through a throwaway file in a temporary directory, so the
+    ``params.bias_function`` contract (it receives a trajectory filename and
+    reads the sibling ``_COLVAR``) is unchanged.
+
+    Parameters
+    ----------
+    fname : str
+        Trajectory part, e.g. ``run1/freeA/traj000002.part0001.xtc``.
+    trajectory_extension : str
+        Extension including the dot, e.g. ``'.xtc'`` (``params.trajectory_extension``).
+    bias_function : callable
+        Called as ``bias_function(tmp_trajectory_path)``; must return the
+        per-frame bias in kT for the rows it finds, or None.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        Per-frame bias in kT, aligned with the part's frames from frame 0. May
+        be **shorter** than the part if PLUMED has not flushed all rows yet —
+        callers must treat the uncovered tail as ``exp(bias) = 1``. None when
+        the alignment cannot be established (see Notes).
+
+    Notes
+    -----
+    Returns None when:
+
+    - *fname* is not a ``.partNNNN`` file (shooting paths cache their own bias);
+    - the cumulative ``COLVAR`` is absent, or the part is not on disk;
+    - *fname* belongs to an **older** trajectory than the one that owns the live
+      ``COLVAR``. The file is rotated away when a new trajectory starts, so
+      resolving an older part against it would read another trajectory's rows;
+    - the ``COLVAR`` holds at least twice the rows the parts account for, which
+      means ``PRINT STRIDE`` does not match ``nstxout-compressed`` (warns).
+
+    Guessing an offset in those last two cases would silently misalign bias with
+    frames, which is worse than no correction at all.
+    """
+    from ..params._methods import _part_row_ranges
+
+    stem = os.path.basename(fname)
+    if not stem.endswith(trajectory_extension):
+        return None
+    match = _PART_RE.match(stem[:-len(trajectory_extension)])
+    if match is None:
+        return None  # not a free-trajectory part (shooting paths cache their own)
+    base = match.group('base')
+    part = int(match.group('part'))
+
+    deffnm_dir = os.path.dirname(fname) or '.'
+    cum_colvar = os.path.join(deffnm_dir, 'COLVAR')
+    if not os.path.exists(cum_colvar):
+        return None
+
+    # The cumulative COLVAR is per trajectory: when a new trajectory starts, the
+    # old file is rotated away. Only the newest trajectory in the directory owns
+    # the live COLVAR, so deriving for an earlier one would silently read another
+    # trajectory's rows.
+    present = set()
+    for pf in glob(os.path.join(deffnm_dir, f'*.part????{trajectory_extension}')):
+        m = _PART_RE.match(os.path.basename(pf)[:-len(trajectory_extension)])
+        if m:
+            present.add(m.group('base'))
+    if present and base != max(present):
+        return None
+
+    header = '#! FIELDS time'
+    with open(cum_colvar) as fh:
+        for line in fh:
+            if line.startswith('#'):
+                header = line.rstrip('\n')
+                break
+    rows = np.loadtxt(cum_colvar, comments='#')
+    if rows.ndim == 1:
+        rows = rows[None, :]
+    if not len(rows):
+        return None
+
+    ranges = _part_row_ranges(deffnm_dir, base, trajectory_extension,
+                              len(rows), allow_partial=True)
+    if part not in ranges:
+        return None
+
+    # A stride mismatch (PRINT STRIDE not equal to nstxout-compressed) leaves the
+    # COLVAR holding an integer multiple of the rows the parts account for, and
+    # every offset is then wrong by that factor. A small surplus is normal —
+    # PLUMED can be a row or two ahead of the safely readable frames — so refuse
+    # only from the 2x floor, which no flush lag can reach.
+    accounted = max(stop for _, stop, _ in ranges.values())
+    if accounted and len(rows) >= 2 * accounted:
+        warnings.warn(
+            f'{cum_colvar!r} holds {len(rows)} rows but the parts of {base!r} '
+            f'account for only {accounted}; PRINT STRIDE most likely does not '
+            f'match nstxout-compressed, so the row-to-frame offsets cannot be '
+            f'trusted. Not deriving bias for {os.path.basename(fname)!r}.',
+            UserWarning,
+            stacklevel=2)
+        return None
+
+    row_start, row_stop, _ = ranges[part]
+    sel = rows[row_start:row_stop]
+    if not len(sel):
+        return None
+
+    tmpdir = tempfile.mkdtemp(prefix='aimmd_bias_')
+    try:
+        tmp_traj = os.path.join(tmpdir, stem)
+        with open(tmp_traj.replace(trajectory_extension, '_COLVAR'), 'w') as fh:
+            fh.write(header + '\n')
+            for row in sel:
+                fh.write(' '.join(f'{v:.6f}' for v in row) + '\n')
+        result = bias_function(tmp_traj)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    if result is None:
+        return None
+    return np.asarray(result, dtype=float)
 
 
 def compute_bias_corrections(pathensemble, weights, lengths=None,
@@ -235,11 +395,17 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
             Number of paths with non-zero weight (the ones that reach the rate).
         ``n_missing``
             How many of those had no usable bias array.
+        ``n_missing_files``
+            Distinct trajectory files behind those paths (several paths commonly
+            share one).
         ``frac_paths``
             ``n_missing / n_paths``.
         ``frac_weighted_length``
-            Share of ``Σ |w| · L`` carried by paths running on ``γ = 1.0``.
-            **This is the number that matters** — see Notes.
+            Share of ``Σ |w| · L`` carried by paths with **no** bias cache at
+            all. **This is the number that matters** — see Notes. A cache that
+            is merely shorter than its path is not counted, because
+            :meth:`Path._get` zero-pads it (its tail then contributes
+            ``exp(0) = 1``, which is the correct weight anyway).
         ``max_inflation``
             ``1 / (1 - frac_weighted_length)``: the largest factor by which the
             reweighted rate can be overestimated because of the gap.
@@ -253,8 +419,10 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
     - The corrected rate is ``k = 1 / Σ(w · L · γ)`` where ``L`` is path length.
     - For unbiased paths (bias ≈ 0 everywhere), ``exp(0) = 1`` so ``γ = 1`` and
       the formula reduces exactly to the standard AIMMD estimator.
-    - Unless ``check=False``, a single ``UserWarning`` is emitted if any path with
-      non-zero weight is missing its bias cache.
+    - Unless ``check=False``, the coverage is printed on every call, and a single
+      terse ``UserWarning`` is raised when the missing weighted fraction exceeds
+      *threshold*. Smaller gaps are reported but not warned about: a still-running
+      free segment and the deliberate ``part0000`` seed produce them every round.
     - Coverage is weighted by ``|w| · L``, not counted per path, because the
       estimator is a sum over ``w · L · γ``: one long uncached free-basin
       trajectory can be 1 path in 1000 and still carry most of the dwell time.
@@ -267,7 +435,7 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
     n_missing = 0
     length_total = 0.0
     length_missing = 0.0
-    missing_examples = []
+    missing_files = set()
 
     for i, path in enumerate(pathensemble):
         if weights[i] == 0.0:
@@ -295,12 +463,15 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
             gammas[i] = 1.0
             n_missing += 1
             length_missing += weighted_length
-            if len(missing_examples) < 3:
-                missing_examples.append(_path_label(path))
+            missing_files.add(_path_label(path))
             continue
 
-        # γᵢ = mean(exp(bias)) over all frames of this path
-        # For unbiased paths (bias = 0 everywhere), exp(0) = 1, so γ = 1 naturally.
+        # γᵢ = mean(exp(bias)) over all frames of this path.
+        # `Path._get('bias')` zero-pads to the path length (path/_get.py:167,205
+        # -> core/utils.extend_array), so a cache shorter than the path already
+        # contributes exp(0) = 1 for its tail — no separate frame weighting is
+        # needed, and a short cache is indistinguishable from a full one here.
+        # Coverage below therefore detects *absent* caches, not short ones.
         gammas[i] = float(np.mean(np.exp(bias)))
 
     frac_weighted = (length_missing / length_total) if length_total > 0 else 0.0
@@ -313,26 +484,28 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
                           if frac_weighted < 1.0 else float('inf')),
         'weighted_length_total': length_total,
         'weighted_length_missing': length_missing,
-        'missing_examples': missing_examples,
+        'missing_examples': sorted(missing_files)[:3],
+        'n_missing_files': len(missing_files),
     }
 
     # The check is default behaviour: report every call, and warn — after the
     # loop, so the message can quantify the gap it is warning about.
     if check:
         print(format_bias_cache_coverage(coverage, threshold=threshold))
-        if n_missing:
-            message = (
-                f'{n_missing} of {n_weighted} paths with non-zero weight are '
-                f'missing bias cache files, carrying {frac_weighted:.1%} of the '
-                f'weighted path length. Those paths fall back to γ = 1.0 (no bias '
-                f'correction), which can overestimate the reweighted rate by up to '
-                f'{_inflation_text(coverage["max_inflation"])}.')
-            if frac_weighted > threshold:
-                message += ' ' + _REMEDIATION_NOTE
-            else:
-                message += (' Ensure bias_function was applied before computing '
-                            'bias corrections.')
-            warnings.warn(message, UserWarning, stacklevel=2)
+        if frac_weighted > threshold:
+            # Terse, catchable signal for library callers. The explanation and
+            # the remediation live in the printed report; saying both twice only
+            # taught readers to skim them.
+            warnings.warn(
+                f'Bias cache coverage {1.0 - frac_weighted:.1%}: '
+                f'{frac_weighted:.1%} of the weighted path length entered the '
+                f'rate estimate with γ = 1.0, across {n_missing} of '
+                f'{n_weighted} paths ({len(missing_files)} files), which can '
+                f'overestimate the reweighted rate by up to '
+                f'{_inflation_text(coverage["max_inflation"])}. See the bias '
+                f'cache coverage report in the log for what to check.',
+                UserWarning,
+                stacklevel=2)
 
     if return_coverage:
         return gammas, coverage
@@ -399,7 +572,7 @@ def format_bias_cache_coverage(coverage,
     lines += [f'{indent}***   {line}' for line in wrapped[1:]]
     if coverage['missing_examples']:
         shown = ', '.join(coverage['missing_examples'])
-        more = coverage['n_missing'] - len(coverage['missing_examples'])
-        suffix = f' (+{more} more)' if more > 0 else ''
-        lines.append(f'{indent}***   uncached: {shown}{suffix}')
+        more = coverage['n_missing_files'] - len(coverage['missing_examples'])
+        suffix = f' (+{more} more files)' if more > 0 else ''
+        lines.append(f'{indent}***   uncovered: {shown}{suffix}')
     return '\n'.join(lines)

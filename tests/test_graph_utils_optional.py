@@ -236,3 +236,168 @@ def test_process_descriptors_pyg_populates_and_reuses_cache(tmp_path):
         assert count_after_second == count_after_first
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Batched insertion, codec handling, and the /dev/shm replica end to end.
+# These need real `Data` objects, so they live here rather than in
+# tests/test_shm_cache.py (which is stdlib-only and runs by default).
+# ---------------------------------------------------------------------------
+def _tiny_graph(gu, n=4):
+    """A small but genuine torch_geometric Data, shaped like a real cache entry."""
+    import torch
+    from torch_geometric.data import Data
+    return Data(positions=torch.randn(n, 3),
+                edge_index=torch.randint(0, n, (2, n * 3)),
+                node_attrs=torch.eye(n),
+                shifts=torch.zeros(n * 3, 3))
+
+
+def _mem_db(gu):
+    import sqlite3
+    conn = sqlite3.connect(':memory:', factory=gu.shm_cache.CacheConnection)
+    conn.execute('CREATE TABLE graphs_cache(key TEXT PRIMARY KEY, data BLOB)')
+    return conn
+
+
+def test_batched_store_lz4_roundtrips():
+    """A batch written with lz4 must be readable by load_from_sqlite."""
+    import torch
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    graphs = [_tiny_graph(gu) for _ in range(5)]
+    keys = [f'k{i}' for i in range(5)]
+
+    gu.store_many_in_sqlite(keys, graphs, conn, compression_lib='lz4')
+
+    for key, original in zip(keys, graphs):
+        back = gu.load_from_sqlite(key, conn, compression_lib='lz4')
+        assert back is not None
+        assert torch.equal(back['positions'], original['positions'])
+        assert torch.equal(back['edge_index'], original['edge_index'])
+
+
+def test_codec_mismatch_is_survivable():
+    """Regression guard for a trap that already produced one wrong conclusion.
+
+    The module's read/write defaults are "gzip" while the pyg path passes "lz4",
+    so a caller that forgets the argument used to write bytes it could not read
+    back. `_decode` now identifies the container from its magic bytes, so a
+    mismatched -- or even mixed -- cache stays readable.
+    """
+    import torch
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    graph = _tiny_graph(gu)
+
+    gu.store_in_sqlite('gz', graph, conn, compression_lib='gzip')
+    gu.store_in_sqlite('l4', graph, conn, compression_lib='lz4')
+    gu.store_in_sqlite('raw', graph, conn, compression_lib='none')
+
+    # every entry readable regardless of what the caller claims the codec is
+    for key in ('gz', 'l4', 'raw'):
+        for claimed in ('gzip', 'lz4', 'none'):
+            back = gu.load_from_sqlite(key, conn, compression_lib=claimed)
+            assert back is not None, f'{key} unreadable when asked for {claimed}'
+            assert torch.equal(back['positions'], graph['positions'])
+
+
+def test_batched_store_retries_on_locked_database():
+    """The retry must wrap the whole transaction, and roll back between tries."""
+    import sqlite3
+    gu = _import_graph_utils()
+    real = _mem_db(gu)
+    state = {'fails': 2, 'rollbacks': 0}
+
+    class Flaky:
+        def executemany(self, *a, **k):
+            if state['fails'] > 0:
+                state['fails'] -= 1
+                raise sqlite3.OperationalError('database is locked')
+            return real.executemany(*a, **k)
+
+        def commit(self):
+            return real.commit()
+
+        def rollback(self):
+            state['rollbacks'] += 1
+
+    gu.store_many_in_sqlite(['a'], [_tiny_graph(gu)], Flaky(), compression_lib='lz4')
+    assert state['fails'] == 0
+    assert state['rollbacks'] == 2, 'each retry must roll back the partial txn'
+    assert real.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 1
+
+
+def test_batched_store_reraises_non_lock_errors():
+    """Only "database is locked" is retryable; anything else must surface."""
+    import sqlite3
+    import pytest as _pytest
+    gu = _import_graph_utils()
+
+    class Broken:
+        def executemany(self, *a, **k):
+            raise sqlite3.OperationalError('no such table: graphs_cache')
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    with _pytest.raises(sqlite3.OperationalError, match='no such table'):
+        gu.store_many_in_sqlite(['a'], [_tiny_graph(gu)], Broken())
+
+
+def test_pyg_store_path_uses_one_transaction(monkeypatch):
+    """The pyg path must commit once per batch, not once per graph."""
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    commits = {'n': 0}
+    real_commit = conn.commit
+
+    def counting_commit():
+        commits['n'] += 1
+        return real_commit()
+    monkeypatch.setattr(conn, 'commit', counting_commit, raising=False)
+
+    gu.store_many_in_sqlite([f'k{i}' for i in range(20)],
+                            [_tiny_graph(gu) for _ in range(20)],
+                            conn, compression_lib='lz4')
+    assert commits['n'] == 1, f'{commits["n"]} commits for a 20-graph batch'
+
+
+def test_replica_serves_real_graphs_end_to_end(tmp_path, monkeypatch):
+    """Stage a real cache into a fake tmpfs and read genuine graphs back."""
+    import sqlite3
+    import torch
+    gu = _import_graph_utils()
+    shm = tmp_path / 'shm'
+    shm.mkdir()
+    monkeypatch.setenv('AIMMD_SHM_DIR', str(shm))
+    gu.shm_cache._REGISTRY.clear()
+    gu.shm_cache._OWNED.clear()
+
+    db = tmp_path / 'graphs_cache.sqlite'
+    conn = gu.init_db(str(db))
+    graphs = [_tiny_graph(gu) for _ in range(6)]
+    keys = [f'k{i}' for i in range(6)]
+    gu.store_many_in_sqlite(keys, graphs, conn, compression_lib='lz4')
+
+    try:
+        assert gu.shm_cache.stage_cache(conn) is not None
+        conn._aimmd_memo = None                 # isolate the replica
+
+        calls = []
+        real_execute = conn.execute
+        monkeypatch.setattr(
+            conn, 'execute',
+            lambda *a, **k: (calls.append(a), real_execute(*a, **k))[1],
+            raising=False)
+
+        for key, original in zip(keys, graphs):
+            back = gu.load_from_sqlite(key, conn, compression_lib='lz4')
+            assert torch.equal(back['positions'], original['positions'])
+        assert calls == [], 'replica hits still queried the real database'
+        assert gu.shm_cache.replica_stats()['hits'] == 6
+    finally:
+        gu.shm_cache.cleanup_replicas()
