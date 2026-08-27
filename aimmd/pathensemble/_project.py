@@ -229,15 +229,27 @@ class PathEnsembleProject(ABC):
                 except:
                     continue
                 input_data_length = len(input_data)
+                # The internal trim must be taken in the PATH INDEX SPACE, not
+                # from the length of the cached data array. Values are computed
+                # only on the reactive region, so a path ending in a state never
+                # has its final frame scored and '<traj>.values.npy' is exactly
+                # one element shorter than the trajectory. Using
+                # 'input_data_length - 1' therefore drops the last REAL internal
+                # frame instead of the terminal state frame -- and for a
+                # three-frame excursion (one internal frame) it drops the whole
+                # path. 'segment_length' is the same quantity that
+                # Path._range('internal') and PathEnsemble.n_frames use.
+                segment_length = int(
+                    abs(int(path._last[k]) - int(path._first[k])) + 1)
                 if k == 0 and where != 'all' and states[0] != states[1]:
                     start = 1
                 else:
                     start = 0
                 if (k == n_files - 1 and where != 'all' and
                     states[1] != states[2]):
-                    stop = input_data_length - 1
+                    stop = segment_length - 1
                 else:
-                    stop = input_data_length
+                    stop = segment_length
                 if where == 'forward' and shooting_k == k:
                     start = max(start, shooting_i)
                 if where == 'backward' and shooting_k == k:
