@@ -185,6 +185,150 @@ def get_initial_frames_for_free_simulations(
     return initial_frames
 
 
+def get_basin_frames_for_free_restart(
+        free_trajectories, target_state, reactive_state,
+        weighting='occupancy', min_frames=0):
+    """
+    Draw a two-frame free-simulation restart segment from inside a basin.
+
+    The free worker's default restart takes the last frame the previous free
+    trajectory spent in the target state — the configuration it escaped from,
+    which lies on the state boundary. This function instead draws the restart
+    configuration from the frames the accumulated free trajectories of that
+    state actually spent *inside* it, so a new first passage starts from the
+    state's own occupancy measure rather than from its boundary.
+
+    Parameters
+    ----------
+    free_trajectories : iterable of aimmd.path.Path
+        Free trajectories of the target state (unsplit), most usefully every
+        trajectory of that state seen so far, including the one that has just
+        finished. Trajectories with no usable state labels are skipped.
+    target_state : str of size 1
+        The state to draw from, e.g. `'A'`.
+    reactive_state : str of size 1
+        The reactive-region label, e.g. `'R'`. Drawing is refused when it
+        equals `target_state`.
+    weighting : {'occupancy', 'unbiased'}, optional
+        `'occupancy'` (default) draws uniformly over in-state frames, i.e. from
+        the biased equilibrium inside the state — the distribution the boosted
+        Tiwary-Parrinello clock assumes. `'unbiased'` draws with probability
+        proportional to `exp(bias)`, i.e. from the unbiased equilibrium; it
+        degrades to `'occupancy'` if any candidate lacks a bias cache.
+    min_frames : int, optional
+        Refuse to draw when fewer than this many in-state frames are available.
+        Default 0 (draw as soon as one frame qualifies).
+
+    Returns
+    -------
+    initial_frames : aimmd.path.Path or None
+        Two consecutive frames `(j - 1, j)` of one candidate trajectory, with
+        frame `j` in `target_state`. `Params.initialize_simulation` starts from
+        the last frame and writes the first as the `.part0000` history frame, so
+        the pair is in forward time order: the history frame is the seed's real
+        predecessor. None when no draw was possible; the caller must then fall
+        back to its own behaviour.
+    seed_bias : numpy.ndarray or None
+        One-element array holding the bias (kT) of the `.part0000` history
+        frame, when it is known. The caller writes it to the seed's bias cache;
+        an in-basin history frame carries a large bias and approximating it as 0
+        would bias short trajectories' γ downward. None when unknown.
+
+    Notes
+    -----
+    - Frames are selected from `path._get('states')`, which masks frames beyond
+      `path._exclude_from`, so indicted (corrupt) frames are never drawn.
+    - Frame index 0 of a trajectory is never drawn: a history frame is needed.
+    - Weights are normalised in a two-level draw (trajectory, then frame within
+      it) which is equivalent to one draw over the pooled frames.
+    - Cost is one pass over the cached state arrays of the pool, paid once per
+      completed free trajectory.
+    - Uses NumPy's global RNG, like the rest of the worker layer; seed it with
+      `np.random.seed(...)` for reproducibility.
+    """
+    t = target_state
+    if t == reactive_state:
+        return None, None
+
+    # collect candidates: (path, in-state indices, bias array or None)
+    candidates = []
+    have_bias = True
+    for path in free_trajectories:
+        if path is None or len(path) < 2:
+            continue
+        try:
+            states = np.asarray(path._get('states'))
+        except Exception:
+            continue
+        if len(states) < 2:
+            continue
+        # index 0 cannot be drawn: it has no predecessor to act as history
+        indices = np.flatnonzero(states[1:] == t) + 1
+        if not indices.size:
+            continue
+        bias = None
+        if weighting == 'unbiased':
+            try:
+                bias = np.asarray(
+                    path._get('bias', raise_if_missing=True), dtype=float)
+            except Exception:
+                bias = None
+            if bias is None or len(bias) < len(states):
+                have_bias = False
+        candidates.append((path, indices, bias))
+
+    if not candidates:
+        return None, None
+    n_total = int(sum(len(indices) for _, indices, _ in candidates))
+    if n_total < max(1, int(min_frames)):
+        return None, None
+
+    # per-frame weights
+    if weighting == 'unbiased' and have_bias:
+        # subtract the global maximum before exponentiating: the fill can be
+        # many kT deep and exp() would otherwise overflow
+        shift = max(float(np.max(bias[indices]))
+                    for _, indices, bias in candidates)
+        per_frame = [np.exp(bias[indices] - shift)
+                     for _, indices, bias in candidates]
+    else:
+        if weighting == 'unbiased':
+            print('Warning: free_restart_basin_weighting=\'unbiased\' needs a '
+                  'bias cache for every candidate trajectory; some are missing, '
+                  'so this draw uses \'occupancy\' weighting instead')
+        per_frame = [np.ones(len(indices), dtype=float)
+                     for _, indices, _ in candidates]
+
+    totals = np.array([float(w.sum()) for w in per_frame])
+    if not np.isfinite(totals).all() or totals.sum() <= 0.0:
+        return None, None
+
+    # two-level draw == one draw over the pooled frames
+    k = int(np.random.choice(len(candidates), p=totals / totals.sum()))
+    path, indices, bias = candidates[k]
+    w = per_frame[k]
+    j = int(np.random.choice(indices, p=w / w.sum()))
+
+    initial_frames = path[j - 1:j + 1]
+    try:
+        if len(initial_frames) != 2 or initial_frames.states[1] != t:
+            return None, None
+    except Exception:
+        return None, None
+
+    # bias of the .part0000 history frame (frame j - 1), when known
+    seed_bias = None
+    if bias is None:
+        try:
+            bias = np.asarray(
+                path._get('bias', raise_if_missing=True), dtype=float)
+        except Exception:
+            bias = None
+    if bias is not None and len(bias) > j - 1:
+        seed_bias = np.array([float(bias[j - 1])], dtype=float)
+    return initial_frames, seed_bias
+
+
 def get_initial_frames_for_training(initial_paths, states='ARB'):
     """
     Given an `aimmd.path.PathEnsemble` instance, extract all frames in the
