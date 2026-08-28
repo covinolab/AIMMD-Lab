@@ -30,6 +30,7 @@ Notes
 import os
 import numpy as np
 import inspect
+import warnings
 from abc import ABC
 from math import inf
 from types import MethodType as Method
@@ -40,7 +41,9 @@ from MDAnalysis import Universe
 from collections.abc import Iterable
 
 # aimmd imports
-from .utils import update_source, create_default_values_function
+from .utils import (update_source, create_default_values_function,
+                    canonical_free_restart_from,
+                    legacy_free_restart_replacement)
 from ..core.utils import accepts_system_id
 from ..path import Path
 from ..pathensemble import PathEnsemble
@@ -221,6 +224,34 @@ class ParamsHelpers(ABC):
                     raise TypeError(
                         f'{name!r} must be distinct upper alpha chars')
             
+            # free-simulation restart source: one string, optionally per state
+            elif name == 'restart_free_simulations_from':
+                value = canonical_free_restart_from(
+                    value, states=getattr(self, 'states', None))
+
+            # DEPRECATED state selector, superseded by the field above
+            elif name == 'restart_free_simulations_with_transitions':
+                value = str(value).replace(' ', '')
+                if value.lower() != 'all':
+                    value = value.upper()
+                if value and not value.isalpha():
+                    raise TypeError(
+                        f'{name!r} must be distinct upper alpha chars, or '
+                        f"'all'")
+                if value:
+                    replacement = legacy_free_restart_replacement(value)
+                    message = (
+                        f"'restart_free_simulations_with_transitions' is "
+                        f"deprecated; use "
+                        f"restart_free_simulations_from = {replacement!r} "
+                        f"instead. The new field also offers the 'basin' and "
+                        f"'equilibrium' restart sources, which draw from inside "
+                        f"the state rather than from its boundary.")
+                    warnings.warn(message, DeprecationWarning, stacklevel=4)
+                    # warnings are shown once per process and this one has been
+                    # missed before; the log line cannot be filtered away
+                    print(f'Warning: {message}')
+
             # topology (update universe)
             elif name == 'topology':
                 if isinstance(value, (list, tuple)):
@@ -392,7 +423,9 @@ class ParamsHelpers(ABC):
             except Exception as exception:  # go back in case of error
                 if not isinstance(backup, str) or backup != 'absent':
                     self.__dict__[name] = backup
-                raise TypeError(f'can\'t update {name!r} with {value!r}')
+                raise TypeError(
+                    f'can\'t update {name!r} with {value!r}: '
+                    f'{exception}') from exception
 
     def _process_and_check(self, fields=[]):
         """
@@ -451,6 +484,19 @@ class ParamsHelpers(ABC):
                 raise TypeError(f'`nbins` must be > 0, or >= 0 when '
                                 f'`extra_bins in ({states!r}, \'all\')`')
         
+        # free-simulation restart source: re-validate against the final
+        # `states` (field assignment order is the params file's, so `states`
+        # may have arrived after the switch), and refuse a config that sets
+        # both the switch and its deprecated predecessor.
+        if (not fields
+                or 'states' in fields
+                or 'restart_free_simulations_from' in fields
+                or 'restart_free_simulations_with_transitions' in fields):
+            self.__dict__['restart_free_simulations_from'] = \
+                canonical_free_restart_from(
+                    self.restart_free_simulations_from, states=self.states)
+            self._free_restart_spec()   # raises TypeError on a conflict
+
         # check free_overriding_bins
         if 'free_overriding_bins' in fields:
             try:

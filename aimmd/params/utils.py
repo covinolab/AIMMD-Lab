@@ -28,6 +28,7 @@ AIMMD components.
 """
 
 # external
+import re
 import numpy as np
 import torch
 from re import split
@@ -192,3 +193,158 @@ def create_default_values_function(network, descriptor_transform=None):
         return output.cpu().numpy().ravel()
 
     return values_function
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Free-simulation restart source
+# ════════════════════════════════════════════════════════════════════════════
+
+FREE_RESTART_MODES = ('crossing', 'transitions', 'basin', 'equilibrium')
+"""Accepted values of ``params.restart_free_simulations_from``.
+
+``'crossing'``
+    The last frame the previous free trajectory spent in the target state, i.e.
+    the configuration it escaped from. This is the historical behaviour and the
+    default. That frame lies *on* the state boundary, so every first passage
+    starts from the boundary-entry distribution.
+``'transitions'``
+    The end frames of a randomly sampled AIMMD transition path. This is what the
+    deprecated ``restart_free_simulations_with_transitions`` selected.
+``'basin'``
+    A frame drawn uniformly from the in-state frames of the accumulated free
+    trajectories, i.e. from the *biased* equilibrium inside the state — the
+    occupancy measure the Tiwary-Parrinello boosted clock assumes.
+``'equilibrium'``
+    The same pool, drawn with probability proportional to ``exp(bias)``, i.e.
+    from the **unbiased** (Boltzmann) equilibrium inside the state. With no
+    recorded bias every weight is 1 and this coincides with ``'basin'``, which
+    is correct: an unbiased trajectory already samples Boltzmann.
+"""
+
+FREE_RESTART_IN_BASIN_MODES = ('basin', 'equilibrium')
+"""The modes that draw from inside the state, and so are meaningless for R."""
+
+
+def parse_free_restart_from(value, states=None, field='restart_free_simulations_from'):
+    """
+    Parse a ``restart_free_simulations_from`` specification.
+
+    Grammar (entries separated by whitespace and/or commas)::
+
+        spec  := entry [entry ...]
+        entry := mode                 # the default for every state
+               | LETTERS ':' mode     # for the named states only
+
+    At most one bare ``mode`` may appear; it becomes the default for states not
+    named explicitly. An empty specification means ``'crossing'``.
+
+    Parameters
+    ----------
+    value : str
+        The specification.
+    states : str, optional
+        ``params.states``. When given, every named state letter must occur in
+        it, and the in-basin modes are refused for the reactive state
+        ``states[1]``.
+    field : str, optional
+        Field name to quote in error messages.
+
+    Returns
+    -------
+    default : str
+        Mode for states not named explicitly.
+    per_state : dict
+        ``{state letter: mode}`` for the states that were named.
+
+    Raises
+    ------
+    TypeError
+        On an unknown mode, a malformed entry, a repeated state, more than one
+        bare mode, an unknown state letter, or an in-basin mode on the reactive
+        state.
+    """
+    text = re.sub(r'\s*:\s*', ':', str(value or '').replace(',', ' ')).strip()
+    default = 'crossing'
+    per_state = {}
+    seen_bare = False
+
+    def _mode(token, where):
+        mode = token.strip().lower()
+        if mode not in FREE_RESTART_MODES:
+            raise TypeError(
+                f'{field!r}: unknown restart source {token.strip()!r} in '
+                f'{where}; expected one of '
+                f'{", ".join(repr(m) for m in FREE_RESTART_MODES)}')
+        return mode
+
+    for entry in text.split():
+        if ':' not in entry:
+            if seen_bare:
+                raise TypeError(
+                    f'{field!r} = {value!r} names more than one default restart '
+                    f'source; give at most one bare mode, and qualify the rest '
+                    f'as e.g. \'A:equilibrium\'')
+            default = _mode(entry, f'{field!r} = {value!r}')
+            seen_bare = True
+            continue
+
+        parts = entry.split(':')
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            raise TypeError(
+                f'{field!r}: malformed entry {entry!r} in {value!r}; expected '
+                f'\'STATES:mode\', e.g. \'A:equilibrium\'')
+        letters = parts[0].strip().upper()
+        if not letters.isalpha():
+            raise TypeError(
+                f'{field!r}: {parts[0].strip()!r} in {entry!r} is not a state '
+                f'letter list')
+        mode = _mode(parts[1], f'entry {entry!r}')
+        for letter in letters:
+            if letter in per_state:
+                raise TypeError(
+                    f'{field!r} = {value!r} assigns state {letter!r} twice')
+            if states is not None and letter not in states:
+                raise TypeError(
+                    f'{field!r}: state {letter!r} is not one of '
+                    f'params.states = {states!r}')
+            if (states is not None and len(states) >= 2
+                    and letter == states[1]
+                    and mode in FREE_RESTART_IN_BASIN_MODES):
+                raise TypeError(
+                    f'{field!r}: restart source {mode!r} is not defined for the '
+                    f'reactive state {letter!r} - "inside the state" is the '
+                    f'barrier region there, where no equilibrium restart '
+                    f'distribution exists. Use \'crossing\' or \'transitions\'.')
+            per_state[letter] = mode
+
+    return default, per_state
+
+
+def canonical_free_restart_from(value, states=None,
+                                field='restart_free_simulations_from'):
+    """Validate a ``restart_free_simulations_from`` value and normalise it.
+
+    Returns the canonical spelling — states upper case, modes lower case,
+    single-space separated, the bare default (if any) first — so that the value
+    round-trips through :meth:`aimmd.Params.save` unchanged.
+    """
+    default, per_state = parse_free_restart_from(value, states=states,
+                                                 field=field)
+    parts = [] if default == 'crossing' and per_state else [default]
+    parts += [f'{letter}:{per_state[letter]}' for letter in sorted(per_state)]
+    return ' '.join(parts) if parts else 'crossing'
+
+
+def legacy_free_restart_replacement(value):
+    """The ``restart_free_simulations_from`` value equivalent to a legacy flag.
+
+    ``restart_free_simulations_with_transitions`` was a state-selector string:
+    ``'all'`` for every free simulation, otherwise the letters of the states it
+    applied to. Returns ``''`` for an empty (inactive) flag.
+    """
+    text = str(value or '').replace(' ', '')
+    if not text:
+        return ''
+    if text.lower() == 'all':
+        return 'transitions'
+    return f'{text.upper()}:transitions'

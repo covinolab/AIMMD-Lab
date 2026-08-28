@@ -35,11 +35,13 @@ The core loop proceeds as follows:
 4) When a stop event is detected, select initial frames for the next
    trajectory and advance to the next trajectory name. By default these are
    the last valid crossing, i.e. the frame the trajectory escaped from, which
-   lies on the state boundary. With ``params.free_restart_from_basin`` the
-   restart configuration is instead drawn from the frames the accumulated free
-   trajectories of that state spent *inside* it, so each first passage starts
-   from the state's occupancy measure rather than from its boundary. See
-   :func:`~aimmd.worker.utils.get_basin_frames_for_free_restart`.
+   lies on the state boundary. ``params.restart_free_simulations_from`` selects
+   a different source: ``'transitions'`` (a sampled AIMMD transition path),
+   ``'basin'`` (uniform over the frames the accumulated free trajectories spent
+   inside the state) or ``'equilibrium'`` (the same pool, reweighted by
+   ``exp(bias)`` to the unbiased Boltzmann distribution inside the state), so
+   that each first passage starts from inside the state rather than from its
+   boundary. See :func:`~aimmd.worker.utils.get_basin_frames_for_free_restart`.
 
 State conventions
 -----------------
@@ -99,6 +101,23 @@ from ..core.utils import now, remove, process_state
 from ..path.utils import get_cache_fname
 from ..pathensemble import PathEnsemble
 from ..pathensemble.utils import assemble_pathensemble
+
+def _basin_weighting_for_mode(mode):
+    """
+    In-basin candidate weighting for a `params.free_restart_mode` value.
+
+    Returns
+    -------
+    str or None
+        ``'occupancy'`` for ``'basin'`` (uniform over in-state frames, i.e. the
+        *biased* equilibrium inside the state), ``'unbiased'`` for
+        ``'equilibrium'`` (drawn with probability proportional to ``exp(bias)``,
+        i.e. the **unbiased** Boltzmann equilibrium inside the state), and None
+        for the sources that do not draw from inside the basin at all
+        (``'crossing'``, ``'transitions'``).
+    """
+    return {'basin': 'occupancy', 'equilibrium': 'unbiased'}.get(mode)
+
 
 # WorkerFree mixin class
 class WorkerFree(ABC):
@@ -175,18 +194,16 @@ class WorkerFree(ABC):
         # retrieve and process paths
         initial_paths = get_initial_frames_for_free_simulations(
                 self.initial_paths, t, r)
-        restart_with_transition = (
-            params.restart_free_simulations_with_transitions == 'all' or
-            t in params.restart_free_simulations_with_transitions)
-        # Equilibrium (in-basin) restart. Off by default, so nothing changes for
-        # an existing run. Never applies to the reactive state, where "inside the
-        # state" is the barrier region.
-        free_restart_from_basin = getattr(
-            params, 'free_restart_from_basin', '')
-        restart_from_basin = bool(t != r and free_restart_from_basin and (
-            free_restart_from_basin == 'all' or t in free_restart_from_basin))
-        basin_weighting = getattr(
-            params, 'free_restart_basin_weighting', 'occupancy')
+        # Where this worker's restart configurations come from. Resolved from
+        # params.restart_free_simulations_from (which also reads the deprecated
+        # restart_free_simulations_with_transitions), and 'crossing' by default,
+        # so nothing changes for an existing run. The in-basin sources never
+        # apply to the reactive state, where "inside the state" is the barrier
+        # region; free_restart_mode already collapses those to 'crossing'.
+        restart_mode = params.free_restart_mode(t)
+        restart_with_transition = restart_mode == 'transitions'
+        basin_weighting = _basin_weighting_for_mode(restart_mode)
+        restart_from_basin = basin_weighting is not None
         basin_min_frames = getattr(
             params, 'free_restart_basin_min_frames', 0)
 
@@ -229,8 +246,9 @@ class WorkerFree(ABC):
                 print(f'\nWarning: could not prime the in-basin restart pool '
                       f'from {_directory}/free{t}: {exception}')
                 basin_pool = []
-            print(f'\nEquilibrium free restart is ON for {t!r} '
-                  f'(weighting={basin_weighting!r}, '
+            print(f'\nFree restarts for {t!r} are drawn from inside the '
+                  f'basin (restart_free_simulations_from = {restart_mode!r}, '
+                  f'{basin_weighting} weighting, '
                   f'min_frames={basin_min_frames}); pool primed with '
                   f'{len(basin_pool)} trajectories from disk')
 
