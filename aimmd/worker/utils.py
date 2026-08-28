@@ -293,9 +293,10 @@ def get_basin_frames_for_free_restart(
                      for _, indices, bias in candidates]
     else:
         if weighting == 'unbiased':
-            print('Warning: free_restart_basin_weighting=\'unbiased\' needs a '
+            print('Warning: the \'equilibrium\' free restart source needs a '
                   'bias cache for every candidate trajectory; some are missing, '
-                  'so this draw uses \'occupancy\' weighting instead')
+                  'so this draw falls back to \'basin\' (occupancy) '
+                  'weighting instead')
         per_frame = [np.ones(len(indices), dtype=float)
                      for _, indices, _ in candidates]
 

@@ -235,7 +235,7 @@ def test_seed_report_flags_low_boost_passages(capsys):
     assert np.all(np.sort(r['boost_ratios'])[:4] < SEED_BOOST_FRACTION)
     assert not r['ok']
     out = capsys.readouterr().out
-    assert 'free_restart_from_basin' in out
+    assert 'restart_free_simulations_from' in out
     assert 'upper bound' in out
 
 

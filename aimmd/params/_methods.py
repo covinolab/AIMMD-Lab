@@ -66,10 +66,13 @@ from MDAnalysis import Universe, Writer
 from ..path import Path
 from .._config import MDA_CACHE, EM_MDP
 from ..cache.npy import load_npy
-from ..core.utils import randomize_velocities, remove
+from ..core.utils import process_state, randomize_velocities, remove
 from ..engines.toy import ToyEngine
 from ..pathensemble import PathEnsemble
 from ..execute.utils import execute_command
+from .utils import (FREE_RESTART_IN_BASIN_MODES,
+                    legacy_free_restart_replacement,
+                    parse_free_restart_from)
 
 
 def _colvar_rowcount(fname):
@@ -239,6 +242,74 @@ def _split_cumulative_colvar(deffnm_dir, deffnm_base, ext):
 
 # params' methods
 class ParamsMethods(ABC):
+
+    def _free_restart_spec(self):
+        """
+        Resolve `restart_free_simulations_from` and its deprecated predecessor.
+
+        Returns
+        -------
+        default : str
+            Restart source for states not named explicitly.
+        per_state : dict
+            ``{state letter: source}`` for the states that were named.
+
+        Raises
+        ------
+        TypeError
+            If both `restart_free_simulations_from` and the deprecated
+            `restart_free_simulations_with_transitions` ask for something.
+        """
+        spec = getattr(self, 'restart_free_simulations_from', 'crossing')
+        legacy = getattr(self, 'restart_free_simulations_with_transitions', '')
+        legacy = str(legacy or '').replace(' ', '')
+
+        if legacy:
+            replacement = legacy_free_restart_replacement(legacy)
+            if str(spec or 'crossing') != 'crossing':
+                raise TypeError(
+                    f"'restart_free_simulations_from' = {spec!r} and the "
+                    f"deprecated "
+                    f"'restart_free_simulations_with_transitions' = "
+                    f"{legacy!r} both select a free-simulation restart source. "
+                    f"Keep only 'restart_free_simulations_from'; the "
+                    f"deprecated flag is equivalent to {replacement!r}.")
+            spec = replacement
+
+        return parse_free_restart_from(spec, states=self.states)
+
+    def free_restart_mode(self, state):
+        """
+        Where free simulations of *state* take their restart configuration.
+
+        Resolves `restart_free_simulations_from`, honouring the deprecated
+        `restart_free_simulations_with_transitions` when that is the one set.
+
+        Parameters
+        ----------
+        state : int or str
+            State index into `params.states`, or the state label itself.
+
+        Returns
+        -------
+        str
+            One of ``'crossing'``, ``'transitions'``, ``'basin'``,
+            ``'equilibrium'``. The in-basin sources are never returned for the
+            reactive state `states[1]`, where they are undefined: a bare
+            in-basin default leaves the reactive state on ``'crossing'``.
+
+        Raises
+        ------
+        TypeError
+            If both the switch and its deprecated predecessor are set.
+        """
+        state = process_state(state, self.states)
+        default, per_state = self._free_restart_spec()
+        mode = per_state.get(state, default)
+        if (mode in FREE_RESTART_IN_BASIN_MODES
+                and len(self.states) >= 2 and state == self.states[1]):
+            return 'crossing'
+        return mode
 
     def initialize_simulation(self, frame, *deffnm,
                               timeout=20., verbose=True):
