@@ -18,6 +18,16 @@ This module provides four public functions used by the AIMMD training worker whe
   (reactive-bias check, γ, and ``k = 1/Σ(w·L·γ)`` in both directions), so the
   four call sites in :mod:`aimmd.worker._train` cannot drift apart.
 
+- :func:`check_bias_zero_point` — validates that the *recorded* bias is zero where
+  no bias was applied, catching a wrong constant offset in ``params.bias_function``
+  (which multiplies every γ, and therefore the rate, by a constant factor).
+
+- :func:`report_nonequilibrium_seeds` — reports whether the free first passages
+  behind the rate were accelerated as much as an equilibrated trajectory in that
+  basin would have been, and whether their bias-reweighted durations are
+  memoryless. Both fail loudly when the free worker's restart scheme is re-seeding
+  at the state boundary faster than the basin can equilibrate.
+
 - :func:`format_bias_cache_coverage` — renders that coverage diagnostic for the
   training log.
 
@@ -665,9 +675,425 @@ def format_bias_cache_coverage(coverage,
     return '\n'.join(lines)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Bias zero point
+# ════════════════════════════════════════════════════════════════════════════
+
+BIAS_ZERO_POINT_TOLERANCE = 0.05
+"""Default tolerance (kT) on the recorded bias where no bias was applied.
+
+``exp(0.05) = 1.05``, so a shift this small moves the reweighted rate by 5 %. The
+failure this guards against is a *constant* offset, which is either 0 or large."""
+
+
+def check_bias_zero_point(pathensemble, states,
+                          tolerance=BIAS_ZERO_POINT_TOLERANCE,
+                          indent='    '):
+    """
+    Check that the *recorded* bias is zero where no bias was applied.
+
+    ``path.bias`` must hold ``β·V_bias`` with the **bias-free region at exactly
+    zero**, because γ = ⟨exp(bias)⟩ is an absolute quantity: adding a constant
+    ``c`` to every recorded value multiplies every γ, and therefore the
+    reweighted rate, by ``exp(c)``. Nothing else in the pipeline can notice.
+
+    The check needs no knowledge of the biasing method. It reads the recorded
+    bias on the reactive-region frames — which the Tiwary-Parrinello scheme
+    requires to be unbiased anyway (:func:`check_reactive_bias`) — and asks
+    whether its median is 0. It also asks whether any frame's recorded bias is
+    negative: a fill that raises the energy inside the states gives ``V ≥ 0``, so
+    a negative recorded value cannot be physical.
+
+    This is deliberately data-driven rather than parsed out of the biasing
+    engine's input. Reading, say, ``BARRIER`` out of a PLUMED ``OPES_METAD`` line
+    would need AIMMD to know kT (it does not), to find the right input file (it
+    may be templated, or the run may have restarted from a ``STATE`` written with
+    a different value), and would still miss a wrong sign, a wrong column, or a
+    wrong kT in ``params.bias_function``. The zero-point test catches all of
+    them, and reports the offset numerically so it can be fixed or divided out.
+
+    Parameters
+    ----------
+    pathensemble : PathEnsemble
+        Ensemble to inspect (bias caches already in place).
+    states : str
+        Three-character state string, e.g. ``'ARB'``; ``states[1]`` is the
+        bias-free reactive region.
+    tolerance : float, default 0.05
+        Largest ``|median|`` (kT) accepted as "zero".
+    indent : str, default four spaces
+        Prefix for the printed lines.
+
+    Returns
+    -------
+    dict
+        ``median`` (kT, median recorded bias in the reactive region),
+        ``minimum`` (kT, smallest recorded bias over all frames),
+        ``n_frames`` (reactive frames inspected),
+        ``offset`` (``median``; what to subtract inside ``params.bias_function``),
+        ``factor`` (``exp(-median)``: the reweighted rate as printed is too fast
+        by this factor when > 1, too slow when < 1),
+        ``ok`` (bool), and ``report`` (printable lines, no trailing newline).
+
+    Notes
+    -----
+    Fixing ``params.bias_function`` mid-run is not enough on its own:
+    ``Worker._cache_bias_files`` rewrites a ``<traj>.bias.npy`` only when it is
+    *shorter* than its trajectory, so already-cached frames would keep the old
+    values and the ensemble would silently mix two zero points. Delete the
+    ``*.bias.npy`` caches so they are recomputed from the untouched COLVARs.
+    """
+    r = states[1] if len(states) >= 2 else states[0]
+    r_bias = []
+    minimum = np.inf
+
+    for path in pathensemble:
+        try:
+            path_states = path._get('states', raise_if_missing=False)
+            path_bias = path._get('bias', raise_if_missing=False)
+        except Exception:
+            continue
+        if path_bias is None or path_states is None:
+            continue
+        n = min(len(path_states), len(path_bias))
+        if n == 0:
+            continue
+        minimum = min(minimum, float(np.min(path_bias[:n])))
+        mask = path_states[:n] == r
+        if mask.any():
+            r_bias.append(path_bias[:n][mask])
+
+    if not r_bias:
+        result = {'median': float('nan'), 'minimum': float('nan'),
+                  'n_frames': 0, 'offset': 0.0, 'factor': 1.0, 'ok': True,
+                  'report': f'{indent}Bias zero point: no reactive frames '
+                            f'to check'}
+        print(result['report'])
+        return result
+
+    r_bias = np.concatenate(r_bias)
+    median = float(np.median(r_bias))
+    minimum = float(minimum) if np.isfinite(minimum) else float('nan')
+    factor = float(np.exp(-median))
+    ok = abs(median) <= tolerance and not (minimum < -tolerance)
+
+    if ok:
+        lines = [f'{indent}Bias zero point: median recorded bias in {r!r} = '
+                 f'{median:+.3f} kT over {len(r_bias)} frames '
+                 f'(min over all frames {minimum:+.3f} kT)']
+    else:
+        body = (
+            f'the recorded bias is not zero where no bias was applied: its '
+            f'median over the {len(r_bias)} frames in {r!r} is {median:+.3f} kT '
+            f'(min over all frames {minimum:+.3f} kT). gamma = <exp(bias)> is '
+            f'absolute, so a constant offset c multiplies every gamma by exp(c): '
+            f'the bias-reweighted rates printed below are too '
+            f'{"fast" if median < 0 else "slow"} by a factor '
+            f'{max(factor, 1.0 / factor):.3f}. Subtract {median:+.3f} kT '
+            f'({-median:+.3f} to be added) inside params.bias_function - for a '
+            f'PLUMED OPES fill floored at -BARRIER this is exactly a wrong '
+            f'BARRIER in the shift - and then DELETE every *.bias.npy cache, '
+            f'because _cache_bias_files only rewrites a cache shorter than its '
+            f'trajectory and the ensemble would otherwise mix two zero points.')
+        wrapped = textwrap.wrap(body, width=78, break_on_hyphens=False)
+        lines = [f'{indent}*** WARNING: {wrapped[0]}']
+        lines += [f'{indent}***   {line}' for line in wrapped[1:]]
+
+    result = {'median': median, 'minimum': minimum, 'n_frames': len(r_bias),
+              'offset': median, 'factor': factor, 'ok': bool(ok),
+              'report': '\n'.join(lines)}
+    print(result['report'])
+    if not ok:
+        warnings.warn(
+            f'Bias zero point off by {median:+.3f} kT: every gamma, and every '
+            f'bias-reweighted rate, is wrong by a factor '
+            f'{max(factor, 1.0 / factor):.3f}. See the bias zero point report '
+            f'in the log.', UserWarning, stacklevel=2)
+    return result
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Non-equilibrium free-basin seeds
+# ════════════════════════════════════════════════════════════════════════════
+
+SEED_BOOST_FRACTION = 0.5
+"""Smallest realised/equilibrium acceleration accepted for one first passage.
+
+Per free trajectory, ``Γᵢ = Σ(L·γ)/Σ(L)`` over its in-basin blocks is the boost
+it actually got; ``Γ_eq`` is the frame-weighted pooled value over every free
+trajectory of that basin, i.e. what an equilibrated trajectory gets. A passage
+that escaped without ever sampling the basin's bias distribution has
+``Γᵢ/Γ_eq ≪ 1``. Measured: G4 calixarene 0.69-1.14 across 68 passages in three
+replicates; calixarene-G2 0.13-0.24 for the boundary-limited ones against
+1.05-1.28 for the equilibrated ones. 0.5 sits in an empty gap on both sides."""
+
+SEED_BOOST_MISS_THRESHOLD = 0.2
+"""Fraction of first passages that may fall below ``SEED_BOOST_FRACTION``.
+
+G4 control: 1 of 68 (1.5 %). G2-v2: 4 of 5 (80 %). G2-v3: 10 of 12 (83 %)."""
+
+SEED_MEMORYLESS_THRESHOLD = 0.35
+"""Smallest median/mean ratio of the reweighted first-passage times accepted.
+
+An exponential has median/mean = ln2 = 0.693; sampling noise at n ~ 30 keeps it
+roughly within 0.5-0.9. Values far below indicate a spike of near-zero passages
+on top of a few long ones, i.e. a start distribution that is not the basin's.
+Measured: G4 control 0.850, OPES flooding 0.779, G2-v2 0.023, G2-v3 0.068."""
+
+_FREE_PATH_RE = re.compile(
+    r'(?P<prefix>.*)free(?P<state>[^/]+)/(?P<traj>traj\d+)\.part\d+$')
+
+
+def _free_trajectory_key(path):
+    """Identify the free trajectory a split block came from.
+
+    Returns ``(key, state)`` where *key* uniquely names the free trajectory
+    (directory + ``traj??????``) and *state* is its target-state folder label, or
+    ``(None, None)`` for anything that is not a free-simulation part (shooting
+    chain paths, initial paths, in-memory paths).
+    """
+    fnames = getattr(path, '_fnames', None) or getattr(path, 'fnames', None)
+    if fnames is None:
+        return None, None
+    try:
+        fname = str(fnames[0])
+    except (IndexError, TypeError):
+        return None, None
+    match = _FREE_PATH_RE.match(os.path.splitext(fname)[0])
+    if match is None:
+        return None, None
+    state = match.group('state')
+    if len(state) != 1:
+        return None, None
+    return f"{match.group('prefix')}free{state}/{match.group('traj')}", state
+
+
+def _ks_exponential(times):
+    """One-sample KS distance of *times* from an exponential fitted to them.
+
+    Returns ``(D, D_crit)``. The rate is estimated from the sample, so the
+    textbook Kolmogorov p-value does not apply; *D_crit* is the approximate 5 %
+    Lilliefors critical value for the exponential with estimated mean,
+    ``1.094/sqrt(n)``. Both are nan for fewer than three finite times.
+    """
+    x = np.sort(np.asarray([t for t in times if np.isfinite(t)], dtype=float))
+    n = len(x)
+    if n < 3:
+        return float('nan'), float('nan')
+    mean = float(np.mean(x))
+    if not mean > 0.0:
+        return float('nan'), float('nan')
+    cdf = 1.0 - np.exp(-x / mean)
+    i = np.arange(1, n + 1, dtype=float)
+    d = max(float(np.max(i / n - cdf)), float(np.max(cdf - (i - 1) / n)))
+    return d, 1.094 / np.sqrt(n)
+
+
+def report_nonequilibrium_seeds(pathensemble, lengths, gammas, states='ARB',
+                                boost_fraction=SEED_BOOST_FRACTION,
+                                miss_threshold=SEED_BOOST_MISS_THRESHOLD,
+                                skew_threshold=SEED_MEMORYLESS_THRESHOLD,
+                                indent='    '):
+    """
+    Report whether the free first passages behind the rate started in equilibrium.
+
+    ``k = N / Σ(w·L·γ)`` is a mean-first-passage estimator, and it is the escape
+    rate from a state only if each first passage started from the equilibrium
+    distribution *inside* that state. AIMMD's free worker restarts every new free
+    trajectory from the frame the previous one escaped from, which sits on the
+    state boundary (see
+    :func:`aimmd.worker.utils.get_basin_frames_for_free_restart` and
+    ``params.free_restart_from_basin``). That is harmless when in-state
+    relaxation is fast compared with the escape time, and badly biased when it is
+    not: the observations pile up at short times, the mean is carried by the rare
+    trajectory that did settle into the basin, and the rate comes out too fast.
+
+    Two symptoms are checked, both computed from the numbers already in hand.
+
+    1. **Realised acceleration.** Per free trajectory, ``Γᵢ = Σ(L·γ)/Σ(L)`` over
+       its in-basin blocks is the boost it actually got; the frame-weighted pooled
+       value over all free trajectories of that basin, ``Γ_eq``, is the boost an
+       equilibrated trajectory gets. Reported is the fraction of completed first
+       passages with ``Γᵢ/Γ_eq`` below *boost_fraction*.
+
+       This is deliberately *not* a "did it reach the deep well" test on
+       ``max(bias)``. The fill is not monotonic in depth — for calixarene-G2 the
+       recorded bias peaks at 6.8 kT around d ≈ 0.42 nm and falls back to ~0 for
+       d < 0.27 nm, a region the frozen bias never filled — so a depth criterion
+       built on the deepest bias mis-ranks trajectories. ``Γᵢ/Γ_eq`` asks the
+       question the estimator actually cares about: was this passage's clock
+       boosted the way the basin's equilibrium clock is?
+
+    2. **Memorylessness.** The bias-reweighted durations of a Poisson escape
+       process are exponential: median/mean = ln 2 = 0.693, and the KS distance
+       from a fitted exponential is small. Reported are both, with the approximate
+       5 % Lilliefors critical value.
+
+    Parameters
+    ----------
+    pathensemble : PathEnsemble
+        The ensemble the rate was computed from.
+    lengths : numpy.ndarray
+        Counted frames per path (``pathensemble.n_frames``).
+    gammas : numpy.ndarray
+        Per-path bias corrections from :func:`compute_bias_corrections`.
+    states : str, optional
+        Three-character state string, e.g. ``'ARB'``.
+    boost_fraction, miss_threshold, skew_threshold : float, optional
+        See the module constants.
+    indent : str, default four spaces
+        Prefix for the printed lines.
+
+    Returns
+    -------
+    dict
+        Keyed by target-state label, each value a dict with ``n_passages``,
+        ``n_censored``, ``n_low_boost``, ``frac_low_boost``, ``boost_ratios``,
+        ``boost_equilibrium``, ``median_over_mean``, ``ks_distance``,
+        ``ks_critical``, ``times`` (reweighted first-passage durations in ``dt``)
+        and ``ok``. Also prints the report and raises a single ``UserWarning``
+        if any direction fails.
+
+    Notes
+    -----
+    - The durations are the free trajectories' own boosted clocks, ``Σ L·γ`` over
+      their blocks, deliberately *without* the reweighting weights: that keeps the
+      number defined for both directions at once and comparable between them.
+      Free trajectories are unmodified dynamics and enter ``Σ(w·L·γ)`` through the
+      same ``L·γ``, so a distortion of this distribution is a distortion of the
+      denominator.
+    - A trajectory still running (or cut at ``params.max_length``) has not
+      completed a first passage. Those are counted as ``n_censored`` and excluded
+      from both statistics; they are legitimate right-censored observations, and
+      excluding them makes the reported rate an *upper* bound.
+    - ``Γ_eq`` is estimated from the same trajectories, so it is only a valid
+      equilibrium reference once at least one of them has equilibrated. When none
+      has, the ratios all sit near 1 and the memorylessness statistic is the
+      backstop.
+    - Cost is one pass over the per-path arrays; no trajectory or cache file is
+      read.
+    """
+    r = states[1] if len(states) >= 2 else states[0]
+    ends = [s for s in states if s != r]
+
+    lengths = np.asarray(lengths, dtype=float)
+    gammas = np.asarray(gammas, dtype=float)
+
+    # group the split blocks back into free trajectories
+    groups = {}
+    for i, path in enumerate(pathensemble):
+        key, state = _free_trajectory_key(path)
+        if key is None or state not in ends:
+            continue
+        try:
+            path_type = path.type
+        except Exception:
+            continue
+        group = groups.setdefault(key, {'state': state, 'time': 0.0,
+                                        'boost_sum': 0.0, 'boost_n': 0.0,
+                                        'done': False})
+        group['time'] += lengths[i] * gammas[i]
+        if len(path_type) > 1 and path_type[1] == state:
+            group['boost_sum'] += lengths[i] * gammas[i]
+            group['boost_n'] += lengths[i]
+        if any(other in path_type[:3] for other in ends if other != state):
+            group['done'] = True
+
+    results = {}
+    lines = []
+    failed = []
+    for state in ends:
+        mine = [g for g in groups.values() if g['state'] == state]
+        if not mine:
+            continue
+        pooled_sum = sum(g['boost_sum'] for g in mine)
+        pooled_n = sum(g['boost_n'] for g in mine)
+        boost_eq = pooled_sum / pooled_n if pooled_n > 0 else float('nan')
+
+        done = [g for g in mine if g['done']]
+        times = np.array([g['time'] for g in done], dtype=float)
+        n_censored = len(mine) - len(done)
+
+        ratios = np.array(
+            [((g['boost_sum'] / g['boost_n']) / boost_eq)
+             if (g['boost_n'] > 0 and np.isfinite(boost_eq) and boost_eq > 0)
+             else 0.0
+             for g in done], dtype=float)
+        if len(ratios) and np.isfinite(boost_eq) and boost_eq > 1.0 + 1e-9:
+            low = int(np.count_nonzero(ratios < boost_fraction))
+            frac_low = low / len(ratios)
+        else:
+            # no fill at all (unbiased run): the ratio carries no information
+            low, frac_low = 0, float('nan')
+
+        finite = times[np.isfinite(times) & (times > 0)]
+        ratio = (float(np.median(finite) / np.mean(finite))
+                 if len(finite) else float('nan'))
+        ks, ks_crit = _ks_exponential(finite)
+
+        ok = True
+        if np.isfinite(frac_low) and frac_low > miss_threshold:
+            ok = False
+        if np.isfinite(ratio) and ratio < skew_threshold:
+            ok = False
+        if np.isfinite(ks) and np.isfinite(ks_crit) and ks > ks_crit:
+            ok = False
+
+        results[state] = {
+            'n_passages': len(done), 'n_censored': n_censored,
+            'n_low_boost': low, 'frac_low_boost': frac_low,
+            'boost_ratios': ratios, 'boost_equilibrium': boost_eq,
+            'median_over_mean': ratio, 'ks_distance': ks,
+            'ks_critical': ks_crit, 'times': finite, 'ok': bool(ok)}
+
+        others = '/'.join(o for o in ends if o != state)
+        lines.append(
+            f'{indent}Free {state}->{others} first passages: '
+            f'{len(done)} completed'
+            + (f' (+{n_censored} still open)' if n_censored else '')
+            + f'; {low} got under {boost_fraction:.0%} of the equilibrium '
+            f'boost <exp(bias)>_{state} = {boost_eq:.1f}'
+            + ('' if not np.isfinite(frac_low) else f' ({frac_low:.0%})')
+            + f'; median/mean {ratio:.3f} (0.693 if memoryless), KS D {ks:.3f}'
+            + ('' if not np.isfinite(ks_crit) else f' (5% crit {ks_crit:.3f})'))
+        if not ok:
+            failed.append(state)
+
+    if not results:
+        report = f'{indent}Free-basin seed check: no free first passages found'
+        print(report)
+        return results
+
+    if failed:
+        body = (
+            f'the free first passages in {", ".join(sorted(failed))} did not '
+            f'start from an equilibrated basin. k = N / sum(w*L*gamma) is a '
+            f'mean-first-passage estimator and only measures the escape rate if '
+            f'each passage starts from the equilibrium distribution INSIDE the '
+            f'state; a trajectory re-seeded at the state boundary escapes before '
+            f'it has sampled the basin, so it enters the denominator with almost '
+            f'none of the boosted dwell time it should carry and the rate is '
+            f'biased fast by roughly 1/(1 - fraction of low-boost passages). Set '
+            f'params.free_restart_from_basin to draw restarts from inside the '
+            f'basin, and treat these bias-reweighted rates as an upper bound '
+            f'until the low-boost fraction and median/mean recover.')
+        wrapped = textwrap.wrap(body, width=78, break_on_hyphens=False)
+        lines.append(f'{indent}*** WARNING: {wrapped[0]}')
+        lines += [f'{indent}***   {line}' for line in wrapped[1:]]
+
+    print('\n'.join(lines))
+    if failed:
+        warnings.warn(
+            f'Non-equilibrium free-basin seeds in {", ".join(sorted(failed))}: '
+            f'the bias-reweighted rate is an upper bound. See the free-basin '
+            f'seed report in the log.', UserWarning, stacklevel=2)
+    return results
+
 def bias_reweighted_rates(pathensemble, weights1, weights2, lengths=None,
                           states='ARB', reactive_threshold=0.5,
                           coverage_threshold=BIAS_CACHE_COVERAGE_THRESHOLD,
+                          zero_point_tolerance=BIAS_ZERO_POINT_TOLERANCE,
+                          seed_diagnostics=True,
                           windows=None, trim_margins=True, label=''):
     """
     Run the whole Tiwary-Parrinello reweighting step and report both rates.
@@ -678,6 +1104,13 @@ def bias_reweighted_rates(pathensemble, weights1, weights2, lengths=None,
     trainer, and the two kinetics-convergence scans), which is how the frame-set
     mismatch between ``L`` and ``γ`` could be fixed in one place and survive in
     three.
+
+    Being the single implementation, it is also where the always-on validity
+    checks live: :func:`check_reactive_bias`, :func:`check_bias_zero_point`, the
+    bias-cache coverage report inside :func:`compute_bias_corrections`, and
+    :func:`report_nonequilibrium_seeds`. A rate that fails any of them is still
+    printed — nothing is silently withheld — but the log then says what is wrong
+    with it, and for a bias zero-point offset it also prints the corrected value.
 
     Parameters
     ----------
@@ -697,6 +1130,11 @@ def bias_reweighted_rates(pathensemble, weights1, weights2, lengths=None,
         Passed to :func:`check_reactive_bias`.
     coverage_threshold : float, optional
         Passed to :func:`compute_bias_corrections`.
+    zero_point_tolerance : float, optional
+        Passed to :func:`check_bias_zero_point`.
+    seed_diagnostics : bool, optional
+        Run :func:`report_nonequilibrium_seeds` (default True). It reads no
+        files, so there is little reason to switch it off.
     windows, trim_margins
         Passed to :func:`counted_frame_windows`.
     label : str, optional
@@ -736,6 +1174,8 @@ def bias_reweighted_rates(pathensemble, weights1, weights2, lengths=None,
                 UserWarning, stacklevel=2)
 
     check_reactive_bias(pathensemble, states, reactive_threshold)
+    zero_point = check_bias_zero_point(pathensemble, states,
+                                       tolerance=zero_point_tolerance)
     gamma1 = compute_bias_corrections(
         pathensemble, weights1, lengths=lengths,
         threshold=coverage_threshold,
@@ -752,4 +1192,25 @@ def bias_reweighted_rates(pathensemble, weights1, weights2, lengths=None,
     k21_rw = 1.0 / denominator2 if denominator2 else float('nan')
     print(f'    {label}k12 bias-reweighted: {k12_rw:.3e} [1/dt]')
     print(f'    {label}k21 bias-reweighted: {k21_rw:.3e} [1/dt]')
+
+    # A constant zero-point offset c scales every gamma by exp(c), hence the
+    # rate by exp(-c) exactly. Print the corrected value so the log carries a
+    # usable number without anyone editing params.bias_function mid-run.
+    if not zero_point['ok'] and np.isfinite(zero_point['factor']):
+        scale = zero_point['factor']
+        print(f'    {label}k12 zero-point corrected '
+              f'(offset {zero_point["offset"]:+.3f} kT): '
+              f'{k12_rw / scale:.3e} [1/dt]')
+        print(f'    {label}k21 zero-point corrected '
+              f'(offset {zero_point["offset"]:+.3f} kT): '
+              f'{k21_rw / scale:.3e} [1/dt]')
+
+    if seed_diagnostics:
+        # gamma is only filled where the direction's weight is non-zero, so
+        # merge the two directions: a free A->B trajectory is weighted in one of
+        # them, a free B->A trajectory in the other.
+        gammas = np.where(np.asarray(weights1, dtype=float) != 0.0,
+                          gamma1, gamma2)
+        report_nonequilibrium_seeds(pathensemble, lengths, gammas,
+                                    states=states)
     return k12_rw, k21_rw, gamma1, gamma2
