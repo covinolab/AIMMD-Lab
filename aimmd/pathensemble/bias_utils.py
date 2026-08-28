@@ -11,8 +11,12 @@ This module provides four public functions used by the AIMMD training worker whe
   the reactive region R, which is required for the reweighting formula to be valid.
 
 - :func:`compute_bias_corrections` — computes the per-path bias correction factor
-  ``γᵢ = ⟨exp(bias)⟩_path_i`` used to recover unbiased kinetics from a biased path
+  ``γᵢ = ⟨exp(bias)⟩`` used to recover unbiased kinetics from a biased path
   ensemble, and reports how much of the ensemble it could actually correct.
+
+- :func:`bias_reweighted_rates` — the whole reweighted-rate step in one call
+  (reactive-bias check, γ, and ``k = 1/Σ(w·L·γ)`` in both directions), so the
+  four call sites in :mod:`aimmd.worker._train` cannot drift apart.
 
 - :func:`format_bias_cache_coverage` — renders that coverage diagnostic for the
   training log.
@@ -35,13 +39,27 @@ Bias-reweighted rate correction
 --------------------------------
 For each path ``i``::
 
-    γᵢ = mean(exp(path.bias))   over all frames of path i
+    γᵢ = mean(exp(path.bias))   over the Lᵢ frames the ensemble counts
 
 The corrected rate estimate is::
 
     k₁₂_unbiased = 1 / Σᵢ(wᵢ · Lᵢ · γᵢ)
 
-where ``wᵢ`` are the existing RFPS/TPS weights and ``Lᵢ`` is the path length in frames.
+where ``wᵢ`` are the existing RFPS/TPS weights and ``Lᵢ`` is the counted path
+length in frames, i.e. :attr:`~aimmd.pathensemble.PathEnsemble.n_frames`.
+
+The frame set matters. ``Lᵢ`` is *not* ``len(path)``: `Path.split` produces blocks
+that overlap by two frames, and the ensemble drops each block's boundary frames so
+that the blocks of one trajectory partition it. ``Lᵢ · γᵢ`` is meant to be the
+boosted (unbiased) residence time of those ``Lᵢ`` frames, i.e.
+``Σ_{counted frames} exp(bias)``. Averaging ``exp(bias)`` over the *whole* block
+while multiplying by the *trimmed* count is that sum for no frame set at all: a
+boundary frame of an in-state dwell block sits in the bias-free reactive region and
+contributes ``exp(0) = 1``, so it dilutes ``γ`` and shortens the reweighted dwell
+time — one-signed toward faster rates, and worst for short blocks, where the two
+margin frames are most of the block. ``γᵢ`` is therefore averaged over exactly the
+window :attr:`~aimmd.pathensemble.PathEnsemble.frame_windows` reports, which is the
+same window ``Lᵢ`` counts by construction.
 
 Because the bias is negligible in R (verified by :func:`check_reactive_bias`),
 ``exp(bias) ≈ 1`` for R frames and the correction mainly comes from A/B frames::
@@ -345,20 +363,66 @@ def derive_bias_from_cumulative_colvar(fname, trajectory_extension,
     return np.asarray(result, dtype=float)
 
 
+def counted_frame_windows(pathensemble, windows=None, trim_margins=True):
+    """
+    Resolve the per-path frame window that the rate estimate counts.
+
+    Parameters
+    ----------
+    pathensemble : PathEnsemble
+        Ensemble to inspect.
+    windows : (array, array) or None, optional
+        Pre-computed ``(start, stop)`` arrays; returned unchanged (as int
+        arrays) when given.
+    trim_margins : bool, default True
+        When False, returns None: ``γ`` then averages over whole paths, which is
+        the pre-fix behaviour and is kept only to reproduce old numbers.
+
+    Returns
+    -------
+    (numpy.ndarray, numpy.ndarray) or None
+        The half-open windows, or None when whole paths should be used.
+
+    Notes
+    -----
+    Returns None (whole paths) when *pathensemble* does not expose
+    :attr:`~aimmd.pathensemble.PathEnsemble.frame_windows` — e.g. a plain list of
+    paths, or a test double. That keeps the function total, but a real
+    ``PathEnsemble`` always supplies windows.
+    """
+    if not trim_margins:
+        return None
+    if windows is not None:
+        starts, stops = windows
+        return (np.asarray(starts, dtype=int), np.asarray(stops, dtype=int))
+    try:
+        starts, stops = pathensemble.frame_windows
+    except Exception:
+        return None
+    return (np.asarray(starts, dtype=int), np.asarray(stops, dtype=int))
+
+
 def compute_bias_corrections(pathensemble, weights, lengths=None,
                              check=True,
                              threshold=BIAS_CACHE_COVERAGE_THRESHOLD,
-                             return_coverage=False):
+                             return_coverage=False,
+                             windows=None, trim_margins=True):
     """
     Compute per-path bias correction factors.
 
     For each path ``i``, computes::
 
-        γᵢ = mean(exp(bias_i))
+        γᵢ = mean(exp(bias_i))   over the frames the ensemble counts
 
     where ``bias_i`` is the per-frame bias in kT units loaded from the
     ``path.bias`` cache (``<traj>.bias.npy``). Paths with missing bias data
     fall back to ``γᵢ = 1.0`` (no correction).
+
+    The average runs over :func:`counted_frame_windows`, i.e. over exactly the
+    ``Lᵢ = `` :attr:`~aimmd.pathensemble.PathEnsemble.n_frames` frames that the
+    rate estimate multiplies ``γᵢ`` by, so that ``Lᵢ · γᵢ`` is
+    ``Σ_{counted frames} exp(bias)``. See the module docstring for why the
+    difference is one-signed toward faster rates.
 
     Parameters
     ----------
@@ -382,6 +446,13 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
     return_coverage : bool, default False
         If True, also return the bias-cache coverage diagnostic (see below).
         Defaults to False so existing callers keep receiving a bare array.
+    windows : (array, array) or None, optional
+        Pre-computed ``(start, stop)`` frame windows, one entry per path. When
+        omitted they are taken from ``pathensemble.frame_windows``.
+    trim_margins : bool, default True
+        When False, ``γ`` averages over whole paths — the pre-fix behaviour.
+        Kept only to reproduce numbers from before this fix; it makes
+        ``Lᵢ · γᵢ`` inconsistent with ``Lᵢ``.
 
     Returns
     -------
@@ -416,7 +487,9 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
 
     Notes
     -----
-    - The corrected rate is ``k = 1 / Σ(w · L · γ)`` where ``L`` is path length.
+    - The corrected rate is ``k = 1 / Σ(w · L · γ)`` where ``L`` is the counted
+      path length ``pathensemble.n_frames`` and ``γ`` averages ``exp(bias)`` over
+      those same frames.
     - For unbiased paths (bias ≈ 0 everywhere), ``exp(0) = 1`` so ``γ = 1`` and
       the formula reduces exactly to the standard AIMMD estimator.
     - Unless ``check=False``, the coverage is printed on every call, and a single
@@ -430,6 +503,7 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
       inflates the rate by ``≈ 1 / (1 - f)``, hence ``max_inflation``.
     """
     gammas = np.ones(len(pathensemble))
+    windows = counted_frame_windows(pathensemble, windows, trim_margins)
 
     n_weighted = 0
     n_missing = 0
@@ -466,13 +540,26 @@ def compute_bias_corrections(pathensemble, weights, lengths=None,
             missing_files.add(_path_label(path))
             continue
 
-        # γᵢ = mean(exp(bias)) over all frames of this path.
+        # γᵢ = mean(exp(bias)) over the frames this path contributes to the
+        # rate, i.e. the window `n_frames` counts — not the whole path. The two
+        # differ by the boundary frames `Path.split` leaves on each block; those
+        # sit in the neighbouring state, carry ~zero bias, and would dilute γ
+        # while not being counted in L.
         # `Path._get('bias')` zero-pads to the path length (path/_get.py:167,205
         # -> core/utils.extend_array), so a cache shorter than the path already
         # contributes exp(0) = 1 for its tail — no separate frame weighting is
         # needed, and a short cache is indistinguishable from a full one here.
         # Coverage below therefore detects *absent* caches, not short ones.
-        gammas[i] = float(np.mean(np.exp(bias)))
+        if windows is not None:
+            start, stop = int(windows[0][i]), int(windows[1][i])
+            counted = bias[start:stop]
+        else:
+            counted = bias
+        if len(counted) == 0:
+            # nothing counted -> w * L * γ is 0 whatever γ is
+            gammas[i] = 1.0
+            continue
+        gammas[i] = float(np.mean(np.exp(counted)))
 
     frac_weighted = (length_missing / length_total) if length_total > 0 else 0.0
     coverage = {
@@ -576,3 +663,93 @@ def format_bias_cache_coverage(coverage,
         suffix = f' (+{more} more files)' if more > 0 else ''
         lines.append(f'{indent}***   uncovered: {shown}{suffix}')
     return '\n'.join(lines)
+
+
+def bias_reweighted_rates(pathensemble, weights1, weights2, lengths=None,
+                          states='ARB', reactive_threshold=0.5,
+                          coverage_threshold=BIAS_CACHE_COVERAGE_THRESHOLD,
+                          windows=None, trim_margins=True, label=''):
+    """
+    Run the whole Tiwary-Parrinello reweighting step and report both rates.
+
+    This is the single implementation of the bias-reweighted rate estimate. It
+    exists because the same six lines used to be written out at four places in
+    :mod:`aimmd.worker._train` (the single-system trainer, the multi-system
+    trainer, and the two kinetics-convergence scans), which is how the frame-set
+    mismatch between ``L`` and ``γ`` could be fixed in one place and survive in
+    three.
+
+    Parameters
+    ----------
+    pathensemble : PathEnsemble
+        The ensemble whose rates are wanted. Bias caches must already be in
+        place (``Worker._cache_bias_files`` in file mode).
+    weights1, weights2 : numpy.ndarray
+        Reweighting weights for ``states`` and for ``states[::-1]``.
+    lengths : numpy.ndarray, optional
+        Counted frames per path. Defaults to
+        :attr:`~aimmd.pathensemble.PathEnsemble.n_frames`, which is what the
+        estimator is defined with. A caller-supplied array that disagrees with
+        the frame windows is reported, because then ``L · γ`` is not a frame sum.
+    states : str, optional
+        Three-character state string, e.g. ``'ARB'``.
+    reactive_threshold : float, optional
+        Passed to :func:`check_reactive_bias`.
+    coverage_threshold : float, optional
+        Passed to :func:`compute_bias_corrections`.
+    windows, trim_margins
+        Passed to :func:`counted_frame_windows`.
+    label : str, optional
+        Prefix for the printed lines, e.g. ``"[system 'G2'] "`` in a
+        multi-system run. Kept so the log format is unchanged.
+
+    Returns
+    -------
+    k12_rw : float
+        ``1 / Σ(w1 · L · γ1)`` in ``[1/dt]``, or nan if the sum is zero.
+    k21_rw : float
+        The same for the reverse direction.
+    gamma1, gamma2 : numpy.ndarray
+        The per-path correction factors, for callers that want to inspect them.
+    """
+    # the flushing print, as used by the trainer these lines moved out of
+    from .._config import print
+
+    windows = counted_frame_windows(pathensemble, windows, trim_margins)
+    if lengths is None:
+        if windows is not None:
+            lengths = windows[1] - windows[0]
+        else:
+            lengths = np.array([len(path) for path in pathensemble])
+    lengths = np.asarray(lengths)
+    if windows is not None:
+        counted = windows[1] - windows[0]
+        if len(counted) == len(lengths) and not np.array_equal(counted,
+                                                              lengths):
+            warnings.warn(
+                f'{label}the supplied path lengths differ from the counted '
+                f'frame windows for '
+                f'{int(np.count_nonzero(counted != lengths))} of '
+                f'{len(lengths)} paths, so L * gamma is not a sum of exp(bias) '
+                f'over any single frame set. Pass lengths=pathensemble.n_frames '
+                f'(the default) to keep the estimator consistent.',
+                UserWarning, stacklevel=2)
+
+    check_reactive_bias(pathensemble, states, reactive_threshold)
+    gamma1 = compute_bias_corrections(
+        pathensemble, weights1, lengths=lengths,
+        threshold=coverage_threshold,
+        windows=windows, trim_margins=trim_margins)
+    # the coverage report is identical for both directions: print it once
+    gamma2 = compute_bias_corrections(
+        pathensemble, weights2, lengths=lengths, check=False,
+        threshold=coverage_threshold,
+        windows=windows, trim_margins=trim_margins)
+
+    denominator1 = float(np.sum(weights1 * lengths * gamma1))
+    denominator2 = float(np.sum(weights2 * lengths * gamma2))
+    k12_rw = 1.0 / denominator1 if denominator1 else float('nan')
+    k21_rw = 1.0 / denominator2 if denominator2 else float('nan')
+    print(f'    {label}k12 bias-reweighted: {k12_rw:.3e} [1/dt]')
+    print(f'    {label}k21 bias-reweighted: {k21_rw:.3e} [1/dt]')
+    return k12_rw, k21_rw, gamma1, gamma2

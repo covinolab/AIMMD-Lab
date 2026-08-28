@@ -415,39 +415,62 @@ class PathEnsembleProperties(ABC):
         return np.array([len(path) for path in self._paths])
 
     @property
+    def frame_windows(self):
+        """
+        Per-path half-open window of the frames this ensemble counts.
+
+        `Path.split` produces blocks that overlap their neighbours by two
+        frames, so the ensemble drops each block's boundary frames to obtain a
+        partition of the trajectory: summing :attr:`n_frames` over the blocks of
+        one trajectory counts every frame exactly once.
+
+        This property exposes *which* frames those are, not just how many, so
+        that any per-frame quantity summed alongside :attr:`n_frames` (notably
+        the Tiwary-Parrinello factor ``γ = ⟨exp(bias)⟩`` in
+        :mod:`aimmd.pathensemble.bias_utils`) can be averaged over exactly the
+        same frames. :attr:`n_frames` is defined as ``stop - start`` here, so the
+        two can never disagree.
+
+        For a path of length <= 1 the whole path is counted. For longer paths the
+        window depends on the Path state triplet ``path.type``:
+
+        - if ``states[0] != states[1]`` the first frame is an end-state boundary
+          and is excluded,
+        - if ``states[1] != states[2]`` the last frame is an end-state boundary
+          and is excluded.
+
+        Returns
+        -------
+        (numpy.ndarray, numpy.ndarray)
+            Integer arrays ``(start, stop)``, one entry per path.
+        """
+        starts = []
+        stops = []
+        for path in self._paths:
+            length = len(path)
+            start, stop = 0, length
+            if length > 1:
+                states = path.type
+                if states[0] != states[1]:
+                    start += 1
+                if states[1] != states[2]:
+                    stop -= 1
+            starts.append(start)
+            stops.append(stop)
+        return (np.array(starts, dtype=int), np.array(stops, dtype=int))
+
+    @property
     def n_frames(self):
         """
         Effective number of frames per path, excluding boundary-state frames.
 
-        This property corrects the stored length of each path by removing
-        boundary frames that correspond to end states, matching the ensemble
-        convention used elsewhere in AIMMD.
-
-        For a path of length <= 1, the stored length is returned unchanged.
-
-        For longer paths, the correction depends on the Path state triplet
-        ``path.type``:
-
-        - If ``states[0] != states[1]`` then the first frame is treated as an
-          end-state boundary and is excluded from the effective count.
-        - If ``states[1] != states[2]`` then the last frame is treated as an
-          end-state boundary and is excluded from the effective count.
+        Defined as ``stop - start`` of :attr:`frame_windows`; see there for the
+        convention and for why the window itself matters.
 
         Returns
         -------
         numpy.ndarray
             Integer array of effective frame counts.
         """
-        n_frames = []
-        for path in self._paths:
-            length = len(path)
-            if length <= 1:
-                n_frames.append(length)
-            else:
-                states = path.type
-                if states[0] != states[1]:
-                    length -= 1
-                if states[1] != states[2]:
-                    length -= 1
-                n_frames.append(length)
-        return np.array(n_frames, dtype=int)
+        starts, stops = self.frame_windows
+        return np.array(stops - starts, dtype=int)

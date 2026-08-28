@@ -560,21 +560,10 @@ class WorkerTrain(ABC):
                 # truncated slice and drag gamma toward 1.0.
                 if bias_source == 'file' and bias_function is not None:
                     self._cache_bias_files(eval_pe, bias_function)
-                from ..pathensemble.bias_utils import (
-                    check_reactive_bias, compute_bias_corrections)
-                check_reactive_bias(
-                    eval_pe, states, bias_reactive_threshold)
-                # compute_bias_corrections reports its own bias-cache coverage;
-                # check=False on the second call avoids repeating it.
-                gamma1 = compute_bias_corrections(eval_pe, w1, lengths=lengths)
-                gamma2 = compute_bias_corrections(eval_pe, w2, lengths=lengths,
-                                                  check=False)
-                k12_rw = np.sum(w1 * lengths * gamma1)
-                k12_rw = 1 / k12_rw if k12_rw else nan
-                k21_rw = np.sum(w2 * lengths * gamma2)
-                k21_rw = 1 / k21_rw if k21_rw else nan
-                print(f'    k12 bias-reweighted: {k12_rw:.3e} [1/dt]')
-                print(f'    k21 bias-reweighted: {k21_rw:.3e} [1/dt]')
+                from ..pathensemble.bias_utils import bias_reweighted_rates
+                k12_rw, k21_rw, gamma1, gamma2 = bias_reweighted_rates(
+                    eval_pe, w1, w2, lengths=lengths, states=states,
+                    reactive_threshold=bias_reactive_threshold)
 
             # only after one training round: rescale committor
             # TODO in the future you may want to adjust it
@@ -926,23 +915,12 @@ class WorkerTrain(ABC):
                     if bias_source == 'file' and bias_function is not None:
                         self._cache_bias_files(pe, bias_function, system_id=sid)
                     from ..pathensemble.bias_utils import (
-                        check_reactive_bias, compute_bias_corrections)
-                    check_reactive_bias(
-                        pe, states,
-                        params.bias_reactive_threshold_of(sid))
-                    gamma1 = compute_bias_corrections(pe, w1,
-                                                      lengths=frame_lengths)
-                    gamma2 = compute_bias_corrections(pe, w2,
-                                                      lengths=frame_lengths,
-                                                      check=False)
-                    k12_rw = np.sum(w1 * frame_lengths * gamma1)
-                    k12_rw = 1 / k12_rw if k12_rw else nan
-                    k21_rw = np.sum(w2 * frame_lengths * gamma2)
-                    k21_rw = 1 / k21_rw if k21_rw else nan
-                    print(f'    [system {sid!r}] k12 bias-reweighted: '
-                          f'{k12_rw:.3e} [1/dt]')
-                    print(f'    [system {sid!r}] k21 bias-reweighted: '
-                          f'{k21_rw:.3e} [1/dt]')
+                        bias_reweighted_rates)
+                    k12_rw, k21_rw, gamma1, gamma2 = bias_reweighted_rates(
+                        pe, w1, w2, lengths=frame_lengths, states=states,
+                        reactive_threshold=(
+                            params.bias_reactive_threshold_of(sid)),
+                        label=f'[system {sid!r}] ')
 
                 # densities/bins drive adaptive shooting-point selection; only
                 # meaningful when there are adaptive bins (nbins > 0). The
@@ -1327,20 +1305,10 @@ class WorkerTrain(ABC):
             # Bias-reweighted rates (Tiwary-Parrinello) — only when record_bias
             # is enabled. Same formula as `_train` at L480-L500.
             if record_bias:
-                from ..pathensemble.bias_utils import (
-                    check_reactive_bias, compute_bias_corrections)
-                check_reactive_bias(
-                    pathensemble, states, bias_reactive_threshold)
-                gamma1 = compute_bias_corrections(pathensemble, w1,
-                                                  lengths=lengths)
-                gamma2 = compute_bias_corrections(pathensemble, w2,
-                                                  lengths=lengths, check=False)
-                k12_rw = np.sum(w1 * lengths * gamma1)
-                k12_rw = 1 / k12_rw if k12_rw else nan
-                k21_rw = np.sum(w2 * lengths * gamma2)
-                k21_rw = 1 / k21_rw if k21_rw else nan
-                print(f'    k12 bias-reweighted: {k12_rw:.3e} [1/dt]')
-                print(f'    k21 bias-reweighted: {k21_rw:.3e} [1/dt]')
+                from ..pathensemble.bias_utils import bias_reweighted_rates
+                k12_rw, k21_rw, gamma1, gamma2 = bias_reweighted_rates(
+                    pathensemble, w1, w2, lengths=lengths, states=states,
+                    reactive_threshold=bias_reactive_threshold)
                 results['k12_rw'][i] = k12_rw
                 results['k21_rw'][i] = k21_rw
 
@@ -1548,18 +1516,14 @@ class WorkerTrain(ABC):
                     if bias_source == 'file' and bias_function is not None:
                         self._cache_bias_files(pe, bias_function, system_id=sid)
                     from ..pathensemble.bias_utils import (
-                        check_reactive_bias, compute_bias_corrections)
-                    check_reactive_bias(
-                        pe, states, params.bias_reactive_threshold_of(sid))
-                    gamma1 = compute_bias_corrections(pe, w1,
-                                                      lengths=frame_lengths)
-                    gamma2 = compute_bias_corrections(pe, w2,
-                                                      lengths=frame_lengths,
-                                                      check=False)
-                    k12_rw = np.sum(w1 * frame_lengths * gamma1)
-                    results['k12_rw'][row] = 1 / k12_rw if k12_rw else nan
-                    k21_rw = np.sum(w2 * frame_lengths * gamma2)
-                    results['k21_rw'][row] = 1 / k21_rw if k21_rw else nan
+                        bias_reweighted_rates)
+                    k12_rw, k21_rw, gamma1, gamma2 = bias_reweighted_rates(
+                        pe, w1, w2, lengths=frame_lengths, states=states,
+                        reactive_threshold=(
+                            params.bias_reactive_threshold_of(sid)),
+                        label=f'[system {sid!r}] ')
+                    results['k12_rw'][row] = k12_rw
+                    results['k21_rw'][row] = k21_rw
                 for fname in set(pe.fnames):
                     kcv_fname = get_cache_fname(fname, 'kcv')
                     NPY_CACHE.remove(kcv_fname)

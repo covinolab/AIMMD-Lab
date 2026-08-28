@@ -54,7 +54,15 @@ test_cache_bias_files_falls_back_to_out_of_cache   — trainer wiring
 Gamma over a path's bias array
 test_a_short_bias_cache_needs_no_special_handling  — _get pads, so one branch suffices
 test_gamma_unchanged_when_bias_covers_the_whole_path — regression
-test_gamma_unchanged_when_bias_longer_than_margin_excluded_length — regression
+
+L and gamma must count the same frames
+test_frame_windows_reproduce_n_frames        — n_frames is stop - start, by definition
+test_gamma_averages_only_the_counted_frames  — margins excluded from L are excluded from γ
+test_margin_frames_used_to_dilute_gamma      — the defect this fixes, quantified
+test_trim_margins_false_reproduces_old_numbers — escape hatch for old runs
+test_windows_fall_back_to_whole_paths        — objects without frame_windows still work
+test_reweighted_rates_are_a_frame_sum        — Σ(w·L·γ) == Σ(w·Σexp(bias))
+test_reweighted_rates_flag_inconsistent_lengths — caller-supplied L that is not the window
 """
 
 import os
@@ -856,21 +864,147 @@ def test_gamma_unchanged_when_bias_covers_the_whole_path():
     assert cov['frac_weighted_length'] == pytest.approx(0.0)
 
 
-def test_gamma_unchanged_when_bias_longer_than_margin_excluded_length():
-    """`pe.n_frames` excludes boundary frames, so len(bias) > L is normal.
+# ════════════════════════════════════════════════════════════════════════════
+# L and gamma must count the same frames
+#
+# `PathEnsemble.n_frames` drops the boundary frames that `Path.split` leaves on
+# each block, so that the blocks of one trajectory partition it. `L * gamma` is
+# meant to be the boosted residence time of those L frames, i.e.
+# sum_{counted} exp(bias). Averaging exp(bias) over the whole block instead
+# makes `L * gamma` a sum over no frame set at all, and because the dropped
+# frames sit in the bias-free reactive region it is one-signed: gamma is diluted
+# toward 1, the reweighted dwell time shrinks, and the rate comes out too fast.
+# The effect is largest for short blocks, where the two margins are most of the
+# block — i.e. exactly the in-basin dwell segments of a fast-escaping run.
+#
+# An earlier revision of this file asserted the opposite ("reinterpreting it
+# would change every existing biased run's numbers"). It would, and it should:
+# the old numbers were not a sum of exp(bias) over any frame set. Use
+# `trim_margins=False` to reproduce them.
+# ════════════════════════════════════════════════════════════════════════════
 
-    In that case γ must stay the mean over the whole path exactly as before —
-    reinterpreting it would change every existing biased run's numbers.
-    """
+class MockWindowedEnsemble(MockPathEnsemble):
+    """MockPathEnsemble that also exposes `frame_windows`, as PathEnsemble does."""
+
+    def __init__(self, paths, windows):
+        super().__init__(paths)
+        starts, stops = zip(*windows)
+        self.frame_windows = (np.array(starts, dtype=int),
+                              np.array(stops, dtype=int))
+
+
+class TypedPath:
+    """Stub with just what `PathEnsemble.frame_windows` reads."""
+
+    def __init__(self, length, type_):
+        self._length = length
+        self.type = type_
+
+    def __len__(self):
+        return self._length
+
+
+def test_frame_windows_reproduce_n_frames():
+    """`n_frames` must be exactly `stop - start`, for every block shape."""
+    from aimmd.pathensemble import PathEnsemble
+
+    pe = PathEnsemble()
+    # `path.type` is (first, middle, last, shooting)
+    pe._paths = [TypedPath(1, 'AAAA'),      # single frame: whole path
+                 TypedPath(4, 'AARA'),      # trailing boundary only
+                 TypedPath(4, 'RARA'),      # both boundaries: an A dwell
+                 TypedPath(5, 'ARBR'),      # a transition block
+                 TypedPath(6, 'AAAA')]      # no boundary at all
+    starts, stops = pe.frame_windows
+    np.testing.assert_array_equal(stops - starts, pe.n_frames)
+    np.testing.assert_array_equal(pe.n_frames, [1, 3, 2, 3, 6])
+
+
+def test_gamma_averages_only_the_counted_frames():
+    """γ must be the mean over the window, not over the whole block."""
+    from aimmd.pathensemble.bias_utils import compute_bias_corrections
+
+    # 'RAAR': two bias-free margins around a two-frame in-state dwell
+    bias = [0.0, 6.0, 6.0, 0.0]
+    pe = MockWindowedEnsemble([MockPath(list('RAAR'), bias)], [(1, 3)])
+    gammas = compute_bias_corrections(pe, np.ones(1), lengths=np.array([2]))
+    np.testing.assert_allclose(gammas[0], np.exp(6.0), rtol=1e-9)
+
+
+def test_margin_frames_used_to_dilute_gamma():
+    """Quantify the defect: L*γ was 0.5x the frame sum for a 2-frame dwell."""
+    from aimmd.pathensemble.bias_utils import compute_bias_corrections
+
+    bias = np.array([0.0, 6.0, 6.0, 0.0])
+    paths = [MockPath(list('RAAR'), bias)]
+    exact = float(np.sum(np.exp(bias[1:3])))          # what L*γ should be
+
+    fixed = compute_bias_corrections(
+        MockWindowedEnsemble(paths, [(1, 3)]), np.ones(1),
+        lengths=np.array([2]))[0] * 2
+    old = compute_bias_corrections(
+        MockWindowedEnsemble(paths, [(1, 3)]), np.ones(1),
+        lengths=np.array([2]), trim_margins=False)[0] * 2
+
+    np.testing.assert_allclose(fixed, exact, rtol=1e-9)
+    assert old / exact == pytest.approx(
+        (2 * (1.0 + np.exp(6.0)) / 4) / np.exp(6.0), rel=1e-9)
+    assert old < exact, 'the old convention shortened the dwell time'
+
+
+def test_trim_margins_false_reproduces_old_numbers():
+    """The escape hatch must give back the pre-fix γ, bit for bit."""
     from aimmd.pathensemble.bias_utils import compute_bias_corrections
 
     bias = list(np.linspace(0.0, 2.0, 10))
-    pe = MockPathEnsemble([MockPath(list('A' * 10), bias)])
-    gammas, cov = compute_bias_corrections(
-        pe, np.ones(1), lengths=np.array([8]), return_coverage=True)
-
+    pe = MockWindowedEnsemble([MockPath(list('A' * 10), bias)], [(1, 9)])
+    gammas = compute_bias_corrections(
+        pe, np.ones(1), lengths=np.array([8]), trim_margins=False)
     np.testing.assert_allclose(gammas[0], np.mean(np.exp(bias)), rtol=1e-9)
-    assert cov['frac_weighted_length'] == pytest.approx(0.0)
+
+
+def test_windows_fall_back_to_whole_paths():
+    """An object with no `frame_windows` keeps working (γ over whole paths)."""
+    from aimmd.pathensemble.bias_utils import (compute_bias_corrections,
+                                               counted_frame_windows)
+
+    bias = [0.0, 6.0, 6.0, 0.0]
+    pe = MockPathEnsemble([MockPath(list('RAAR'), bias)])
+    assert counted_frame_windows(pe) is None
+    gammas = compute_bias_corrections(pe, np.ones(1), lengths=np.array([2]))
+    np.testing.assert_allclose(gammas[0], np.mean(np.exp(bias)), rtol=1e-9)
+
+
+def test_reweighted_rates_are_a_frame_sum():
+    """1/k must equal Σ_paths w · Σ_{counted frames} exp(bias), exactly."""
+    from aimmd.pathensemble.bias_utils import bias_reweighted_rates
+
+    bias_a = np.array([0.0, 6.0, 6.0, 6.0, 0.0])
+    bias_b = np.array([0.0, 0.0, 0.0])
+    paths = [MockPath(list('RAAAR'), bias_a), MockPath(list('ARB'), bias_b)]
+    windows = [(1, 4), (1, 2)]
+    pe = MockWindowedEnsemble(paths, windows)
+    w1 = np.array([1.0, 2.0])
+    lengths = np.array([3, 1])
+
+    k12, k21, gamma1, gamma2 = bias_reweighted_rates(
+        pe, w1, w1, lengths=lengths, states='ARB')
+
+    expected = (1.0 * np.sum(np.exp(bias_a[1:4]))
+                + 2.0 * np.sum(np.exp(bias_b[1:2])))
+    np.testing.assert_allclose(1.0 / k12, expected, rtol=1e-9)
+    np.testing.assert_allclose(k21, k12, rtol=1e-9)
+
+
+def test_reweighted_rates_flag_inconsistent_lengths():
+    """A caller-supplied L that is not the window is a silent estimator bug."""
+    from aimmd.pathensemble.bias_utils import bias_reweighted_rates
+
+    pe = MockWindowedEnsemble(
+        [MockPath(list('RAAR'), [0.0, 6.0, 6.0, 0.0])], [(1, 3)])
+    with pytest.warns(UserWarning, match='counted frame windows'):
+        bias_reweighted_rates(pe, np.ones(1), np.ones(1),
+                              lengths=np.array([4]), states='ARB')
 
 
 # ════════════════════════════════════════════════════════════════════════════
