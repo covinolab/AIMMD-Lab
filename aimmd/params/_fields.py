@@ -429,6 +429,73 @@ Accepted elements include:
 their target state."""
                  })
 
+    free_restart_from_basin: str = field(
+        default='',
+        metadata={'description':
+"""Restart free simulations from an in-basin frame instead of the boundary
+crossing, for selected states.
+
+Default `''` reproduces the historical behaviour exactly: every new free
+trajectory is seeded from the LAST frame the previous free trajectory spent in
+the target state, i.e. the configuration from which it escaped. That frame sits
+on the state boundary, so each first passage starts from the boundary-entry
+distribution rather than from the equilibrium distribution inside the state.
+The two coincide only when relaxation inside the state is fast compared with the
+escape time; when the state contains sub-populations that interconvert slowly
+(a deep core and a weakly bound outer shell, say), boundary seeding restarts
+every observation in the escape-prone shell and the resulting first-passage
+times are neither exponential nor representative, which biases `k = N / Σ(w·L·γ)`
+toward faster rates.
+
+When enabled, the restart configuration is drawn from the frames the accumulated
+free trajectories of that state actually spent inside it (see
+`free_restart_basin_weighting`), which is the occupancy measure the rate
+estimator itself sums over.
+
+Accepted values, following `restart_free_simulations_with_transitions`:
+- `''` (default): off everywhere,
+- a list of states in capital letters (eg. `'AB'`),
+- `'all'`: every free simulation.
+
+Ignored for a free simulation whose target state is the reactive state
+(`states[1]`): there "inside the state" is the barrier region, where no
+equilibrium restart distribution is meaningful."""
+                 })
+
+    free_restart_basin_weighting: str = field(
+        default='occupancy',
+        metadata={'description':
+"""How in-basin candidate restart frames are weighted when
+`free_restart_from_basin` is active.
+
+- `'occupancy'` (default): uniform over the in-state frames of the accumulated
+  free trajectories. Those frames are the biased trajectory's own occupancy
+  measure, i.e. the biased equilibrium inside the state. This is the
+  distribution the Tiwary-Parrinello estimator assumes: the boosted clock
+  Σ exp(bias)·dt already converts biased residence into unbiased residence, so
+  the trajectory must be started from the *biased* stationary state for the
+  conversion to be exact. It is also exactly what an uninterrupted free
+  trajectory would have produced, and it needs no bias data.
+- `'unbiased'`: draw with probability ∝ exp(bias), i.e. from the *unbiased*
+  equilibrium inside the state. This matches the textbook definition of the rate
+  (mean first passage from equilibrium in A), but combined with the boosted
+  clock it double-counts the fill during the initial relaxation and returns a
+  slightly slower rate; the difference is O(t_relax/τ). Falls back to
+  `'occupancy'`, with a printed note, whenever any candidate trajectory has no
+  bias cache — silently dropping uncached trajectories would drop precisely the
+  long in-basin dwells that carry the correction."""
+                 })
+
+    free_restart_basin_min_frames: int = field(
+        default=0,
+        metadata={'description':
+"""Minimum number of in-state frames the pool must hold before
+`free_restart_from_basin` is used. Below it, the free worker falls back to the
+boundary exit frame for that restart. Default 0 (no requirement). Raise it if
+you would rather keep the historical behaviour until a meaningful in-basin
+sample exists."""
+                 })
+
     # ------------------------------------------------------------------
     # Shooting point initialization options
     # ------------------------------------------------------------------
