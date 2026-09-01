@@ -34,6 +34,7 @@ try:
         )
     from torch_geometric.nn import radius_graph
     import os
+    import random
     import time
     import MDAnalysis.transformations as transformations
     from . import shm_cache
@@ -41,6 +42,17 @@ except ImportError as e:
     raise ImportError(f"Module {e.name} not found. "
                       f"The module 'aimmd.network.graph_utils'"
                       f"requires additional dependencies.") from e
+
+#: How long a writer keeps retrying a locked graph cache before giving up.
+#: Overridable with ``AIMMD_STORE_RETRY_SECONDS``.
+_STORE_RETRY_SECONDS = float(os.environ.get('AIMMD_STORE_RETRY_SECONDS', 300.0))
+
+#: Per-attempt SQLite busy timeout, set explicitly in :func:`init_db` rather
+#: than inheriting Python's 5 s default. Overridable with
+#: ``AIMMD_SQLITE_BUSY_SECONDS``. Must stay well under _STORE_RETRY_SECONDS, or
+#: a single attempt consumes the whole budget.
+_SQLITE_BUSY_SECONDS = float(os.environ.get('AIMMD_SQLITE_BUSY_SECONDS', 10.0))
+
 
 def atom_coordinate_descriptors_function(
         trajectory: mda.coordinates.timestep.Timestep,
@@ -85,7 +97,8 @@ def init_db(db_path: str = "graphs_cache.sqlite") -> sqlite3.Connection:
     # isinstance() still holds and every caller is unaffected.  It exists only so
     # per-connection state (a /dev/shm replica, a blob memo) can be attached --
     # a plain sqlite3.Connection has no __dict__.  See aimmd.network.shm_cache.
-    conn = sqlite3.connect(db_path, factory=shm_cache.CacheConnection)
+    conn = sqlite3.connect(db_path, timeout=_SQLITE_BUSY_SECONDS,
+                           factory=shm_cache.CacheConnection)
     conn.execute("CREATE TABLE IF NOT EXISTS graphs_cache"
                 "(key TEXT PRIMARY KEY, data BLOB)")
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -187,6 +200,53 @@ def load_from_sqlite(key: str, conn: sqlite3.Connection, compression_lib = "gzip
         memo.put(key, row[0])
     return _decode(row[0])
 
+
+def _store_blobs(conn, keys, blobs) -> bool:
+    """Write encoded graphs, retrying while the database is locked.
+
+    Returns True if they were written, False if the deadline passed first.
+
+    **A lock must never be fatal.** The graph cache is a cache: callers already
+    hold the graphs in memory (`process_descriptors_pyg` assembles its result
+    from `new_graphs`, `load_or_create` returns the graph it just built) and
+    write only so a later process can skip the recompute. Raising propagated out
+    of `descriptors_function` into `Path.compute` -> `trajectory.extend` ->
+    `execute_command.stop_condition`, killed `gmx mdrun`, and cancelled every
+    task in the job -- observed in 19 production jobs, the oldest predating the
+    /dev/shm cache work by months. Losing a cache entry costs one recompute.
+
+    Backoff is exponential with jitter so that dozens of concurrent writers do
+    not resynchronise onto a single retry cadence.
+    """
+    deadline = time.monotonic() + _STORE_RETRY_SECONDS
+    attempt = 0
+    while True:
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)",
+                zip(keys, blobs))
+            conn.commit()
+            return True
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if 'locked' not in message and 'busy' not in message:
+                raise
+            # Roll back first, or the partial transaction survives and the next
+            # executemany compounds it.
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            if time.monotonic() >= deadline:
+                print(f'graph cache: gave up writing {len(keys)} graph(s) '
+                      f'after {_STORE_RETRY_SECONDS:.0f}s of lock contention; '
+                      f'they will be recomputed when next needed', flush=True)
+                return False
+            attempt += 1
+            time.sleep(min(5.0, 0.05 * 2 ** min(attempt, 7))
+                       * (0.5 + random.random()))
+
+
 def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Connection, compression_lib = "gzip"):
     """ Store a graph in SQLite cache.
 
@@ -203,22 +263,8 @@ def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Con
         Supported: "gzip", "lz4", "none".
     """
     compressed_data = _encode(data, compression_lib)
-
-    # try storing, if it fails due to database lock, retry a few times with some delay
-    for _ in range(10):
-        try:
-            conn.execute("INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)", (key, compressed_data))
-            conn.commit()
-            _after_store(conn, [key], [compressed_data])
-            return # success
-        except sqlite3.OperationalError as e:
-            if "database is locked" in str(e):
-                time.sleep(0.05)
-            else:
-                raise
-
-    # persistent problem
-    raise RuntimeError("Failed to store graph in SQLite after multiple attempts due to persistent database lock.")
+    if _store_blobs(conn, [key], [compressed_data]):
+        _after_store(conn, [key], [compressed_data])
 
 
 def store_many_in_sqlite(keys: list[str], graphs: list[torch_geometric.data.Data],
@@ -247,29 +293,8 @@ def store_many_in_sqlite(keys: list[str], graphs: list[torch_geometric.data.Data
     if not keys:
         return
     blobs = [_encode(g, compression_lib) for g in graphs]
-
-    # The retry must wrap the WHOLE transaction, and each attempt must roll back
-    # first -- otherwise a partial transaction survives and the next executemany
-    # compounds it.
-    for _ in range(10):
-        try:
-            conn.executemany(
-                "INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)",
-                zip(keys, blobs))
-            conn.commit()
-            _after_store(conn, keys, blobs)
-            return
-        except sqlite3.OperationalError as e:
-            if "database is locked" in str(e):
-                try:
-                    conn.rollback()
-                except sqlite3.Error:
-                    pass
-                time.sleep(0.05)
-            else:
-                raise
-
-    raise RuntimeError("Failed to store graphs in SQLite after multiple attempts due to persistent database lock.")
+    if _store_blobs(conn, keys, blobs):
+        _after_store(conn, keys, blobs)
 
 
 def _after_store(conn, keys, blobs):
