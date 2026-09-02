@@ -903,7 +903,7 @@ def report_nonequilibrium_seeds(pathensemble, lengths, gammas, states='ARB',
     trajectory from the frame the previous one escaped from, which sits on the
     state boundary (see
     :func:`aimmd.worker.utils.get_basin_frames_for_free_restart` and
-    ``params.restart_free_simulations_from``). That is harmless when in-state
+    ``params.free_restart_source``). That is harmless when in-state
     relaxation is fast compared with the escape time, and badly biased when it is
     not: the observations pile up at short times, the mean is carried by the rare
     trajectory that did settle into the basin, and the rate comes out too fast.
@@ -1074,7 +1074,7 @@ def report_nonequilibrium_seeds(pathensemble, lengths, gammas, states='ARB',
             f'it has sampled the basin, so it enters the denominator with almost '
             f'none of the boosted dwell time it should carry and the rate is '
             f'biased fast by roughly 1/(1 - fraction of low-boost passages). Set '
-            f'params.restart_free_simulations_from to draw restarts from inside the '
+            f'params.free_restart_source to draw restarts from inside the '
             f'basin, and treat these bias-reweighted rates as an upper bound '
             f'until the low-boost fraction and median/mean recover.')
         wrapped = textwrap.wrap(body, width=78, break_on_hyphens=False)

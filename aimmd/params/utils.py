@@ -196,20 +196,44 @@ def create_default_values_function(network, descriptor_transform=None):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Free-simulation restart source
+# Free-simulation seeding: where the first trajectory starts, and where the
+# later ones restart from
 # ════════════════════════════════════════════════════════════════════════════
 
-FREE_RESTART_MODES = ('crossing', 'transitions', 'basin', 'equilibrium')
-"""Accepted values of ``params.restart_free_simulations_from``.
+SEEDING_POSITION_ALIASES = {'boundary': 1.0, 'middle': 0.5, 'deepest': 0.0}
+"""Named values of ``params.free_seeding_position``.
+
+The frames of the initial path that belong to the target state form one
+contiguous run — the one the transition departs from. The position is a
+fraction over that run, ordered *far side first*, so the meaning is the same
+for a state at the start of the path and for one at its end even though the
+file order is mirrored.
+
+``'boundary'`` (1.0)
+    The frame adjacent to the reactive region. This is the historical
+    behaviour and the default.
+``'middle'`` (0.5)
+    The middle of the run.
+``'deepest'`` (0.0)
+    The frame furthest from the reactive region, i.e. as deep into the state
+    as the initial path reaches.
+"""
+
+SEEDING_POSITION_RANDOM = 'random'
+"""``params.free_seeding_position`` value drawing uniformly over the run."""
+
+FREE_RESTART_SOURCES = ('crossing', 'seed', 'basin', 'equilibrium',
+                        'transitions')
+"""Accepted values of ``params.free_restart_source``.
 
 ``'crossing'``
     The last frame the previous free trajectory spent in the target state, i.e.
     the configuration it escaped from. This is the historical behaviour and the
     default. That frame lies *on* the state boundary, so every first passage
     starts from the boundary-entry distribution.
-``'transitions'``
-    The end frames of a randomly sampled AIMMD transition path. This is what the
-    deprecated ``restart_free_simulations_with_transitions`` selected.
+``'seed'``
+    The same frame the first seeding used, re-derived from the initial path
+    through ``params.free_seeding_position``.
 ``'basin'``
     A frame drawn uniformly from the in-state frames of the accumulated free
     trajectories, i.e. from the *biased* equilibrium inside the state — the
@@ -219,132 +243,186 @@ FREE_RESTART_MODES = ('crossing', 'transitions', 'basin', 'equilibrium')
     from the **unbiased** (Boltzmann) equilibrium inside the state. With no
     recorded bias every weight is 1 and this coincides with ``'basin'``, which
     is correct: an unbiased trajectory already samples Boltzmann.
+``'transitions'``
+    The end frames of a randomly sampled AIMMD transition path. This is what
+    the deprecated ``restart_free_simulations_with_transitions`` selected, and
+    like that flag it also replaces the *first* seed, falling back to a
+    randomly chosen initial path while no transition has been sampled yet.
 """
 
-FREE_RESTART_IN_BASIN_MODES = ('basin', 'equilibrium')
-"""The modes that draw from inside the state, and so are meaningless for R."""
+FREE_RESTART_IN_STATE_SOURCES = ('seed', 'basin', 'equilibrium')
+"""The sources that draw from inside the state, and so are meaningless for R."""
 
 
-def parse_free_restart_from(value, states=None, field='restart_free_simulations_from'):
+def _state_keyed_spec(value, field, states, parse_one, empty_default):
     """
-    Parse a ``restart_free_simulations_from`` specification.
+    Split a per-state params value into ``(default, per_state)``.
 
-    Grammar (entries separated by whitespace and/or commas)::
-
-        spec  := entry [entry ...]
-        entry := mode                 # the default for every state
-               | LETTERS ':' mode     # for the named states only
-
-    At most one bare ``mode`` may appear; it becomes the default for states not
-    named explicitly. An empty specification means ``'crossing'``.
+    A scalar applies to every state. A mapping keyed by state letter applies
+    only to the states it names; the others keep `empty_default`.
 
     Parameters
     ----------
-    value : str
-        The specification.
-    states : str, optional
-        ``params.states``. When given, every named state letter must occur in
-        it, and the in-basin modes are refused for the reactive state
-        ``states[1]``.
-    field : str, optional
-        Field name to quote in error messages.
+    value : object
+        The user's value: a scalar accepted by `parse_one`, or a mapping from
+        state letter to such a scalar. None and ``''`` mean "unset".
+    field : str
+        Field name, quoted in error messages.
+    states : str or None
+        ``params.states``. When given, every key must occur in it.
+    parse_one : callable
+        ``parse_one(scalar, where) -> canonical scalar``.
+    empty_default : object
+        The canonical value an unset field resolves to.
 
     Returns
     -------
-    default : str
-        Mode for states not named explicitly.
+    default : object
     per_state : dict
-        ``{state letter: mode}`` for the states that were named.
-
-    Raises
-    ------
-    TypeError
-        On an unknown mode, a malformed entry, a repeated state, more than one
-        bare mode, an unknown state letter, or an in-basin mode on the reactive
-        state.
     """
-    text = re.sub(r'\s*:\s*', ':', str(value or '').replace(',', ' ')).strip()
-    default = 'crossing'
-    per_state = {}
-    seen_bare = False
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return empty_default, {}
 
-    def _mode(token, where):
-        mode = token.strip().lower()
-        if mode not in FREE_RESTART_MODES:
-            raise TypeError(
-                f'{field!r}: unknown restart source {token.strip()!r} in '
-                f'{where}; expected one of '
-                f'{", ".join(repr(m) for m in FREE_RESTART_MODES)}')
-        return mode
-
-    for entry in text.split():
-        if ':' not in entry:
-            if seen_bare:
+    if isinstance(value, dict):
+        per_state = {}
+        for key, item in value.items():
+            letter = str(key).strip().upper()
+            if len(letter) != 1 or not letter.isalpha():
                 raise TypeError(
-                    f'{field!r} = {value!r} names more than one default restart '
-                    f'source; give at most one bare mode, and qualify the rest '
-                    f'as e.g. \'A:equilibrium\'')
-            default = _mode(entry, f'{field!r} = {value!r}')
-            seen_bare = True
-            continue
-
-        parts = entry.split(':')
-        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
-            raise TypeError(
-                f'{field!r}: malformed entry {entry!r} in {value!r}; expected '
-                f'\'STATES:mode\', e.g. \'A:equilibrium\'')
-        letters = parts[0].strip().upper()
-        if not letters.isalpha():
-            raise TypeError(
-                f'{field!r}: {parts[0].strip()!r} in {entry!r} is not a state '
-                f'letter list')
-        mode = _mode(parts[1], f'entry {entry!r}')
-        for letter in letters:
-            if letter in per_state:
-                raise TypeError(
-                    f'{field!r} = {value!r} assigns state {letter!r} twice')
+                    f'{field!r}: {key!r} is not a single state letter')
             if states is not None and letter not in states:
                 raise TypeError(
                     f'{field!r}: state {letter!r} is not one of '
                     f'params.states = {states!r}')
-            if (states is not None and len(states) >= 2
-                    and letter == states[1]
-                    and mode in FREE_RESTART_IN_BASIN_MODES):
+            if letter in per_state:
                 raise TypeError(
-                    f'{field!r}: restart source {mode!r} is not defined for the '
-                    f'reactive state {letter!r} - "inside the state" is the '
-                    f'barrier region there, where no equilibrium restart '
-                    f'distribution exists. Use \'crossing\' or \'transitions\'.')
-            per_state[letter] = mode
+                    f'{field!r} assigns state {letter!r} twice')
+            per_state[letter] = parse_one(item, f'{field!r}[{letter!r}]')
+        return empty_default, per_state
 
-    return default, per_state
+    return parse_one(value, f'{field!r}'), {}
 
 
-def canonical_free_restart_from(value, states=None,
-                                field='restart_free_simulations_from'):
-    """Validate a ``restart_free_simulations_from`` value and normalise it.
+def _one_seeding_position(value, where):
+    """Canonicalise a single `free_seeding_position` scalar."""
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in SEEDING_POSITION_ALIASES:
+            return SEEDING_POSITION_ALIASES[text]
+        if text == SEEDING_POSITION_RANDOM:
+            return SEEDING_POSITION_RANDOM
+        try:
+            number = float(text)
+        except ValueError:
+            names = ', '.join(repr(n) for n in SEEDING_POSITION_ALIASES)
+            raise TypeError(
+                f'{where}: unknown seeding position {value!r}; expected a '
+                f'fraction in [0, 1], one of {names}, or '
+                f'{SEEDING_POSITION_RANDOM!r}') from None
+    elif isinstance(value, bool):
+        # bools are ints in Python and would silently mean 0.0 / 1.0
+        raise TypeError(f'{where}: seeding position must be a number or a '
+                        f'name, got {value!r}')
+    else:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise TypeError(f'{where}: seeding position must be a number or a '
+                            f'name, got {value!r}') from None
 
-    Returns the canonical spelling — states upper case, modes lower case,
-    single-space separated, the bare default (if any) first — so that the value
+    if not 0.0 <= number <= 1.0:
+        raise TypeError(f'{where}: seeding position {number!r} is outside '
+                        f'[0, 1]; 0.0 is the frame furthest from the reactive '
+                        f'region and 1.0 the one adjacent to it')
+    return float(number)
+
+
+def _one_restart_source(value, where):
+    """Canonicalise a single `free_restart_source` scalar."""
+    source = str(value).strip().lower()
+    if source not in FREE_RESTART_SOURCES:
+        raise TypeError(
+            f'{where}: unknown restart source {value!r}; expected one of '
+            f'{", ".join(repr(s) for s in FREE_RESTART_SOURCES)}')
+    return source
+
+
+def parse_seeding_position(value, states=None, field='free_seeding_position'):
+    """
+    Parse a ``params.free_seeding_position`` value.
+
+    Returns
+    -------
+    default : float or str
+        Position for states not named explicitly; 1.0 when unset.
+    per_state : dict
+        ``{state letter: position}`` for the states that were named.
+
+    Raises
+    ------
+    TypeError
+        On an unknown name, a fraction outside [0, 1], a key that is not a
+        single state letter, or a state that is not in `states`.
+    """
+    return _state_keyed_spec(value, field, states, _one_seeding_position,
+                             SEEDING_POSITION_ALIASES['boundary'])
+
+
+def parse_restart_source(value, states=None, field='free_restart_source'):
+    """
+    Parse a ``params.free_restart_source`` value.
+
+    Returns
+    -------
+    default : str
+        Source for states not named explicitly; ``'crossing'`` when unset.
+    per_state : dict
+        ``{state letter: source}`` for the states that were named.
+    """
+    return _state_keyed_spec(value, field, states, _one_restart_source,
+                             'crossing')
+
+
+def _canonical(value, states, field, parser, aliases=None):
+    """Normalise a per-state params value so it round-trips through `save`."""
+    default, per_state = parser(value, states=states, field=field)
+    if aliases:
+        inverse = {v: k for k, v in aliases.items()}
+        default = inverse.get(default, default)
+        per_state = {k: inverse.get(v, v) for k, v in per_state.items()}
+    if per_state:
+        return {letter: per_state[letter] for letter in sorted(per_state)}
+    return default
+
+
+def canonical_seeding_position(value, states=None,
+                               field='free_seeding_position'):
+    """Validate a ``free_seeding_position`` value and normalise it.
+
+    Named positions keep their names, fractions stay numbers, and a per-state
+    mapping comes back with upper-case keys in sorted order, so the value
     round-trips through :meth:`aimmd.Params.save` unchanged.
     """
-    default, per_state = parse_free_restart_from(value, states=states,
-                                                 field=field)
-    parts = [] if default == 'crossing' and per_state else [default]
-    parts += [f'{letter}:{per_state[letter]}' for letter in sorted(per_state)]
-    return ' '.join(parts) if parts else 'crossing'
+    return _canonical(value, states, field, parse_seeding_position,
+                      SEEDING_POSITION_ALIASES)
 
 
-def legacy_free_restart_replacement(value):
-    """The ``restart_free_simulations_from`` value equivalent to a legacy flag.
+def canonical_restart_source(value, states=None, field='free_restart_source'):
+    """Validate a ``free_restart_source`` value and normalise it."""
+    return _canonical(value, states, field, parse_restart_source)
+
+
+def legacy_transitions_replacement(value):
+    """The ``free_restart_source`` value equivalent to the deprecated flag.
 
     ``restart_free_simulations_with_transitions`` was a state-selector string:
     ``'all'`` for every free simulation, otherwise the letters of the states it
-    applied to. Returns ``''`` for an empty (inactive) flag.
+    applied to. Returns ``''`` for an empty (inactive) flag, the bare source
+    ``'transitions'`` for ``'all'``, and a per-state mapping otherwise.
     """
     text = str(value or '').replace(' ', '')
     if not text:
         return ''
     if text.lower() == 'all':
         return 'transitions'
-    return f'{text.upper()}:transitions'
+    return {letter: 'transitions' for letter in text.upper()}

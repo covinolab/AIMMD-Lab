@@ -93,6 +93,8 @@ from ..cache.npy import save_npy, load_npy
 from ..core.utils import now, process_state, remove
 from ..path.utils import get_cache_fname, read_sweep_frame, write_sweep_frame
 from ..pathensemble import PathEnsemble
+from ..params.utils import (SEEDING_POSITION_ALIASES,
+                             SEEDING_POSITION_RANDOM)
 from ..execute.utils import execute_command
 from ..analysis.utils import bin_centers, merge_empty_bins
 from ..network.rescale_utils import rescale
@@ -133,49 +135,165 @@ def get_initial_transitions_for_shooting_chain(initial_paths, states='ARB'):
     return transitions
 
 
+def state_run_locs(states, boundary_loc, at_start):
+    """
+    Locations of the in-state run a transition departs from, far side first.
+
+    Parameters
+    ----------
+    states : array of str
+        Per-frame state labels of the untrimmed initial path.
+    boundary_loc : int
+        Location of the in-state frame adjacent to the reactive region, i.e.
+        the first frame of the transition block the initial-path trim keeps.
+    at_start : bool
+        True when the state's run precedes the reactive region in file order
+        (the usual case for `states[0]`), False when it follows it (`states[-1]`).
+
+    Returns
+    -------
+    list of int
+        The maximal run of the same state label containing `boundary_loc`,
+        ordered **far side first**: index 0 is the frame furthest from the
+        reactive region and the last index is `boundary_loc`. A leading or
+        trailing excursion out of the state is therefore never swept in.
+    """
+    states = np.asarray(states)
+    label = states[boundary_loc]
+    if at_start:
+        low = boundary_loc
+        while low > 0 and states[low - 1] == label:
+            low -= 1
+        return list(range(low, boundary_loc + 1))
+    high = boundary_loc
+    while high + 1 < len(states) and states[high + 1] == label:
+        high += 1
+    return list(range(high, boundary_loc - 1, -1))
+
+
+def seed_index_in_run(n, position):
+    """
+    Index into a state's run of frames for a fractional seeding position.
+
+    `position` is measured over the run ordered far-side-first, so 0.0 is the
+    frame furthest from the reactive region and 1.0 the one adjacent to it.
+
+    Uses ``int(position * (n - 1) + 0.5)`` rather than `round`, whose
+    banker's rounding sends ``round(0.5)`` to 0 and would make a two-frame run
+    seed at the *far* frame for ``position=0.5``. Ties therefore go towards the
+    boundary, i.e. towards the historical behaviour.
+    """
+    if n <= 1:
+        return 0
+    return int(position * (n - 1) + 0.5)
+
+
+def _couple_in_state_run(trimmed, untrimmed, target_state, position, rng):
+    """
+    Build a ``(history, seed)`` couple at `position` inside the state's run.
+
+    The couple's last frame is the seed `Params.initialize_simulation` starts
+    the MD from; the first is its neighbour on the boundary side, written as
+    the ``.part0000`` history segment. When the seed is the boundary frame that
+    neighbour is the adjacent reactive frame, exactly as in the historical
+    behaviour, so the couple is always two frames long.
+    """
+    at_start = trimmed.initial('states') == target_state
+    boundary_loc = trimmed.locs[0] if at_start else trimmed.locs[-1]
+    run = state_run_locs(untrimmed.states, boundary_loc, at_start)
+
+    if position == SEEDING_POSITION_RANDOM:
+        if rng is None:
+            index = int(np.random.randint(len(run)))
+        else:
+            index = int(rng.integers(len(run)))
+    else:
+        index = seed_index_in_run(len(run), position)
+    seed_loc = run[index]
+
+    if at_start:
+        # [seed, seed+1] reversed -> (history on the boundary side, seed)
+        return untrimmed[seed_loc:seed_loc + 2][::-1]
+    return untrimmed[seed_loc - 1:seed_loc + 1]
+
+
 def get_initial_frames_for_free_simulations(
-        initial_paths, target_state, reactive_state):
+        initial_paths, target_state, reactive_state,
+        position=1.0, untrimmed_paths=None, rng=None):
     """
     Given an `aimmd.path.PathEnsemble` instance, extract two consecutive frames
     from each path for the purporse of launching free simulations. The first
-    frame of each couple is always reactive, and the second is internal to
-    `target_state`.
+    frame of each couple is the `.part0000` history frame, and the second is
+    internal to `target_state` and is the frame the MD starts from.
 
     Parameters
     ----------
     initial_paths : aimmd.path.PathEnsemble or aimmd.path.Path
-        The paths from which the frames are extracted.
+        The paths from which the frames are extracted. These are the *trimmed*
+        initial paths, i.e. transition blocks, so each one already begins (or
+        ends) at the in-state frame adjacent to the reactive region.
     target_state : str of size 1
         The state of the second frame, e.g. `'A'`.
     reactive_state : str of size 1
         The state of the first frame, e.g. `'R'`.
+    position : float or str, optional
+        Where inside the state's run of frames to seed, as a fraction ordered
+        far-side-first: 0.0 is the frame furthest from the reactive region and
+        1.0 (the default) the one adjacent to it. ``'random'`` draws uniformly
+        over the run. See `params.free_seeding_position`.
+    untrimmed_paths : sequence of aimmd.path.Path, optional
+        The initial paths before the transition trim, one per entry of
+        `initial_paths`, as returned by `params.untrimmed_initial_paths()`.
+        Required for every `position` other than 1.0, because the trim removes
+        exactly the frames those positions ask for. Ignored when
+        ``position == 1.0``.
+    rng : numpy.random.Generator, optional
+        Source of randomness for ``position='random'``. Defaults to NumPy's
+        global RNG, like the rest of the worker layer.
 
     Returns
     -------
     initial_frames : aimmd.path.PathEnsemble
         `PathEnsemble` with the same length of `initial_paths`, where each
         element contains the frame couples extracted from the paths.
-    
+
     Notes
     -----
-    The two frames in a couple are either at the beginning or at the end of the
-    origin path. If the path does not allow for it, this function throws an
+    With ``position == 1.0`` this is the historical implementation, unchanged
+    and taking the same code path: the two frames in a couple are either at the
+    beginning or at the end of the origin path, and `untrimmed_paths` is never
+    consulted. If the path does not allow for it, this function throws an
     error.
     """
     initial_paths = PathEnsemble(initial_paths)
     initial_frames = PathEnsemble()
+    at_boundary = (not isinstance(position, str)
+                   and float(position) == SEEDING_POSITION_ALIASES['boundary'])
+
+    if not at_boundary and target_state != reactive_state \
+            and untrimmed_paths is None:
+        raise TypeError(
+            f'seeding at position {position!r} needs the initial paths as they '
+            f'were before the transition trim, which removes exactly those '
+            f'frames; pass untrimmed_paths=params.untrimmed_initial_paths()')
 
     # extract frames for each path
-    for path in initial_paths:
+    for i, path in enumerate(initial_paths):
         if target_state == reactive_state:
+            # the reactive state has no in-state run to place a seed in
             if np.random.random() > .5:
                 initial_frames._paths.append(path[:+2])
             else:
                 initial_frames._paths.append(path[:-3:-1])
-        elif path.initial('states') == target_state:
-            initial_frames._paths.append(path[1::-1])
+        elif at_boundary:
+            if path.initial('states') == target_state:
+                initial_frames._paths.append(path[1::-1])
+            else:
+                initial_frames._paths.append(path[-2:])
         else:
-            initial_frames._paths.append(path[-2:])
+            initial_frames._paths.append(
+                _couple_in_state_run(path, untrimmed_paths[i], target_state,
+                                     position, rng))
 
         # check
         states = initial_frames[-1].states
