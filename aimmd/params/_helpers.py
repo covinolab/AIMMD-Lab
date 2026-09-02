@@ -42,8 +42,8 @@ from collections.abc import Iterable
 
 # aimmd imports
 from .utils import (update_source, create_default_values_function,
-                    canonical_free_restart_from,
-                    legacy_free_restart_replacement)
+                    canonical_restart_source, canonical_seeding_position,
+                    legacy_transitions_replacement)
 from ..core.utils import accepts_system_id
 from ..path import Path
 from ..pathensemble import PathEnsemble
@@ -224,9 +224,17 @@ class ParamsHelpers(ABC):
                     raise TypeError(
                         f'{name!r} must be distinct upper alpha chars')
             
-            # free-simulation restart source: one string, optionally per state
-            elif name == 'restart_free_simulations_from':
-                value = canonical_free_restart_from(
+            # free-simulation seeding: where the FIRST trajectory of a state
+            # starts inside the state, as a fraction over the state's run of
+            # initial-path frames. A scalar, or a mapping keyed by state.
+            elif name == 'free_seeding_position':
+                value = canonical_seeding_position(
+                    value, states=getattr(self, 'states', None))
+
+            # free-simulation reseeding: where every LATER trajectory of a
+            # state restarts from. A scalar, or a mapping keyed by state.
+            elif name == 'free_restart_source':
+                value = canonical_restart_source(
                     value, states=getattr(self, 'states', None))
 
             # DEPRECATED state selector, superseded by the field above
@@ -239,14 +247,16 @@ class ParamsHelpers(ABC):
                         f'{name!r} must be distinct upper alpha chars, or '
                         f"'all'")
                 if value:
-                    replacement = legacy_free_restart_replacement(value)
+                    replacement = legacy_transitions_replacement(value)
                     message = (
                         f"'restart_free_simulations_with_transitions' is "
                         f"deprecated; use "
-                        f"restart_free_simulations_from = {replacement!r} "
-                        f"instead. The new field also offers the 'basin' and "
-                        f"'equilibrium' restart sources, which draw from inside "
-                        f"the state rather than from its boundary.")
+                        f"free_restart_source = {replacement!r} "
+                        f"instead. The new field also offers the 'seed', "
+                        f"'basin' and 'equilibrium' restart sources, which "
+                        f"draw from inside the state rather than from its "
+                        f"boundary, and pairs with 'free_seeding_position' "
+                        f"which places the first seed.")
                     warnings.warn(message, DeprecationWarning, stacklevel=4)
                     # warnings are shown once per process and this one has been
                     # missed before; the log line cannot be filtered away
@@ -490,11 +500,15 @@ class ParamsHelpers(ABC):
         # both the switch and its deprecated predecessor.
         if (not fields
                 or 'states' in fields
-                or 'restart_free_simulations_from' in fields
+                or 'free_seeding_position' in fields
+                or 'free_restart_source' in fields
                 or 'restart_free_simulations_with_transitions' in fields):
-            self.__dict__['restart_free_simulations_from'] = \
-                canonical_free_restart_from(
-                    self.restart_free_simulations_from, states=self.states)
+            self.__dict__['free_seeding_position'] = \
+                canonical_seeding_position(
+                    self.free_seeding_position, states=self.states)
+            self.__dict__['free_restart_source'] = \
+                canonical_restart_source(
+                    self.free_restart_source, states=self.states)
             self._free_restart_spec()   # raises TypeError on a conflict
 
         # check free_overriding_bins
@@ -570,6 +584,13 @@ class ParamsHelpers(ABC):
                 # recompute states (only if not manually overwritten)
                 if 'states' not in path.__dict__:
                     path.states = path.compute(self.states_function)
+                # Keep the untrimmed path: the loop below replaces `path`
+                # with its transition block, which starts AT the state
+                # boundary, and every `free_seeding_position` other than
+                # 'boundary' needs the deep-basin frames that removes.
+                untrimmed = self.__dict__.setdefault(
+                    '_untrimmed_initial_paths', {})
+                untrimmed[i] = path
                 # throw a warning if no transition is found
                 transition_found = False 
                 for split_path in (split_paths := path.split()):

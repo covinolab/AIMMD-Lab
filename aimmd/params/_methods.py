@@ -64,15 +64,16 @@ from MDAnalysis import Universe, Writer
 
 # aimmd imports
 from ..path import Path
+from .utils import (FREE_RESTART_IN_STATE_SOURCES, SEEDING_POSITION_ALIASES,
+                    legacy_transitions_replacement, parse_restart_source,
+                    parse_seeding_position)
 from .._config import MDA_CACHE, EM_MDP
 from ..cache.npy import load_npy
 from ..core.utils import process_state, randomize_velocities, remove
 from ..engines.toy import ToyEngine
 from ..pathensemble import PathEnsemble
 from ..execute.utils import execute_command
-from .utils import (FREE_RESTART_IN_BASIN_MODES,
-                    legacy_free_restart_replacement,
-                    parse_free_restart_from)
+
 
 
 def _colvar_rowcount(fname):
@@ -245,7 +246,7 @@ class ParamsMethods(ABC):
 
     def _free_restart_spec(self):
         """
-        Resolve `restart_free_simulations_from` and its deprecated predecessor.
+        Resolve `free_restart_source` and its deprecated predecessor.
 
         Returns
         -------
@@ -257,32 +258,32 @@ class ParamsMethods(ABC):
         Raises
         ------
         TypeError
-            If both `restart_free_simulations_from` and the deprecated
+            If both `free_restart_source` and the deprecated
             `restart_free_simulations_with_transitions` ask for something.
         """
-        spec = getattr(self, 'restart_free_simulations_from', 'crossing')
+        spec = getattr(self, 'free_restart_source', 'crossing')
         legacy = getattr(self, 'restart_free_simulations_with_transitions', '')
         legacy = str(legacy or '').replace(' ', '')
 
         if legacy:
-            replacement = legacy_free_restart_replacement(legacy)
-            if str(spec or 'crossing') != 'crossing':
+            replacement = legacy_transitions_replacement(legacy)
+            default, per_state = parse_restart_source(spec, states=self.states)
+            if default != 'crossing' or per_state:
                 raise TypeError(
-                    f"'restart_free_simulations_from' = {spec!r} and the "
-                    f"deprecated "
+                    f"'free_restart_source' = {spec!r} and the deprecated "
                     f"'restart_free_simulations_with_transitions' = "
-                    f"{legacy!r} both select a free-simulation restart source. "
-                    f"Keep only 'restart_free_simulations_from'; the "
-                    f"deprecated flag is equivalent to {replacement!r}.")
+                    f"{legacy!r} both select a free-simulation restart "
+                    f"source. Keep only 'free_restart_source'; the deprecated "
+                    f"flag is equivalent to {replacement!r}.")
             spec = replacement
 
-        return parse_free_restart_from(spec, states=self.states)
+        return parse_restart_source(spec, states=self.states)
 
-    def free_restart_mode(self, state):
+    def free_restart_source_for(self, state):
         """
         Where free simulations of *state* take their restart configuration.
 
-        Resolves `restart_free_simulations_from`, honouring the deprecated
+        Resolves `free_restart_source`, honouring the deprecated
         `restart_free_simulations_with_transitions` when that is the one set.
 
         Parameters
@@ -293,23 +294,75 @@ class ParamsMethods(ABC):
         Returns
         -------
         str
-            One of ``'crossing'``, ``'transitions'``, ``'basin'``,
-            ``'equilibrium'``. The in-basin sources are never returned for the
-            reactive state `states[1]`, where they are undefined: a bare
-            in-basin default leaves the reactive state on ``'crossing'``.
+            One of `aimmd.params.utils.FREE_RESTART_SOURCES`. The in-state
+            sources are never returned for the reactive state `states[1]`,
+            where they are undefined: a bare in-state default leaves the
+            reactive state on ``'crossing'``.
 
         Raises
         ------
         TypeError
-            If both the switch and its deprecated predecessor are set.
+            If both the field and its deprecated predecessor are set.
         """
         state = process_state(state, self.states)
         default, per_state = self._free_restart_spec()
-        mode = per_state.get(state, default)
-        if (mode in FREE_RESTART_IN_BASIN_MODES
+        source = per_state.get(state, default)
+        if (source in FREE_RESTART_IN_STATE_SOURCES
                 and len(self.states) >= 2 and state == self.states[1]):
             return 'crossing'
-        return mode
+        return source
+
+    def free_seeding_position_for(self, state):
+        """
+        Where the first free simulation of *state* starts inside the state.
+
+        Parameters
+        ----------
+        state : int or str
+            State index into `params.states`, or the state label itself.
+
+        Returns
+        -------
+        float or str
+            A fraction in [0, 1] over the state's run of initial-path frames,
+            ordered far-side-first, or ``'random'``. Always the default for the
+            reactive state `states[1]`, which has no in-state run.
+        """
+        state = process_state(state, self.states)
+        default, per_state = parse_seeding_position(
+            getattr(self, 'free_seeding_position', 'boundary'),
+            states=self.states)
+        if len(self.states) >= 2 and state == self.states[1]:
+            return SEEDING_POSITION_ALIASES['boundary']
+        return per_state.get(state, default)
+
+    def untrimmed_initial_paths(self):
+        """
+        The initial paths as the user gave them, before the transition trim.
+
+        `_process_and_check` replaces every entry of `initial_paths` by its
+        transition block, which starts at the last in-state frame before the
+        reactive region. Every `free_seeding_position` other than ``'boundary'``
+        needs the frames that removes, so the pre-trim paths are kept aside at
+        load time. Entries missing from that cache (an old session, a path
+        assigned without a states check) are reloaded from the file name.
+
+        Returns
+        -------
+        list of aimmd.path.Path
+            One entry per initial path, in the same order, with `states`
+            computed.
+        """
+        kept = self.__dict__.get('_untrimmed_initial_paths') or {}
+        out = []
+        for i, trimmed in enumerate(self.initial_paths):
+            path = kept.get(i)
+            if path is None:
+                path = Path(trimmed.fname)
+                if 'states' not in path.__dict__:
+                    path.states = path.compute(self.states_function)
+            out.append(path)
+        return out
 
     def initialize_simulation(self, frame, *deffnm,
                               timeout=20., verbose=True):

@@ -35,13 +35,18 @@ The core loop proceeds as follows:
 4) When a stop event is detected, select initial frames for the next
    trajectory and advance to the next trajectory name. By default these are
    the last valid crossing, i.e. the frame the trajectory escaped from, which
-   lies on the state boundary. ``params.restart_free_simulations_from`` selects
-   a different source: ``'transitions'`` (a sampled AIMMD transition path),
-   ``'basin'`` (uniform over the frames the accumulated free trajectories spent
-   inside the state) or ``'equilibrium'`` (the same pool, reweighted by
-   ``exp(bias)`` to the unbiased Boltzmann distribution inside the state), so
-   that each first passage starts from inside the state rather than from its
-   boundary. See :func:`~aimmd.worker.utils.get_basin_frames_for_free_restart`.
+   lies on the state boundary. ``params.free_restart_source`` selects a
+   different source: ``'seed'`` (the initial-path seed again),
+   ``'transitions'`` (a sampled AIMMD transition path), ``'basin'`` (uniform
+   over the frames the accumulated free trajectories spent inside the state) or
+   ``'equilibrium'`` (the same pool, reweighted by ``exp(bias)`` to the
+   unbiased Boltzmann distribution inside the state), so that each first
+   passage starts from inside the state rather than from its boundary. See
+   :func:`~aimmd.worker.utils.get_basin_frames_for_free_restart`.
+
+   Where the FIRST trajectory of each state starts is a separate choice,
+   ``params.free_seeding_position``, a fraction over the state's own run of
+   initial-path frames.
 
 State conventions
 -----------------
@@ -102,9 +107,9 @@ from ..path.utils import get_cache_fname
 from ..pathensemble import PathEnsemble
 from ..pathensemble.utils import assemble_pathensemble
 
-def _basin_weighting_for_mode(mode):
+def _basin_weighting_for_source(source):
     """
-    In-basin candidate weighting for a `params.free_restart_mode` value.
+    In-basin candidate weighting for a `params.free_restart_source` value.
 
     Returns
     -------
@@ -113,10 +118,10 @@ def _basin_weighting_for_mode(mode):
         *biased* equilibrium inside the state), ``'unbiased'`` for
         ``'equilibrium'`` (drawn with probability proportional to ``exp(bias)``,
         i.e. the **unbiased** Boltzmann equilibrium inside the state), and None
-        for the sources that do not draw from inside the basin at all
-        (``'crossing'``, ``'transitions'``).
+        for the sources that do not draw from the accumulated in-state pool
+        (``'crossing'``, ``'seed'``, ``'transitions'``).
     """
-    return {'basin': 'occupancy', 'equilibrium': 'unbiased'}.get(mode)
+    return {'basin': 'occupancy', 'equilibrium': 'unbiased'}.get(source)
 
 
 # WorkerFree mixin class
@@ -191,21 +196,38 @@ class WorkerFree(ABC):
         states = params.states
         t = process_state(target_state, states)
         r = states[1]
-        # retrieve and process paths
+        # retrieve and process paths. `free_seeding_position` says where in
+        # the state's run of initial-path frames the FIRST trajectory starts;
+        # 1.0 ('boundary') is the historical behaviour and takes the historical
+        # code path, so the untrimmed paths are only loaded when asked for.
+        seeding_position = params.free_seeding_position_for(t)
+        at_boundary = (not isinstance(seeding_position, str)
+                       and float(seeding_position) == 1.0)
         initial_paths = get_initial_frames_for_free_simulations(
-                self.initial_paths, t, r)
+                self.initial_paths, t, r,
+                position=seeding_position,
+                untrimmed_paths=(None if at_boundary
+                                 else params.untrimmed_initial_paths()),
+                rng=(np.random.default_rng(k)
+                     if seeding_position == 'random' else None))
+        if not at_boundary:
+            locs = initial_paths[k % len(initial_paths)].locs
+            print(f'\nFirst free simulation of {t!r} is seeded at position '
+                  f'{seeding_position!r} of the in-{t} run, i.e. frame '
+                  f'{locs[-1]} of the initial path')
         # Where this worker's restart configurations come from. Resolved from
-        # params.restart_free_simulations_from (which also reads the deprecated
+        # params.free_restart_source (which also reads the deprecated
         # restart_free_simulations_with_transitions), and 'crossing' by default,
         # so nothing changes for an existing run. The in-basin sources never
         # apply to the reactive state, where "inside the state" is the barrier
-        # region; free_restart_mode already collapses those to 'crossing'.
-        restart_mode = params.free_restart_mode(t)
-        restart_with_transition = restart_mode == 'transitions'
-        basin_weighting = _basin_weighting_for_mode(restart_mode)
+        # region; free_restart_source_for already collapses those to
+        # 'crossing'.
+        restart_source = params.free_restart_source_for(t)
+        restart_with_transition = restart_source == 'transitions'
+        restart_from_seed = restart_source == 'seed'
+        basin_weighting = _basin_weighting_for_source(restart_source)
         restart_from_basin = basin_weighting is not None
-        basin_min_frames = getattr(
-            params, 'free_restart_basin_min_frames', 0)
+        basin_min_frames = getattr(params, 'free_restart_min_frames', 0)
 
         # get folders
         folder = f'free{t}'
@@ -247,7 +269,7 @@ class WorkerFree(ABC):
                       f'from {_directory}/free{t}: {exception}')
                 basin_pool = []
             print(f'\nFree restarts for {t!r} are drawn from inside the '
-                  f'basin (restart_free_simulations_from = {restart_mode!r}, '
+                  f'basin (free_restart_source = {restart_source!r}, '
                   f'{basin_weighting} weighting, '
                   f'min_frames={basin_min_frames}); pool primed with '
                   f'{len(basin_pool)} trajectories from disk')
@@ -363,9 +385,14 @@ class WorkerFree(ABC):
                 self.total_steps += 1
                 total_frames.append(0)
 
-                # take initial frames from inside the basin, when asked to
+                # take initial frames from inside the basin, when asked to.
+                # `restart_from_seed` leaves initial_frames None, which sends
+                # the next iteration back to the initial-path seed above.
                 initial_frames = None
                 seed_bias = None
+                if restart_from_seed:
+                    print(f'\nRestarting {t!r} from the initial-path seed '
+                          f'again (free_restart_source = \'seed\')')
                 if restart_from_basin:
                     basin_pool.append(trajectory)
                     initial_frames, seed_bias = \
@@ -385,7 +412,7 @@ class WorkerFree(ABC):
                               f'{fnames[-1]} {locs[-1]}')
 
                 # take initial frames from last valid crossing
-                if initial_frames is None:
+                if initial_frames is None and not restart_from_seed:
                     if t == r:
                         stop_frame += last_length - 2
                     initial_frames = trajectory[stop_frame:stop_frame + 2]
