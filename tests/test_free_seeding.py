@@ -516,3 +516,131 @@ def test_untrimmed_initial_paths_is_keyed_by_source_base_name(tmp_path):
     got = p.untrimmed_initial_paths()
     assert set(got) == {'initial_selected.xtc'}
     assert len(got['initial_selected.xtc']) == 13
+
+
+# ── reaching the untrimmed path from a worker ─────────────────────────────
+#
+# A worker loads params with initial_paths=None so it does not re-read and
+# re-trim the user's trajectory in every slot, and the copies in the run's
+# initial<states>/ folder are already trimmed. So the names the params FILE
+# gave are recorded at load time, resolved while Params.load is chdir'd into
+# the params folder - which is what makes every form of path work identically
+# to the field itself.
+
+import re as _re
+from ._helpers_unit import build_params_file
+
+
+def _params_file(tmp_path, initial_fname, literal):
+    """A params.py whose `initial_paths` is exactly `literal`."""
+    path = build_params_file(tmp_path, initial_fname)
+    source = open(path).read()
+    source = _re.sub(r"initial_paths = \[[^\]]*\]",
+                     f"initial_paths = {literal}", source)
+    open(path, 'w').write(source)
+    return path
+
+
+def _ramp_path(where, stem='initial'):
+    """A 13-frame path whose states are AAAARRRRRBBBB under the fixture rule."""
+    x = np.linspace(-1.0, 1.0, 13)
+    positions = np.zeros((13, 2, 3), dtype=np.float32)
+    positions[:, 0, 0] = x
+    positions[:, 1, 0] = x + 0.05
+    from ._helpers_unit import write_trajectory
+    return write_trajectory(where, stem=stem, positions=positions)
+
+
+def _worker_params(path):
+    """Params as aimmd/worker/_helpers.py builds it."""
+    return aimmd.Params(str(path), initial_paths=None, save=False)
+
+
+def test_worker_records_a_bare_initial_path_name(tmp_path):
+    traj = _ramp_path(tmp_path)
+    pf = _params_file(tmp_path, traj, "['initial.xtc']")
+    p = _worker_params(pf)
+    assert len(p.initial_paths) == 0            # the worker override still holds
+    assert p.__dict__['_initial_path_files'] == [str(traj)]
+    assert set(p.untrimmed_initial_paths()) == {'initial.xtc'}
+
+
+def test_worker_records_a_parent_relative_initial_path(tmp_path):
+    """'../initial.xtc' must resolve against the params folder, not the cwd."""
+    outer = tmp_path / 'outer'
+    inner = tmp_path / 'outer' / 'box'
+    inner.mkdir(parents=True)
+    traj = _ramp_path(outer)
+    pf = _params_file(inner, traj, "['../initial.xtc']")
+    p = _worker_params(pf)
+    assert p.__dict__['_initial_path_files'] == [os.path.abspath(traj)]
+    assert len(p.untrimmed_initial_paths()['initial.xtc']) == 13
+
+
+def test_worker_records_an_absolute_initial_path(tmp_path):
+    elsewhere = tmp_path / 'elsewhere'
+    elsewhere.mkdir()
+    traj = _ramp_path(elsewhere)
+    box = tmp_path / 'box'
+    box.mkdir()
+    pf = _params_file(box, traj, f"['{os.path.abspath(traj)}']")
+    p = _worker_params(pf)
+    assert p.__dict__['_initial_path_files'] == [os.path.abspath(traj)]
+    assert len(p.untrimmed_initial_paths()['initial.xtc']) == 13
+
+
+def test_worker_records_a_globbed_initial_path(tmp_path):
+    sub = tmp_path / 'inputs'
+    sub.mkdir()
+    traj = _ramp_path(sub)
+    pf = _params_file(tmp_path, traj, "['inputs/*.xtc']")
+    p = _worker_params(pf)
+    assert p.__dict__['_initial_path_files'] == [os.path.abspath(traj)]
+    assert set(p.untrimmed_initial_paths()) == {'initial.xtc'}
+
+
+def test_missing_source_file_is_a_clear_error_naming_it(tmp_path):
+    traj = _ramp_path(tmp_path)
+    pf = _params_file(tmp_path, traj, "['initial.xtc']")
+    p = _worker_params(pf)
+    os.remove(traj)                              # the user moved it away
+    with pytest.raises(TypeError, match='initial.xtc'):
+        p.untrimmed_initial_paths()
+
+
+def test_no_recorded_names_is_a_clear_error(tmp_path):
+    p = _params(states='ARB')
+    p.__dict__['initial_paths'] = aimmd.PathEnsemble([])
+    with pytest.raises(TypeError, match='initial_paths'):
+        p.untrimmed_initial_paths()
+
+
+def test_an_unpopulated_states_cache_is_recomputed(tmp_path):
+    """A blank cache reads back as EMPTY strings, and '' in 'ARB' is True.
+
+    So the guard cannot be a bare containment test, or it accepts the blanks
+    and every downstream state lookup silently sees no states at all.
+    """
+    from aimmd.cache.npy import save_npy
+    from aimmd.path.utils import get_cache_fname
+    traj = _ramp_path(tmp_path)
+    save_npy(get_cache_fname(traj, 'states'), np.full(13, '', dtype='<U1'))
+    pf = _params_file(tmp_path, traj, "['initial.xtc']")
+    p = _worker_params(pf)
+    states = ''.join(np.asarray(
+        p.untrimmed_initial_paths()['initial.xtc'].states).tolist())
+    assert states == 'AAAARRRRRBBBB'
+
+
+def test_the_whole_chain_serves_every_position(tmp_path):
+    """params.py -> worker params -> untrimmed path -> seed frame."""
+    traj = _ramp_path(tmp_path)
+    pf = _params_file(tmp_path, traj, "['initial.xtc']")
+    p = _worker_params(pf)
+    full = p.untrimmed_initial_paths()['initial.xtc']
+    block = transition_block(full, p.states)
+    assert block is not None
+    run = state_run_locs(np.asarray(full.states), block.locs[0], True)
+    assert run == [0, 1, 2, 3]                   # the leading A run
+    assert [run[seed_index_in_run(len(run), q)] for q in (0.0, 0.5, 1.0)] \
+        == [0, 2, 3]

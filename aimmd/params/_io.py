@@ -51,6 +51,7 @@ from dataclasses import MISSING
 from ..path import Path
 from .._config import print
 from ..core.utils import unique_path
+from .utils import resolve_path_names
 from ..pathensemble import PathEnsemble
 from ..core.decorators import class_or_instancemethod
 
@@ -247,6 +248,23 @@ class ParamsIO(ABC):
                         fields[name] = module.__dict__[name]
                         updated_fields.append(name)
                         num_fields_from_filename += 1
+
+                # Remember the file's initial-path FILE NAMES, whatever the
+                # caller did with the field itself. A worker loads params with
+                # `initial_paths=None` so that it does not re-read and re-trim
+                # the user's trajectory in every slot, which means the loop
+                # above skipped the name -- and the free-simulation seeding
+                # needs it to reach the untrimmed path on demand (see
+                # `Params.untrimmed_initial_paths`).
+                #
+                # Resolved HERE because we are still chdir'd into the params
+                # folder, so this inherits the loader's own resolution rule
+                # instead of reimplementing it: a bare name, a '../' name, an
+                # absolute name and a glob pattern all behave exactly as they
+                # do for the field. Names only -- no readers are opened.
+                if 'initial_paths' in module.__dict__:
+                    self.__dict__['_initial_path_files'] = \
+                        resolve_path_names(module.__dict__['initial_paths'])
 
                 # after execution: swap original and local modules names
                 # avoiding conflicts
