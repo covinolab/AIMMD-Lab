@@ -425,9 +425,9 @@ Applies only to the first free trajectory of a state - the one seeded from
 `initial_paths`, before any AIMMD ensemble exists. Where the later trajectories
 restart from is `free_restart_source`, which is independent of this.
 
-The frames of the initial path that belong to the target state form one
-contiguous run: the run the transition departs from. This field picks a frame
-inside that run by fractional position, measured from the far side of the state
+The candidates are the frames of the initial path that belong to the target
+state and lie on that state's side of the transition boundary. This field picks
+one of them by fractional position, measured from the far side of the state
 towards the reactive region:
 
 - 0.0  the frame furthest from the reactive region - as deep into the state as
@@ -436,13 +436,34 @@ towards the reactive region:
 - 1.0  the frame adjacent to the reactive region. DEFAULT, and the behaviour of
        every AIMMD version so far.
 
-The fraction is a position within the state's own run, so 0.0 always means
+The fraction is a position among that state's own frames, so 0.0 always means
 "deep" and 1.0 always means "at the boundary", for A and for B alike. For a
 state sitting at the end of the path (normally B) that is the mirror image of
-the file order. The frame index is `int(fraction * (n - 1) + 0.5)` over the
-run's frames ordered far-side-first, so a run of one frame always yields that
-frame, no value can fall outside the state, and a two-frame run ties towards
-the boundary, i.e. towards the historical behaviour.
+the file order. The index is `int(fraction * (n - 1) + 0.5)` over the candidates
+ordered far-side-first, so a single candidate always yields itself, no value can
+fall outside the state, and two candidates tie towards the boundary, i.e.
+towards the historical behaviour.
+
+A brief recrossing does NOT truncate the candidates. If the path pops out of the
+state for a frame or two and comes straight back, those frames are skipped and
+the ones behind them still count. calixarene-G5's initial path is the reason:
+
+    BBBBBBBRRRRRRRRRRAAAAAAAAA R AAAAAAAAAAAAAAAAAAAAAAA
+           boundary=17 ^       ^26                    ^49
+
+Frame 26 sits at 6.35 A against a 5.5 A boundary - one frame - and drops back to
+5.37 A. Stopping at it would leave 'deepest' pointing at frame 25 (4.97 A) and
+hide the 23 deeper frames behind it, the deepest being frame 49 at 3.64 A: 1.33 A
+of depth given up to a single-frame excursion, more than the entire seed offset
+this field exists to remove. Frames outside the state are excluded from the
+candidates rather than merely traversed, so an intermediate position can never
+land on a reactive frame and start the free simulation outside the basin.
+
+A path with NO transition at all - what a brute-force shooting setup uses, in
+practice every frame in the reactive state - has neither a boundary nor an
+in-state side, so a position cannot be placed in it. Setting anything other
+than 'boundary' for such a run raises ValueError: the choice is meaningless
+there rather than merely awkward.
 
 Accepted values:
 

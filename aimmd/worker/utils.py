@@ -135,53 +135,71 @@ def get_initial_transitions_for_shooting_chain(initial_paths, states='ARB'):
     return transitions
 
 
-def state_run_locs(states, boundary_loc, at_start):
+def state_seed_locs(states, boundary_loc, at_start):
     """
-    Locations of the in-state run a transition departs from, far side first.
+    Locations a seed may be placed at, ordered far side first.
+
+    Candidates are every frame labelled with the target state that lies on the
+    target state's side of the transition boundary - NOT merely the contiguous
+    run containing that boundary. The distinction matters whenever the path
+    briefly recrosses: calixarene-G5's initial path is
+
+        BBBBBBBRRRRRRRRRRAAAAAAAAA R AAAAAAAAAAAAAAAAAAAAAAA
+               boundary=17 ^       ^26                    ^49
+
+    where frame 26 pops one frame above A* (6.35 A against a 5.5 A boundary) and
+    drops straight back. Treating that blip as the end of the run would stop the
+    candidates at frame 25 (4.97 A) and hide the 23 genuinely deeper frames
+    behind it, the deepest being frame 49 at 3.64 A - giving up 1.33 A of depth
+    to a single-frame excursion. Skipping the blip instead keeps all 32 in-state
+    frames as candidates.
+
+    Frames NOT in the target state are excluded rather than merely traversed, so
+    a seed is always inside the state even when the excursion is long: taking
+    the whole span regardless of label would let an intermediate position land
+    on a reactive frame and start the free simulation outside the basin.
 
     Parameters
     ----------
     states : array of str
         Per-frame state labels of the untrimmed initial path.
     boundary_loc : int
-        Location of the in-state frame adjacent to the reactive region, i.e.
-        the first frame of the transition block the initial-path trim keeps.
+        Location of the in-state frame adjacent to the reactive region, i.e. the
+        first (or last) frame of the transition block the initial-path trim
+        keeps.
     at_start : bool
-        True when the state's run precedes the reactive region in file order
-        (the usual case for `states[0]`), False when it follows it (`states[-1]`).
+        True when the target state's frames precede the reactive region in file
+        order (the usual case for `states[0]`), False when they follow it
+        (`states[-1]`).
 
     Returns
     -------
     list of int
-        The maximal run of the same state label containing `boundary_loc`,
-        ordered **far side first**: index 0 is the frame furthest from the
-        reactive region and the last index is `boundary_loc`. A leading or
-        trailing excursion out of the state is therefore never swept in.
+        Locations in the untrimmed path, ordered **far side first**: index 0 is
+        the frame furthest from the reactive region and the last index is
+        `boundary_loc`. Never empty - `boundary_loc` itself always qualifies.
     """
     states = np.asarray(states)
     label = states[boundary_loc]
     if at_start:
-        low = boundary_loc
-        while low > 0 and states[low - 1] == label:
-            low -= 1
-        return list(range(low, boundary_loc + 1))
-    high = boundary_loc
-    while high + 1 < len(states) and states[high + 1] == label:
-        high += 1
-    return list(range(high, boundary_loc - 1, -1))
+        span = range(0, boundary_loc + 1)                    # ascending
+    else:
+        span = range(len(states) - 1, boundary_loc - 1, -1)  # descending
+    return [loc for loc in span if states[loc] == label]
 
 
-def seed_index_in_run(n, position):
+def seed_index_for_position(n, position):
     """
-    Index into a state's run of frames for a fractional seeding position.
+    Index into the ordered seed candidates for a fractional position.
 
-    `position` is measured over the run ordered far-side-first, so 0.0 is the
-    frame furthest from the reactive region and 1.0 the one adjacent to it.
+    `position` is measured over the candidates ordered far-side-first (see
+    `state_seed_locs`), so 0.0 is the frame furthest from the reactive region
+    and 1.0 the one adjacent to it.
 
     Uses ``int(position * (n - 1) + 0.5)`` rather than `round`, whose
-    banker's rounding sends ``round(0.5)`` to 0 and would make a two-frame run
-    seed at the *far* frame for ``position=0.5``. Ties therefore go towards the
-    boundary, i.e. towards the historical behaviour.
+    banker's rounding sends ``round(0.5)`` to 0 and would make a two-candidate
+    set seed at the *far* frame for ``position=0.5``. Ties therefore go towards
+    the boundary, i.e. towards the historical behaviour.
     """
     if n <= 1:
         return 0
@@ -238,9 +256,9 @@ def _match_untrimmed(untrimmed_paths, path, states):
         f'candidates are {sorted(untrimmed_paths)}')
 
 
-def _couple_in_state_run(untrimmed, target_state, states, position, rng):
+def _seed_couple(untrimmed, target_state, states, position, rng):
     """
-    Build a ``(history, seed)`` couple at `position` inside the state's run.
+    Build a ``(history, seed)`` couple at `position` among the seed candidates.
 
     The couple's last frame is the seed `Params.initialize_simulation` starts
     the MD from; the first is its neighbour on the boundary side, written as
@@ -255,21 +273,25 @@ def _couple_in_state_run(untrimmed, target_state, states, position, rng):
     """
     block = transition_block(untrimmed, states)
     if block is None:
-        raise RuntimeError(
-            f'{untrimmed.fname} holds no {states!r} transition, so there is no '
-            f'state boundary to place a seed relative to')
+        raise ValueError(
+            f'{untrimmed.fname} holds no {states!r} transition, so it has '
+            f'neither a state boundary nor an in-state side, and a seed cannot '
+            f'be placed by position in it. This is what a brute-force shooting '
+            f'path looks like (in practice every frame {states[1]!r}); the '
+            f'seeding positions are meaningless for such a run, so leave '
+            f'free_seeding_position at its default here.')
     at_start = block.initial('states') == target_state
     boundary_loc = block.locs[0] if at_start else block.locs[-1]
-    run = state_run_locs(untrimmed.states, boundary_loc, at_start)
+    candidates = state_seed_locs(untrimmed.states, boundary_loc, at_start)
 
     if position == SEEDING_POSITION_RANDOM:
         if rng is None:
-            index = int(np.random.randint(len(run)))
+            index = int(np.random.randint(len(candidates)))
         else:
-            index = int(rng.integers(len(run)))
+            index = int(rng.integers(len(candidates)))
     else:
-        index = seed_index_in_run(len(run), position)
-    seed_loc = run[index]
+        index = seed_index_for_position(len(candidates), position)
+    seed_loc = candidates[index]
 
     if at_start:
         # [seed, seed+1] reversed -> (history on the boundary side, seed)
@@ -353,7 +375,7 @@ def get_initial_frames_for_free_simulations(
                 initial_frames._paths.append(path[-2:])
         else:
             initial_frames._paths.append(
-                _couple_in_state_run(
+                _seed_couple(
                     _match_untrimmed(untrimmed_paths, path, states),
                     target_state, states, position, rng))
 
