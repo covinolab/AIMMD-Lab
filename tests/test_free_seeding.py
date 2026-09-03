@@ -40,12 +40,17 @@ test_index_rule_fraction
 test_index_rule_single_frame_run
 test_index_rule_two_frame_run_ties_to_the_boundary
 test_index_rule_is_mirrored_for_a_trailing_state
+test_a_brief_recrossing_does_not_truncate_the_candidates
+test_candidates_exclude_frames_outside_the_state
+test_deepest_reaches_past_a_recrossing
+test_a_path_without_a_transition_is_a_value_error
+test_an_all_reactive_path_is_a_value_error
 
 Frame selection on real paths
 test_deepest_picks_the_first_frame_of_a_leading_run
 test_deepest_picks_the_last_frame_of_a_trailing_run
 test_middle_picks_the_middle_of_the_run
-test_the_run_is_the_one_containing_the_transition_boundary
+test_a_leading_dip_is_skipped_not_treated_as_the_state_edge
 test_couple_is_always_two_frames_with_the_prefix_on_the_boundary_side
 test_random_is_reproducible_for_a_given_worker
 
@@ -84,8 +89,8 @@ from aimmd.params.utils import (
 )
 from aimmd.worker.utils import (
     get_initial_frames_for_free_simulations,
-    seed_index_in_run,
-    state_run_locs,
+    seed_index_for_position,
+    state_seed_locs,
     transition_block,
 )
 
@@ -226,33 +231,33 @@ def test_position_canonical_form_round_trips():
 
 def test_index_rule_named_values():
     n = 5
-    assert seed_index_in_run(n, 1.0) == 4
-    assert seed_index_in_run(n, 0.5) == 2
-    assert seed_index_in_run(n, 0.0) == 0
+    assert seed_index_for_position(n, 1.0) == 4
+    assert seed_index_for_position(n, 0.5) == 2
+    assert seed_index_for_position(n, 0.0) == 0
 
 
 def test_index_rule_fraction():
-    assert seed_index_in_run(5, 0.25) == 1
-    assert seed_index_in_run(9, 0.25) == 2
+    assert seed_index_for_position(5, 0.25) == 1
+    assert seed_index_for_position(9, 0.25) == 2
 
 
 def test_index_rule_single_frame_run():
     for p in (0.0, 0.5, 1.0):
-        assert seed_index_in_run(1, p) == 0
+        assert seed_index_for_position(1, p) == 0
 
 
 def test_index_rule_two_frame_run_ties_to_the_boundary():
     """round(0.5) == 0 in Python; the rule must not inherit that."""
-    assert seed_index_in_run(2, 0.5) == 1
-    assert seed_index_in_run(2, 0.0) == 0
-    assert seed_index_in_run(2, 1.0) == 1
+    assert seed_index_for_position(2, 0.5) == 1
+    assert seed_index_for_position(2, 0.0) == 0
+    assert seed_index_for_position(2, 1.0) == 1
 
 
 def test_index_rule_is_mirrored_for_a_trailing_state():
     """The run is ordered far-side-first, so the rule itself never mirrors."""
     states = np.array(list('AAARRRRBB'), dtype='<U1')
-    leading = state_run_locs(states, boundary_loc=2, at_start=True)
-    trailing = state_run_locs(states, boundary_loc=7, at_start=False)
+    leading = state_seed_locs(states, boundary_loc=2, at_start=True)
+    trailing = state_seed_locs(states, boundary_loc=7, at_start=False)
     assert leading == [0, 1, 2]
     assert trailing == [8, 7]
 
@@ -285,13 +290,22 @@ def test_middle_picks_the_middle_of_the_run(tmp_path):
     assert got[0].locs[-1] == 2
 
 
-def test_the_run_is_the_one_containing_the_transition_boundary(tmp_path):
-    """A leading dip out of the state must not be swept into the run."""
+def test_a_leading_dip_is_skipped_not_treated_as_the_state_edge(tmp_path):
+    """'ARAAARRRB': the A at loc 0 stays a candidate; the R at loc 1 does not.
+
+    Under the earlier rule - the maximal CONTIGUOUS run containing the boundary
+    - loc 0 was unreachable and 'deepest' stopped at loc 2. Decision (E) skips
+    the one-frame excursion instead, so the deepest A in the file is reachable
+    while the reactive frame itself stays excluded from selection.
+    """
     path = _path(tmp_path, 'ARAAARRRB')
-    trimmed = path[4:]           # transition block starts at the last A
+    trimmed = path[4:]                   # transition block starts at the last A
+    assert state_seed_locs(np.asarray(path.states), 4, True) == [0, 2, 3, 4]
+
     got = get_initial_frames_for_free_simulations(
         [trimmed], 'A', 'R', position=0.0, untrimmed_paths=_untrimmed(path), states='ARB')
-    assert got[0].locs[-1] == 2  # the run is locs 2..4, not 0..4
+    assert got[0].locs[-1] == 0          # was 2 under the contiguous-run rule
+    assert got[0].states[-1] == 'A'
 
 
 def test_couple_is_always_two_frames_with_the_prefix_on_the_boundary_side(tmp_path):
@@ -640,7 +654,69 @@ def test_the_whole_chain_serves_every_position(tmp_path):
     full = p.untrimmed_initial_paths()['initial.xtc']
     block = transition_block(full, p.states)
     assert block is not None
-    run = state_run_locs(np.asarray(full.states), block.locs[0], True)
+    run = state_seed_locs(np.asarray(full.states), block.locs[0], True)
     assert run == [0, 1, 2, 3]                   # the leading A run
-    assert [run[seed_index_in_run(len(run), q)] for q in (0.0, 0.5, 1.0)] \
+    assert [run[seed_index_for_position(len(run), q)] for q in (0.0, 0.5, 1.0)] \
         == [0, 2, 3]
+
+
+# ── decision (E): a brief recrossing must not wall off the deep basin ─────
+#
+# calixarene-G5's real initial path pops one frame above A* and drops straight
+# back; treating that blip as the end of the state would hide 23 deeper frames
+# behind it and give up 1.33 A of depth. Candidates are therefore every in-state
+# frame on the state's side of the boundary, with out-of-state frames EXCLUDED
+# (not merely traversed, or an intermediate position could seed outside A).
+
+DIP = 'AAARAAAARRRB'      # A at 0,1,2 and 4,5,6,7; the blip is frame 3
+
+
+def test_a_brief_recrossing_does_not_truncate_the_candidates():
+    states = np.array(list(DIP), dtype='<U1')
+    got = state_seed_locs(states, boundary_loc=7, at_start=True)
+    assert got == [0, 1, 2, 4, 5, 6, 7]        # frame 3 skipped, not a wall
+
+
+def test_candidates_exclude_frames_outside_the_state():
+    states = np.array(list(DIP), dtype='<U1')
+    got = state_seed_locs(states, boundary_loc=7, at_start=True)
+    assert 3 not in got
+    assert all(states[loc] == 'A' for loc in got)
+
+
+def test_deepest_reaches_past_a_recrossing(tmp_path):
+    path = _path(tmp_path, DIP, stem='dip')
+    trimmed = path[7:]                          # the transition block
+    for position, want in ((0.0, 0), (0.5, 4), (1.0, 7)):
+        got = get_initial_frames_for_free_simulations(
+            [trimmed], 'A', 'R', position=position,
+            untrimmed_paths=_untrimmed(path), states='ARB')
+        couple = got[0]
+        assert couple.locs[-1] == want
+        assert couple.states[-1] == 'A'
+        assert len(couple) == 2
+        assert couple.locs[0] == couple.locs[-1] + 1
+
+
+def test_a_path_without_a_transition_is_a_value_error(tmp_path):
+    """Brute-force setups have no boundary, so a position is meaningless."""
+    path = _path(tmp_path, 'AAAABBBB', stem='notransition')
+    with pytest.raises(ValueError, match='brute-force'):
+        get_initial_frames_for_free_simulations(
+            [path], 'A', 'R', position=0.0,
+            untrimmed_paths=_untrimmed(path), states='ARB')
+
+
+def test_an_all_reactive_path_is_a_value_error(tmp_path):
+    path = _path(tmp_path, 'RRRRRR', stem='allreactive')
+    with pytest.raises(ValueError, match='brute-force'):
+        get_initial_frames_for_free_simulations(
+            [path], 'A', 'R', position=0.0,
+            untrimmed_paths=_untrimmed(path), states='ARB')
+
+
+def test_the_default_still_works_on_a_brute_force_path(tmp_path):
+    """The ValueError must fire only for the options that need a boundary."""
+    path = _path(tmp_path, 'RRRRRR', stem='allreactive2')
+    got = get_initial_frames_for_free_simulations([path], 'R', 'R')
+    assert len(got) == 1 and len(got[0]) == 2
