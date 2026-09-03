@@ -51,7 +51,7 @@ _STORE_RETRY_SECONDS = float(os.environ.get('AIMMD_STORE_RETRY_SECONDS', 300.0))
 #: than inheriting Python's 5 s default. Overridable with
 #: ``AIMMD_SQLITE_BUSY_SECONDS``. Must stay well under _STORE_RETRY_SECONDS, or
 #: a single attempt consumes the whole budget.
-_SQLITE_BUSY_SECONDS = float(os.environ.get('AIMMD_SQLITE_BUSY_SECONDS', 10.0))
+_SQLITE_BUSY_SECONDS = float(os.environ.get('AIMMD_SQLITE_BUSY_SECONDS', 30.0))
 
 
 def atom_coordinate_descriptors_function(
@@ -92,24 +92,78 @@ def atom_coordinate_descriptors_function(
     return np.array(result)
 
 def init_db(db_path: str = "graphs_cache.sqlite") -> sqlite3.Connection:
-    """Initialize the SQLite database for graph caching."""
-    # `CacheConnection` is a sqlite3.Connection subclass, so this is a drop-in:
-    # isinstance() still holds and every caller is unaffected.  It exists only so
-    # per-connection state (a /dev/shm replica, a blob memo) can be attached --
-    # a plain sqlite3.Connection has no __dict__.  See aimmd.network.shm_cache.
-    conn = sqlite3.connect(db_path, timeout=_SQLITE_BUSY_SECONDS,
-                           factory=shm_cache.CacheConnection)
-    conn.execute("CREATE TABLE IF NOT EXISTS graphs_cache"
-                "(key TEXT PRIMARY KEY, data BLOB)")
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA wal_autocheckpoint=1000;")
-    conn.commit()
-    # `Params.load` chdir's into the params folder before exec'ing it, so a
-    # relative db_path resolves correctly here.
-    conn._aimmd_db_path = os.path.abspath(db_path)
-    shm_cache.register(conn)
-    return conn
+    """Initialize (or open) the SQLite database for graph caching.
+
+    Hardened against the campaign-start thundering herd. At job start every one
+    of the ~36 processes opens all 5 caches at once (Params exec calls this once
+    per system), and a continuation inherits multi-GB caches whose large WAL --
+    left un-checkpointed by the SIGKILL that ends a walltime-limited job -- must
+    be recovered by the first opener under an exclusive lock that can exceed the
+    busy timeout. The previous version took the WAL writer lock unconditionally
+    (via `CREATE TABLE IF NOT EXISTS`, even when the table already existed) and
+    had no retry, so the losers of that race raised `database is locked` straight
+    out through `Params.load`, uncaught, killing the whole job in minutes.
+
+    Three defences:
+      - a read-only existence check (`sqlite_master`) before any DDL, so on a
+        continuation -- where the table always exists -- almost every opener
+        takes no writer lock at all;
+      - an explicit ``PRAGMA busy_timeout`` set first, so it covers recovery and
+        every statement below (raised from Python's 5 s default);
+      - a bounded retry-with-backoff around the whole open, so a transient lock
+        during the herd is survived rather than fatal.
+    """
+    busy_ms = int(_SQLITE_BUSY_SECONDS * 1000)
+    deadline = time.monotonic() + _STORE_RETRY_SECONDS
+    attempt = 0
+    while True:
+        conn = None
+        try:
+            # `CacheConnection` is a sqlite3.Connection subclass, so this is a
+            # drop-in: isinstance() still holds and every caller is unaffected.
+            # It exists only so per-connection state (a /dev/shm replica, a blob
+            # memo) can be attached -- a plain sqlite3.Connection has no
+            # __dict__.  See aimmd.network.shm_cache.
+            conn = sqlite3.connect(db_path, timeout=_SQLITE_BUSY_SECONDS,
+                                   factory=shm_cache.CacheConnection)
+            # Set the busy timeout first and explicitly, so it also covers WAL
+            # recovery triggered by the statements below.
+            conn.execute(f"PRAGMA busy_timeout={busy_ms}")
+            # Read-only existence check: a WAL reader, never the writer lock. On
+            # a continuation the table already exists, so this is the whole cost.
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='graphs_cache'").fetchone()
+            if exists is None:
+                conn.execute("CREATE TABLE IF NOT EXISTS graphs_cache"
+                             "(key TEXT PRIMARY KEY, data BLOB)")
+                conn.commit()
+            # Setting journal_mode=WAL on an already-WAL db is a no-op; only pay
+            # the mode-change (which needs an exclusive moment) when necessary.
+            if str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() != "wal":
+                conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA wal_autocheckpoint=1000;")
+            conn.commit()
+            # `Params.load` chdir's into the params folder before exec'ing it, so
+            # a relative db_path resolves correctly here.
+            conn._aimmd_db_path = os.path.abspath(db_path)
+            shm_cache.register(conn)
+            return conn
+        except sqlite3.OperationalError as exc:
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+            message = str(exc).lower()
+            if ('locked' in message or 'busy' in message) \
+                    and time.monotonic() < deadline:
+                attempt += 1
+                time.sleep(min(2.0, 0.05 * 2 ** min(attempt, 6))
+                           * (0.5 + random.random()))
+                continue
+            raise
 
 
 def _encode(data: torch_geometric.data.Data, compression_lib: str) -> bytes:
