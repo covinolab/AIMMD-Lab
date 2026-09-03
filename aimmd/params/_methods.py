@@ -343,25 +343,42 @@ class ParamsMethods(ABC):
         `_process_and_check` replaces every entry of `initial_paths` by its
         transition block, which starts at the last in-state frame before the
         reactive region. Every `free_seeding_position` other than ``'boundary'``
-        needs the frames that removes, so the pre-trim paths are kept aside at
-        load time. Entries missing from that cache (an old session, a path
-        assigned without a states check) are reloaded from the file name.
+        needs the frames that removes, so they are read back from the source
+        file each entry still names.
 
         Returns
         -------
-        list of aimmd.path.Path
-            One entry per initial path, in the same order, with `states`
-            computed.
+        dict
+            ``{base name of the source file: untrimmed Path}``, with `states`
+            computed. Keyed by name rather than by position because a worker
+            does not hold `params.initial_paths`: it reads its own copies back
+            from ``<run>/initial<states>/``, in whatever order the glob gives
+            and with the trajectory extension appended.
+
+        Notes
+        -----
+        Multi-system runs keep one `PathEnsemble` per system in
+        `initial_paths`; those are flattened here, which is safe because the
+        source base names are what the lookup matches on.
         """
-        kept = self.__dict__.get('_untrimmed_initial_paths') or {}
-        out = []
-        for i, trimmed in enumerate(self.initial_paths):
-            path = kept.get(i)
-            if path is None:
-                path = Path(trimmed.fname)
-                if 'states' not in path.__dict__:
-                    path.states = path.compute(self.states_function)
-            out.append(path)
+        groups = getattr(self, 'initial_paths', None) or []
+        if isinstance(groups, PathEnsemble):
+            flat = list(groups)
+        else:
+            flat = [path for group in groups for path in group]
+
+        out = {}
+        for trimmed in flat:
+            base = os.path.basename(str(trimmed.fname))
+            if base in out:
+                continue
+            path = Path(trimmed.fname)
+            try:
+                # the trim already computed these, so the cache is warm
+                path.states
+            except Exception:
+                path.states = path.compute(self.states_function)
+            out[base] = path
         return out
 
     def initialize_simulation(self, frame, *deffnm,

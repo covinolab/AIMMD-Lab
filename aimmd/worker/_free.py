@@ -208,6 +208,7 @@ class WorkerFree(ABC):
                 position=seeding_position,
                 untrimmed_paths=(None if at_boundary
                                  else params.untrimmed_initial_paths()),
+                states=params.states,
                 rng=(np.random.default_rng(k)
                      if seeding_position == 'random' else None))
         if not at_boundary:
