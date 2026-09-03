@@ -343,8 +343,24 @@ class ParamsMethods(ABC):
         `_process_and_check` replaces every entry of `initial_paths` by its
         transition block, which starts at the last in-state frame before the
         reactive region. Every `free_seeding_position` other than ``'boundary'``
-        needs the frames that removes, so they are read back from the source
-        file each entry still names.
+        needs the frames that removes, so the source files are read back here.
+
+        Where the names come from depends on who is asking:
+
+        - in the launching process `initial_paths` is populated, and each
+          (trimmed) entry still carries the `fname` of the user's file;
+        - in a worker it is empty, because `aimmd/worker/_helpers.py` loads
+          params with ``initial_paths=None`` so that a node's slots do not each
+          re-read and re-trim the trajectory. The names then come from
+          ``_initial_path_files``, recorded by `Params.load` while it was
+          chdir'd into the params folder and so resolved by exactly the rule
+          the field itself uses - a bare name, a ``'../'`` name, an absolute
+          name and a glob pattern all behave the same way.
+
+        Nothing is cached on disk and nothing is written at build time, so a
+        hand-edited params.py takes effect on an already-built run folder
+        without a rebuild. The cost is one `states_function` pass per worker,
+        paid only when a non-default `free_seeding_position` is set.
 
         Returns
         -------
@@ -363,20 +379,50 @@ class ParamsMethods(ABC):
         """
         groups = getattr(self, 'initial_paths', None) or []
         if isinstance(groups, PathEnsemble):
-            flat = list(groups)
+            sources = [path.fname for path in groups]
+        elif groups:
+            sources = [path.fname for group in groups for path in group]
         else:
-            flat = [path for group in groups for path in group]
+            # A worker loads params with `initial_paths=None`, so the field is
+            # empty there and the names come from what the params FILE said,
+            # recorded at load time and already resolved to absolute paths.
+            sources = list(self.__dict__.get('_initial_path_files') or [])
+            if not sources:
+                raise TypeError(
+                    "cannot reach the untrimmed initial paths: this Params has "
+                    "neither 'initial_paths' nor the file names recorded at "
+                    "load time. A free_seeding_position other than 'boundary' "
+                    "needs them; check that params.py assigns 'initial_paths'.")
 
         out = {}
-        for trimmed in flat:
-            base = os.path.basename(str(trimmed.fname))
+        for source in sources:
+            base = os.path.basename(str(source))
             if base in out:
                 continue
-            path = Path(trimmed.fname)
+            if not os.path.exists(source):
+                raise TypeError(
+                    f"the initial path {source!r} named by params.py is not "
+                    f"there. A free_seeding_position other than 'boundary' "
+                    f"reads the frames the transition trim removed, so the "
+                    f"file itself is needed - the copy in the run's "
+                    f"initial<states>/ folder is already trimmed.")
+            path = Path(source)
+            # A cache may sit beside the file, but it is not necessarily
+            # usable: an unpopulated one reads back as an array of EMPTY
+            # strings rather than raising, so validate instead of merely
+            # catching. Recomputing costs one states_function pass over a
+            # path of tens of frames.
+            usable = False
             try:
-                # the trim already computed these, so the cache is warm
-                path.states
+                cached = np.asarray(path.states)
+                usable = (len(cached) == len(path)
+                          and cached.dtype.kind in 'US'
+                          and all(len(str(label)) == 1
+                                  and str(label) in self.states
+                                  for label in cached))
             except Exception:
+                usable = False
+            if not usable:
                 path.states = path.compute(self.states_function)
             out[base] = path
         return out

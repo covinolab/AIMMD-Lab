@@ -28,9 +28,11 @@ AIMMD components.
 """
 
 # external
+import os
 import re
 import numpy as np
 import torch
+from glob import glob
 from re import split
 from types import FunctionType as Function
 from inspect import getsource
@@ -426,3 +428,54 @@ def legacy_transitions_replacement(value):
     if text.lower() == 'all':
         return 'transitions'
     return {letter: 'transitions' for letter in text.upper()}
+
+
+def resolve_path_names(value):
+    """
+    Absolute file names behind an ``initial_paths``-style value.
+
+    Accepts what `PathEnsemble` accepts as a source of names: a single name, a
+    glob pattern, an iterable of either (including the nested per-system lists a
+    multi-system run uses), or already-built `Path` objects. NO readers are
+    opened - this resolves names only.
+
+    Relative names and patterns are resolved against the CURRENT working
+    directory, so call it while chdir'd wherever those names are meant to be
+    interpreted. `Params.load` chdirs into the params file's folder before it
+    executes the file (`aimmd/params/_io.py`), so calling it from there inherits
+    the loader's own resolution rule rather than reimplementing it: a bare name,
+    a ``'../'`` name, an absolute name and a glob pattern all behave exactly as
+    they do for the field itself.
+
+    Returns
+    -------
+    list of str
+        Absolute file names, glob patterns expanded and sorted, duplicates
+        dropped in first-seen order. A name matching nothing is kept as its
+        resolved absolute form rather than silently vanishing, so whatever tries
+        to read it later can say which file is missing.
+    """
+    out = []
+
+    def walk(item):
+        if item is None:
+            return
+        if hasattr(item, 'fname'):          # a Path (or anything path-like)
+            item = item.fname
+        if isinstance(item, (str, os.PathLike)):
+            text = os.fspath(item)
+            matches = sorted(glob(text))
+            for name in (matches or [text]):
+                name = os.path.abspath(name)
+                if name not in out:
+                    out.append(name)
+            return
+        try:
+            children = list(item)           # PathEnsemble, list, tuple, ...
+        except TypeError:
+            return
+        for child in children:
+            walk(child)
+
+    walk(value)
+    return out
