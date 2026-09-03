@@ -531,3 +531,90 @@ def test_topup_breakage_is_retried_next_cycle(tmp_path, monkeypatch):
     conn.execute('INSERT INTO graphs_cache VALUES (?,?)', ('b', pickle.dumps(2)))
     conn.commit()
     assert shm_cache.refresh_replicas().get(conn._aimmd_db_path) == 1
+
+
+# ------------------------------------------- staging must never be able to hang --
+def test_stage_cache_aborts_on_deadline_and_falls_back(tmp_path, monkeypatch):
+    """Staging must be bounded by a wall-clock deadline.
+
+    The production hang was `conn.backup(dest, pages=-1)`: it holds one WAL
+    read-snapshot for the entire uninterruptible copy, which blocks WAL
+    checkpointing, so under concurrent writers the WAL grows without bound and
+    the single copy never returns -- 6-12 h of silent trainer idle. The
+    replacement must instead have a deadline it cannot exceed, and on the
+    deadline it must degrade to "no replica, read the real DB" (return None,
+    attach nothing, leave no partial files) rather than block.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {chr(97 + i): i for i in range(6)})
+    monkeypatch.setattr(shm_cache, '_STAGE_DEADLINE_SECONDS', 0.0, raising=True)
+
+    result = shm_cache.stage_cache(conn)
+
+    assert result is None, 'a blown deadline must fall back, not stage'
+    assert getattr(conn, '_aimmd_replica', None) is None
+    # no half-written replica left behind anywhere under the shm root
+    root = shm_cache.shm_root()
+    leftovers = []
+    for dirpath, _dirs, files in os.walk(root):
+        leftovers += [f for f in files if '.partial' in f or f.endswith('.sqlite')]
+    assert leftovers == [], f'staging left files behind: {leftovers}'
+
+
+def test_stage_cache_completes_under_concurrent_writers(tmp_path):
+    """A cache written continuously during staging must still stage, bounded.
+
+    This is the scenario that hung in production (writers appending while the
+    trainer copies). The replica must come out queryable and contain at least
+    the rows present when staging began.
+    """
+    import threading
+
+    path = tmp_path / 'c.sqlite'
+    conn = _make_cache(path, {f'k{i}': i for i in range(200)})
+
+    stop = threading.Event()
+
+    def writer():
+        w = sqlite3.connect(str(path), timeout=5.0)
+        w.execute('PRAGMA busy_timeout=5000')
+        i = 0
+        while not stop.is_set():
+            try:
+                w.execute('INSERT OR REPLACE INTO graphs_cache VALUES (?,?)',
+                          (f'w{i}', pickle.dumps(i)))
+                w.commit()
+                i += 1
+            except sqlite3.OperationalError:
+                pass
+        w.close()
+
+    threads = [threading.Thread(target=writer) for _ in range(3)]
+    for t in threads:
+        t.start()
+    try:
+        t0 = __import__('time').monotonic()
+        result = shm_cache.stage_cache(conn)
+        elapsed = __import__('time').monotonic() - t0
+    finally:
+        stop.set()
+        for t in threads:
+            t.join(timeout=10)
+
+    assert result is not None and os.path.exists(result)
+    assert elapsed < 60, f'staging took {elapsed:.1f}s under writers (should be seconds)'
+    n = conn._aimmd_replica.execute(
+        'SELECT count(*) FROM graphs_cache').fetchone()[0]
+    assert n >= 200, f'replica has {n} rows, lost data present at stage start'
+
+
+def test_stage_cache_never_raises_on_copy_failure(tmp_path, monkeypatch):
+    """Any staging failure must degrade to None, never propagate."""
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1})
+
+    def boom(*a, **k):
+        raise OSError('simulated tmpfs failure')
+    monkeypatch.setattr(shm_cache, '_snapshot_copy', boom)
+
+    result = shm_cache.stage_cache(conn)   # must not raise
+    assert result is None
+    assert getattr(conn, '_aimmd_replica', None) is None

@@ -522,3 +522,111 @@ def test_init_db_sets_an_explicit_busy_timeout(tmp_path):
     conn = gu.init_db(db_path=str(tmp_path / 'g.sqlite'))
     got = conn.execute('PRAGMA busy_timeout').fetchone()[0]
     assert got >= 10000, f'busy_timeout is {got} ms; expected an explicit >=10 s'
+
+
+# ------------------------------------- init_db must survive the startup herd --
+def test_init_db_retries_on_transient_lock(tmp_path, monkeypatch):
+    """A locked cache at open time must be retried, not fatal.
+
+    The continuation crash: ~36 processes x 5 caches open at once against caches
+    carrying a multi-GB stale WAL left by the SIGKILLed job; the first opener
+    holds an exclusive lock for WAL recovery > the busy timeout, and init_db --
+    which had no retry -- raised `database is locked` straight through Params
+    load, uncaught, killing the job in ~3 min. init_db must retry with backoff.
+    """
+    import sqlite3
+    gu = _import_graph_utils()
+    monkeypatch.setattr(gu, '_SQLITE_BUSY_SECONDS', 0.1, raising=True)
+
+    real_connect = sqlite3.connect
+    state = {'fails': 3}
+
+    class LockingConn:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a):
+            if sql.strip().upper().startswith(('CREATE TABLE', 'SELECT 1 FROM SQLITE_MASTER')) \
+                    and state['fails'] > 0:
+                state['fails'] -= 1
+                raise sqlite3.OperationalError('database is locked')
+            return self._inner.execute(sql, *a)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def flaky_connect(*a, **k):
+        return LockingConn(real_connect(*a, **k))
+    monkeypatch.setattr(sqlite3, 'connect', flaky_connect)
+
+    conn = gu.init_db(db_path=str(tmp_path / 'g.sqlite'))   # must NOT raise
+    assert state['fails'] == 0, 'should have retried through the transient locks'
+    assert conn is not None
+
+
+def test_init_db_skips_ddl_when_table_exists(tmp_path):
+    """On a continuation the table already exists; opening it must not take the
+    WAL writer lock. A read-only existence check replaces the unconditional
+    CREATE TABLE, so 179/180 concurrent openers never contend for the writer."""
+    import sqlite3
+    gu = _import_graph_utils()
+    p = str(tmp_path / 'g.sqlite')
+    gu.init_db(db_path=p).close()          # first call creates the table
+
+    real_connect = sqlite3.connect
+    ddl = {'count': 0}
+
+    class WatchConn:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a):
+            if sql.strip().upper().startswith('CREATE TABLE'):
+                ddl['count'] += 1
+            return self._inner.execute(sql, *a)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    import unittest.mock as _mock
+    with _mock.patch.object(sqlite3, 'connect',
+                            lambda *a, **k: WatchConn(real_connect(*a, **k))):
+        gu.init_db(db_path=p).close()      # second call: table already present
+    assert ddl['count'] == 0, 'CREATE TABLE ran though the table already existed'
+
+
+def test_init_db_busy_timeout_is_at_least_30s(tmp_path):
+    """Recovery of a multi-GB WAL can exceed 10 s; the per-attempt patience
+    must be raised well above it."""
+    gu = _import_graph_utils()
+    conn = gu.init_db(db_path=str(tmp_path / 'g.sqlite'))
+    got = conn.execute('PRAGMA busy_timeout').fetchone()[0]
+    assert got >= 30000, f'busy_timeout is {got} ms; expected >= 30 s'
+
+
+def _herd_opener(path, q):
+    """Module-level so spawn can pickle it."""
+    try:
+        import aimmd.network.graph_utils as g
+        g.init_db(db_path=path).close()
+        q.put('ok')
+    except Exception as exc:                                    # noqa: BLE001
+        q.put(f'FAIL:{type(exc).__name__}')
+
+
+def test_init_db_concurrent_openers_all_succeed(tmp_path):
+    """A herd of concurrent openers on one existing cache must all succeed."""
+    import multiprocessing as mp
+    gu = _import_graph_utils()
+    path = str(tmp_path / 'g.sqlite')
+    gu.init_db(db_path=path).close()
+
+    ctx = mp.get_context('spawn')
+    q = ctx.Queue()
+    ps = [ctx.Process(target=_herd_opener, args=(path, q)) for _ in range(16)]
+    for pr in ps:
+        pr.start()
+    for pr in ps:
+        pr.join(timeout=120)
+    res = [q.get() for _ in range(16)]
+    assert res.count('ok') == 16, res

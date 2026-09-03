@@ -80,6 +80,16 @@ __all__ = ['CacheConnection', 'BlobMemo', 'register', 'registered_connections',
 
 
 _GIB = 1024 ** 3
+#: Hard wall-clock ceiling for staging ONE cache into tmpfs. The old
+#: ``backup(pages=-1)`` had no ceiling and could block for the whole SLURM
+#: allocation (6-12 h of silent trainer idle observed in production); this bounds
+#: it, and on the ceiling staging degrades to "no replica, read the real DB"
+#: rather than hang. Overridable with ``AIMMD_STAGE_DEADLINE``.
+_STAGE_DEADLINE_SECONDS = float(os.environ.get('AIMMD_STAGE_DEADLINE', 300.0))
+#: Sequential copy chunk; matches JUPITER's GPFS block size (8 MiB).
+_COPY_CHUNK = 8 * 1024 * 1024
+#: Busy timeout for the short-lived checkpoint/pin connection used while staging.
+_STAGE_PIN_BUSY_S = 30.0
 _DISABLED = ('', '0', 'off', 'none', 'false', 'no')
 _DIR_PREFIX = 'aimmd-cache-u'
 
@@ -375,17 +385,80 @@ def _reap_stale(shm_dir=None):
 
 
 # ---------------------------------------------------------------- staging --
+def _snapshot_copy(conn, db_path, partial, deadline_s):
+    """Bounded, hang-proof snapshot of a live WAL cache into ``partial``.
+
+    Replaces ``conn.backup(dest, pages=-1)``. That call defeats the
+    restart-livelock of a chunked backup, but only by holding one WAL
+    read-snapshot for the entire, uninterruptible, single C-level copy -- and
+    that read-mark blocks WAL checkpointing. On a multi-GB, write-hot cache the
+    WAL then grows without bound while writers append, per-page reads on a
+    parallel filesystem collapse, and the one copy never returns: 6-12 h of
+    silent trainer idle were observed in production, and ``Connection.interrupt``
+    is ignored by ``sqlite3_backup_step`` so it cannot even be aborted.
+
+    Instead:
+      1. ``PRAGMA wal_checkpoint(TRUNCATE)`` folds the WAL into the main file. A
+         checkpoint RETURNS (busy or done) -- it never waits unboundedly -- so
+         this step cannot hang; a partial checkpoint just leaves the main file
+         slightly behind, which is fine (see below).
+      2. Pin a short read snapshot on a throwaway connection. A reader blocks WAL
+         *reset*, so no concurrent checkpoint can rewrite main-file pages under
+         the copy. Held only for the seconds of the copy, not the hours a
+         ``pages=-1`` step would.
+      3. Plain SEQUENTIAL file copy of the main db (+ the now-tiny WAL) with a
+         wall-clock deadline enforced in our own loop -- sequential I/O plays to
+         a parallel FS's strength, and a deadline is trivially enforceable
+         because the loop is ours.
+
+    Correctness rests on the cache being content-addressed and append-only: the
+    copy is at worst slightly stale ("incomplete, never wrong"), and
+    :func:`refresh_replicas` tops it up. Raises ``TimeoutError`` on the deadline.
+    """
+    t0 = time.monotonic()
+    # 1. bounded checkpoint -- a partial result is acceptable, so swallow errors.
+    try:
+        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    except sqlite3.Error:
+        pass
+    # 2. pin a read snapshot so a checkpoint cannot move main-file pages mid-copy
+    pin = sqlite3.connect(db_path, timeout=_STAGE_PIN_BUSY_S)
+    try:
+        pin.execute('BEGIN')
+        pin.execute('SELECT 1 FROM graphs_cache LIMIT 1').fetchone()
+        # 3. sequential copy under the deadline
+        for suffix in ('', '-wal'):
+            src = db_path + suffix
+            if not os.path.exists(src):
+                continue
+            with open(src, 'rb') as fi, open(partial + suffix, 'wb') as fo:
+                while True:
+                    if time.monotonic() - t0 > deadline_s:
+                        raise TimeoutError(
+                            f'snapshot exceeded {deadline_s:.0f}s deadline')
+                    chunk = fi.read(_COPY_CHUNK)
+                    if not chunk:
+                        break
+                    fo.write(chunk)
+    finally:
+        try:
+            pin.rollback()
+        except sqlite3.Error:
+            pass
+        pin.close()
+
+
 def stage_cache(conn, shm_dir=None, force=False):
     """Copy one cache into tmpfs and attach the replica to ``conn``.
 
-    Uses ``Connection.backup(dst, pages=-1)`` rather than a file copy: with WAL
-    and ``wal_autocheckpoint=1000`` the main database file is mutated during
-    checkpoints, which under many concurrent writers happens constantly, so a
-    plain copy can capture a partially-checkpointed file.  ``pages=-1`` (one
-    shot) is required -- a chunked backup restarts whenever the source is
-    written, so with active writers it would never terminate.
+    The copy is a bounded checkpoint-then-sequential-copy (:func:`_snapshot_copy`)
+    with a hard wall-clock deadline, chosen so staging can never block the
+    trainer -- see that function for why the previous ``backup(pages=-1)`` could
+    hang for the whole allocation on a large, write-hot cache.
 
-    Returns the replica path, or ``None`` if it was skipped.  Never raises.
+    Returns the replica path, or ``None`` if it was skipped (including on a blown
+    staging deadline, in which case the trainer simply reads the real database).
+    Never raises.
     """
     global _ATEXIT_ARMED
     db_path = getattr(conn, '_aimmd_db_path', None)
@@ -407,7 +480,7 @@ def stage_cache(conn, shm_dir=None, force=False):
         _warn_once('size', f'cannot size {db_path} ({exc}); not staging')
         return None
 
-    # backup() writes a full copy alongside the previous one before the swap
+    # the copy lands in a .partial beside any previous replica before the swap
     ok, why = _fits(need * 2 if os.path.exists(dst) else need, shm_dir)
     if not ok:
         _warn_once(f'space-{dst}',
@@ -420,22 +493,29 @@ def stage_cache(conn, shm_dir=None, force=False):
     try:
         os.makedirs(root, mode=0o700, exist_ok=True)
         t0 = time.time()
-        dest = sqlite3.connect(partial)
-        try:
-            conn.backup(dest, pages=-1)
-        finally:
-            dest.close()
-        os.replace(partial, dst)          # atomic on tmpfs
+        _snapshot_copy(conn, db_path, partial, _STAGE_DEADLINE_SECONDS)
+        os.replace(partial, dst)                    # atomic on tmpfs
+        # Move the (now tiny) WAL alongside, or clear any stale one, so the
+        # replica opens against a matched pair.
+        if os.path.exists(partial + '-wal'):
+            os.replace(partial + '-wal', dst + '-wal')
+        else:
+            try:
+                os.remove(dst + '-wal')
+            except OSError:
+                pass
         size = os.path.getsize(dst)
         dt = time.time() - t0
-    except (sqlite3.Error, OSError) as exc:
-        for leftover in (partial, partial + '-wal', partial + '-shm'):
+    except (sqlite3.Error, OSError, TimeoutError) as exc:
+        for leftover in (partial, partial + '-wal', partial + '-shm',
+                         dst + '-wal'):
             try:
                 os.remove(leftover)
             except OSError:
                 pass
         _warn_once(f'stage-{dst}',
-                   f'could not stage {os.path.basename(db_path)} ({exc}); '
+                   f'could not stage {os.path.basename(db_path)} within '
+                   f'{_STAGE_DEADLINE_SECONDS:.0f}s ({exc}); '
                    f'continuing on the real database')
         return None
 
