@@ -188,7 +188,57 @@ def seed_index_in_run(n, position):
     return int(position * (n - 1) + 0.5)
 
 
-def _couple_in_state_run(trimmed, untrimmed, target_state, position, rng):
+def transition_block(path, states):
+    """
+    The transition block of `path`, i.e. what the initial-path trim keeps.
+
+    Reproduces `Params._process_and_check`: the first `path.split()` block
+    whose ``type[:3]`` is a transition. Returned as a view on `path`, so its
+    `locs` are locations in `path`'s own file - which is what makes it usable
+    to place a seed inside the untrimmed path. Returns None when the path holds
+    no transition.
+    """
+    for block in path.split():
+        # `type` is normally the compact str `_process_and_check` compares
+        # against; coerce so a per-frame array cannot raise an ambiguous-truth
+        # ValueError out of the `in` test
+        block_type = ''.join(np.atleast_1d(block.type).astype(str))[:3]
+        if block_type in (states, states[::-1]):
+            return block
+    return None
+
+
+def _match_untrimmed(untrimmed_paths, path, states):
+    """
+    The untrimmed path `path` was trimmed and written out from.
+
+    `untrimmed_paths` is keyed by the base name of the source file, as
+    returned by `params.untrimmed_initial_paths()`. A worker reads its initial
+    paths back from ``<run>/initial<states>/``, where the Launcher wrote them
+    with the trajectory extension appended, so the worker-side base name has
+    the source base name as a prefix rather than being equal to it.
+    """
+    if not untrimmed_paths:
+        raise TypeError(
+            'seeding away from the state boundary needs the initial paths as '
+            'they were before the transition trim, which removes exactly '
+            'those frames; pass '
+            'untrimmed_paths=params.untrimmed_initial_paths()')
+    base = os.path.basename(str(path.fname))
+    if base in untrimmed_paths:
+        return untrimmed_paths[base]
+    matches = [value for key, value in untrimmed_paths.items()
+               if base.startswith(key)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(untrimmed_paths) == 1:
+        return next(iter(untrimmed_paths.values()))
+    raise TypeError(
+        f'cannot tell which initial path {base!r} was trimmed from; '
+        f'candidates are {sorted(untrimmed_paths)}')
+
+
+def _couple_in_state_run(untrimmed, target_state, states, position, rng):
     """
     Build a ``(history, seed)`` couple at `position` inside the state's run.
 
@@ -197,9 +247,19 @@ def _couple_in_state_run(trimmed, untrimmed, target_state, position, rng):
     the ``.part0000`` history segment. When the seed is the boundary frame that
     neighbour is the adjacent reactive frame, exactly as in the historical
     behaviour, so the couple is always two frames long.
+
+    The state boundary is located by re-deriving the transition block inside
+    `untrimmed`, NOT from the trimmed path the caller holds: a worker reads its
+    initial paths back from the copies the Launcher wrote, whose `locs` restart
+    at 0 and so cannot index the untrimmed file.
     """
-    at_start = trimmed.initial('states') == target_state
-    boundary_loc = trimmed.locs[0] if at_start else trimmed.locs[-1]
+    block = transition_block(untrimmed, states)
+    if block is None:
+        raise RuntimeError(
+            f'{untrimmed.fname} holds no {states!r} transition, so there is no '
+            f'state boundary to place a seed relative to')
+    at_start = block.initial('states') == target_state
+    boundary_loc = block.locs[0] if at_start else block.locs[-1]
     run = state_run_locs(untrimmed.states, boundary_loc, at_start)
 
     if position == SEEDING_POSITION_RANDOM:
@@ -219,7 +279,7 @@ def _couple_in_state_run(trimmed, untrimmed, target_state, position, rng):
 
 def get_initial_frames_for_free_simulations(
         initial_paths, target_state, reactive_state,
-        position=1.0, untrimmed_paths=None, rng=None):
+        position=1.0, untrimmed_paths=None, states=None, rng=None):
     """
     Given an `aimmd.path.PathEnsemble` instance, extract two consecutive frames
     from each path for the purporse of launching free simulations. The first
@@ -241,12 +301,15 @@ def get_initial_frames_for_free_simulations(
         far-side-first: 0.0 is the frame furthest from the reactive region and
         1.0 (the default) the one adjacent to it. ``'random'`` draws uniformly
         over the run. See `params.free_seeding_position`.
-    untrimmed_paths : sequence of aimmd.path.Path, optional
-        The initial paths before the transition trim, one per entry of
-        `initial_paths`, as returned by `params.untrimmed_initial_paths()`.
+    untrimmed_paths : dict, optional
+        The initial paths before the transition trim, keyed by the base name of
+        the source file, as returned by `params.untrimmed_initial_paths()`.
         Required for every `position` other than 1.0, because the trim removes
         exactly the frames those positions ask for. Ignored when
         ``position == 1.0``.
+    states : str, optional
+        ``params.states``. Required for every `position` other than 1.0, to
+        re-derive where the transition block starts inside the untrimmed path.
     rng : numpy.random.Generator, optional
         Source of randomness for ``position='random'``. Defaults to NumPy's
         global RNG, like the rest of the worker layer.
@@ -270,15 +333,13 @@ def get_initial_frames_for_free_simulations(
     at_boundary = (not isinstance(position, str)
                    and float(position) == SEEDING_POSITION_ALIASES['boundary'])
 
-    if not at_boundary and target_state != reactive_state \
-            and untrimmed_paths is None:
+    if not at_boundary and target_state != reactive_state and not states:
         raise TypeError(
-            f'seeding at position {position!r} needs the initial paths as they '
-            f'were before the transition trim, which removes exactly those '
-            f'frames; pass untrimmed_paths=params.untrimmed_initial_paths()')
+            f'seeding at position {position!r} needs states=params.states to '
+            f'locate the transition block inside the untrimmed initial path')
 
     # extract frames for each path
-    for i, path in enumerate(initial_paths):
+    for path in initial_paths:
         if target_state == reactive_state:
             # the reactive state has no in-state run to place a seed in
             if np.random.random() > .5:
@@ -292,8 +353,9 @@ def get_initial_frames_for_free_simulations(
                 initial_frames._paths.append(path[-2:])
         else:
             initial_frames._paths.append(
-                _couple_in_state_run(path, untrimmed_paths[i], target_state,
-                                     position, rng))
+                _couple_in_state_run(
+                    _match_untrimmed(untrimmed_paths, path, states),
+                    target_state, states, position, rng))
 
         # check
         states = initial_frames[-1].states

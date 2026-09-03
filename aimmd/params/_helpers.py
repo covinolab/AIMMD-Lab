@@ -584,13 +584,11 @@ class ParamsHelpers(ABC):
                 # recompute states (only if not manually overwritten)
                 if 'states' not in path.__dict__:
                     path.states = path.compute(self.states_function)
-                # Keep the untrimmed path: the loop below replaces `path`
-                # with its transition block, which starts AT the state
-                # boundary, and every `free_seeding_position` other than
-                # 'boundary' needs the deep-basin frames that removes.
-                untrimmed = self.__dict__.setdefault(
-                    '_untrimmed_initial_paths', {})
-                untrimmed[i] = path
+                # NB the loop below replaces `path` with its transition
+                # block, which starts AT the state boundary. The deep-basin
+                # frames every `free_seeding_position` other than 'boundary'
+                # needs are read back from `path.fname` on demand, by
+                # `untrimmed_initial_paths()`.
                 # throw a warning if no transition is found
                 transition_found = False 
                 for split_path in (split_paths := path.split()):

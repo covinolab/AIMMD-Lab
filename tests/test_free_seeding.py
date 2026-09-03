@@ -65,6 +65,7 @@ test_deprecated_flag_plus_new_field_raises
 test_round_one_field_is_gone
 """
 
+import os
 import warnings
 
 import numpy as np
@@ -85,6 +86,7 @@ from aimmd.worker.utils import (
     get_initial_frames_for_free_simulations,
     seed_index_in_run,
     state_run_locs,
+    transition_block,
 )
 
 from ._helpers_unit import build_path
@@ -105,6 +107,11 @@ def _path(tmp_path, state_string, stem='traj'):
     positions[:, 1, 0] = np.arange(n, dtype=np.float32) + 1.0
     return build_path(tmp_path, stem=stem, positions=positions,
                       states=list(state_string))
+
+
+def _untrimmed(*paths):
+    """The mapping `params.untrimmed_initial_paths()` returns."""
+    return {os.path.basename(str(p.fname)): p for p in paths}
 
 
 def _historical_couple(path, target_state):
@@ -148,7 +155,7 @@ def test_boundary_never_touches_the_untrimmed_path(tmp_path):
     path = _path(tmp_path, 'ARRRRB')
     sentinel = object()          # would explode if it were indexed
     got = get_initial_frames_for_free_simulations(
-        [path], 'A', 'R', position=1.0, untrimmed_paths=[sentinel])
+        [path], 'A', 'R', position=1.0, untrimmed_paths=_untrimmed(), states='ARB')
     assert list(got[0].locs) == [1, 0]
 
 
@@ -256,7 +263,7 @@ def test_deepest_picks_the_first_frame_of_a_leading_run(tmp_path):
     path = _path(tmp_path, 'AAARRRRBB')
     trimmed = path[2:]
     got = get_initial_frames_for_free_simulations(
-        [trimmed], 'A', 'R', position=0.0, untrimmed_paths=[path])
+        [trimmed], 'A', 'R', position=0.0, untrimmed_paths=_untrimmed(path), states='ARB')
     assert list(got[0].locs) == [1, 0]
     assert list(got[0].states) == ['A', 'A']
 
@@ -265,7 +272,7 @@ def test_deepest_picks_the_last_frame_of_a_trailing_run(tmp_path):
     path = _path(tmp_path, 'AAARRRRBB')
     trimmed = path[:8]
     got = get_initial_frames_for_free_simulations(
-        [trimmed], 'B', 'R', position=0.0, untrimmed_paths=[path])
+        [trimmed], 'B', 'R', position=0.0, untrimmed_paths=_untrimmed(path), states='ARB')
     assert list(got[0].locs) == [7, 8]
     assert list(got[0].states) == ['B', 'B']
 
@@ -274,7 +281,7 @@ def test_middle_picks_the_middle_of_the_run(tmp_path):
     path = _path(tmp_path, 'AAAAARRRRBBBB')
     trimmed = path[4:]
     got = get_initial_frames_for_free_simulations(
-        [trimmed], 'A', 'R', position=0.5, untrimmed_paths=[path])
+        [trimmed], 'A', 'R', position=0.5, untrimmed_paths=_untrimmed(path), states='ARB')
     assert got[0].locs[-1] == 2
 
 
@@ -283,7 +290,7 @@ def test_the_run_is_the_one_containing_the_transition_boundary(tmp_path):
     path = _path(tmp_path, 'ARAAARRRB')
     trimmed = path[4:]           # transition block starts at the last A
     got = get_initial_frames_for_free_simulations(
-        [trimmed], 'A', 'R', position=0.0, untrimmed_paths=[path])
+        [trimmed], 'A', 'R', position=0.0, untrimmed_paths=_untrimmed(path), states='ARB')
     assert got[0].locs[-1] == 2  # the run is locs 2..4, not 0..4
 
 
@@ -292,7 +299,7 @@ def test_couple_is_always_two_frames_with_the_prefix_on_the_boundary_side(tmp_pa
     trimmed = path[4:]
     for position in (0.0, 0.25, 0.5, 1.0):
         got = get_initial_frames_for_free_simulations(
-            [trimmed], 'A', 'R', position=position, untrimmed_paths=[path])
+            [trimmed], 'A', 'R', position=position, untrimmed_paths=_untrimmed(path), states='ARB')
         couple = got[0]
         assert len(couple) == 2
         assert couple.locs[0] == couple.locs[-1] + 1   # prefix is boundary-side
@@ -306,12 +313,12 @@ def test_random_is_reproducible_for_a_given_worker(tmp_path):
     for _ in range(2):
         got = get_initial_frames_for_free_simulations(
             [trimmed], 'A', 'R', position='random',
-            untrimmed_paths=[path], rng=np.random.default_rng(7))
+            untrimmed_paths=_untrimmed(path), states='ARB', rng=np.random.default_rng(7))
         picks.append(got[0].locs[-1])
     assert picks[0] == picks[1]
     other = get_initial_frames_for_free_simulations(
         [trimmed], 'A', 'R', position='random',
-        untrimmed_paths=[path], rng=np.random.default_rng(8))
+        untrimmed_paths=_untrimmed(path), states='ARB', rng=np.random.default_rng(8))
     assert 0 <= other[0].locs[-1] <= 4
 
 
@@ -411,3 +418,101 @@ def test_min_frames_field_is_renamed():
     assert p.free_restart_min_frames == 0
     assert 'free_restart_basin_min_frames' not in \
         aimmd.Params.placeholder.__dataclass_fields__
+
+
+# ── regressions: the worker does not hold params.initial_paths ────────────
+#
+# A worker reads its initial paths back from <run>/initial<states>/, i.e. the
+# copies the Launcher wrote out. Those are ALREADY trimmed, their `locs`
+# restart at 0, their file name has the trajectory extension appended, and the
+# glob order and count need not match params.initial_paths. Two production
+# defects came from assuming otherwise: an IndexError from indexing the
+# untrimmed paths by the worker path's position, and - silently, wherever the
+# lengths happened to match - a seed placed using locs that index the wrong
+# file.
+
+def test_seed_is_placed_from_the_untrimmed_path_not_the_worker_copy(tmp_path):
+    """A worker copy whose locs restart at 0 must still seed at the right frame."""
+    full = _path(tmp_path, 'AAAAARRRRBBBB', stem='initial_selected')
+    # what the Launcher wrote: only the transition block, locs restarting at 0
+    worker_copy = _path(tmp_path, 'ARRRRB', stem='initial_selected.xtc')
+    got = get_initial_frames_for_free_simulations(
+        [worker_copy], 'A', 'R', position=0.0,
+        untrimmed_paths=_untrimmed(full), states='ARB')
+    # locs must be locations in the UNTRIMMED file: the deepest A is frame 0
+    assert list(got[0].locs) == [1, 0]
+    assert list(got[0].filenames) == [str(full.fname)] * 2
+
+
+def test_worker_copy_is_matched_by_name_not_by_position(tmp_path):
+    """The lookup is keyed by source base name, with the extension appended."""
+    full = _path(tmp_path, 'AAAAARRRRBBBB', stem='initial_selected')
+    worker_copy = _path(tmp_path, 'ARRRRB', stem='initial_selected.xtc')
+    untrimmed = _untrimmed(full)
+    assert 'initial_selected.xtc' in untrimmed
+    assert os.path.basename(str(worker_copy.fname)) == 'initial_selected.xtc.xtc'
+    got = get_initial_frames_for_free_simulations(
+        [worker_copy], 'A', 'R', position=0.5,
+        untrimmed_paths=untrimmed, states='ARB')
+    assert got[0].locs[-1] == 2          # middle of the untrimmed run 0..4
+
+
+def test_lookup_is_by_name_so_extra_worker_copies_cannot_index_out_of_range(tmp_path):
+    """The old code did untrimmed_paths[i] and raised IndexError here.
+
+    The worker's glob of <run>/initial<states>/ can return more entries than
+    params.initial_paths has, in any order, so the lookup must be by name.
+    """
+    from aimmd.worker.utils import _match_untrimmed
+    full = _path(tmp_path, 'AAAAARRRRBBBB', stem='manycopies')
+    untrimmed = _untrimmed(full)
+    assert len(untrimmed) == 1
+    copies = [_path(tmp_path, 'ARRRRB', stem=f'manycopies.xtc.part{n}')
+              for n in range(3)]
+    for position, copy in enumerate(copies):
+        # position 2 would have been an IndexError into a 1-entry list
+        assert _match_untrimmed(untrimmed, copy, 'ARB') is full
+
+
+def test_lookup_rejects_an_ambiguous_name(tmp_path):
+    from aimmd.worker.utils import _match_untrimmed
+    a = _path(tmp_path, 'ARRRRB', stem='alpha')
+    b = _path(tmp_path, 'ARRRRB', stem='beta')
+    stray = _path(tmp_path, 'ARRRRB', stem='gamma')
+    with pytest.raises(TypeError, match='cannot tell which initial path'):
+        _match_untrimmed(_untrimmed(a, b), stray, 'ARB')
+
+
+def test_missing_untrimmed_paths_raises_a_clear_error(tmp_path):
+    worker_copy = _path(tmp_path, 'ARRRRB')
+    with pytest.raises(TypeError, match='untrimmed_initial_paths'):
+        get_initial_frames_for_free_simulations(
+            [worker_copy], 'A', 'R', position=0.0,
+            untrimmed_paths={}, states='ARB')
+
+
+def test_missing_states_raises_a_clear_error(tmp_path):
+    worker_copy = _path(tmp_path, 'ARRRRB')
+    with pytest.raises(TypeError, match='params.states'):
+        get_initial_frames_for_free_simulations(
+            [worker_copy], 'A', 'R', position=0.0,
+            untrimmed_paths=_untrimmed(worker_copy))
+
+
+def test_transition_block_reproduces_the_trim(tmp_path):
+    full = _path(tmp_path, 'AAAAARRRRBBBB')
+    block = transition_block(full, 'ARB')
+    assert block is not None
+    assert block.locs[0] == 4            # last A before R
+    assert block.locs[-1] == 9           # first B
+    assert transition_block(_path(tmp_path, 'AAAA', stem='noswitch'),
+                            'ARB') is None
+
+
+def test_untrimmed_initial_paths_is_keyed_by_source_base_name(tmp_path):
+    full = _path(tmp_path, 'AAAAARRRRBBBB', stem='initial_selected')
+    p = _params(states='ARB')
+    p.__dict__['initial_paths'] = aimmd.PathEnsemble([full])
+    got = p.untrimmed_initial_paths()
+    assert set(got) == {'initial_selected.xtc'}
+    assert len(got['initial_selected.xtc']) == 13
