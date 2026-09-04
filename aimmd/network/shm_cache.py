@@ -90,6 +90,10 @@ _STAGE_DEADLINE_SECONDS = float(os.environ.get('AIMMD_STAGE_DEADLINE', 300.0))
 _COPY_CHUNK = 8 * 1024 * 1024
 #: Busy timeout for the short-lived checkpoint/pin connection used while staging.
 _STAGE_PIN_BUSY_S = 30.0
+#: Consecutive staging failures after which a cache stops being re-armed for the
+#: rest of the process. Without this a cache that cannot be staged is retried on
+#: every lookup, turning one blown deadline into a stall before each one.
+_STAGE_MAX_ATTEMPTS = int(os.environ.get('AIMMD_STAGE_MAX_ATTEMPTS', 3))
 _DISABLED = ('', '0', 'off', 'none', 'false', 'no')
 _DIR_PREFIX = 'aimmd-cache-u'
 
@@ -139,6 +143,7 @@ class CacheConnection(sqlite3.Connection):
     _aimmd_replica = None
     _aimmd_replica_path = None
     _aimmd_stage_pending = False
+    _aimmd_stage_failures = 0
     _aimmd_replica_frozen = False   # out of tmpfs: stops top-up AND write-through
     _aimmd_topup_broken = False     # source unreadable: stops top-up only
     _aimmd_watermark = 0
@@ -385,6 +390,37 @@ def _reap_stale(shm_dir=None):
 
 
 # ---------------------------------------------------------------- staging --
+def _recount_owned(dst):
+    """Record a replica's true tmpfs footprint: main file plus its WAL.
+
+    The old ``backup()`` produced no ``-wal``, so counting the main file alone
+    was exact. A copy can bring one across (the biggest production cache carried
+    2.79 GB of it), and that is real tmpfs -- invisible otherwise to both
+    ``AIMMD_SHM_MAX_BYTES`` and the npy-budget handover, i.e. node memory
+    over-commit in the unsafe direction.
+    """
+    total = 0
+    for suffix in ('', '-wal'):
+        try:
+            total += os.path.getsize(dst + suffix)
+        except OSError:
+            pass
+    _OWNED[dst] = total
+    _STATS['staged_bytes'] = sum(_OWNED.values())
+    return total
+
+
+def _stage_failed(conn):
+    """Disarm a cache after a failed staging attempt.
+
+    Clearing ``_aimmd_stage_pending`` is what stops the read path retrying the
+    whole copy on the very next lookup; the failure counter is what stops
+    ``stage_replicas`` re-arming it every round forever.
+    """
+    conn._aimmd_stage_pending = False
+    conn._aimmd_stage_failures = getattr(conn, '_aimmd_stage_failures', 0) + 1
+
+
 def _snapshot_copy(conn, db_path, partial, deadline_s):
     """Bounded, hang-proof snapshot of a live WAL cache into ``partial``.
 
@@ -402,10 +438,17 @@ def _snapshot_copy(conn, db_path, partial, deadline_s):
          checkpoint RETURNS (busy or done) -- it never waits unboundedly -- so
          this step cannot hang; a partial checkpoint just leaves the main file
          slightly behind, which is fine (see below).
-      2. Pin a short read snapshot on a throwaway connection. A reader blocks WAL
-         *reset*, so no concurrent checkpoint can rewrite main-file pages under
-         the copy. Held only for the seconds of the copy, not the hours a
-         ``pages=-1`` step would.
+      2. Pin a short read snapshot on a throwaway connection, held only for the
+         seconds of the copy (not the hours a ``pages=-1`` step would). If the
+         TRUNCATE succeeded the pin takes read-mark 0, which blocks *all*
+         backfill and freezes the main file outright. If it returned busy, the
+         pin caps backfill at its own mark -- a checkpointer CAN still rewrite
+         main-file pages under the copy, but only pages that also have a frame
+         in the WAL we copy next, and the WAL wins on read, so replay repairs
+         the tearing. **This is why the ``-wal`` must be copied, and copied
+         after the main file: removing or reordering it introduces real
+         corruption.** The pin also blocks WAL *reset*, which is what keeps
+         those repair frames from being truncated away mid-copy.
       3. Plain SEQUENTIAL file copy of the main db (+ the now-tiny WAL) with a
          wall-clock deadline enforced in our own loop -- sequential I/O plays to
          a parallel FS's strength, and a deadline is trivially enforceable
@@ -422,6 +465,10 @@ def _snapshot_copy(conn, db_path, partial, deadline_s):
     except sqlite3.Error:
         pass
     # 2. pin a read snapshot so a checkpoint cannot move main-file pages mid-copy
+    # A busy TRUNCATE can burn the source connection's whole busy_timeout, so
+    # check the clock before committing to the copy rather than only inside it.
+    if time.monotonic() - t0 > deadline_s:
+        raise TimeoutError(f'checkpoint alone exceeded the {deadline_s:.0f}s deadline')
     pin = sqlite3.connect(db_path, timeout=_STAGE_PIN_BUSY_S)
     try:
         pin.execute('BEGIN')
@@ -478,6 +525,7 @@ def stage_cache(conn, shm_dir=None, force=False):
         need = int(need * 1.05)
     except OSError as exc:
         _warn_once('size', f'cannot size {db_path} ({exc}); not staging')
+        _stage_failed(conn)
         return None
 
     # the copy lands in a .partial beside any previous replica before the swap
@@ -486,6 +534,7 @@ def stage_cache(conn, shm_dir=None, force=False):
         _warn_once(f'space-{dst}',
                    f'{why}; {os.path.basename(db_path)} stays on disk '
                    f'({need / 1e9:.1f} GB needed, {free_bytes(shm_dir) / 1e9:.1f} GB free)')
+        _stage_failed(conn)
         return None
 
     root = os.path.dirname(dst)
@@ -517,6 +566,7 @@ def stage_cache(conn, shm_dir=None, force=False):
                    f'could not stage {os.path.basename(db_path)} within '
                    f'{_STAGE_DEADLINE_SECONDS:.0f}s ({exc}); '
                    f'continuing on the real database')
+        _stage_failed(conn)
         return None
 
     try:
@@ -536,12 +586,13 @@ def stage_cache(conn, shm_dir=None, force=False):
             os.remove(dst)
         except OSError:
             pass
+        _stage_failed(conn)
         return None
 
     old = _OWNED.pop(dst, 0)
-    _OWNED[dst] = size
-    _STATS['staged_bytes'] = sum(_OWNED.values())
+    size = _recount_owned(dst)          # main + any WAL the copy brought across
     _take_npy_budget(size - old)
+    conn._aimmd_stage_failures = 0
     conn._aimmd_replica = replica
     conn._aimmd_replica_path = dst
     conn._aimmd_watermark = watermark
@@ -578,7 +629,11 @@ def stage_replicas(shm_dir=None, lazy=True, verbose=True):
             conn._aimmd_topup_broken = False         # and the source may be back
             out[conn._aimmd_db_path] = conn._aimmd_replica_path
         elif lazy:
-            conn._aimmd_stage_pending = True
+            # Do not re-arm a cache that has already failed repeatedly: the read
+            # path retries whenever this is set, so an unstageable cache would
+            # otherwise pay a staging attempt before every lookup.
+            if getattr(conn, '_aimmd_stage_failures', 0) < _STAGE_MAX_ATTEMPTS:
+                conn._aimmd_stage_pending = True
         else:
             path = stage_cache(conn, shm_dir=shm_dir)
             if path:
@@ -694,8 +749,7 @@ def refresh_replicas(shm_dir=None, verbose=False):
             conn._aimmd_watermark = hi
             added[db_path] = hi - low
             try:
-                _OWNED[dst] = os.path.getsize(dst)
-                _STATS['staged_bytes'] = sum(_OWNED.values())
+                _recount_owned(dst)
             except OSError:
                 pass
         except sqlite3.Error as exc:
