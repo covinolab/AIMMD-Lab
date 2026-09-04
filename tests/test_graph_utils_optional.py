@@ -684,3 +684,29 @@ def test_reader_role_single_store_is_also_local(tmp_path, monkeypatch):
     gu.store_in_sqlite('r', _tiny_graph(gu), conn, compression_lib='lz4')
     assert conn.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 0
 
+
+def test_blocked_write_is_reported_while_it_waits(monkeypatch, capsys):
+    """A contended write must announce itself, not go silent for 300 s.
+
+    In production the only sign of a stalled trainer was a single line after the
+    full retry budget expired, so a 5-minute stall looked identical to a hang.
+    """
+    import sqlite3
+    gu = _import_graph_utils()
+    monkeypatch.setattr(gu, '_STORE_RETRY_SECONDS', 1.0, raising=True)
+    monkeypatch.setattr(gu, '_STORE_REPORT_EVERY', 0.0, raising=True)
+
+    class AlwaysLocked:
+        def executemany(self, *a, **k):
+            raise sqlite3.OperationalError('database is locked')
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    gu._store_blobs(AlwaysLocked(), ['k'], [b'blob'])
+    out = capsys.readouterr().out
+    assert 'blocked' in out, f'no progress report while blocked; got: {out!r}'
+    assert 'still retrying' in out

@@ -73,6 +73,24 @@ from .utils import rescale_bins, get_initial_frames_for_training
 from .._config import NPY_CACHE, MDA_CACHE, print
 from ..cache.npy import save_npy
 from ..core.utils import now, replace_in_cache, accepts_system_id
+
+
+def _graph_cache_line():
+    """One-line graph-cache counters, for spotting a stalled/ineffective cache.
+
+    ``shm`` is what the replicas actually occupy; ``hit``/``miss`` are replica
+    lookups and ``memo`` in-process ones, so a healthy trainer shows hits and
+    memo climbing and misses flat. All-misses means the replica is absent or
+    stale and every lookup is going to shared storage.
+    """
+    try:
+        from ..network import shm_cache as _sc
+        st = _sc.replica_stats()
+        return (f"graph cache hit={st.get('hits', 0):,} "
+                f"miss={st.get('misses', 0):,} memo={st.get('memo_hits', 0):,} "
+                f"shm={st.get('staged_bytes', 0) / 1e9:.1f}GB")
+    except Exception:                                          # noqa: BLE001
+        return 'graph cache stats unavailable'
 from ..pathensemble import PathEnsemble
 from ..analysis.utils import compute_bins
 from ..pathensemble.utils import assemble_pathensemble
@@ -823,13 +841,32 @@ class WorkerTrain(ABC):
 
             # (re)compute descriptors (full ensemble, for fit) + committor values
             # (on the possibly-subsampled eval ensemble, to bound the value pass)
+            #
+            # Deliberately chatty: this is the phase that stalled in production
+            # (staging is interleaved here -- each system's replica is copied on
+            # its first cache lookup -- so a missing "staged ..." line pins the
+            # stall to a system, and the per-step timings and cache counters say
+            # whether it is descriptor compute, the value pass, or cache I/O).
             eval_pes = make_eval_pes()
+            print(f'\nValue pass over {len(systems)} system(s) {now()}')
             for k, (subdir, sid) in enumerate(systems):
                 if params.compute_descriptors_args is not None:
-                    pathensembles[k].compute(
+                    _t0 = time.time()
+                    print(f"... [system {sid!r}] descriptors: computing over "
+                          f"{len(pathensembles[k])} paths {now()}")
+                    n_desc = pathensembles[k].compute(
                         *params.compute_descriptors_args, system_id=sid)
+                    print(f"... [system {sid!r}] descriptors: {n_desc} frame(s) "
+                          f"computed in {time.time() - _t0:.1f}s "
+                          f"[{_graph_cache_line()}]")
                 cache_bias(eval_pes[k], sid)
-                eval_pes[k].compute(**values_kwargs('values', sid))
+                _t0 = time.time()
+                print(f"... [system {sid!r}] value pass: {len(eval_pes[k])} "
+                      f"paths {now()}")
+                n_val = eval_pes[k].compute(**values_kwargs('values', sid))
+                print(f"... [system {sid!r}] value pass: {n_val} frame(s) "
+                      f"in {time.time() - _t0:.1f}s [{_graph_cache_line()}]")
+            print(f'Value pass complete {now()}')
             if self.termination_signal:
                 return
 
