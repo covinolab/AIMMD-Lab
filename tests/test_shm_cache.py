@@ -618,3 +618,67 @@ def test_stage_cache_never_raises_on_copy_failure(tmp_path, monkeypatch):
     result = shm_cache.stage_cache(conn)   # must not raise
     assert result is None
     assert getattr(conn, '_aimmd_replica', None) is None
+
+
+def test_blown_deadline_does_not_retry_on_every_lookup(tmp_path, monkeypatch):
+    """A failed stage must not re-arm itself for the very next lookup.
+
+    `_aimmd_stage_pending` was cleared only on success, and graph_utils'
+    load path retries stage_cache whenever it is still set. So one blown
+    deadline turned into a fresh full staging attempt -- up to another whole
+    deadline -- before EVERY subsequent cache lookup: the unbounded hang this
+    module exists to prevent, merely chunked, and hidden because _warn_once
+    suppresses the repeats. Bound it instead: give up the pending flag on
+    failure, and stop re-arming after a few consecutive failures.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {chr(97 + i): i for i in range(6)})
+    calls = {'n': 0}
+    real = shm_cache._snapshot_copy
+
+    def slow_fail(*a, **k):
+        calls['n'] += 1
+        raise TimeoutError('simulated blown deadline')
+    monkeypatch.setattr(shm_cache, '_snapshot_copy', slow_fail)
+
+    # arm it the way the trainer does: stage_replicas marks it pending, the
+    # first cache lookup then triggers the copy
+    shm_cache.stage_replicas()
+    assert getattr(conn, '_aimmd_stage_pending', False) is True
+    assert shm_cache.stage_cache(conn) is None
+    assert calls['n'] == 1
+    # the load path only retries while the pending flag is set
+    assert getattr(conn, '_aimmd_stage_pending', False) is False, (
+        'a failed stage left itself armed; the next lookup would restage')
+
+    # and re-arming across rounds must be bounded, not forever
+    for _ in range(10):
+        shm_cache.stage_replicas()
+        if getattr(conn, '_aimmd_stage_pending', False):
+            shm_cache.stage_cache(conn)
+    assert calls['n'] <= shm_cache._STAGE_MAX_ATTEMPTS, (
+        f'{calls["n"]} staging attempts; must stop after '
+        f'{shm_cache._STAGE_MAX_ATTEMPTS} consecutive failures')
+
+    monkeypatch.setattr(shm_cache, '_snapshot_copy', real)
+
+
+def test_owned_accounting_includes_the_replica_wal(tmp_path, monkeypatch):
+    """tmpfs accounting must count the replica's -wal, not just the main file.
+
+    The old backup() produced no -wal, so main-only accounting was exact. The
+    copy can bring one across (up to 2.79 GB for the biggest production cache),
+    and it is real tmpfs -- invisible to both AIMMD_SHM_MAX_BYTES and the npy
+    budget handover, i.e. node memory over-commit in the unsafe direction.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {chr(97 + i): i for i in range(6)})
+    dst = shm_cache.stage_cache(conn)
+    assert dst is not None
+
+    # simulate a replica that carries a WAL (busy TRUNCATE leaves one behind)
+    with open(dst + '-wal', 'wb') as fh:
+        fh.write(b'\0' * (3 * 1024 * 1024))
+
+    shm_cache._recount_owned(dst)
+    on_disk = os.path.getsize(dst) + os.path.getsize(dst + '-wal')
+    assert shm_cache._OWNED[dst] == on_disk, (
+        f'accounted {shm_cache._OWNED[dst]} but {on_disk} bytes are in tmpfs')
