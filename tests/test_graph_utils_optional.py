@@ -630,3 +630,57 @@ def test_init_db_concurrent_openers_all_succeed(tmp_path):
         pr.join(timeout=120)
     res = [q.get() for _ in range(16)]
     assert res.count('ok') == 16, res
+
+
+# ----------------------------- the trainer must not write to the shared cache --
+def test_reader_role_keeps_graphs_local(tmp_path, monkeypatch):
+    """In reader role a store populates memo/replica but never the shared DB.
+
+    The trainer computes descriptors for the whole ensemble at the top of every
+    round (worker/_train.py, `pathensembles[k].compute(*compute_descriptors_args)`)
+    and the campaign's descriptors_function stores every resulting graph. That
+    put a ~30 MB, 4096-row transaction in contention with ~35 MD writers for
+    SQLite's single, unfair write lock, and the trainer lost -- 300 s per batch,
+    observed in production as a stall indistinguishable from a hang.
+
+    The trainer is a reader by role: it needs the graphs in memory for this
+    round, not in the shared cache, and the writers cache them anyway when they
+    reach those frames. Keeping them local removes the trainer from the write
+    lock entirely.
+    """
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    graphs = [_tiny_graph(gu) for _ in range(3)]
+    keys = ['r0', 'r1', 'r2']
+
+    mirrored = []
+    monkeypatch.setattr(gu, '_after_store',
+                        lambda c, k, b: mirrored.append(list(k)))
+    wrote = []
+    monkeypatch.setattr(gu, '_store_blobs',
+                        lambda c, k, b: wrote.append(list(k)) or True)
+
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+    gu.store_many_in_sqlite(keys, graphs, conn, compression_lib='lz4')
+
+    assert wrote == [], 'the trainer must not touch the shared write lock'
+    assert mirrored == [keys], 'but the graphs must still be memo/replica-local'
+    assert conn.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 0
+
+
+def test_writer_role_still_writes_to_the_shared_cache(tmp_path, monkeypatch):
+    """MD writers are unchanged -- they are what populates the cache."""
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: False)
+    gu.store_many_in_sqlite(['w0'], [_tiny_graph(gu)], conn, compression_lib='lz4')
+    assert conn.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 1
+
+
+def test_reader_role_single_store_is_also_local(tmp_path, monkeypatch):
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+    gu.store_in_sqlite('r', _tiny_graph(gu), conn, compression_lib='lz4')
+    assert conn.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 0
+

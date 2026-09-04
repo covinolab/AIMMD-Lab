@@ -76,7 +76,8 @@ from .._config import print
 __all__ = ['CacheConnection', 'BlobMemo', 'register', 'registered_connections',
            'shm_root', 'replica_path', 'free_bytes', 'reserve_bytes',
            'budget_bytes', 'stage_cache', 'stage_replicas', 'refresh_replicas',
-           'cleanup_replicas', 'replica_stats', 'detach']
+           'cleanup_replicas', 'replica_stats', 'detach',
+           'set_reader_role', 'reader_role']
 
 
 _GIB = 1024 ** 3
@@ -109,6 +110,34 @@ _OWNED = {}          # replica path -> bytes, only what THIS process staged
 _ATEXIT_ARMED = False
 _WARNED = set()
 _NPY_BUDGET_RETURNED = 0
+#: True in a process that only *reads* the shared graph cache (the trainer).
+#: Set structurally by the trainer entry points, never inferred.
+_READER_ROLE = False
+
+
+def set_reader_role(enabled=True):
+    """Declare this process a cache *reader* (the trainer).
+
+    A reader still creates graphs it needs, but keeps them in its memo and its
+    own tmpfs replica instead of writing them to the shared database. That takes
+    the trainer out of contention for SQLite's single, unfair write lock, which
+    it was losing to ~35 MD writers for 300 s at a time -- long enough to be
+    indistinguishable from a hang. Nothing is lost: the writers cache those same
+    graphs when they reach the frames, and the cache is content-addressed, so a
+    graph computed twice is byte-identical.
+
+    Set ``AIMMD_TRAINER_WRITES_CACHE=1`` to restore the old behaviour (useful if
+    a trainer ever runs with no MD writers to populate the cache for it).
+    """
+    global _READER_ROLE
+    if os.environ.get('AIMMD_TRAINER_WRITES_CACHE', '') not in _DISABLED:
+        return                       # explicitly opted out of the reader role
+    _READER_ROLE = bool(enabled)
+
+
+def reader_role():
+    """True if this process must not write to the shared graph cache."""
+    return _READER_ROLE
 
 
 def _warn_once(tag, msg):
@@ -316,6 +345,9 @@ def _return_npy_budget():
     except Exception:
         pass
     _NPY_BUDGET_RETURNED = 0
+#: True in a process that only *reads* the shared graph cache (the trainer).
+#: Set structurally by the trainer entry points, never inferred.
+_READER_ROLE = False
 
 
 # ---------------------------------------------------------------- reaping --

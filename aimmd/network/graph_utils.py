@@ -317,6 +317,9 @@ def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Con
         Supported: "gzip", "lz4", "none".
     """
     compressed_data = _encode(data, compression_lib)
+    if shm_cache.reader_role():
+        _after_store(conn, [key], [compressed_data])
+        return
     if _store_blobs(conn, [key], [compressed_data]):
         _after_store(conn, [key], [compressed_data])
 
@@ -347,6 +350,12 @@ def store_many_in_sqlite(keys: list[str], graphs: list[torch_geometric.data.Data
     if not keys:
         return
     blobs = [_encode(g, compression_lib) for g in graphs]
+    if shm_cache.reader_role():
+        # The trainer keeps what it computes local (memo + its own tmpfs
+        # replica) rather than contending for the shared write lock; see
+        # shm_cache.set_reader_role.
+        _after_store(conn, keys, blobs)
+        return
     if _store_blobs(conn, keys, blobs):
         _after_store(conn, keys, blobs)
 

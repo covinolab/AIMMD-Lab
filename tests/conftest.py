@@ -31,3 +31,23 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_slow)
         if "graph" in item.keywords and not config.getoption("--rungraph"):
             item.add_marker(skip_graph)
+
+
+@pytest.fixture(autouse=True)
+def _reset_graph_cache_reader_role():
+    """Keep the trainer's reader-role flag from leaking between tests.
+
+    ``shm_cache.set_reader_role()`` is process-global and sticky by design (a
+    process is a trainer or it is not). Under pytest, though, the multi-system
+    trainer tests set it and every later test inherits it -- which would quietly
+    turn any subsequent `store_*_in_sqlite` into a no-op and make results depend
+    on collection order. shm_cache is stdlib-only, so importing it here is free.
+    """
+    try:
+        from aimmd.network import shm_cache
+    except Exception:                                           # noqa: BLE001
+        yield
+        return
+    shm_cache._READER_ROLE = False
+    yield
+    shm_cache._READER_ROLE = False
