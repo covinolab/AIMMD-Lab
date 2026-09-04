@@ -53,6 +53,11 @@ _STORE_RETRY_SECONDS = float(os.environ.get('AIMMD_STORE_RETRY_SECONDS', 300.0))
 #: a single attempt consumes the whole budget.
 _SQLITE_BUSY_SECONDS = float(os.environ.get('AIMMD_SQLITE_BUSY_SECONDS', 30.0))
 
+#: How often to report that a graph-cache write is still blocked. Without this a
+#: contended write is silent for the whole retry budget, which in production was
+#: indistinguishable from a hang. Overridable with ``AIMMD_STORE_REPORT_EVERY``.
+_STORE_REPORT_EVERY = float(os.environ.get('AIMMD_STORE_REPORT_EVERY', 30.0))
+
 
 def atom_coordinate_descriptors_function(
         trajectory: mda.coordinates.timestep.Timestep,
@@ -272,7 +277,9 @@ def _store_blobs(conn, keys, blobs) -> bool:
     Backoff is exponential with jitter so that dozens of concurrent writers do
     not resynchronise onto a single retry cadence.
     """
-    deadline = time.monotonic() + _STORE_RETRY_SECONDS
+    t0 = time.monotonic()
+    deadline = t0 + _STORE_RETRY_SECONDS
+    next_report = _STORE_REPORT_EVERY
     attempt = 0
     while True:
         try:
@@ -280,6 +287,10 @@ def _store_blobs(conn, keys, blobs) -> bool:
                 "INSERT OR REPLACE INTO graphs_cache (key, data) VALUES (?, ?)",
                 zip(keys, blobs))
             conn.commit()
+            if attempt:
+                print(f'graph cache: wrote {len(keys)} graph(s) after '
+                      f'{time.monotonic() - t0:.0f}s of contention '
+                      f'({attempt} retries)', flush=True)
             return True
         except sqlite3.OperationalError as exc:
             message = str(exc).lower()
@@ -297,6 +308,14 @@ def _store_blobs(conn, keys, blobs) -> bool:
                       f'they will be recomputed when next needed', flush=True)
                 return False
             attempt += 1
+            waited = time.monotonic() - t0
+            if waited >= next_report:
+                # Say so while it is happening, not only when it gives up.
+                print(f'graph cache: write of {len(keys)} graph(s) blocked '
+                      f'{waited:.0f}s by other writers ({attempt} attempts), '
+                      f'still retrying up to {_STORE_RETRY_SECONDS:.0f}s',
+                      flush=True)
+                next_report = waited + _STORE_REPORT_EVERY
             time.sleep(min(5.0, 0.05 * 2 ** min(attempt, 7))
                        * (0.5 + random.random()))
 
