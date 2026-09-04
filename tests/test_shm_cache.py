@@ -682,3 +682,15 @@ def test_owned_accounting_includes_the_replica_wal(tmp_path, monkeypatch):
     on_disk = os.path.getsize(dst) + os.path.getsize(dst + '-wal')
     assert shm_cache._OWNED[dst] == on_disk, (
         f'accounted {shm_cache._OWNED[dst]} but {on_disk} bytes are in tmpfs')
+
+
+# ------------------------------------------------ reader role (the trainer) --
+def test_reader_role_defaults_off_and_toggles():
+    """Writers must be unaffected; only the trainer opts in."""
+    assert shm_cache.reader_role() is False
+    try:
+        shm_cache.set_reader_role()
+        assert shm_cache.reader_role() is True
+    finally:
+        shm_cache.set_reader_role(False)
+    assert shm_cache.reader_role() is False

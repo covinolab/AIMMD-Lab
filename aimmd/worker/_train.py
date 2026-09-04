@@ -364,6 +364,10 @@ class WorkerTrain(ABC):
             # After must_stop(), so a trainer about to exit does not pay for a
             # copy it will never read; inside the loop, because the writers keep
             # appending and a once-per-process replica would go stale.
+            # The trainer only READS the shared graph cache: anything it has to
+            # compute stays in its memo and its own tmpfs replica, so it never
+            # contends with the ~35 MD writers for SQLite's single write lock.
+            shm_cache.set_reader_role()
             shm_cache.stage_replicas()
 
             # Recompute any missing descriptor cache files (e.g. after deletion)
@@ -811,6 +815,10 @@ class WorkerTrain(ABC):
                 return
 
             # see the equivalent call in _train()
+            # The trainer only READS the shared graph cache: anything it has to
+            # compute stays in its memo and its own tmpfs replica, so it never
+            # contends with the ~35 MD writers for SQLite's single write lock.
+            shm_cache.set_reader_role()
             shm_cache.stage_replicas()
 
             # (re)compute descriptors (full ensemble, for fit) + committor values
