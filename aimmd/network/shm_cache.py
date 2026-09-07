@@ -77,7 +77,7 @@ __all__ = ['CacheConnection', 'BlobMemo', 'register', 'registered_connections',
            'shm_root', 'replica_path', 'free_bytes', 'reserve_bytes',
            'budget_bytes', 'stage_cache', 'stage_replicas', 'refresh_replicas',
            'cleanup_replicas', 'replica_stats', 'detach',
-           'set_reader_role', 'reader_role']
+           'set_reader_role', 'reader_role', 'headroom', 'headroom_line']
 
 
 _GIB = 1024 ** 3
@@ -865,6 +865,31 @@ def cleanup_replicas():
             pass
     if freed:
         print(f'shm_cache: released {freed / 1e9:.1f} GB of tmpfs')
+
+
+def headroom(shm_dir=None):
+    """Current tmpfs position: what we staged, the ceiling, and what is free.
+
+    Logged once per training cycle so the budget ceiling is seen approaching
+    rather than discovered by a staging refusal. The caches grow without bound,
+    so this is the number that eventually ends the speedup.
+    """
+    return {
+        'staged_bytes': sum(_OWNED.values()),
+        'budget_bytes': budget_bytes(shm_dir),
+        'free_bytes': free_bytes(shm_dir),
+        'reserve_bytes': reserve_bytes(shm_dir),
+        'replicas': len(_OWNED),
+    }
+
+
+def headroom_line(shm_dir=None):
+    """One-line form of :func:`headroom` for the trainer log."""
+    h = headroom(shm_dir)
+    return (f"{h['replicas']} replica(s) staged "
+            f"{h['staged_bytes'] / 1e9:.1f} GB of a "
+            f"{h['budget_bytes'] / 1e9:.1f} GB budget, "
+            f"{h['free_bytes'] / 1e9:.1f} GB free in tmpfs")
 
 
 def replica_stats():

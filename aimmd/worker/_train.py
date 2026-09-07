@@ -787,12 +787,24 @@ class WorkerTrain(ABC):
                 self.termination_signal = 2
                 return True
             print(f'\nLoading current path ensembles {now()}')
+            _load_t0 = time.time()
             total_steps = total_frames = 0
             for k, (subdir, sid) in enumerate(systems):
+                # Split the timing: `shot_chains` reuses last round's Path
+                # objects, `free_trajectories` cannot yet, so seeing them apart
+                # is what tells us where the load time actually goes.
+                _t = time.time()
                 chains = params.shot_chains(
                     subdir, None, old=shot_chains_by_system[k])
                 shot_chains_by_system[k] = chains
+                _t_chains = time.time() - _t
+                _t = time.time()
                 frees = params.free_trajectories(subdir)
+                _t_frees = time.time() - _t
+                print(f"... [system {sid!r}] loaded "
+                      f"{sum(len(c) for c in chains)} shot path(s) in "
+                      f"{_t_chains:.1f}s + {len(frees)} free trajectory(ies) in "
+                      f"{_t_frees:.1f}s")
                 for chain in chains:
                     total_frames += sum(chain.n_frames)
                     total_steps += len(chain)
@@ -804,6 +816,9 @@ class WorkerTrain(ABC):
                     return True
             self.total_steps = total_steps
             self.total_frames = total_frames
+            print(f'Path ensembles loaded in {time.time() - _load_t0:.1f}s '
+                  f'({total_steps:,} steps, {total_frames:,} frames); '
+                  f'{shm_cache.headroom_line()}')
             return False
 
         def make_eval_pes():
@@ -889,7 +904,8 @@ class WorkerTrain(ABC):
                 if len(losses):
                     source = 'new'
                     rounds_done += 1
-                    print(f'*** training completed {now()}')
+                    print(f'*** training completed {now()} '
+                          f'[{_graph_cache_line()}]')
                     if self.termination_signal:
                         break
                 else:
@@ -913,14 +929,33 @@ class WorkerTrain(ABC):
                         print(f'*** copied {network_fname!r} to {backup!r}')
                 # rebuild the eval ensembles (frames may have grown during fit)
                 # and refresh committor values with the new network
-                shm_cache.refresh_replicas()
+                #
+                # This second pass had no instrumentation at all, so its cost
+                # was never once observed -- every stall analysis so far has
+                # been blind past this point.
+                added = shm_cache.refresh_replicas()
+                if added:
+                    # Rows added per cache: a system whose cache stops growing
+                    # while the others keep going is the one whose writers are
+                    # being starved.
+                    print('... replica top-up: ' + ', '.join(
+                        f'{os.path.basename(k)} +{v:,}' for k, v in added.items()))
                 eval_pes = make_eval_pes()
+                print(f'\nPost-training value pass over {len(systems)} '
+                      f'system(s) {now()}')
+                _post_t0 = time.time()
                 for k, (subdir, sid) in enumerate(systems):
                     pe = eval_pes[k]
                     target = 'new' if source == 'new' else 'values'
                     cache_bias(pe, sid)
-                    pe.compute(**values_kwargs(target, sid),
-                               overwrite=(source == 'new'))
+                    _t = time.time()
+                    n_post = pe.compute(**values_kwargs(target, sid),
+                                        overwrite=(source == 'new'))
+                    print(f"... [system {sid!r}] {target}: {n_post} frame(s) "
+                          f"over {len(pe)} paths in {time.time() - _t:.1f}s "
+                          f"[{_graph_cache_line()}]")
+                print(f'Post-training value pass complete in '
+                      f'{time.time() - _post_t0:.1f}s {now()}')
                 if self.termination_signal:
                     return
 
