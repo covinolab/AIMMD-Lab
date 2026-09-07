@@ -90,8 +90,18 @@ class _Worker(WorkerTrain):
         self.total_frames = 0
 
 
+class _Run(list):
+    """The recorded shot_chains calls, plus the trainer's captured output.
+
+    A list subclass so existing tests can keep iterating it directly, while the
+    logging tests can reach `.out` -- capsys in a test body does not see output
+    produced during fixture setup.
+    """
+    out = ''
+
+
 @pytest.fixture
-def driver(tmp_path, monkeypatch):
+def driver(tmp_path, monkeypatch, capsys):
     """Run one multi-system round, recording every shot_chains call."""
     import os
     for sid in ('s1', 's2'):
@@ -117,8 +127,9 @@ def driver(tmp_path, monkeypatch):
         network_batch_size=4, rescale_committor=False,
         reweight_parameters={}, trajectory_extension='.xtc',
         compute_values_args=(lambda x: np.array([0.0]), 'values', 'positions'),
-        compute_descriptors_args=(lambda x: np.array([0.0]), 'descriptors',
-                                  'positions'),
+        # compute_descriptors_args is a PROPERTY derived from this, so it
+        # must be set for the trainer's descriptor sweep to run at all
+        descriptors_function=lambda trajectory, system_id=None: np.zeros((1, 1)),
         network_save_interval=1, record_bias=False, bias_function=None,
         bias_source='values', subsample_caps=None,
         subsample_caps_of=lambda sid: None,
@@ -142,7 +153,10 @@ def driver(tmp_path, monkeypatch):
     # Deliberately not guarded: if the stub stops completing a round, that
     # should fail loudly rather than skip and silently stop testing the fix.
     worker._train_multi_system(nrounds=1, keep_running=False)
-    return calls
+    run = _Run(calls)
+    run.out = capsys.readouterr().out
+    print(run.out)              # keep it visible on failure
+    return run
 
 
 def test_reload_offers_the_previous_chains_back(driver):
@@ -174,3 +188,42 @@ def test_old_is_per_system_not_pooled(driver):
             tag = getattr(chain, 'tag', '')
             assert tag.startswith(f'{directory}#') or tag == 'assembled', (
                 f'{directory} was offered chains belonging to {tag!r}')
+
+
+def test_trainer_reports_each_phase(driver):
+    """Every phase of a round must be attributable from the log alone.
+
+    Diagnosing the production stalls repeatedly failed because this loop was
+    almost silent: a stall could not be pinned to a system or a step, the
+    post-training pass had no instrumentation at all, and the fit's own cache
+    behaviour was invisible. All of those cost real GPU-hours to re-derive.
+    """
+    out = driver.out
+
+    # the load, split so we can see chains-vs-free-trajectories
+    assert 'Loading current path ensembles' in out
+    assert 'shot path(s) in' in out and 'free trajectory(ies) in' in out
+    assert 'Path ensembles loaded in' in out
+    # tmpfs headroom, so the ceiling is seen approaching
+    assert 'replica(s) staged' in out and 'budget' in out
+    # the pre-training value pass, per system and per step
+    assert 'Value pass over' in out
+    assert 'descriptors:' in out and 'value pass:' in out
+    # graph-cache counters attached to the phases
+    assert 'graph cache hit=' in out
+    # the fit's OWN cache behaviour -- previously invisible, which is why we
+    # still cannot explain 619 ms/epoch in production
+    assert 'training completed' in out
+    completed = [l for l in out.splitlines() if 'training completed' in l]
+    assert any('graph cache hit=' in l for l in completed), (
+        f'no cache counters on the fit line: {completed}')
+    # the post-training pass, which had no instrumentation at all before
+    assert 'Post-training value pass over' in out
+    assert 'Post-training value pass complete in' in out
+
+
+def test_trainer_reports_are_per_system(driver):
+    """A stall must be attributable to one system, not just to 'the value pass'."""
+    out = driver.out
+    for sid in ('s1', 's2'):
+        assert f"[system '{sid}']" in out, f'no per-system line for {sid}'

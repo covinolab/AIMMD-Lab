@@ -694,3 +694,18 @@ def test_reader_role_defaults_off_and_toggles():
     finally:
         shm_cache.set_reader_role(False)
     assert shm_cache.reader_role() is False
+
+
+def test_headroom_reports_staged_budget_and_free(tmp_path):
+    """Per-round tmpfs headroom, so the ceiling is seen coming, not hit.
+
+    Production is already at ~64 GB staged against a ~128 GB default ceiling.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1, 'b': 2})
+    shm_cache.stage_cache(conn)
+    h = shm_cache.headroom()
+    assert set(h) >= {'staged_bytes', 'budget_bytes', 'free_bytes'}
+    assert h['staged_bytes'] > 0
+    assert h['budget_bytes'] > 0
+    line = shm_cache.headroom_line()
+    assert 'GB' in line and 'staged' in line
