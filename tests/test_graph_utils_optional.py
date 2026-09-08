@@ -710,3 +710,203 @@ def test_blocked_write_is_reported_while_it_waits(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert 'blocked' in out, f'no progress report while blocked; got: {out!r}'
     assert 'still retrying' in out
+
+
+# ------------------- the reader's backlog, and getting it into the cache --
+def test_reader_role_buffers_for_a_later_flush(monkeypatch):
+    """Keeping graphs local is not enough -- they must also be kept.
+
+    The replica is re-staged from the real database at the top of every round,
+    so a graph the trainer computed and kept only in its replica is gone by the
+    next round and recomputed from scratch. In production that was ~25,000
+    graphs per round for one system, indefinitely, and every recompute was a
+    read against the real database that stopped its WAL from ever resetting.
+    """
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+
+    gu.store_many_in_sqlite(['r0', 'r1'], [_tiny_graph(gu) for _ in range(2)],
+                            conn, compression_lib='lz4')
+
+    assert conn.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 0
+    assert gu.shm_cache.pending_count(conn) == 2
+
+
+def test_flush_pending_writes_persists_them_to_the_shared_cache(monkeypatch):
+    """One batched write per round is what closes the hole for good."""
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+    keys = ['r0', 'r1', 'r2']
+    gu.store_many_in_sqlite(keys, [_tiny_graph(gu) for _ in keys], conn,
+                            compression_lib='lz4')
+
+    written = gu.flush_pending_writes(conn)
+
+    assert sum(written.values()) == 3
+    assert conn.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 3
+    assert gu.shm_cache.pending_count(conn) == 0
+    for key in keys:
+        assert gu.load_from_sqlite(key, conn, compression_lib='lz4') is not None
+
+
+def test_flush_pending_writes_uses_a_single_transaction(monkeypatch):
+    """A round's backlog is one commit, not one per graph -- that was the bug."""
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+    gu.store_many_in_sqlite([f'k{i}' for i in range(20)],
+                            [_tiny_graph(gu) for _ in range(20)], conn,
+                            compression_lib='lz4')
+    calls = []
+    real = gu._store_blobs
+    monkeypatch.setattr(gu, '_store_blobs',
+                        lambda c, k, b: calls.append(len(k)) or real(c, k, b))
+
+    gu.flush_pending_writes(conn)
+
+    assert calls == [20], f'expected one batched write, got {calls}'
+
+
+def test_writer_role_buffers_nothing(monkeypatch):
+    """MD writers write immediately; the backlog is a trainer-only mechanism."""
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: False)
+    gu.store_many_in_sqlite(['w0'], [_tiny_graph(gu)], conn, compression_lib='lz4')
+    assert gu.shm_cache.pending_count(conn) == 0
+    assert conn.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 1
+
+
+def test_flush_with_nothing_pending_is_a_no_op(monkeypatch):
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    calls = []
+    monkeypatch.setattr(gu, '_store_blobs',
+                        lambda c, k, b: calls.append(k) or True)
+    assert gu.flush_pending_writes(conn) == {}
+    assert calls == [], 'an empty backlog must not take the write lock at all'
+
+
+def test_flush_never_raises_and_drops_the_batch_when_the_write_gives_up(monkeypatch):
+    """A lock must never be fatal, and the backlog must never grow unbounded.
+
+    Re-buffering a batch that just lost a 300 s fight would carry it into every
+    later round and grow the trainer's memory without bound. Dropping it costs
+    one recompute next round -- the cache is content-addressed, so that is free
+    of correctness risk.
+    """
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+    gu.store_many_in_sqlite(['r0'], [_tiny_graph(gu)], conn, compression_lib='lz4')
+    monkeypatch.setattr(gu, '_store_blobs', lambda c, k, b: False)
+
+    written = gu.flush_pending_writes(conn)
+
+    assert sum(written.values()) == 0
+    assert gu.shm_cache.pending_count(conn) == 0, 'must not re-buffer'
+
+
+def test_flush_survives_an_unwritable_database(monkeypatch):
+    """Anything unexpected in the flush is a cache miss, never a crash."""
+    import sqlite3
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+    gu.store_many_in_sqlite(['r0'], [_tiny_graph(gu)], conn, compression_lib='lz4')
+
+    def boom(*a, **k):
+        raise sqlite3.OperationalError('attempt to write a readonly database')
+
+    monkeypatch.setattr(gu, '_store_blobs', boom)
+    assert gu.flush_pending_writes(conn) == {}
+    assert gu.shm_cache.pending_count(conn) == 0
+
+
+def test_store_flushes_early_when_over_the_byte_cap(monkeypatch):
+    """A long round must not accumulate the whole ensemble in memory."""
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+    monkeypatch.setattr(gu.shm_cache, '_PENDING_WRITE_BYTES', 1)
+
+    gu.store_many_in_sqlite(['r0'], [_tiny_graph(gu)], conn, compression_lib='lz4')
+
+    assert gu.shm_cache.pending_count(conn) == 0, 'over the cap: flush at once'
+    assert conn.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 1
+
+
+def test_flush_without_a_connection_covers_every_registered_cache(monkeypatch):
+    """The multi-system trainer holds one connection per system."""
+    gu = _import_graph_utils()
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+    conns = []
+    for i in range(3):
+        c = _mem_db(gu)
+        c._aimmd_db_path = f'/nowhere/cache{i}.sqlite'
+        gu.shm_cache.register(c)
+        gu.store_many_in_sqlite([f'k{i}'], [_tiny_graph(gu)], c,
+                                compression_lib='lz4')
+        conns.append(c)
+
+    written = gu.flush_pending_writes()
+
+    assert sum(written.values()) == 3
+    assert len(written) == 3, f'one entry per cache, got {written}'
+    for c in conns:
+        assert c.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 1
+
+
+def test_flush_reports_what_it_wrote(monkeypatch, capsys):
+    """The trainer log must attribute the backlog to a system."""
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    conn._aimmd_db_path = '/nowhere/graphs_cache_G4.sqlite'
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+    gu.store_many_in_sqlite(['r0', 'r1'], [_tiny_graph(gu) for _ in range(2)],
+                            conn, compression_lib='lz4')
+    gu.flush_pending_writes(conn, verbose=True)
+    out = capsys.readouterr().out
+    assert 'graphs_cache_G4.sqlite' in out
+    assert '2' in out
+
+
+def test_flush_rolls_back_a_failed_write(monkeypatch):
+    """A failed flush must not leave the connection inside a transaction.
+
+    `_store_blobs` rolls back on its lock branch but re-raises every other error
+    with the transaction still open, and pysqlite has already issued BEGIN and
+    the INSERT by then. A connection left mid-transaction pins a read snapshot
+    for the life of the trainer: it stops seeing rows the MD writers add,
+    `refresh_replicas` reads an unchanging MAX(rowid) and stops topping up, and
+    the pinned read-mark makes `wal_checkpoint` return busy for *every* process
+    on that database -- reproducing the exact failure this whole change exists
+    to end. Reachable with a read-only or corrupt cache file, neither of which
+    heals on its own.
+    """
+    import sqlite3
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu.shm_cache, 'reader_role', lambda: True)
+    gu.store_many_in_sqlite(['r0'], [_tiny_graph(gu)], conn, compression_lib='lz4')
+
+    def enters_a_transaction_then_fails(cache, keys, blobs):
+        # exactly what the real _store_blobs does before its bare `raise`
+        cache.execute('INSERT OR REPLACE INTO graphs_cache VALUES (?,?)',
+                      ('wedge', b'x'))
+        assert cache.in_transaction, 'precondition: the write opened a txn'
+        raise sqlite3.OperationalError('attempt to write a readonly database')
+
+    monkeypatch.setattr(gu, '_store_blobs', enters_a_transaction_then_fails)
+
+    assert gu.flush_pending_writes(conn) == {}
+    assert conn.in_transaction is False, (
+        'the connection is wedged in a transaction: it will pin a read snapshot '
+        'and block WAL resets for every process on this database')
+    # and the connection is still usable
+    conn.execute('INSERT OR REPLACE INTO graphs_cache VALUES (?,?)', ('ok', b'y'))
+    conn.commit()
+    assert conn.execute(
+        "SELECT count(*) FROM graphs_cache WHERE key='ok'").fetchone()[0] == 1

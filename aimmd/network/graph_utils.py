@@ -338,6 +338,8 @@ def store_in_sqlite(key: str, data: torch_geometric.data.Data, conn: sqlite3.Con
     compressed_data = _encode(data, compression_lib)
     if shm_cache.reader_role():
         _after_store(conn, [key], [compressed_data])
+        if shm_cache.buffer_write(conn, [key], [compressed_data]):
+            flush_pending_writes(conn)
         return
     if _store_blobs(conn, [key], [compressed_data]):
         _after_store(conn, [key], [compressed_data])
@@ -372,8 +374,13 @@ def store_many_in_sqlite(keys: list[str], graphs: list[torch_geometric.data.Data
     if shm_cache.reader_role():
         # The trainer keeps what it computes local (memo + its own tmpfs
         # replica) rather than contending for the shared write lock; see
-        # shm_cache.set_reader_role.
+        # shm_cache.set_reader_role. It also keeps a backlog, written once per
+        # round by `flush_pending_writes`, because a replica is re-staged from
+        # the real database every round -- so replica-only graphs are recomputed
+        # forever, and each recompute is a read that stops the WAL resetting.
         _after_store(conn, keys, blobs)
+        if shm_cache.buffer_write(conn, keys, blobs):
+            flush_pending_writes(conn)
         return
     if _store_blobs(conn, keys, blobs):
         _after_store(conn, keys, blobs)
@@ -392,6 +399,62 @@ def _after_store(conn, keys, blobs):
         for key, blob in zip(keys, blobs):
             memo.put(key, blob)
     shm_cache.write_through(conn, keys, blobs)
+
+
+def flush_pending_writes(conn=None, verbose=False):
+    """Write the reader's backlog of computed graphs into the shared cache.
+
+    The trainer computes graphs the MD writers have not cached yet, and in
+    reader role keeps them out of the write lock (`shm_cache.set_reader_role`).
+    Without this flush they only ever reach its in-process memo and its tmpfs
+    replica -- both of which are rebuilt from the real database next round, so
+    the same graphs are recomputed every round for the life of the campaign, and
+    every recompute is another read that keeps that database's WAL from
+    resetting. One production system spent three runs in exactly that state.
+
+    Writing the whole round in one batch is what makes this affordable: the
+    thing that starved the trainer was thousands of small contended writes, not
+    one large one. With ``conn=None`` every registered cache is flushed, which
+    is what the multi-system trainer needs -- it holds one connection per system.
+
+    Returns ``{db_path: rows_written}``, empty when there was nothing to write
+    or the write did not land. Never raises: a lock is not allowed to be fatal
+    here any more than anywhere else in this module.
+    """
+    conns = [conn] if conn is not None else shm_cache.registered_connections()
+    written = {}
+    for cache in conns:
+        keys, blobs = shm_cache.take_pending(cache)
+        if not keys:
+            continue
+        name = getattr(cache, '_aimmd_db_path', None) or '<cache>'
+        try:
+            stored = _store_blobs(cache, keys, blobs)
+        except Exception as exc:            # noqa: BLE001 - never fatal
+            # Roll back before moving on. `_store_blobs` rolls back on its lock
+            # branch but re-raises every other error with the transaction still
+            # open, and pysqlite has already issued BEGIN and the INSERT by
+            # then. A connection left mid-transaction pins a read snapshot for
+            # the rest of the process: the trainer stops seeing rows the writers
+            # add, `refresh_replicas` reads an unchanging MAX(rowid) and stops
+            # topping up, and the pinned read-mark makes `wal_checkpoint`
+            # return busy for EVERY process on that database -- which is the
+            # exact pathology this change exists to end. Reachable via a
+            # read-only cache file or a corrupt one, neither of which heals.
+            try:
+                cache.rollback()
+            except sqlite3.Error:
+                pass
+            print(f'!! graph cache: could not flush {len(keys):,} graph(s) to '
+                  f'{os.path.basename(name)} ({exc}); they will be recomputed '
+                  f'when next needed', flush=True)
+            continue
+        if stored:
+            written[name] = len(keys)
+            if verbose:
+                print(f'... graph cache: flushed {len(keys):,} graph(s) to '
+                      f'{os.path.basename(name)}', flush=True)
+    return written
 
 
 def get_stable_hash(config: mlcolvar.data.graph.atomic.Configurations) -> str:

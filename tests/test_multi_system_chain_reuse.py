@@ -156,12 +156,17 @@ def driver(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr('aimmd.worker._train.shutil.copyfile',
                         lambda s, d: None)
 
+    flush_calls = []
+    monkeypatch.setattr('aimmd.worker._train._flush_graph_backlog',
+                        lambda: flush_calls.append(1))
+
     worker = _Worker(params, tmp_path)
     # Deliberately not guarded: if the stub stops completing a round, that
     # should fail loudly rather than skip and silently stop testing the fix.
     worker._train_multi_system(nrounds=1, keep_running=False)
     run = _Run(calls)
     run.free_calls = free_calls
+    run.flush_calls = flush_calls
     run.out = capsys.readouterr().out
     print(run.out)              # keep it visible on failure
     return run
@@ -256,3 +261,71 @@ def test_free_trajectories_are_offered_back(driver):
         for i, old in enumerate(olds[1:], start=1):
             assert old is not None, (
                 f'{directory}: reload {i} passed no old= to free_trajectories')
+
+
+def test_trainer_writes_its_computed_graphs_back_each_round(driver):
+    """Both value passes must hand the round's new graphs to the shared cache.
+
+    The trainer computes graphs the MD writers have not reached yet. Keeping
+    them only in its memo and its tmpfs replica means they are recomputed every
+    round forever, because both are rebuilt from the real database at the top of
+    the next round -- and each recompute is a read that stops that database's
+    WAL from resetting. Two sites must fire per round: after the value pass and
+    after the post-training value pass.
+    """
+    assert len(driver.flush_calls) >= 2, (
+        f'expected the backlog to be flushed after both value passes, saw '
+        f'{len(driver.flush_calls)}')
+
+
+# ------------------------------------ the backlog flush helper in isolation --
+def test_flush_helper_is_a_no_op_without_the_graph_stack(monkeypatch):
+    """A run with no graph cache must not pay to import the GNN stack.
+
+    `_flush_graph_backlog` runs up to four times per round. Importing
+    `graph_utils` there drags in torch_geometric/mlcolvar/mdtraj even for a toy
+    1-D run that never stores a graph -- which pushed `test_toy_1d` past its
+    training-time guard. If `graph_utils` was never imported, nothing was ever
+    stored, so there is nothing to flush.
+    """
+    import sys
+    from aimmd.worker import _train
+
+    monkeypatch.delitem(sys.modules, 'aimmd.network.graph_utils', raising=False)
+    called = []
+    monkeypatch.setattr('builtins.__import__',
+                        lambda *a, **k: called.append(a[:1]) or (_ for _ in ()).throw(
+                            AssertionError('must not import anything')))
+    _train._flush_graph_backlog()          # must simply return
+    assert called == []
+
+
+def test_flush_helper_reports_what_was_written(monkeypatch, capsys):
+    """When the cache is in play, the round's write-back is attributable."""
+    import sys, types
+    from aimmd.worker import _train
+
+    stub = types.ModuleType('aimmd.network.graph_utils')
+    stub.flush_pending_writes = lambda: {'/nowhere/graphs_cache_G4.sqlite': 25086}
+    monkeypatch.setitem(sys.modules, 'aimmd.network.graph_utils', stub)
+
+    _train._flush_graph_backlog()
+
+    out = capsys.readouterr().out
+    assert 'graphs_cache_G4.sqlite' in out
+    assert '25,086' in out
+
+
+def test_flush_helper_never_raises(monkeypatch):
+    """A cache write must never propagate into the training loop."""
+    import sys, types
+    from aimmd.worker import _train
+
+    stub = types.ModuleType('aimmd.network.graph_utils')
+
+    def boom():
+        raise RuntimeError('cache exploded')
+
+    stub.flush_pending_writes = boom
+    monkeypatch.setitem(sys.modules, 'aimmd.network.graph_utils', stub)
+    _train._flush_graph_backlog()          # must not raise
