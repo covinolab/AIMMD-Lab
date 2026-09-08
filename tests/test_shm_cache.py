@@ -709,3 +709,65 @@ def test_headroom_reports_staged_budget_and_free(tmp_path):
     assert h['budget_bytes'] > 0
     line = shm_cache.headroom_line()
     assert 'GB' in line and 'staged' in line
+
+
+# --------------------------------------- staging checkpoint, made visible --
+def test_staging_reports_a_clean_checkpoint(tmp_path, capsys):
+    """A checkpoint that reset the WAL says so, and does not warn.
+
+    The outcome of the staging ``wal_checkpoint(TRUNCATE)`` used to be
+    discarded, so a WAL that never reset was invisible for three production
+    runs. Reporting it is the whole point of the change.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1, 'b': 2})
+    assert shm_cache.stage_cache(conn) is not None
+    out = capsys.readouterr().out
+    assert 'checkpoint' in out.lower()
+    assert '!!' not in out, 'a clean checkpoint must not warn'
+
+
+def test_staging_warns_when_the_checkpoint_is_busy(tmp_path, capsys):
+    """A reader pinning the WAL blocks the reset -- the production failure.
+
+    This is the exact shape of the G4 case: the checkpoint backfills but cannot
+    reset, so the WAL grows without bound while the log says nothing.
+    """
+    db = tmp_path / 'c.sqlite'
+    conn = _make_cache(db, {'a': 1, 'b': 2})
+    conn.execute('PRAGMA busy_timeout=100')
+    other = sqlite3.connect(str(db), timeout=0.1)
+    other.execute('BEGIN')
+    other.execute('SELECT 1 FROM graphs_cache LIMIT 1').fetchone()
+    try:
+        shm_cache.stage_cache(conn)
+    finally:
+        other.rollback()
+        other.close()
+    out = capsys.readouterr().out
+    assert 'busy' in out.lower()
+    assert 'c.sqlite' in out
+
+
+def test_a_non_wal_database_reports_nothing(tmp_path, capsys):
+    """``(0, -1, -1)`` means "not a WAL database", not "reset -1 frames"."""
+    shm_cache._report_checkpoint('/nowhere/plain.sqlite', (0, -1, -1))
+    assert capsys.readouterr().out == ''
+
+
+def test_staging_survives_a_checkpoint_that_errors(tmp_path):
+    """The checkpoint is best-effort: an error must not stop staging."""
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1})
+    real = conn.execute
+
+    def boom(sql, *a, **k):
+        if 'wal_checkpoint' in str(sql).lower():
+            raise sqlite3.OperationalError('no')
+        return real(sql, *a, **k)
+
+    conn.execute = boom
+    try:
+        assert shm_cache.stage_cache(conn) is not None
+    finally:
+        del conn.execute
+    assert _get(conn, 'a') == 1
+

@@ -345,9 +345,6 @@ def _return_npy_budget():
     except Exception:
         pass
     _NPY_BUDGET_RETURNED = 0
-#: True in a process that only *reads* the shared graph cache (the trainer).
-#: Set structurally by the trainer entry points, never inferred.
-_READER_ROLE = False
 
 
 # ---------------------------------------------------------------- reaping --
@@ -453,6 +450,45 @@ def _stage_failed(conn):
     conn._aimmd_stage_failures = getattr(conn, '_aimmd_stage_failures', 0) + 1
 
 
+def _report_checkpoint(db_path, row):
+    """Say whether the staging checkpoint actually reset the WAL.
+
+    ``PRAGMA wal_checkpoint`` returns ``(busy, log_frames, backfilled)``.
+    ``busy=1`` means a reader held a read-mark throughout, so frames were
+    backfilled into the main database but the WAL was **not** reset: it keeps
+    every frame and grows without bound, and each write then pays a wal-index
+    scan across all of them.
+
+    This result used to be discarded. One production system sat busy for three
+    consecutive runs -- its WAL reaching 1.14 GB and resetting 12 times where
+    its four siblings reset 98-150 -- and no log line said so. Reporting it is
+    the entire point: the pragma already ran either way, since ``execute`` steps
+    the statement, so adding the fetch changes what is *known*, not what is done.
+    """
+    if row is None:
+        return
+    try:
+        busy, frames, backfilled = int(row[0]), int(row[1]), int(row[2])
+    except (IndexError, TypeError, ValueError):
+        return
+    if frames < 0:
+        return                  # (0, -1, -1): not a WAL database, nothing to say
+    name = os.path.basename(db_path)
+    if busy:
+        # Tag scoped to the cache, per house convention, so each of five systems
+        # still gets its own line. Staging checkpoints once per cache per
+        # process anyway (`stage_cache` no-ops once a replica is attached), so
+        # the dedupe costs no information.
+        _warn_once(f'ckpt-{db_path}',
+                   f'{name}: WAL checkpoint BUSY -- {frames:,} frame(s) still '
+                   f'in the WAL ({backfilled:,} backfilled); a concurrent reader '
+                   f'is pinning it, so the WAL cannot reset and will keep growing')
+    else:
+        # A clean TRUNCATE always reports (0, 0, 0), so quoting the counts here
+        # would print a constant and imply nothing was folded in.
+        print(f'shm_cache: {name}: WAL checkpoint reset the WAL')
+
+
 def _snapshot_copy(conn, db_path, partial, deadline_s):
     """Bounded, hang-proof snapshot of a live WAL cache into ``partial``.
 
@@ -492,10 +528,15 @@ def _snapshot_copy(conn, db_path, partial, deadline_s):
     """
     t0 = time.monotonic()
     # 1. bounded checkpoint -- a partial result is acceptable, so swallow errors.
+    # The `.fetchone()` is load-bearing, not cosmetic: `execute` alone leaves the
+    # statement active on `conn`, and the next `conn.commit()` on it then dies
+    # with "cannot commit transaction - SQL statements in progress" -- which is
+    # exactly what the trainer's pending-write flush does on this connection.
     try:
-        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        row = conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
     except sqlite3.Error:
-        pass
+        row = None
+    _report_checkpoint(db_path, row)
     # 2. pin a read snapshot so a checkpoint cannot move main-file pages mid-copy
     # A busy TRUNCATE can burn the source connection's whole busy_timeout, so
     # check the clock before committing to the copy rather than only inside it.
