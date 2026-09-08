@@ -61,6 +61,7 @@ Notes
 # external
 import io
 import os
+import sys
 import time
 import torch
 import numpy as np
@@ -91,6 +92,40 @@ def _graph_cache_line():
                 f"shm={st.get('staged_bytes', 0) / 1e9:.1f}GB")
     except Exception:                                          # noqa: BLE001
         return 'graph cache stats unavailable'
+
+
+def _flush_graph_backlog():
+    """Write graphs computed this round into the shared cache, in one batch.
+
+    The trainer reads the shared cache but stays out of its write lock during a
+    round (`shm_cache.set_reader_role`), so anything it had to compute lives
+    only in its memo and its tmpfs replica -- and both are rebuilt from the real
+    database at the top of the next round. Without this flush the same graphs
+    are recomputed every round for the life of the campaign, and each recompute
+    is another read against that database, which is what stops its WAL from ever
+    resetting. Once per round is cheap; never is what was expensive.
+
+    Looked up in ``sys.modules`` rather than imported: if `graph_utils` was never
+    imported then no graph was ever stored and there is nothing to flush, and
+    importing it here would drag the whole GNN stack into runs that have no
+    graph cache at all (a toy 1-D run pays seconds for a no-op). A cache write
+    is never allowed to be fatal either, hence the guard around the call.
+    """
+    _gu = sys.modules.get('aimmd.network.graph_utils')
+    if _gu is None:
+        return
+    try:
+        flushed = _gu.flush_pending_writes()
+    except Exception as exc:                                   # noqa: BLE001
+        # `flush_pending_writes` is written not to raise, but the training loop
+        # must not depend on that: losing a cache write costs one recompute,
+        # losing the round costs the allocation.
+        print(f'!! graph cache: write-back failed ({exc}); '
+              f'those graphs will be recomputed when next needed')
+        return
+    if flushed:
+        print('... graph cache: wrote back ' + ', '.join(
+            f'{os.path.basename(k)} +{v:,}' for k, v in flushed.items()))
 from ..pathensemble import PathEnsemble
 from ..analysis.utils import compute_bins
 from ..pathensemble.utils import assemble_pathensemble
@@ -432,6 +467,7 @@ class WorkerTrain(ABC):
                   f'the new reactive {r} frames {now()}')
             n = eval_pe.compute(**compute_kwargs('values'))
             print(f'... computed {n} values')
+            _flush_graph_backlog()
             
             # check mid-cycle (do not update path ensemble)
             if self.termination_signal:
@@ -508,6 +544,7 @@ class WorkerTrain(ABC):
                     # in this way, we minimize the risk of i/o issues
                     n = eval_pe.compute(**compute_kwargs('values'))
                 print(f'... computed {n} values')
+                _flush_graph_backlog()
                 
                 # check mid-cycle (do not update path ensemble)
                 if self.termination_signal:
@@ -893,6 +930,7 @@ class WorkerTrain(ABC):
                 n_val = eval_pes[k].compute(**values_kwargs('values', sid))
                 print(f"... [system {sid!r}] value pass: {n_val} frame(s) "
                       f"in {time.time() - _t0:.1f}s [{_graph_cache_line()}]")
+            _flush_graph_backlog()
             print(f'Value pass complete {now()}')
             if self.termination_signal:
                 return
@@ -966,6 +1004,7 @@ class WorkerTrain(ABC):
                     print(f"... [system {sid!r}] {target}: {n_post} frame(s) "
                           f"over {len(pe)} paths in {time.time() - _t:.1f}s "
                           f"[{_graph_cache_line()}]")
+                _flush_graph_backlog()
                 print(f'Post-training value pass complete in '
                       f'{time.time() - _post_t0:.1f}s {now()}')
                 if self.termination_signal:

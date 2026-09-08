@@ -59,6 +59,8 @@ Environment
 ``AIMMD_SHM_MAX_BYTES``    ceiling on total AIMMD replica bytes (default 50% of tmpfs)
 ``AIMMD_SHM_MAX_AGE``      seconds before an orphaned replica dir is reaped (default 3 d)
 ``AIMMD_GRAPH_MEMO_BYTES`` per-connection blob memo budget (default 64 MiB, 0 disables)
+``AIMMD_PENDING_WRITE_BYTES`` reader backlog held per cache before an early flush
+                           (default 256 MiB)
 """
 import atexit
 import errno
@@ -77,7 +79,8 @@ __all__ = ['CacheConnection', 'BlobMemo', 'register', 'registered_connections',
            'shm_root', 'replica_path', 'free_bytes', 'reserve_bytes',
            'budget_bytes', 'stage_cache', 'stage_replicas', 'refresh_replicas',
            'cleanup_replicas', 'replica_stats', 'detach',
-           'set_reader_role', 'reader_role', 'headroom', 'headroom_line']
+           'set_reader_role', 'reader_role', 'headroom', 'headroom_line',
+           'buffer_write', 'pending_count', 'pending_bytes', 'take_pending']
 
 
 _GIB = 1024 ** 3
@@ -95,6 +98,13 @@ _STAGE_PIN_BUSY_S = 30.0
 #: rest of the process. Without this a cache that cannot be staged is retried on
 #: every lookup, turning one blown deadline into a stall before each one.
 _STAGE_MAX_ATTEMPTS = int(os.environ.get('AIMMD_STAGE_MAX_ATTEMPTS', 3))
+#: Bytes of reader-computed graphs held per cache before the backlog is flushed
+#: early. A round's backlog is normally written in one batch at the end of the
+#: value pass; this bounds what an unusually long round can accumulate in memory
+#: (~25k graphs is ~190 MB in production). Overridable with
+#: ``AIMMD_PENDING_WRITE_BYTES``.
+_PENDING_WRITE_BYTES = int(os.environ.get('AIMMD_PENDING_WRITE_BYTES',
+                                          256 * 1024 * 1024))
 _DISABLED = ('', '0', 'off', 'none', 'false', 'no')
 _DIR_PREFIX = 'aimmd-cache-u'
 
@@ -138,6 +148,72 @@ def set_reader_role(enabled=True):
 def reader_role():
     """True if this process must not write to the shared graph cache."""
     return _READER_ROLE
+
+
+def buffer_write(conn, keys, blobs):
+    """Hold graphs the reader computed until they can be written in one batch.
+
+    Keeping the trainer out of the write lock (:func:`set_reader_role`) is only
+    half the job. Its replica is re-staged from the real database at the top of
+    every round, so a graph that lives *only* in the replica is gone by the next
+    round and recomputed from scratch -- and every recompute is another read
+    against the real database, which is what stops that database's WAL from ever
+    resetting. In production one system recomputed ~25,000 of the same graphs
+    every round while its WAL grew to 1.14 GB against 34-155 MB elsewhere.
+
+    So the reader keeps a backlog and writes it once per round instead of never:
+    thousands of contended writes collapse to one batch, and the gap in the
+    shared cache closes permanently rather than being re-dug every round.
+
+    Deduplicates by key -- the cache is content-addressed, so a key seen twice
+    in a round is the same bytes.
+
+    Returns True when the backlog is over :data:`_PENDING_WRITE_BYTES` and the
+    caller should flush it now rather than wait for the end of the round.
+    """
+    pending = getattr(conn, '_aimmd_pending', None)
+    if pending is None:
+        pending = {}
+        try:
+            conn._aimmd_pending = pending
+        except AttributeError:
+            # A plain sqlite3.Connection has no __dict__ and cannot carry a
+            # backlog. `init_db` always uses CacheConnection, but this is public
+            # API: degrade to the old behaviour rather than raise, because this
+            # exception would surface inside `descriptors_function` and cancel
+            # the job -- the exact failure `_store_blobs` exists to prevent.
+            return False
+    for key, blob in zip(keys, blobs):
+        pending[key] = blob
+    return pending_bytes(conn) >= _PENDING_WRITE_BYTES
+
+
+def pending_count(conn):
+    """Number of graphs waiting to be written to the shared cache."""
+    pending = getattr(conn, '_aimmd_pending', None)
+    return len(pending) if pending else 0
+
+
+def pending_bytes(conn):
+    """Encoded size of the backlog, for the byte cap and for reporting."""
+    pending = getattr(conn, '_aimmd_pending', None)
+    return sum(len(b) for b in pending.values()) if pending else 0
+
+
+def take_pending(conn):
+    """Drain the backlog, returning ``(keys, blobs)``.
+
+    Draining before the write (rather than after a successful one) is
+    deliberate: a batch that loses the lock is dropped, not carried into the
+    next round. Re-buffering would grow the trainer's memory without bound
+    across a multi-day campaign, and costs nothing to skip -- the cache is
+    content-addressed, so the worst case is one recompute.
+    """
+    pending = getattr(conn, '_aimmd_pending', None)
+    if not pending:
+        return [], []
+    conn._aimmd_pending = {}
+    return list(pending.keys()), list(pending.values())
 
 
 def _warn_once(tag, msg):

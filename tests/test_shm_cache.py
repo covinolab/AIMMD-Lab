@@ -771,3 +771,74 @@ def test_staging_survives_a_checkpoint_that_errors(tmp_path):
         del conn.execute
     assert _get(conn, 'a') == 1
 
+
+# ------------------------------ pending writes the reader must not discard --
+def test_buffer_write_accumulates_and_reports_its_size(tmp_path):
+    conn = _make_cache(tmp_path / 'c.sqlite', {})
+    shm_cache.buffer_write(conn, ['k1'], [b'xxxx'])
+    shm_cache.buffer_write(conn, ['k2'], [b'yyyyyy'])
+    assert shm_cache.pending_count(conn) == 2
+    assert shm_cache.pending_bytes(conn) == 10
+
+
+def test_buffer_write_dedupes_by_key(tmp_path):
+    """Content-addressed keys: the same key twice is one row, counted once."""
+    conn = _make_cache(tmp_path / 'c.sqlite', {})
+    shm_cache.buffer_write(conn, ['k'], [b'aaaa'])
+    shm_cache.buffer_write(conn, ['k'], [b'aaaa'])
+    assert shm_cache.pending_count(conn) == 1
+    assert shm_cache.pending_bytes(conn) == 4
+
+
+def test_buffer_write_signals_when_over_the_byte_cap(tmp_path, monkeypatch):
+    """Over the cap the caller must flush early, or a long round grows forever."""
+    monkeypatch.setattr(shm_cache, '_PENDING_WRITE_BYTES', 8)
+    conn = _make_cache(tmp_path / 'c.sqlite', {})
+    assert shm_cache.buffer_write(conn, ['a'], [b'1234']) is False
+    # reaching the cap is enough; it is a budget, not a threshold to exceed
+    assert shm_cache.buffer_write(conn, ['b'], [b'5678']) is True
+
+
+def test_take_pending_drains_the_buffer(tmp_path):
+    conn = _make_cache(tmp_path / 'c.sqlite', {})
+    shm_cache.buffer_write(conn, ['k1', 'k2'], [b'a', b'b'])
+    keys, blobs = shm_cache.take_pending(conn)
+    assert list(keys) == ['k1', 'k2']
+    assert list(blobs) == [b'a', b'b']
+    assert shm_cache.pending_count(conn) == 0
+    assert shm_cache.pending_bytes(conn) == 0
+    assert shm_cache.take_pending(conn) == ([], [])
+
+
+def test_pending_buffers_are_per_connection(tmp_path):
+    """One system's backlog must never be written into another's database."""
+    c1 = _make_cache(tmp_path / 'one.sqlite', {})
+    c2 = _make_cache(tmp_path / 'two.sqlite', {})
+    shm_cache.buffer_write(c1, ['k'], [b'aaaa'])
+    assert shm_cache.pending_count(c1) == 1
+    assert shm_cache.pending_count(c2) == 0
+
+
+def test_pending_helpers_are_safe_on_an_untouched_connection(tmp_path):
+    conn = _make_cache(tmp_path / 'c.sqlite', {})
+    assert shm_cache.pending_count(conn) == 0
+    assert shm_cache.pending_bytes(conn) == 0
+    assert shm_cache.take_pending(conn) == ([], [])
+
+
+def test_buffer_write_on_a_plain_connection_degrades_quietly(tmp_path):
+    """A cache optimisation must never raise into `descriptors_function`.
+
+    `init_db` always builds a CacheConnection, but these are public functions
+    and a plain sqlite3.Connection has no ``__dict__``. Raising here would
+    propagate through Path.compute into the engine and cancel every task in the
+    job -- the failure mode `_store_blobs` was written to prevent.
+    """
+    plain = sqlite3.connect(':memory:')
+    try:
+        assert shm_cache.buffer_write(plain, ['k'], [b'v']) is False
+        assert shm_cache.pending_count(plain) == 0
+        assert shm_cache.pending_bytes(plain) == 0
+        assert shm_cache.take_pending(plain) == ([], [])
+    finally:
+        plain.close()
