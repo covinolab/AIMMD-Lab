@@ -296,7 +296,7 @@ def test_shoot_registers_completed_path_and_updates_non_tps_weight(monkeypatch, 
         check_if_initialized=lambda *deffnms: False,
         shot_chains=lambda directory, t, k=None: chain,
         shot_paths=lambda directory, prefix, t, k=None: chain,
-        free_trajectories=lambda directory: [],
+        free_trajectories=lambda directory, old=None: [],
         initialize_simulation=lambda shooting_point, *deffnms: None,
         compute_values_args=(lambda x: np.array([0.0]), "values", "positions"),
     )
@@ -383,7 +383,7 @@ def test_train_performs_one_round_and_saves_outputs(monkeypatch, tmp_path):
         network_save_interval=1,
         update_network=lambda directory, timeout=0, raise_if_failure=False: None,
         shot_chains=lambda directory, target_state=None, old=None: [ensemble],
-        free_trajectories=lambda directory: [],
+        free_trajectories=lambda directory, old=None: [],
         network=TinyNetwork(),
     )
     worker = TinyTrainWorker(params, aimmd.PathEnsemble(initial), tmp_path)

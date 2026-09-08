@@ -343,7 +343,8 @@ class WorkerTrain(ABC):
                 return True
             
             # get free trajectories
-            self._free_trajectories = params.free_trajectories(directory)
+            self._free_trajectories = params.free_trajectories(
+                directory, old=getattr(self, '_free_trajectories', []))
             for trajectory in self._free_trajectories:
                 total_frames += trajectory.n_frames
 
@@ -781,6 +782,15 @@ class WorkerTrain(ABC):
             shot_chains_by_system = [[] for _ in systems]
         self._shot_chains_by_system = shot_chains_by_system
 
+        # Same idea for the free trajectories, which had no reuse at all. Their
+        # reuse is conditional inside `free_trajectories` (a free trajectory
+        # grows, unlike a shot path), so offering a stale list is safe: anything
+        # that changed is rebuilt.
+        frees_by_system = getattr(self, '_free_trajectories_by_system', None)
+        if frees_by_system is None or len(frees_by_system) != len(systems):
+            frees_by_system = [[] for _ in systems]
+        self._free_trajectories_by_system = frees_by_system
+
         def must_stop():
             nonlocal pathensembles
             if self.must_stop:
@@ -790,16 +800,18 @@ class WorkerTrain(ABC):
             _load_t0 = time.time()
             total_steps = total_frames = 0
             for k, (subdir, sid) in enumerate(systems):
-                # Split the timing: `shot_chains` reuses last round's Path
-                # objects, `free_trajectories` cannot yet, so seeing them apart
-                # is what tells us where the load time actually goes.
+                # Split the timing: both reuse last round's Path objects now,
+                # but free trajectories only when unchanged (they grow), so
+                # seeing them apart is what tells us where the load time goes.
                 _t = time.time()
                 chains = params.shot_chains(
                     subdir, None, old=shot_chains_by_system[k])
                 shot_chains_by_system[k] = chains
                 _t_chains = time.time() - _t
                 _t = time.time()
-                frees = params.free_trajectories(subdir)
+                frees = params.free_trajectories(
+                    subdir, old=frees_by_system[k])
+                frees_by_system[k] = frees
                 _t_frees = time.time() - _t
                 print(f"... [system {sid!r}] loaded "
                       f"{sum(len(c) for c in chains)} shot path(s) in "
@@ -1240,7 +1252,9 @@ class WorkerTrain(ABC):
         self._shot_chains = params.shot_chains(
             directory, None,
             old=getattr(self, '_shot_chains', []))
-        self._free_trajectories = params.free_trajectories(directory)
+        # One-shot (runs once, not per round), so this saves a single rescan.
+        self._free_trajectories = params.free_trajectories(
+            directory, old=getattr(self, '_free_trajectories', []))
 
         # ── build margins from initial paths (same as _train) ─────────────
         margins = get_initial_frames_for_training(self.initial_paths)
@@ -1506,13 +1520,16 @@ class WorkerTrain(ABC):
         # per-system full chains/free + margins
         sys_chains, sys_free, margins = [], [], []
         _reusable = getattr(self, '_shot_chains_by_system', None) or []
+        _reusable_frees = getattr(self, '_free_trajectories_by_system', None) or []
         for _k, (subdir, sid) in enumerate(systems):
             # One-shot: this loop runs once, so reuse saves a single full
             # rescan rather than one per round. Cheap, but not the same win.
             chains = params.shot_chains(
                 subdir, None,
                 old=_reusable[_k] if _k < len(_reusable) else [])
-            frees = params.free_trajectories(subdir)
+            frees = params.free_trajectories(
+                subdir,
+                old=(_reusable_frees[_k] if _k < len(_reusable_frees) else []))
             sys_chains.append(chains)
             sys_free.append(frees)
             ip = PathEnsemble(f'{subdir}/initial{states}/*')

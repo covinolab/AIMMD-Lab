@@ -114,6 +114,13 @@ def driver(tmp_path, monkeypatch, capsys):
         calls.append((directory, old, returned))
         return returned
 
+    free_calls = []
+
+    def free_trajectories(directory, target_state=None, old=None):
+        returned = []
+        free_calls.append((directory, old))
+        return returned
+
     params = aimmd.Params.placeholder.copy()
     params.__dict__.update(
         multi_system=True, multi_system_share_network=True,
@@ -136,7 +143,7 @@ def driver(tmp_path, monkeypatch, capsys):
         bias_reactive_threshold_of=lambda sid: None,
         update_network=lambda directory, timeout=0, raise_if_failure=False: None,
         shot_chains=shot_chains,
-        free_trajectories=lambda directory: [],
+        free_trajectories=free_trajectories,
         network=_Net(),
     )
     for name, value in (
@@ -154,6 +161,7 @@ def driver(tmp_path, monkeypatch, capsys):
     # should fail loudly rather than skip and silently stop testing the fix.
     worker._train_multi_system(nrounds=1, keep_running=False)
     run = _Run(calls)
+    run.free_calls = free_calls
     run.out = capsys.readouterr().out
     print(run.out)              # keep it visible on failure
     return run
@@ -227,3 +235,24 @@ def test_trainer_reports_are_per_system(driver):
     out = driver.out
     for sid in ('s1', 's2'):
         assert f"[system '{sid}']" in out, f'no per-system line for {sid}'
+
+
+def test_free_trajectories_are_offered_back(driver):
+    """The trainer must thread `old=` into free_trajectories too.
+
+    This was the one remaining un-reused part of the ensemble load, and the
+    load was 46 min of a ~4 h production round. Reuse inside
+    free_trajectories is conditional (a free trajectory grows), so offering a
+    stale list is safe -- but the trainer has to offer it at all.
+    """
+    per_dir = {}
+    for directory, old in driver.free_calls:
+        per_dir.setdefault(directory, []).append(old)
+
+    assert per_dir, 'free_trajectories was never called'
+    repeated = {d: v for d, v in per_dir.items() if len(v) > 1}
+    assert repeated, f'no directory reloaded; saw { {d: len(v) for d, v in per_dir.items()} }'
+    for directory, olds in repeated.items():
+        for i, old in enumerate(olds[1:], start=1):
+            assert old is not None, (
+                f'{directory}: reload {i} passed no old= to free_trajectories')

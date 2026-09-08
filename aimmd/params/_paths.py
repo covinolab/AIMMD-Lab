@@ -53,7 +53,7 @@ from ..pathensemble.utils import assemble_pathensemble
 # params' paths loading methods
 class ParamsPaths(ABC):
 
-    def free_trajectories(self, directory, target_state=None):
+    def free_trajectories(self, directory, target_state=None, old=None):
         """
         Collect (unsplit) free trajectories from an AIMMD run directory.
 
@@ -65,6 +65,20 @@ class ParamsPaths(ABC):
         target_state : str, optional
             If None, load for all states in `self.states`.
             Otherwise interpreted via `process_state(target_state, self.states)`.
+        old : iterable of aimmd.path.Path, optional
+            Free trajectories from a previous call. Any whose part files are
+            byte-for-byte unchanged is returned as the *same object*, so nothing
+            is re-read from disk. Without this the trainer rebuilds every free
+            trajectory every round, and `Path(fnames, ...)` resolves to
+            `min_length=inf`, which makes the MDA reader cache a guaranteed miss
+            and re-walks every part file.
+
+            Reuse is conditional, unlike `shot_paths`. A shot path is immutable
+            once registered; a free trajectory *grows* -- new parts appear and
+            `gmx mdrun` appends to the last one in place. So a trajectory is
+            only reused when both its tuple of part filenames and the size of
+            its last part are unchanged; otherwise it is rebuilt. Trajectory
+            files are append-only, so size is a sound signal here.
         
         Returns
         -------
@@ -87,6 +101,35 @@ class ParamsPaths(ABC):
 
         # initialize
         result = []
+
+        # Index any offered trajectories by their part signature. A miss just
+        # means we rebuild, so a stale or partial `old` can only cost time.
+        reusable = {}
+        for old_traj in (old or []):
+            sig = getattr(old_traj, '_aimmd_parts_sig', None)
+            if sig is not None:
+                reusable.setdefault(sig, old_traj)
+
+        def _parts_sig(part_fnames):
+            """Identity of a free trajectory on disk: which parts, and how long
+            the last one is (the only one that can still be appended to)."""
+            try:
+                return (tuple(part_fnames), os.path.getsize(part_fnames[-1]))
+            except OSError:
+                return None
+
+        def _assemble(part_fnames, name, indicted_map, attr):
+            """Reuse the previous object when nothing changed, else rebuild."""
+            sig = _parts_sig(part_fnames)
+            traj = reusable.get(sig) if sig is not None else None
+            if traj is None:
+                traj = Path(part_fnames, remove_overlapping_frames=True)
+                traj._aimmd_parts_sig = sig
+            # re-apply the exclusion every time: indicted.log can change even
+            # when the trajectory files have not.
+            if name in indicted_map:
+                setattr(traj, attr, indicted_map[name])
+            return traj
 
         # get "offset" for determining the path number
         ext = self.trajectory_extension
@@ -119,12 +162,8 @@ class ParamsPaths(ABC):
                 current = fname[-offset-6:-offset]
                 if active != current and fnames:
                     try:
-                        traj = Path(fnames,
-                            remove_overlapping_frames=True)
-                        name = f'traj{active}'
-                        if name in indicted:
-                            traj._exclude_from = indicted[name]
-                        result.append(traj)
+                        result.append(_assemble(
+                            fnames, f'traj{active}', indicted, '_exclude_from'))
                     except:
                         continue
                     fnames = [fname]
@@ -134,12 +173,8 @@ class ParamsPaths(ABC):
             # last path
             if fnames:
                 try:
-                    traj = Path(fnames,
-                        remove_overlapping_frames=True)
-                    name = f'traj{current}'
-                    if name in indicted:
-                        traj.exclude_from = indicted[name]
-                    result.append(traj)
+                    result.append(_assemble(
+                        fnames, f'traj{current}', indicted, 'exclude_from'))
                 except:
                     continue
 
