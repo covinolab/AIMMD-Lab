@@ -119,6 +119,7 @@ Coverage is counted in frames, and frames with no bias value contribute
 # external
 import os
 import re
+import shlex
 import shutil
 import tempfile
 import textwrap
@@ -208,8 +209,10 @@ BIAS_CACHE_COVERAGE_THRESHOLD = 0.05
 
 def _path_label(path):
     """Best-effort human-readable identifier for a path (for diagnostics)."""
-    fnames = getattr(path, 'fnames', None)
-    if fnames is not None:
+    for attribute in ('fnames', '_fnames'):
+        fnames = getattr(path, attribute, None)
+        if fnames is None:
+            continue
         try:
             if len(fnames):
                 return str(fnames[0])
@@ -680,11 +683,185 @@ def format_bias_cache_coverage(coverage,
 # ════════════════════════════════════════════════════════════════════════════
 
 BIAS_ZERO_POINT_TOLERANCE = 0.05
-"""Default tolerance (kT) on the recorded bias where no bias was applied.
+"""Largest |median| (kT) accepted as "zero", and the width within which two
+cache files count as sharing one zero point. exp(0.05) = 1.05."""
 
-``exp(0.05) = 1.05``, so a shift this small moves the reweighted rate by 5 %. The
-failure this guards against is a *constant* offset, which is either 0 or large."""
+ZERO_POINT_MIN_FILE_FRAMES = 3
+"""Reactive frames a cache file needs before it may vote on a zero point.
+The floor of one or two frames is those frames' value, tail or not."""
 
+ZERO_POINT_MIN_FLOOR_MASS = 0.5
+"""Share of a file's reactive frames that must sit within `tolerance` of its own
+floor before that floor counts as the file's zero point.
+
+This is the shape test that separates a stale cache from a file whose reactive
+frames happen to lie in the genuine near-boundary band. A cache written with a
+different `bias_function` has ALL of its bias-free frames displaced together, so
+its floor is where its mass is; a file that only clipped the fill has its frames
+spread over several kT with nothing at the floor."""
+
+ZERO_POINT_MIN_LEVEL_FILES = 2
+"""Voting files that make a group a zero point regardless of its frame share."""
+
+ZERO_POINT_MIN_LEVEL_FRACTION = 0.01
+"""Frame share that makes a group a zero point regardless of its file count.
+
+The two criteria are an OR on purpose, and both directions are documented: the
+file count catches a small stale batch that a share threshold alone would drop
+(the silent-pass this check exists to close), the frame share catches a SINGLE
+stale file that carries a lot of the ensemble - the .part0001 of a long free
+trajectory. A group meeting neither is reported as an informational line rather
+than silently discarded."""
+
+ZERO_POINT_MAX_FILES_LISTED = 20
+"""Longest explicit `rm` printed in the report. The complete list is always in
+`result['fix_command']`, which is never truncated."""
+
+_STOP_DELETE_RESTART = (
+    'STOP the run, DELETE the caches, then RESTART - in that order. Deleting '
+    'under a live worker changes nothing: the in-memory NPY cache never '
+    're-stats the file it memoised and is only cleared when a worker starts. '
+    'The values are then recomputed from the untouched *_COLVAR files; a cache '
+    'whose COLVAR is gone comes back with gamma = 1 and is named by the bias '
+    'cache coverage report instead. This applies to bias_source=\'file\'; under '
+    '\'reader\' the bias lives on the Path and PathEnsemble.compute refills only '
+    'falsy frames, so a stale non-zero frame is not revisited by a delete at '
+    'all.')
+
+_NOT_A_REPAIR = (
+    'This report makes the failure legible; it does not repair the run, and it '
+    'will keep firing every round until the caches are rebuilt. Nothing '
+    'fingerprints params.bias_function at any writer of a *.bias.npy, so a '
+    'future mid-campaign edit produces this same mixture again.')
+
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+def _plural(count, singular, plural=None):
+    """``3 cache files`` / ``1 cache file``, so report text reads as English."""
+    return f'{count} {singular if count == 1 else (plural or singular + "s")}'
+
+
+def _warning_block(body, indent):
+    """Wrap *body* into the module's ``*** WARNING:`` / ``***   `` block."""
+    wrapped = textwrap.wrap(body, width=78, break_on_hyphens=False)
+    return ([f'{indent}*** WARNING: {wrapped[0]}']
+            + [f'{indent}***   {line}' for line in wrapped[1:]])
+
+
+def _wrap_lines(body, indent, width=74):
+    """Wrap *body* into continuation lines of an already-open warning block."""
+    return [f'{indent}***   {line}'
+            for line in textwrap.wrap(body, width=width, break_on_hyphens=False)]
+
+
+def _frame_files(path, n):
+    """Per-frame source-file names for the first *n* frames, and whether the
+    per-file census had to fall back to one pseudo-file per path.
+
+    ``aimmd.path.Path.filenames`` is per-frame and aligned with the arrays
+    ``_get`` returns, which is what lets the census attribute a frame to the
+    cache file it came from. When it is unavailable the census degrades to the
+    per-path unit -- still a working (weaker) detector, but the file-level
+    remedy must then be suppressed rather than printed wrong.
+    """
+    try:
+        names = [str(name) for name in path.filenames]
+    except Exception:
+        names = []
+    if len(names) < n:
+        return np.asarray([_path_label(path)] * n, dtype=object), True
+    return np.asarray(names[:n], dtype=object), False
+
+
+def _cache_name(fname):
+    """The bias cache written next to trajectory *fname*."""
+    return f'{fname}.bias.npy'
+
+
+def _delete_command(fnames):
+    """A pasteable ``rm`` of those trajectories' bias caches, never truncated."""
+    return 'rm -f ' + ' '.join(shlex.quote(_cache_name(f)) for f in fnames)
+
+
+def _zero_point_levels(files, tolerance,
+                       min_file_frames=ZERO_POINT_MIN_FILE_FRAMES,
+                       min_floor_mass=ZERO_POINT_MIN_FLOOR_MASS,
+                       min_level_files=ZERO_POINT_MIN_LEVEL_FILES,
+                       min_fraction=ZERO_POINT_MIN_LEVEL_FRACTION):
+    """Group per-file reactive-bias floors into the distinct zero points present.
+
+    Returns ``(levels, unplaced, no_reactive, dropped)``:
+
+    levels
+        ascending in ``value``; each ``{'value', 'n_files', 'n_frames',
+        'files'}`` with every ASSIGNED file, not only the voting ones.
+    unplaced
+        files that have reactive frames but whose floor matches no level -
+        anomalous, and what makes a deletion list a lower bound.
+    no_reactive
+        files with no bias-free frame at all. Benign and structural (every
+        pure-A or pure-B block, and the deliberate ``part0000`` seeds): their
+        zero point is simply not readable, and their presence must not escalate
+        the remedy.
+    dropped
+        groups that were too small to call a zero point, reported rather than
+        discarded.
+    """
+    voters = []
+    for name, entry in files.items():
+        if entry['n_frames'] < min_file_frames or not np.isfinite(entry['floor']):
+            continue
+        if entry['floor_mass'] < min_floor_mass:
+            continue                       # a tail, not a zero point
+        voters.append((entry['floor'], name))
+    voters.sort()
+    if not voters:
+        return ([],
+                sorted(n for n, e in files.items() if e['n_frames']),
+                sorted(n for n, e in files.items() if not e['n_frames']),
+                [])
+
+    # a level is at most one tolerance wide: opened at its lowest floor and
+    # closed at the first floor beyond it, never chained neighbour-to-neighbour,
+    # so a slow drift cannot merge two real zero points into one wide level
+    groups = []
+    for floor, name in voters:
+        if not groups or floor - groups[-1][0][0] > tolerance:
+            groups.append([])
+        groups[-1].append((floor, name))
+
+    n_voted = sum(files[n]['n_frames'] for _, n in voters)
+    levels, dropped = [], []
+    for group in groups:
+        n_frames = sum(files[n]['n_frames'] for _, n in group)
+        value = float(np.median([f for f, _ in group]))
+        if len(group) >= min_level_files or n_frames >= min_fraction * n_voted:
+            levels.append({'value': value, 'n_files': 0, 'n_frames': 0,
+                           'files': []})
+        else:
+            dropped.append({'value': value, 'n_files': len(group),
+                            'n_frames': n_frames,
+                            'files': sorted(n for _, n in group)})
+
+    unplaced, no_reactive = [], []
+    for name in sorted(files):
+        entry = files[name]
+        if not entry['n_frames']:
+            no_reactive.append(name)
+            continue
+        nearest = (min(levels, key=lambda lv: abs(entry['floor'] - lv['value']))
+                   if levels and np.isfinite(entry['floor']) else None)
+        if nearest is None or abs(entry['floor'] - nearest['value']) > tolerance:
+            unplaced.append(name)
+            continue
+        nearest['files'].append(name)
+        nearest['n_files'] += 1
+        nearest['n_frames'] += entry['n_frames']
+    return levels, unplaced, no_reactive, dropped
+
+
+# ── the check ───────────────────────────────────────────────────────────────
 
 def check_bias_zero_point(pathensemble, states,
                           tolerance=BIAS_ZERO_POINT_TOLERANCE,
@@ -692,25 +869,40 @@ def check_bias_zero_point(pathensemble, states,
     """
     Check that the *recorded* bias is zero where no bias was applied.
 
-    ``path.bias`` must hold ``β·V_bias`` with the **bias-free region at exactly
-    zero**, because γ = ⟨exp(bias)⟩ is an absolute quantity: adding a constant
-    ``c`` to every recorded value multiplies every γ, and therefore the
-    reweighted rate, by ``exp(c)``. Nothing else in the pipeline can notice.
+    ``path.bias`` must hold ``beta*V_bias`` with the bias-free region at exactly
+    zero, because gamma = <exp(bias)> is absolute: adding a constant ``c`` to
+    every recorded value multiplies every gamma, and therefore the reweighted
+    rate, by ``exp(c)``. Nothing else in the pipeline can notice.
 
-    The check needs no knowledge of the biasing method. It reads the recorded
-    bias on the reactive-region frames — which the Tiwary-Parrinello scheme
-    requires to be unbiased anyway (:func:`check_reactive_bias`) — and asks
-    whether its median is 0. It also asks whether any frame's recorded bias is
-    negative: a fill that raises the energy inside the states gives ``V ≥ 0``, so
-    a negative recorded value cannot be physical.
+    Three separate questions, because their remedies differ:
 
-    This is deliberately data-driven rather than parsed out of the biasing
-    engine's input. Reading, say, ``BARRIER`` out of a PLUMED ``OPES_METAD`` line
-    would need AIMMD to know kT (it does not), to find the right input file (it
-    may be templated, or the run may have restarted from a ``STATE`` written with
-    a different value), and would still miss a wrong sign, a wrong column, or a
-    wrong kT in ``params.bias_function``. The zero-point test catches all of
-    them, and reports the offset numerically so it can be fixed or divided out.
+    - **Is there one zero point?** Each ``<traj>.bias.npy`` is written in one
+      call with one ``params.bias_function``, so the floor of a file's reactive
+      frames is the zero point that file carries. More than one level is the
+      signature of a ``bias_function`` edited mid-campaign: nothing invalidates
+      a cache that is already complete. A mixture has **no single offset** - one
+      subset of the gammas is wrong by a constant factor while the rest are
+      right - so the remedy is a list of caches to rebuild, not a number.
+    - **Is that zero point 0?** The median over the reactive frames. The only
+      failure a scalar correction repairs.
+    - **Is any recorded bias negative?** A fill that raises the energy inside
+      the states gives V >= 0, over every frame, not only the reactive ones.
+
+    Contract for callers::
+
+        np.isfinite(factor)  <=>  `census_conclusive`
+                             <=>  the per-file census placed every cache file
+                                  that has reactive frames on one and the same
+                                  zero point
+                             <=>  dividing every rate by `factor` is a valid
+                                  correction (a no-op when `median_ok`)
+
+    which is why :func:`bias_reweighted_rates` prints its corrected rates under
+    ``not median_ok and np.isfinite(factor)``. The census is deliberately the
+    gate rather than ``uniform_ok``: ``len(levels) <= 1`` is also what an
+    ensemble the census could not read looks like - every cache below the
+    voting bar of ``ZERO_POINT_MIN_FILE_FRAMES``, or a floor matching no level
+    - and a mixture like that must not be published as one clean offset.
 
     Parameters
     ----------
@@ -720,32 +912,46 @@ def check_bias_zero_point(pathensemble, states,
         Three-character state string, e.g. ``'ARB'``; ``states[1]`` is the
         bias-free reactive region.
     tolerance : float, default 0.05
-        Largest ``|median|`` (kT) accepted as "zero".
+        Largest ``|median|`` (kT) accepted as "zero". Doubles as the width
+        within which two cache files count as sharing one zero point, and as
+        the slack on the ``V >= 0`` test.
     indent : str, default four spaces
         Prefix for the printed lines.
 
     Returns
     -------
     dict
-        ``median`` (kT, median recorded bias in the reactive region),
-        ``minimum`` (kT, smallest recorded bias over all frames),
-        ``n_frames`` (reactive frames inspected),
-        ``offset`` (``median``; what to subtract inside ``params.bias_function``),
-        ``factor`` (``exp(-median)``: the reweighted rate as printed is too fast
-        by this factor when > 1, too slow when < 1),
-        ``ok`` (bool), and ``report`` (printable lines, no trailing newline).
-
-    Notes
-    -----
-    Fixing ``params.bias_function`` mid-run is not enough on its own:
-    ``Worker._cache_bias_files`` rewrites a ``<traj>.bias.npy`` only when it is
-    *shorter* than its trajectory, so already-cached frames would keep the old
-    values and the ensemble would silently mix two zero points. Delete the
-    ``*.bias.npy`` caches so they are recomputed from the untouched COLVARs.
+        ``median``, ``minimum``, ``n_frames``, ``report`` - as before.
+        ``ok`` - ``median_ok and uniform_ok and positive_ok``.
+        ``median_ok``, ``uniform_ok``, ``positive_ok`` - its three components.
+        ``census_conclusive`` - the census placed every cache file with
+        reactive frames on a single level; what gates ``offset``/``factor``.
+        ``offset``, ``factor`` - the constant to subtract and ``exp(-offset)``;
+        **nan unless** ``census_conclusive``, i.e. nan for a mixture and for an
+        ensemble in which the census established nothing.
+        ``gap``, ``gap_factor`` - kT from the level at zero (from zero itself
+        when no level is there) to the furthest other level, and ``exp(|gap|)``;
+        nan unless mixed.
+        ``levels``, ``n_levels``, ``n_files``.
+        ``mismatched_files`` - every file off the level that is at zero
+        (every placed file when no level is; trajectory names, so their caches
+        are those names + ``.bias.npy``).
+        ``mismatched_fraction``.
+        ``negative_files``, ``n_negative_frames``.
+        ``unplaced_files`` - files with reactive frames whose floor matched no
+        level; any at all makes ``mismatched_files`` a LOWER BOUND.
+        ``no_reactive_files`` - files with no bias-free frame (benign).
+        ``dropped_levels`` - groups too small to call a zero point.
+        ``census_degraded`` - the per-file census fell back to per-path.
+        ``fix_command`` - complete, never truncated ``rm`` of the caches to
+        rebuild, or None; ``fix_command_is_complete`` says whether it suffices.
     """
     r = states[1] if len(states) >= 2 else states[0]
     r_bias = []
     minimum = np.inf
+    n_negative = 0
+    files = {}
+    degraded = False
 
     for path in pathensemble:
         try:
@@ -758,58 +964,359 @@ def check_bias_zero_point(pathensemble, states,
         n = min(len(path_states), len(path_bias))
         if n == 0:
             continue
-        minimum = min(minimum, float(np.min(path_bias[:n])))
-        mask = path_states[:n] == r
+        path_bias = np.asarray(path_bias[:n], dtype=float)
+        minimum = min(minimum, float(np.min(path_bias)))
+        n_negative += int(np.count_nonzero(path_bias < -tolerance))
+        mask = np.asarray(path_states[:n]) == r
         if mask.any():
-            r_bias.append(path_bias[:n][mask])
+            r_bias.append(path_bias[mask])
+
+        names, fell_back = _frame_files(path, n)
+        degraded = degraded or fell_back
+        for name in set(names.tolist()):
+            here = names == name
+            entry = files.setdefault(str(name),
+                                     {'n_frames': 0, 'floor': np.inf,
+                                      'floor_mass': 0.0, 'minimum': np.inf,
+                                      '_r': []})
+            entry['minimum'] = min(entry['minimum'],
+                                   float(np.min(path_bias[here])))
+            here_r = here & mask
+            if here_r.any():
+                entry['_r'].append(path_bias[here_r])
+
+    for entry in files.values():
+        if entry['_r']:
+            block = np.concatenate(entry['_r'])
+            entry['n_frames'] = int(len(block))
+            entry['floor'] = float(np.min(block))
+            entry['floor_mass'] = float(
+                np.mean(np.abs(block - entry['floor']) <= tolerance))
+        del entry['_r']
 
     if not r_bias:
-        result = {'median': float('nan'), 'minimum': float('nan'),
-                  'n_frames': 0, 'offset': 0.0, 'factor': 1.0, 'ok': True,
-                  'report': f'{indent}Bias zero point: no reactive frames '
-                            f'to check'}
+        result = _empty_result(indent, files)
         print(result['report'])
         return result
 
     r_bias = np.concatenate(r_bias)
     median = float(np.median(r_bias))
     minimum = float(minimum) if np.isfinite(minimum) else float('nan')
-    factor = float(np.exp(-median))
-    ok = abs(median) <= tolerance and not (minimum < -tolerance)
 
-    if ok:
-        lines = [f'{indent}Bias zero point: median recorded bias in {r!r} = '
-                 f'{median:+.3f} kT over {len(r_bias)} frames '
-                 f'(min over all frames {minimum:+.3f} kT)']
+    levels, unplaced, no_reactive, dropped = _zero_point_levels(files, tolerance)
+    negative_files = sorted(name for name, e in files.items()
+                            if e['minimum'] < -tolerance)
+
+    # The correct zero point is 0 by definition - that is the premise the whole
+    # check rests on - so the reference level is the one AT zero, never the one
+    # carrying the most frames. Picking by population inverts the remedy exactly
+    # in the regime this check was written for: once the stale caches hold more
+    # than half the placed reactive frames, every already-correct cache lands in
+    # `mismatched_files` and in the printed `rm`, and the direction words invert
+    # with it. On calixarene_G2_opes_v5 that was true for most of the campaign.
+    if len(levels) <= 1:
+        reference = levels[0] if levels else None
+        others = []
     else:
+        at_zero = [lv for lv in levels if abs(lv['value']) <= tolerance]
+        # no level at zero (or two of them inside one tolerance): no level is
+        # the right one, so every placed cache file has to be rebuilt
+        reference = at_zero[0] if len(at_zero) == 1 else None
+        others = [lv for lv in levels if lv is not reference]
+    mismatched_files = sorted(f for lv in others for f in lv['files'])
+    n_mismatched = sum(lv['n_frames'] for lv in others)
+    n_placed = sum(lv['n_frames'] for lv in levels)
+    mismatched_fraction = (n_mismatched / n_placed) if n_placed else 0.0
+
+    median_ok = abs(median) <= tolerance
+    uniform_ok = len(levels) <= 1
+    positive_ok = not (minimum < -tolerance)
+    ok = median_ok and uniform_ok and positive_ok
+
+    # One level is evidence of ONE zero point only when every cache file that
+    # has reactive frames sits ON it. A file the census could not place - too
+    # few reactive frames to vote, or a floor matching no level - carries a zero
+    # point the census never saw, so `len(levels) <= 1` is then the absence of a
+    # finding rather than a finding, and a mixture whose caches all fall below
+    # the voting bar would otherwise be published as a single clean offset. A
+    # degraded (per-path) census is excluded for the same reason: two paths
+    # sharing a first file collapse into one pseudo-cache and hide a mixture
+    # between them.
+    census_conclusive = len(levels) == 1 and not unplaced and not degraded
+
+    # bound here, where the levels are - not inside the branch that prints them
+    if others:
+        base = reference['value'] if reference is not None else 0.0
+        worst = max(others, key=lambda lv: abs(lv['value'] - base))
+        gap = float(worst['value'] - base)
+        gap_factor = float(np.exp(abs(gap)))
+    else:
+        gap = float('nan')
+        gap_factor = float('nan')
+
+    # `offset`/`factor` describe a shift of ONE zero point, so they exist only
+    # when the census established that there is one. nan otherwise - which is
+    # the second guard that stops bias_reweighted_rates printing a "corrected"
+    # rate for a mixture, or for an ensemble the census could not read.
+    # errstate: a units error in bias_function (kJ/mol read as kT) overflows
+    # exp() to inf, which prints as 'inf' and is the right answer; a numpy
+    # RuntimeWarning next to it in the log is not.
+    with np.errstate(over='ignore', under='ignore'):
+        offset = median if census_conclusive else float('nan')
+        factor = float(np.exp(-offset)) if census_conclusive else float('nan')
+        # What a constant offset of `median` would do to every rate. Report
+        # text only, and taken from the median directly: `factor` is withheld
+        # above whenever one constant is not established, and exp(|median|)
+        # also cannot divide by an underflowed exp(-median) the way
+        # max(factor, 1.0 / factor) did (ZeroDivisionError above ~746 kT).
+        median_inflation = float(np.exp(abs(median)))
+
+    # what the per-file census may and may not be quoted as having found
+    if census_conclusive:
+        census_clause = (f'the census over {_plural(len(files), "cache file")} '
+                         f'finds no second zero point')
+    else:
+        census_clause = (f'the per-file census could not establish that this is '
+                         f'the only zero point '
+                         f'({_plural(len(levels), "level")} found, '
+                         f'{_plural(len(unplaced), "cache file")} on none of '
+                         f'them)')
+
+    complete = not unplaced and not degraded
+    if mismatched_files:
+        fix_command = _delete_command(mismatched_files)
+    elif not median_ok and files and not degraded:
+        fix_command = _delete_command(sorted(files))
+    else:
+        fix_command = None
+
+    lines = [f'{indent}Bias zero point: median recorded bias in {r!r} = '
+             f'{median:+.3f} kT over {len(r_bias)} frames '
+             f'(min over all frames {minimum:+.3f} kT)']
+    warning = None
+
+    if not uniform_ok:
+        # every phrase that depended on "the majority" is phrased against zero
+        anchor = ('the level that is at zero, where the bias-free region '
+                  'belongs' if reference is not None else
+                  'zero - and NO level here is at zero, so every placed cache '
+                  'carries a wrong one')
+        rest = ('while the rest are right' if reference is not None else
+                'and none of the others is right either')
+        body = (
+            f'the recorded bias has {len(levels)} different zero points, '
+            f'{abs(gap):.3f} kT apart: {len(mismatched_files)} of '
+            f'{_plural(len(files), "bias cache file")} ({n_mismatched} of '
+            f'{n_placed} placed frames in {r!r}, {mismatched_fraction:.1%}) '
+            f'were written with a floor {abs(gap):.3f} kT '
+            f'{"below" if gap < 0 else "above"} {anchor}. gamma = '
+            f'<exp(bias)> is absolute, so those files\' gamma are a factor '
+            f'{gap_factor:.3f} too {"small" if gap < 0 else "large"} {rest}, '
+            f'and the bias-reweighted rates below are too '
+            f'{"fast" if gap < 0 else "slow"} by somewhere between 1 and '
+            f'{gap_factor:.3f}, depending on how much of Sum(w*L*gamma) those '
+            f'files carry. A mixture has NO single offset, so no zero-point '
+            f'corrected rate is printed below: scaling the whole ensemble by '
+            f'one number would leave the correct files wrong in the other '
+            f'direction. This is what editing params.bias_function '
+            f'mid-campaign leaves behind - register_path writes a shooting '
+            f'path\'s cache once and never revisits it, and _cache_bias_files '
+            f'rewrites a <traj>.bias.npy only while it is SHORTER than its '
+            f'trajectory, so every cache that was already complete kept the '
+            f'old zero point. For a PLUMED OPES fill floored at -BARRIER, one '
+            f'BARRIER change in the shift is exactly this gap.')
+        lines += _warning_block(body, indent)
+        for level in levels:
+            tag = ' (at zero)' if level is reference else ''
+            lines.append(f'{indent}***   zero point {level["value"]:+.3f} kT: '
+                         f'{_plural(level["n_files"], "file")}, '
+                         f'{_plural(level["n_frames"], "frame")} '
+                         f'in {r!r}{tag}')
+        lines += _rebuild_lines(mismatched_files, files, indent,
+                                complete=complete, degraded=degraded,
+                                unplaced=unplaced)
+        warning = (
+            f'Bias zero point is not unique: {len(levels)} zero points in the '
+            f'recorded bias, {abs(gap):.3f} kT apart. {len(mismatched_files)} '
+            f'of {_plural(len(files), "bias cache")} carry the wrong one, so '
+            f'their gamma is wrong by a factor {gap_factor:.3f} and no single '
+            f'offset can repair it - those caches have to be rebuilt. See the '
+            f'bias zero point report in the log.')
+
+    elif not median_ok:
+        # the offset is only a correction if it applies to every cache, which
+        # is exactly what an inconclusive census has not shown
+        hedge = ('' if census_conclusive else
+                 'No zero-point corrected rate is printed below: one constant '
+                 'is a correction only if every cache carries the same zero '
+                 'point, and the census could not establish that. ')
         body = (
             f'the recorded bias is not zero where no bias was applied: its '
             f'median over the {len(r_bias)} frames in {r!r} is {median:+.3f} kT '
-            f'(min over all frames {minimum:+.3f} kT). gamma = <exp(bias)> is '
-            f'absolute, so a constant offset c multiplies every gamma by exp(c): '
-            f'the bias-reweighted rates printed below are too '
-            f'{"fast" if median < 0 else "slow"} by a factor '
-            f'{max(factor, 1.0 / factor):.3f}. Subtract {median:+.3f} kT '
-            f'({-median:+.3f} to be added) inside params.bias_function - for a '
-            f'PLUMED OPES fill floored at -BARRIER this is exactly a wrong '
-            f'BARRIER in the shift - and then DELETE every *.bias.npy cache, '
-            f'because _cache_bias_files only rewrites a cache shorter than its '
-            f'trajectory and the ensemble would otherwise mix two zero points.')
-        wrapped = textwrap.wrap(body, width=78, break_on_hyphens=False)
-        lines = [f'{indent}*** WARNING: {wrapped[0]}']
-        lines += [f'{indent}***   {line}' for line in wrapped[1:]]
-
-    result = {'median': median, 'minimum': minimum, 'n_frames': len(r_bias),
-              'offset': median, 'factor': factor, 'ok': bool(ok),
-              'report': '\n'.join(lines)}
-    print(result['report'])
-    if not ok:
-        warnings.warn(
+            f'(min over all frames {minimum:+.3f} kT), and {census_clause}. '
+            f'gamma = <exp(bias)> is absolute, so a constant offset c '
+            f'multiplies every gamma by exp(c): the bias-reweighted rates '
+            f'printed below are too {"fast" if median < 0 else "slow"} by a '
+            f'factor {median_inflation:.3f}. {hedge}Subtract {median:+.3f} '
+            f'kT ({-median:+.3f} to be added) inside params.bias_function - '
+            f'for a PLUMED OPES fill floored at -BARRIER this is exactly a '
+            f'wrong BARRIER in the shift - and then rebuild every bias cache, '
+            f'because a cache that is already complete keeps the old zero '
+            f'point and the ensemble would otherwise mix two of them.')
+        lines += _warning_block(body, indent)
+        lines += _rebuild_lines(sorted(files), files, indent,
+                                complete=complete, degraded=degraded,
+                                unplaced=unplaced, whole_run=True)
+        warning = (
             f'Bias zero point off by {median:+.3f} kT: every gamma, and every '
             f'bias-reweighted rate, is wrong by a factor '
-            f'{max(factor, 1.0 / factor):.3f}. See the bias zero point report '
-            f'in the log.', UserWarning, stacklevel=2)
+            f'{median_inflation:.3f}. See the bias zero point report '
+            f'in the log.')
+
+    elif not positive_ok:
+        body = (
+            f'{_plural(n_negative, "recorded bias value")} '
+            f'{"is" if n_negative == 1 else "are"} negative (minimum '
+            f'{minimum:+.3f} kT, over all frames, not only {r!r}), which a '
+            f'fill that raises the energy inside the states cannot produce: '
+            f'V >= 0 by construction. The median in {r!r} is {median:+.3f} kT '
+            f'and {census_clause}, so this is neither a constant offset nor a '
+            f'mixture and no scalar correction applies - none is printed '
+            f'below. Look for a wrong sign, a wrong column or a wrong kT in '
+            f'params.bias_function, or a truncated cache, in:')
+        lines += _warning_block(body, indent)
+        shown = negative_files[:3]
+        more = len(negative_files) - len(shown)
+        suffix = f' (+{more} more files)' if more > 0 else ''
+        lines.append(f'{indent}***   negative in: {", ".join(shown)}{suffix}')
+        warning = (
+            f'Bias zero point: {_plural(n_negative, "recorded bias value")} '
+            f'{"is" if n_negative == 1 else "are"} negative (minimum '
+            f'{minimum:+.3f} kT) across '
+            f'{_plural(len(negative_files), "cache file")}, which a fill that '
+            f'only raises the energy cannot produce. The zero point itself is '
+            f'fine, so no constant offset applies. See the bias zero point '
+            f'report in the log.')
+
+    elif levels:
+        # a complete partition of the cache files: on the level, no bias-free
+        # frame at all, and - the category this line used to omit - on no
+        # recognised level, which is what withholds `factor` above
+        unaccounted = (f', {len(unplaced)} on no recognised zero point'
+                       if unplaced else '')
+        lines.append(f'{indent}Bias zero point: one zero point at '
+                     f'{levels[0]["value"]:+.3f} kT across '
+                     f'{levels[0]["n_files"]} of {len(files)} cache files '
+                     f'({len(no_reactive)} hold no bias-free frame'
+                     f'{unaccounted})')
+
+    for group in dropped:
+        lines.append(f'{indent}    note: {group["n_files"]} cache file(s) floor '
+                     f'at {group["value"]:+.3f} kT over {group["n_frames"]} '
+                     f'frames in {r!r} - below both level thresholds, reported '
+                     f'not dropped: {", ".join(group["files"][:3])}')
+    if unplaced:
+        lines.append(f'{indent}    note: {len(unplaced)} cache file(s) have '
+                     f'reactive frames on no recognised zero point: '
+                     f'{", ".join(unplaced[:3])} - any deletion list above is '
+                     f'a lower bound')
+    if degraded:
+        lines.append(f'{indent}    note: per-frame filenames unavailable, so '
+                     f'the census ran per PATH, not per cache file; no '
+                     f'deletion list is printed from a degraded census')
+
+    result = {
+        'median': median, 'minimum': minimum, 'n_frames': len(r_bias),
+        'offset': offset, 'factor': factor, 'ok': bool(ok),
+        'median_ok': bool(median_ok), 'uniform_ok': bool(uniform_ok),
+        'positive_ok': bool(positive_ok),
+        'census_conclusive': bool(census_conclusive),
+        'gap': gap, 'gap_factor': gap_factor,
+        'levels': levels, 'n_levels': len(levels), 'n_files': len(files),
+        'mismatched_files': mismatched_files,
+        'mismatched_fraction': float(mismatched_fraction),
+        'negative_files': negative_files, 'n_negative_frames': n_negative,
+        'unplaced_files': unplaced, 'no_reactive_files': no_reactive,
+        'dropped_levels': dropped, 'census_degraded': bool(degraded),
+        'fix_command': fix_command,
+        'fix_command_is_complete': bool(fix_command is not None and complete),
+        'report': '\n'.join(lines),
+    }
+    print(result['report'])
+    if warning is not None:
+        warnings.warn(warning, UserWarning, stacklevel=2)
     return result
+
+
+def _empty_result(indent, files):
+    """Early return for an ensemble with no reactive frames.
+
+    Carries EVERY key, so a caller may index the dict unconditionally.
+    """
+    return {
+        'median': float('nan'), 'minimum': float('nan'), 'n_frames': 0,
+        'offset': 0.0, 'factor': 1.0, 'ok': True,
+        'median_ok': True, 'uniform_ok': True, 'positive_ok': True,
+        # no reactive frame anywhere: there is no zero point to get wrong, so
+        # the no-op correction below is valid and the contract on `factor` holds
+        'census_conclusive': True,
+        'gap': float('nan'), 'gap_factor': float('nan'),
+        'levels': [], 'n_levels': 0, 'n_files': len(files),
+        'mismatched_files': [], 'mismatched_fraction': 0.0,
+        'negative_files': [], 'n_negative_frames': 0,
+        'unplaced_files': [], 'no_reactive_files': sorted(files),
+        'dropped_levels': [], 'census_degraded': False,
+        'fix_command': None, 'fix_command_is_complete': False,
+        'report': f'{indent}Bias zero point: no reactive frames to check',
+    }
+
+
+def _rebuild_lines(fnames, files, indent, *, complete, degraded, unplaced,
+                   whole_run=False):
+    """Name the caches to rebuild, and give the exact command only when it is
+    provably the whole fix.
+
+    An explicit ``rm`` is printed only when the list is complete and short: it
+    is the least destructive repair and keeps every already-correct cache.
+    Otherwise the remedy is prose, never a partial ``rm`` and never a
+    ``find ... -delete`` (whose root would be a guess, and which in a
+    multi-system layout can reach outside the run). The complete list always
+    stays in ``result['fix_command']``.
+    """
+    if not fnames:
+        return _wrap_lines('no cache file could be attributed, so no rebuild '
+                           'list can be given. ' + _STOP_DELETE_RESTART, indent)
+
+    caches = [shlex.quote(_cache_name(name)) for name in fnames]
+    if complete and len(fnames) <= ZERO_POINT_MAX_FILES_LISTED:
+        head = (f'rebuild {_plural(len(fnames), "bias cache")}'
+                f'{" - every cache in the run" if whole_run else ""}. '
+                + _STOP_DELETE_RESTART)
+        lines = _wrap_lines(head, indent)
+        body = (['rm -f \\'] + [f'  {c} \\' for c in caches[:-1]]
+                + [f'  {caches[-1]}'])
+        lines += [f'{indent}***     {line}' for line in body]
+    else:
+        if degraded:
+            why = ('the per-file census degraded to per-path, so a file-level '
+                   'list would name paths, not caches')
+        elif unplaced:
+            why = (f'{_plural(len(unplaced), "further cache file")} '
+                   f'{"has" if len(unplaced) == 1 else "have"} '
+                   f'reactive frames on no recognised level, so this list is a '
+                   f'LOWER BOUND and deleting only these would leave a mixture')
+        else:
+            why = (f'too many to list every round (the complete list is in '
+                   f'the returned fix_command)')
+        head = (f'{len(fnames)} of the {len(files)} bias caches must be '
+                f'rebuilt, starting with '
+                f'{", ".join(_cache_name(f) for f in fnames[:3])} - {why}, so '
+                f'delete every *.bias.npy under the run directory instead and '
+                f'let them all be recomputed; a cache that was already correct '
+                f'recomputes to the same values. ' + _STOP_DELETE_RESTART)
+        lines = _wrap_lines(head, indent)
+    lines += _wrap_lines(_NOT_A_REPAIR, indent)
+    return lines
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1196,7 +1703,14 @@ def bias_reweighted_rates(pathensemble, weights1, weights2, lengths=None,
     # A constant zero-point offset c scales every gamma by exp(c), hence the
     # rate by exp(-c) exactly. Print the corrected value so the log carries a
     # usable number without anyone editing params.bias_function mid-run.
-    if not zero_point['ok'] and np.isfinite(zero_point['factor']):
+    # Gated on the *median* test, which is where `factor` comes from, and not
+    # on `ok`, which also carries the mixed-zero-point and negative-bias
+    # failures that `factor` says nothing about: those two used to print
+    # `offset +0.000 kT` and a rate identical to the uncorrected one under a
+    # "corrected" label. `factor` is nan for a mixture, so `isfinite` is the
+    # second guard, and the invariant documented on check_bias_zero_point
+    # holds: isfinite(factor) <=> dividing every rate by it is valid.
+    if not zero_point['median_ok'] and np.isfinite(zero_point['factor']):
         scale = zero_point['factor']
         print(f'    {label}k12 zero-point corrected '
               f'(offset {zero_point["offset"]:+.3f} kT): '
