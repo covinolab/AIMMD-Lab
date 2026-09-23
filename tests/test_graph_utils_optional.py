@@ -401,3 +401,124 @@ def test_replica_serves_real_graphs_end_to_end(tmp_path, monkeypatch):
         assert gu.shm_cache.replica_stats()['hits'] == 6
     finally:
         gu.shm_cache.cleanup_replicas()
+
+
+# ------------------------------------ a locked cache must not kill the job --
+def test_persistent_lock_does_not_raise(monkeypatch):
+    """A writer that cannot get the lock must give up quietly, not raise.
+
+    The graph cache is a cache: `process_descriptors_pyg` assembles its result
+    from the in-memory `new_graphs` list and only writes so that a later process
+    can skip the recompute. Raising here aborted the entire campaign -- the
+    RuntimeError propagated descriptors_function -> Path.compute ->
+    trajectory.extend -> execute_command.stop_condition, killed `gmx mdrun`, and
+    cancelled all 36 tasks. Seen in 19 production jobs, the oldest
+    calixarene_G2/slurm-852869, so it long predates the /dev/shm cache work.
+    """
+    import sqlite3
+    gu = _import_graph_utils()
+    monkeypatch.setattr(gu, '_STORE_RETRY_SECONDS', 0.2, raising=True)
+
+    attempts = {'n': 0, 'rollbacks': 0}
+
+    class AlwaysLocked:
+        def executemany(self, *a, **k):
+            attempts['n'] += 1
+            raise sqlite3.OperationalError('database is locked')
+
+        def commit(self):
+            raise AssertionError('must not commit')
+
+        def rollback(self):
+            attempts['rollbacks'] += 1
+
+    gu.store_many_in_sqlite(['a'], [_tiny_graph(gu)], AlwaysLocked(),
+                            compression_lib='lz4')
+
+    assert attempts['n'] >= 2, 'must retry, not give up on the first lock'
+    assert attempts['rollbacks'] == attempts['n'], 'every attempt rolls back'
+
+
+def test_persistent_lock_does_not_populate_memo_or_replica(monkeypatch):
+    """Nothing may be mirrored for rows that never reached the database.
+
+    Keeps the replica a strict subset of the real cache, which is what makes the
+    rowid watermark in shm_cache.refresh_replicas sound.
+    """
+    import sqlite3
+    gu = _import_graph_utils()
+    monkeypatch.setattr(gu, '_STORE_RETRY_SECONDS', 0.2, raising=True)
+
+    mirrored = []
+    monkeypatch.setattr(gu, '_after_store',
+                        lambda conn, keys, blobs: mirrored.append(keys))
+
+    class AlwaysLocked:
+        def executemany(self, *a, **k):
+            raise sqlite3.OperationalError('database is locked')
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    gu.store_many_in_sqlite(['a'], [_tiny_graph(gu)], AlwaysLocked(),
+                            compression_lib='lz4')
+    assert mirrored == [], 'write-through must not run for an unwritten batch'
+
+
+def test_single_store_is_also_non_fatal(monkeypatch):
+    """`store_in_sqlite` shares the hazard -- load_or_create writes through it."""
+    import sqlite3
+    gu = _import_graph_utils()
+    monkeypatch.setattr(gu, '_STORE_RETRY_SECONDS', 0.2, raising=True)
+
+    class AlwaysLocked:
+        def executemany(self, *a, **k):
+            raise sqlite3.OperationalError('database is locked')
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    gu.store_in_sqlite('k', _tiny_graph(gu), AlwaysLocked(),
+                       compression_lib='lz4')
+
+
+def test_lock_that_clears_still_stores(monkeypatch):
+    """Giving up must be a last resort: a lock that frees still gets written."""
+    import sqlite3
+    gu = _import_graph_utils()
+    conn = _mem_db(gu)
+    monkeypatch.setattr(gu, '_STORE_RETRY_SECONDS', 30.0, raising=True)
+    state = {'fails': 3}
+    real_executemany = conn.executemany
+
+    class Clearing:
+        def executemany(self, *a, **k):
+            if state['fails'] > 0:
+                state['fails'] -= 1
+                raise sqlite3.OperationalError('database is locked')
+            return real_executemany(*a, **k)
+
+        def commit(self):
+            return conn.commit()
+
+        def rollback(self):
+            pass
+
+    gu.store_many_in_sqlite(['a'], [_tiny_graph(gu)], Clearing(),
+                            compression_lib='lz4')
+    assert state['fails'] == 0
+    assert conn.execute('SELECT count(*) FROM graphs_cache').fetchone()[0] == 1
+
+
+def test_init_db_sets_an_explicit_busy_timeout(tmp_path):
+    """Do not inherit Python's 5 s default by accident -- state it."""
+    gu = _import_graph_utils()
+    conn = gu.init_db(db_path=str(tmp_path / 'g.sqlite'))
+    got = conn.execute('PRAGMA busy_timeout').fetchone()[0]
+    assert got >= 10000, f'busy_timeout is {got} ms; expected an explicit >=10 s'

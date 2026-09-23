@@ -75,7 +75,7 @@ exploratory run:
    loaded via ``torch.load`` or :meth:`aimmd.Params.update_network`.
 
 Multi-System (Multi-Ligand) Runs
----------------------------------
+--------------------------------
 
 A single params file can drive **several chemical systems at once** (for example
 two ligands binding the same host) and train **one shared committor model** that
@@ -206,6 +206,93 @@ convergence fills the ``k12_rw`` / ``k21_rw`` columns per system.
    Each system's PLUMED ``PRINT STRIDE`` (COLVAR output stride) must equal that
    system's ``nstxout-compressed`` so that COLVAR row *i* lines up with
    trajectory frame *i*; a mismatch silently misaligns the cached bias.
+
+Where Free Simulations Start
+----------------------------
+
+Free simulations sample the in-state equilibrium and the exit flux. There are two
+distinct moments at which one has to be given a starting configuration, and they
+are controlled independently:
+
+``free_seeding_position``
+   Where the **first** free trajectory of a state starts, chosen from the initial
+   path.
+
+``free_restart_source``
+   Where **every later** one restarts from, after the previous trajectory has
+   committed to a state.
+
+Both default to the historical behaviour, and both accept a per-state mapping such
+as ``{'A': 'deepest'}``.
+
+Why the first seed is not where you might expect
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:meth:`aimmd.Params` replaces each entry of ``initial_paths`` by its *transition
+block* -- the first :meth:`aimmd.Path.split` block whose type is a transition.
+Because ``split()`` overlaps neighbouring blocks by two frames, that block begins
+at the **last in-state frame before the reactive region**. Everything deeper is
+dropped.
+
+So by default the first free simulation starts *just inside* the state boundary,
+however deep the initial path reached. That is harmless when the boundary sits
+close to the bound minimum and badly wrong when it does not -- an accelerated run
+whose boundary was pushed outwards to clear a frozen bias can find its free
+simulations starting on the shoulder of the barrier, leaving almost immediately,
+and reporting a rate biased fast.
+
+``free_seeding_position`` addresses that. It is a fraction over the target state's
+own frames, ordered from the far side of the state towards the reactive region:
+``0.0`` (``'deepest'``) is as deep as the initial path reaches, ``1.0``
+(``'boundary'``, the default) is the frame adjacent to the reactive region, and
+``0.5`` (``'middle'``) is halfway. The same number means the same thing for both
+end states, which for a state at the end of the path is the mirror image of the
+file order.
+
+.. code-block:: python
+
+   # start the first free-A run as deep in the basin as the initial path goes,
+   # and draw every later restart from the accumulated in-A ensemble
+   free_seeding_position = {'A': 'deepest'}
+   free_restart_source   = {'A': 'equilibrium'}
+
+Brief recrossings do not truncate the candidates
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+An unbinding path often pops across the state boundary for a frame and comes
+straight back. Such a blip is **skipped**, not treated as the end of the state:
+the frames behind it remain candidates. Frames outside the state are excluded
+from selection rather than merely traversed, so an intermediate position can
+never land on a reactive frame and start the run outside the basin.
+
+This is not hypothetical. One calixarene guest's initial path reads
+
+.. code-block:: text
+
+   BBBBBBBRRRRRRRRRRAAAAAAAAA R AAAAAAAAAAAAAAAAAAAAAAA
+          boundary=17 ^       ^26                    ^49
+
+Frame 26 sits at 6.35 A against a 5.5 A state boundary -- one frame -- then drops
+back to 5.37 A. Stopping there would leave ``'deepest'`` pointing at frame 25
+(4.97 A) and hide the 23 deeper frames behind it, the deepest being frame 49 at
+3.64 A. That is 1.33 A of depth given up to a single-frame excursion, more than
+the offset the setting exists to remove.
+
+.. note::
+
+   Nothing is exported at build time and nothing is cached on disk for this. The
+   deeper frames are read from the file ``initial_paths`` names, resolved exactly
+   as the field itself resolves it, so a hand-edited ``params.py`` takes effect on
+   an already-built run directory without rebuilding it. The file therefore has to
+   still be where ``params.py`` says; if it is not, a non-default position fails
+   with a message naming it. The default never reads it at all.
+
+.. important::
+
+   A path with no transition -- what a brute-force shooting setup uses, in practice
+   every frame in the reactive state -- has neither a state boundary nor an
+   in-state side, so a position cannot be placed in it. Setting anything other
+   than ``'boundary'`` for such a run raises ``ValueError``.
 
 Bounding the Value Pass (``subsample_caps``)
 --------------------------------------------

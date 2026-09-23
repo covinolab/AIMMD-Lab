@@ -32,8 +32,21 @@ The core loop proceeds as follows:
    choose suitable *initial frames* (two frames defining a starting direction)
    and call :meth:`~aimmd.params.Params.initialize_simulation`.
 
-4) When a stop event is detected, select initial frames from the last valid
-   crossing and advance to the next trajectory name.
+4) When a stop event is detected, select initial frames for the next
+   trajectory and advance to the next trajectory name. By default these are
+   the last valid crossing, i.e. the frame the trajectory escaped from, which
+   lies on the state boundary. ``params.free_restart_source`` selects a
+   different source: ``'seed'`` (the initial-path seed again),
+   ``'transitions'`` (a sampled AIMMD transition path), ``'basin'`` (uniform
+   over the frames the accumulated free trajectories spent inside the state) or
+   ``'equilibrium'`` (the same pool, reweighted by ``exp(bias)`` to the
+   unbiased Boltzmann distribution inside the state), so that each first
+   passage starts from inside the state rather than from its boundary. See
+   :func:`~aimmd.worker.utils.get_basin_frames_for_free_restart`.
+
+   Where the FIRST trajectory of each state starts is a separate choice,
+   ``params.free_seeding_position``, a fraction over the state's own run of
+   initial-path frames.
 
 State conventions
 -----------------
@@ -84,7 +97,8 @@ import numpy as np
 from abc import ABC
 
 # aimmd imports
-from .utils import get_initial_frames_for_free_simulations
+from .utils import (get_basin_frames_for_free_restart,
+                    get_initial_frames_for_free_simulations)
 from ..path import Path
 from .._config import print
 from ..cache.npy import save_npy
@@ -92,6 +106,23 @@ from ..core.utils import now, remove, process_state
 from ..path.utils import get_cache_fname
 from ..pathensemble import PathEnsemble
 from ..pathensemble.utils import assemble_pathensemble
+
+def _basin_weighting_for_source(source):
+    """
+    In-basin candidate weighting for a `params.free_restart_source` value.
+
+    Returns
+    -------
+    str or None
+        ``'occupancy'`` for ``'basin'`` (uniform over in-state frames, i.e. the
+        *biased* equilibrium inside the state), ``'unbiased'`` for
+        ``'equilibrium'`` (drawn with probability proportional to ``exp(bias)``,
+        i.e. the **unbiased** Boltzmann equilibrium inside the state), and None
+        for the sources that do not draw from the accumulated in-state pool
+        (``'crossing'``, ``'seed'``, ``'transitions'``).
+    """
+    return {'basin': 'occupancy', 'equilibrium': 'unbiased'}.get(source)
+
 
 # WorkerFree mixin class
 class WorkerFree(ABC):
@@ -165,12 +196,39 @@ class WorkerFree(ABC):
         states = params.states
         t = process_state(target_state, states)
         r = states[1]
-        # retrieve and process paths
+        # retrieve and process paths. `free_seeding_position` says where in
+        # the state's run of initial-path frames the FIRST trajectory starts;
+        # 1.0 ('boundary') is the historical behaviour and takes the historical
+        # code path, so the untrimmed paths are only loaded when asked for.
+        seeding_position = params.free_seeding_position_for(t)
+        at_boundary = (not isinstance(seeding_position, str)
+                       and float(seeding_position) == 1.0)
         initial_paths = get_initial_frames_for_free_simulations(
-                self.initial_paths, t, r)
-        restart_with_transition = (
-            params.restart_free_simulations_with_transitions == 'all' or
-            t in params.restart_free_simulations_with_transitions)
+                self.initial_paths, t, r,
+                position=seeding_position,
+                untrimmed_paths=(None if at_boundary
+                                 else params.untrimmed_initial_paths()),
+                states=params.states,
+                rng=(np.random.default_rng(k)
+                     if seeding_position == 'random' else None))
+        if not at_boundary:
+            locs = initial_paths[k % len(initial_paths)].locs
+            print(f'\nFirst free simulation of {t!r} is seeded at position '
+                  f'{seeding_position!r} of the in-{t} run, i.e. frame '
+                  f'{locs[-1]} of the initial path')
+        # Where this worker's restart configurations come from. Resolved from
+        # params.free_restart_source (which also reads the deprecated
+        # restart_free_simulations_with_transitions), and 'crossing' by default,
+        # so nothing changes for an existing run. The in-basin sources never
+        # apply to the reactive state, where "inside the state" is the barrier
+        # region; free_restart_source_for already collapses those to
+        # 'crossing'.
+        restart_source = params.free_restart_source_for(t)
+        restart_with_transition = restart_source == 'transitions'
+        restart_from_seed = restart_source == 'seed'
+        basin_weighting = _basin_weighting_for_source(restart_source)
+        restart_from_basin = basin_weighting is not None
+        basin_min_frames = getattr(params, 'free_restart_min_frames', 0)
 
         # get folders
         folder = f'free{t}'
@@ -198,9 +256,29 @@ class WorkerFree(ABC):
                     if self.termination_signal:
                         return
 
+        # in-basin restart pool: every free trajectory of this state seen so
+        # far. Primed from disk so a requeued worker does not have to rebuild an
+        # in-basin sample from scratch; a fresh run starts empty and the very
+        # first trajectory is therefore still boundary-seeded (there is nothing
+        # else to draw from yet).
+        basin_pool = []
+        if restart_from_basin:
+            try:
+                basin_pool = list(params.free_trajectories(_directory, t))
+            except Exception as exception:
+                print(f'\nWarning: could not prime the in-basin restart pool '
+                      f'from {_directory}/free{t}: {exception}')
+                basin_pool = []
+            print(f'\nFree restarts for {t!r} are drawn from inside the '
+                  f'basin (free_restart_source = {restart_source!r}, '
+                  f'{basin_weighting} weighting, '
+                  f'min_frames={basin_min_frames}); pool primed with '
+                  f'{len(basin_pool)} trajectories from disk')
+
         # initialize
         chains = []
         initial_frames = None
+        seed_bias = None
         num = k + 1  # first trajectory
         name = f'traj{num:06g}'
         deffnm = f'{folder}/{name}'
@@ -235,6 +313,8 @@ class WorkerFree(ABC):
 
                 # need to find initial_frames
                 if restart_with_transition or not initial_frames:
+                    # these sources carry no known history-frame bias
+                    seed_bias = None
 
                     # take initial_frames from a sampled transition
                     if restart_with_transition:
@@ -280,16 +360,23 @@ class WorkerFree(ABC):
                 # slice a per-part _COLVAR for it. Without a bias cache here,
                 # path._get('bias', raise_if_missing=True) would fail and the
                 # whole free trajectory would fall back to gamma=1.0 in the
-                # bias correction. Approximate the seed-frame bias as 0
-                # (1-frame-out-of-thousands; bypasses bias_function which has
-                # no source COLVAR to read).
+                # bias correction. A boundary-crossing seed's history frame
+                # lies in the (bias-free) reactive region, so 0 is right for it;
+                # an in-basin seed's history frame carries the full fill and
+                # `seed_bias` holds its recorded value. Approximating THAT as 0
+                # would drag gamma down for exactly the shortest trajectories.
                 if (getattr(params, 'record_bias', False)
                         and getattr(params, 'bias_source', '') == 'file'):
                     seed_n = max(len(initial_frames) - 1, 0)
                     if seed_n > 0:
                         seed_xtc = f'{deffnm}.part0000{ext}'
+                        if (seed_bias is not None
+                                and len(seed_bias) == seed_n):
+                            seed_values = np.asarray(seed_bias, dtype=float)
+                        else:
+                            seed_values = np.zeros(seed_n, dtype=float)
                         save_npy(get_cache_fname(seed_xtc, 'bias'),
-                                 np.zeros(seed_n, dtype=float))
+                                 seed_values)
 
             # update old_nframes
             old_nframes = nframes
@@ -299,17 +386,44 @@ class WorkerFree(ABC):
                 self.total_steps += 1
                 total_frames.append(0)
 
+                # take initial frames from inside the basin, when asked to.
+                # `restart_from_seed` leaves initial_frames None, which sends
+                # the next iteration back to the initial-path seed above.
+                initial_frames = None
+                seed_bias = None
+                if restart_from_seed:
+                    print(f'\nRestarting {t!r} from the initial-path seed '
+                          f'again (free_restart_source = \'seed\')')
+                if restart_from_basin:
+                    basin_pool.append(trajectory)
+                    initial_frames, seed_bias = \
+                        get_basin_frames_for_free_restart(
+                            basin_pool, t, r,
+                            weighting=basin_weighting,
+                            min_frames=basin_min_frames)
+                    if initial_frames is None:
+                        print(f'\nWarning: no in-{t} sample to restart from '
+                              f'yet; using the boundary crossing instead')
+                    else:
+                        locs = initial_frames.locs
+                        fnames = initial_frames.filenames
+                        print(f'\nRestarting from an in-{t} frame drawn from '
+                              f'{len(basin_pool)} trajectories '
+                              f'({basin_weighting} weighting): '
+                              f'{fnames[-1]} {locs[-1]}')
+
                 # take initial frames from last valid crossing
-                if t == r:
-                    stop_frame += last_length - 2
-                initial_frames = trajectory[stop_frame:stop_frame + 2]
-                if initial_frames.states[1] == t:
-                    pass
-                elif initial_frames.states[0] == t:
-                    initial_frames = initial_frames[::-1]
-                else:
-                    initial_frames = None  # this should never happen
-                    # but it allows to recover from "corrupted" data
+                if initial_frames is None and not restart_from_seed:
+                    if t == r:
+                        stop_frame += last_length - 2
+                    initial_frames = trajectory[stop_frame:stop_frame + 2]
+                    if initial_frames.states[1] == t:
+                        pass
+                    elif initial_frames.states[0] == t:
+                        initial_frames = initial_frames[::-1]
+                    else:
+                        initial_frames = None  # this should never happen
+                        # but it allows to recover from "corrupted" data
 
                 # go to next trajectory
                 num += total

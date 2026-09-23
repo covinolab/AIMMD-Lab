@@ -416,17 +416,167 @@ compared to the previous one. Too large values may disrupt the Markov chain
 (excessive overrides)."""
                  })
 
+    free_seeding_position: str = field(
+        default='boundary',
+        metadata={'description':
+"""Where inside the state the FIRST free simulation of each state starts.
+
+Applies only to the first free trajectory of a state - the one seeded from
+`initial_paths`, before any AIMMD ensemble exists. Where the later trajectories
+restart from is `free_restart_source`, which is independent of this.
+
+The candidates are the frames of the initial path that belong to the target
+state and lie on that state's side of the transition boundary. This field picks
+one of them by fractional position, measured from the far side of the state
+towards the reactive region:
+
+- 0.0  the frame furthest from the reactive region - as deep into the state as
+       the initial path reaches.
+- 0.5  the middle of the run.
+- 1.0  the frame adjacent to the reactive region. DEFAULT, and the behaviour of
+       every AIMMD version so far.
+
+The fraction is a position among that state's own frames, so 0.0 always means
+"deep" and 1.0 always means "at the boundary", for A and for B alike. For a
+state sitting at the end of the path (normally B) that is the mirror image of
+the file order. The index is `int(fraction * (n - 1) + 0.5)` over the candidates
+ordered far-side-first, so a single candidate always yields itself, no value can
+fall outside the state, and two candidates tie towards the boundary, i.e.
+towards the historical behaviour.
+
+A brief recrossing does NOT truncate the candidates. If the path pops out of the
+state for a frame or two and comes straight back, those frames are skipped and
+the ones behind them still count. calixarene-G5's initial path is the reason:
+
+    BBBBBBBRRRRRRRRRRAAAAAAAAA R AAAAAAAAAAAAAAAAAAAAAAA
+           boundary=17 ^       ^26                    ^49
+
+Frame 26 sits at 6.35 A against a 5.5 A boundary - one frame - and drops back to
+5.37 A. Stopping at it would leave 'deepest' pointing at frame 25 (4.97 A) and
+hide the 23 deeper frames behind it, the deepest being frame 49 at 3.64 A: 1.33 A
+of depth given up to a single-frame excursion, more than the entire seed offset
+this field exists to remove. Frames outside the state are excluded from the
+candidates rather than merely traversed, so an intermediate position can never
+land on a reactive frame and start the free simulation outside the basin.
+
+A path with NO transition at all - what a brute-force shooting setup uses, in
+practice every frame in the reactive state - has neither a boundary nor an
+in-state side, so a position cannot be placed in it. Setting anything other
+than 'boundary' for such a run raises ValueError: the choice is meaningless
+there rather than merely awkward.
+
+Accepted values:
+
+- a float in [0, 1], or a string that parses as one, e.g. 0.25
+- 'boundary'   = 1.0   DEFAULT
+- 'middle'     = 0.5
+- 'deepest'    = 0.0
+- 'random'     a frame drawn uniformly from the run, drawn from a seed derived
+               from the worker index so a requeued worker reproduces its own
+               choice
+- a dict keyed by state letter for per-state control, e.g.
+  {'A': 'deepest', 'B': 'boundary'}. States not named keep the default.
+
+Only the two end states have an in-state run; a value given for the reactive
+state `states[1]` is ignored.
+
+Ignored for a state whose `free_restart_source` is 'transitions', which - as the
+deprecated `restart_free_simulations_with_transitions` did - replaces the first
+seed too, with a randomly chosen initial path.
+
+Any value other than 'boundary' needs initial-path frames that the transition
+trim in `Params._process_and_check` removes, so the untrimmed paths are
+retained internally at load time; 'boundary' uses the trimmed path unchanged
+and takes the historical code path.
+
+Why it matters. The trim replaces each initial path by its transition block,
+and because `Path.split()` overlaps neighbouring blocks by two frames that
+block begins at the LAST in-state frame before the reactive region. The first
+free simulation therefore starts at the state boundary, however deep the
+initial path reached - which is fine when the boundary sits just outside the
+bound minimum, and badly wrong when it does not."""
+                 })
+
+    free_restart_source: str = field(
+        default='crossing',
+        metadata={'description':
+"""Where each free simulation AFTER the first one restarts from.
+
+A free simulation stops when it commits to a state, and AIMMD immediately starts
+the next one. This field says where that next configuration comes from. It is
+independent of `free_seeding_position`, which governs only the first trajectory
+of each state.
+
+Accepted values:
+
+- 'crossing'     The last frame the previous trajectory spent in the target
+                 state, i.e. the configuration it escaped from. DEFAULT, and the
+                 historical behaviour. That frame lies ON the state boundary, so
+                 every first passage starts from the boundary-entry distribution
+                 rather than from the equilibrium distribution inside the state.
+                 The two agree only when relaxation inside the state is fast
+                 compared with the escape time; when the state holds
+                 sub-populations that interconvert slowly (a deep core and a
+                 weakly bound outer shell, say) this restarts every observation
+                 in the escape-prone shell, the first-passage times stop being
+                 exponential, and the rate estimate is biased fast.
+- 'seed'         The same frame the first seeding used, re-derived from the
+                 initial path through `free_seeding_position`. Every trajectory
+                 of the state then starts from one fixed configuration with
+                 fresh velocities.
+- 'basin'        A frame drawn uniformly from the in-state frames AIMMD has
+                 accumulated, i.e. from the *biased* equilibrium inside the
+                 state - the occupancy measure the Tiwary-Parrinello boosted
+                 clock assumes. Needs no bias data.
+- 'equilibrium'  The same pool, drawn with probability proportional to
+                 exp(bias), i.e. from the *unbiased* (Boltzmann) equilibrium
+                 inside the state. This matches the textbook rate - mean first
+                 passage from equilibrium in A - and is what an unbiased-MD or
+                 OPES-flooding reference measures. With no recorded bias every
+                 weight is 1 and this coincides with 'basin', which is correct:
+                 an unbiased trajectory already samples Boltzmann.
+- 'transitions'  The end frames of a randomly sampled AIMMD transition path.
+                 This is what the deprecated
+                 `restart_free_simulations_with_transitions` selected, and like
+                 that flag it also replaces the FIRST seed, falling back to a
+                 randomly chosen initial path while no transition has been
+                 sampled yet.
+- a dict keyed by state letter for per-state control, e.g.
+  {'A': 'equilibrium', 'B': 'crossing'}. States not named keep the default.
+
+'seed', 'basin' and 'equilibrium' draw from inside the state and are meaningless
+for the reactive state `states[1]`; requesting one of them there leaves that
+state on 'crossing'.
+
+See also `free_restart_min_frames`."""
+                 })
+
     restart_free_simulations_with_transitions: str = field(
         default='',
         metadata={'description':
-"""Restart free simulations from AIMMD-sampled transition for selected states.
-If non-empty, free simulations targeting specified states are be restarted from
-the last frames of randomly sampled transition paths rather than from the most
-recent state crossing observed in the previous free simulation.
-Accepted elements include:
-- a list of states in capital letters (eg. 'AB'),
-- 'all', which means that you consider *all* free simulations, regardless of
-their target state."""
+"""DEPRECATED - use `free_restart_source` instead.
+
+Restart free simulations from AIMMD-sampled transitions for selected states.
+Accepted elements are a list of states in capital letters (eg. 'AB'), or 'all'.
+
+This is the same choice as `free_restart_source = 'transitions'`, so it is now
+read through that field: `'all'` means `free_restart_source = 'transitions'` and
+`'AB'` means `{'A': 'transitions', 'B': 'transitions'}`. Setting it to a
+non-empty value still works and still does exactly what it used to - including
+replacing the first seed and falling back to a randomly chosen initial path
+while no transition has been sampled - but raises a DeprecationWarning naming
+the replacement. Setting both it and a non-default `free_restart_source` for the
+same state is an error."""
+                 })
+
+    free_restart_min_frames: int = field(
+        default=0,
+        metadata={'description':
+"""Minimum number of in-state frames the pool must hold before the `'basin'` /
+`'equilibrium'` sources of `free_restart_source` are used. Below it, the free
+worker falls back to the boundary exit frame (`'crossing'`) for that restart.
+Default 0 (no requirement). Raise it if you would rather keep the historical
+behaviour until a meaningful in-basin sample exists."""
                  })
 
     # ------------------------------------------------------------------

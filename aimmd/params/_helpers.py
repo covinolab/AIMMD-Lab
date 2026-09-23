@@ -30,6 +30,7 @@ Notes
 import os
 import numpy as np
 import inspect
+import warnings
 from abc import ABC
 from math import inf
 from types import MethodType as Method
@@ -40,7 +41,9 @@ from MDAnalysis import Universe
 from collections.abc import Iterable
 
 # aimmd imports
-from .utils import update_source, create_default_values_function
+from .utils import (update_source, create_default_values_function,
+                    canonical_restart_source, canonical_seeding_position,
+                    legacy_transitions_replacement)
 from ..core.utils import accepts_system_id
 from ..path import Path
 from ..pathensemble import PathEnsemble
@@ -221,6 +224,44 @@ class ParamsHelpers(ABC):
                     raise TypeError(
                         f'{name!r} must be distinct upper alpha chars')
             
+            # free-simulation seeding: where the FIRST trajectory of a state
+            # starts inside the state, as a fraction over the state's run of
+            # initial-path frames. A scalar, or a mapping keyed by state.
+            elif name == 'free_seeding_position':
+                value = canonical_seeding_position(
+                    value, states=getattr(self, 'states', None))
+
+            # free-simulation reseeding: where every LATER trajectory of a
+            # state restarts from. A scalar, or a mapping keyed by state.
+            elif name == 'free_restart_source':
+                value = canonical_restart_source(
+                    value, states=getattr(self, 'states', None))
+
+            # DEPRECATED state selector, superseded by the field above
+            elif name == 'restart_free_simulations_with_transitions':
+                value = str(value).replace(' ', '')
+                if value.lower() != 'all':
+                    value = value.upper()
+                if value and not value.isalpha():
+                    raise TypeError(
+                        f'{name!r} must be distinct upper alpha chars, or '
+                        f"'all'")
+                if value:
+                    replacement = legacy_transitions_replacement(value)
+                    message = (
+                        f"'restart_free_simulations_with_transitions' is "
+                        f"deprecated; use "
+                        f"free_restart_source = {replacement!r} "
+                        f"instead. The new field also offers the 'seed', "
+                        f"'basin' and 'equilibrium' restart sources, which "
+                        f"draw from inside the state rather than from its "
+                        f"boundary, and pairs with 'free_seeding_position' "
+                        f"which places the first seed.")
+                    warnings.warn(message, DeprecationWarning, stacklevel=4)
+                    # warnings are shown once per process and this one has been
+                    # missed before; the log line cannot be filtered away
+                    print(f'Warning: {message}')
+
             # topology (update universe)
             elif name == 'topology':
                 if isinstance(value, (list, tuple)):
@@ -392,7 +433,9 @@ class ParamsHelpers(ABC):
             except Exception as exception:  # go back in case of error
                 if not isinstance(backup, str) or backup != 'absent':
                     self.__dict__[name] = backup
-                raise TypeError(f'can\'t update {name!r} with {value!r}')
+                raise TypeError(
+                    f'can\'t update {name!r} with {value!r}: '
+                    f'{exception}') from exception
 
     def _process_and_check(self, fields=[]):
         """
@@ -451,6 +494,23 @@ class ParamsHelpers(ABC):
                 raise TypeError(f'`nbins` must be > 0, or >= 0 when '
                                 f'`extra_bins in ({states!r}, \'all\')`')
         
+        # free-simulation restart source: re-validate against the final
+        # `states` (field assignment order is the params file's, so `states`
+        # may have arrived after the switch), and refuse a config that sets
+        # both the switch and its deprecated predecessor.
+        if (not fields
+                or 'states' in fields
+                or 'free_seeding_position' in fields
+                or 'free_restart_source' in fields
+                or 'restart_free_simulations_with_transitions' in fields):
+            self.__dict__['free_seeding_position'] = \
+                canonical_seeding_position(
+                    self.free_seeding_position, states=self.states)
+            self.__dict__['free_restart_source'] = \
+                canonical_restart_source(
+                    self.free_restart_source, states=self.states)
+            self._free_restart_spec()   # raises TypeError on a conflict
+
         # check free_overriding_bins
         if 'free_overriding_bins' in fields:
             try:
@@ -524,6 +584,11 @@ class ParamsHelpers(ABC):
                 # recompute states (only if not manually overwritten)
                 if 'states' not in path.__dict__:
                     path.states = path.compute(self.states_function)
+                # NB the loop below replaces `path` with its transition
+                # block, which starts AT the state boundary. The deep-basin
+                # frames every `free_seeding_position` other than 'boundary'
+                # needs are read back from `path.fname` on demand, by
+                # `untrimmed_initial_paths()`.
                 # throw a warning if no transition is found
                 transition_found = False 
                 for split_path in (split_paths := path.split()):

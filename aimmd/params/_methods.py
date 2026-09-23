@@ -64,12 +64,16 @@ from MDAnalysis import Universe, Writer
 
 # aimmd imports
 from ..path import Path
+from .utils import (FREE_RESTART_IN_STATE_SOURCES, SEEDING_POSITION_ALIASES,
+                    legacy_transitions_replacement, parse_restart_source,
+                    parse_seeding_position)
 from .._config import MDA_CACHE, EM_MDP
 from ..cache.npy import load_npy
-from ..core.utils import randomize_velocities, remove
+from ..core.utils import process_state, randomize_velocities, remove
 from ..engines.toy import ToyEngine
 from ..pathensemble import PathEnsemble
 from ..execute.utils import execute_command
+
 
 
 def _colvar_rowcount(fname):
@@ -239,6 +243,189 @@ def _split_cumulative_colvar(deffnm_dir, deffnm_base, ext):
 
 # params' methods
 class ParamsMethods(ABC):
+
+    def _free_restart_spec(self):
+        """
+        Resolve `free_restart_source` and its deprecated predecessor.
+
+        Returns
+        -------
+        default : str
+            Restart source for states not named explicitly.
+        per_state : dict
+            ``{state letter: source}`` for the states that were named.
+
+        Raises
+        ------
+        TypeError
+            If both `free_restart_source` and the deprecated
+            `restart_free_simulations_with_transitions` ask for something.
+        """
+        spec = getattr(self, 'free_restart_source', 'crossing')
+        legacy = getattr(self, 'restart_free_simulations_with_transitions', '')
+        legacy = str(legacy or '').replace(' ', '')
+
+        if legacy:
+            replacement = legacy_transitions_replacement(legacy)
+            default, per_state = parse_restart_source(spec, states=self.states)
+            if default != 'crossing' or per_state:
+                raise TypeError(
+                    f"'free_restart_source' = {spec!r} and the deprecated "
+                    f"'restart_free_simulations_with_transitions' = "
+                    f"{legacy!r} both select a free-simulation restart "
+                    f"source. Keep only 'free_restart_source'; the deprecated "
+                    f"flag is equivalent to {replacement!r}.")
+            spec = replacement
+
+        return parse_restart_source(spec, states=self.states)
+
+    def free_restart_source_for(self, state):
+        """
+        Where free simulations of *state* take their restart configuration.
+
+        Resolves `free_restart_source`, honouring the deprecated
+        `restart_free_simulations_with_transitions` when that is the one set.
+
+        Parameters
+        ----------
+        state : int or str
+            State index into `params.states`, or the state label itself.
+
+        Returns
+        -------
+        str
+            One of `aimmd.params.utils.FREE_RESTART_SOURCES`. The in-state
+            sources are never returned for the reactive state `states[1]`,
+            where they are undefined: a bare in-state default leaves the
+            reactive state on ``'crossing'``.
+
+        Raises
+        ------
+        TypeError
+            If both the field and its deprecated predecessor are set.
+        """
+        state = process_state(state, self.states)
+        default, per_state = self._free_restart_spec()
+        source = per_state.get(state, default)
+        if (source in FREE_RESTART_IN_STATE_SOURCES
+                and len(self.states) >= 2 and state == self.states[1]):
+            return 'crossing'
+        return source
+
+    def free_seeding_position_for(self, state):
+        """
+        Where the first free simulation of *state* starts inside the state.
+
+        Parameters
+        ----------
+        state : int or str
+            State index into `params.states`, or the state label itself.
+
+        Returns
+        -------
+        float or str
+            A fraction in [0, 1] over the state's run of initial-path frames,
+            ordered far-side-first, or ``'random'``. Always the default for the
+            reactive state `states[1]`, which has no in-state run.
+        """
+        state = process_state(state, self.states)
+        default, per_state = parse_seeding_position(
+            getattr(self, 'free_seeding_position', 'boundary'),
+            states=self.states)
+        if len(self.states) >= 2 and state == self.states[1]:
+            return SEEDING_POSITION_ALIASES['boundary']
+        return per_state.get(state, default)
+
+    def untrimmed_initial_paths(self):
+        """
+        The initial paths as the user gave them, before the transition trim.
+
+        `_process_and_check` replaces every entry of `initial_paths` by its
+        transition block, which starts at the last in-state frame before the
+        reactive region. Every `free_seeding_position` other than ``'boundary'``
+        needs the frames that removes, so the source files are read back here.
+
+        Where the names come from depends on who is asking:
+
+        - in the launching process `initial_paths` is populated, and each
+          (trimmed) entry still carries the `fname` of the user's file;
+        - in a worker it is empty, because `aimmd/worker/_helpers.py` loads
+          params with ``initial_paths=None`` so that a node's slots do not each
+          re-read and re-trim the trajectory. The names then come from
+          ``_initial_path_files``, recorded by `Params.load` while it was
+          chdir'd into the params folder and so resolved by exactly the rule
+          the field itself uses - a bare name, a ``'../'`` name, an absolute
+          name and a glob pattern all behave the same way.
+
+        Nothing is cached on disk and nothing is written at build time, so a
+        hand-edited params.py takes effect on an already-built run folder
+        without a rebuild. The cost is one `states_function` pass per worker,
+        paid only when a non-default `free_seeding_position` is set.
+
+        Returns
+        -------
+        dict
+            ``{base name of the source file: untrimmed Path}``, with `states`
+            computed. Keyed by name rather than by position because a worker
+            does not hold `params.initial_paths`: it reads its own copies back
+            from ``<run>/initial<states>/``, in whatever order the glob gives
+            and with the trajectory extension appended.
+
+        Notes
+        -----
+        Multi-system runs keep one `PathEnsemble` per system in
+        `initial_paths`; those are flattened here, which is safe because the
+        source base names are what the lookup matches on.
+        """
+        groups = getattr(self, 'initial_paths', None) or []
+        if isinstance(groups, PathEnsemble):
+            sources = [path.fname for path in groups]
+        elif groups:
+            sources = [path.fname for group in groups for path in group]
+        else:
+            # A worker loads params with `initial_paths=None`, so the field is
+            # empty there and the names come from what the params FILE said,
+            # recorded at load time and already resolved to absolute paths.
+            sources = list(self.__dict__.get('_initial_path_files') or [])
+            if not sources:
+                raise TypeError(
+                    "cannot reach the untrimmed initial paths: this Params has "
+                    "neither 'initial_paths' nor the file names recorded at "
+                    "load time. A free_seeding_position other than 'boundary' "
+                    "needs them; check that params.py assigns 'initial_paths'.")
+
+        out = {}
+        for source in sources:
+            base = os.path.basename(str(source))
+            if base in out:
+                continue
+            if not os.path.exists(source):
+                raise TypeError(
+                    f"the initial path {source!r} named by params.py is not "
+                    f"there. A free_seeding_position other than 'boundary' "
+                    f"reads the frames the transition trim removed, so the "
+                    f"file itself is needed - the copy in the run's "
+                    f"initial<states>/ folder is already trimmed.")
+            path = Path(source)
+            # A cache may sit beside the file, but it is not necessarily
+            # usable: an unpopulated one reads back as an array of EMPTY
+            # strings rather than raising, so validate instead of merely
+            # catching. Recomputing costs one states_function pass over a
+            # path of tens of frames.
+            usable = False
+            try:
+                cached = np.asarray(path.states)
+                usable = (len(cached) == len(path)
+                          and cached.dtype.kind in 'US'
+                          and all(len(str(label)) == 1
+                                  and str(label) in self.states
+                                  for label in cached))
+            except Exception:
+                usable = False
+            if not usable:
+                path.states = path.compute(self.states_function)
+            out[base] = path
+        return out
 
     def initialize_simulation(self, frame, *deffnm,
                               timeout=20., verbose=True):
