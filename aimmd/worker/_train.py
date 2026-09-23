@@ -61,6 +61,7 @@ Notes
 # external
 import io
 import os
+import sys
 import time
 import torch
 import numpy as np
@@ -73,6 +74,58 @@ from .utils import rescale_bins, get_initial_frames_for_training
 from .._config import NPY_CACHE, MDA_CACHE, print
 from ..cache.npy import save_npy
 from ..core.utils import now, replace_in_cache, accepts_system_id
+
+
+def _graph_cache_line():
+    """One-line graph-cache counters, for spotting a stalled/ineffective cache.
+
+    ``shm`` is what the replicas actually occupy; ``hit``/``miss`` are replica
+    lookups and ``memo`` in-process ones, so a healthy trainer shows hits and
+    memo climbing and misses flat. All-misses means the replica is absent or
+    stale and every lookup is going to shared storage.
+    """
+    try:
+        from ..network import shm_cache as _sc
+        st = _sc.replica_stats()
+        return (f"graph cache hit={st.get('hits', 0):,} "
+                f"miss={st.get('misses', 0):,} memo={st.get('memo_hits', 0):,} "
+                f"shm={st.get('staged_bytes', 0) / 1e9:.1f}GB")
+    except Exception:                                          # noqa: BLE001
+        return 'graph cache stats unavailable'
+
+
+def _flush_graph_backlog():
+    """Write graphs computed this round into the shared cache, in one batch.
+
+    The trainer reads the shared cache but stays out of its write lock during a
+    round (`shm_cache.set_reader_role`), so anything it had to compute lives
+    only in its memo and its tmpfs replica -- and both are rebuilt from the real
+    database at the top of the next round. Without this flush the same graphs
+    are recomputed every round for the life of the campaign, and each recompute
+    is another read against that database, which is what stops its WAL from ever
+    resetting. Once per round is cheap; never is what was expensive.
+
+    Looked up in ``sys.modules`` rather than imported: if `graph_utils` was never
+    imported then no graph was ever stored and there is nothing to flush, and
+    importing it here would drag the whole GNN stack into runs that have no
+    graph cache at all (a toy 1-D run pays seconds for a no-op). A cache write
+    is never allowed to be fatal either, hence the guard around the call.
+    """
+    _gu = sys.modules.get('aimmd.network.graph_utils')
+    if _gu is None:
+        return
+    try:
+        flushed = _gu.flush_pending_writes()
+    except Exception as exc:                                   # noqa: BLE001
+        # `flush_pending_writes` is written not to raise, but the training loop
+        # must not depend on that: losing a cache write costs one recompute,
+        # losing the round costs the allocation.
+        print(f'!! graph cache: write-back failed ({exc}); '
+              f'those graphs will be recomputed when next needed')
+        return
+    if flushed:
+        print('... graph cache: wrote back ' + ', '.join(
+            f'{os.path.basename(k)} +{v:,}' for k, v in flushed.items()))
 from ..pathensemble import PathEnsemble
 from ..analysis.utils import compute_bins
 from ..pathensemble.utils import assemble_pathensemble
@@ -325,7 +378,8 @@ class WorkerTrain(ABC):
                 return True
             
             # get free trajectories
-            self._free_trajectories = params.free_trajectories(directory)
+            self._free_trajectories = params.free_trajectories(
+                directory, old=getattr(self, '_free_trajectories', []))
             for trajectory in self._free_trajectories:
                 total_frames += trajectory.n_frames
 
@@ -364,6 +418,10 @@ class WorkerTrain(ABC):
             # After must_stop(), so a trainer about to exit does not pay for a
             # copy it will never read; inside the loop, because the writers keep
             # appending and a once-per-process replica would go stale.
+            # The trainer only READS the shared graph cache: anything it has to
+            # compute stays in its memo and its own tmpfs replica, so it never
+            # contends with the ~35 MD writers for SQLite's single write lock.
+            shm_cache.set_reader_role()
             shm_cache.stage_replicas()
 
             # Recompute any missing descriptor cache files (e.g. after deletion)
@@ -409,6 +467,7 @@ class WorkerTrain(ABC):
                   f'the new reactive {r} frames {now()}')
             n = eval_pe.compute(**compute_kwargs('values'))
             print(f'... computed {n} values')
+            _flush_graph_backlog()
             
             # check mid-cycle (do not update path ensemble)
             if self.termination_signal:
@@ -485,6 +544,7 @@ class WorkerTrain(ABC):
                     # in this way, we minimize the risk of i/o issues
                     n = eval_pe.compute(**compute_kwargs('values'))
                 print(f'... computed {n} values')
+                _flush_graph_backlog()
                 
                 # check mid-cycle (do not update path ensemble)
                 if self.termination_signal:
@@ -759,18 +819,41 @@ class WorkerTrain(ABC):
             shot_chains_by_system = [[] for _ in systems]
         self._shot_chains_by_system = shot_chains_by_system
 
+        # Same idea for the free trajectories, which had no reuse at all. Their
+        # reuse is conditional inside `free_trajectories` (a free trajectory
+        # grows, unlike a shot path), so offering a stale list is safe: anything
+        # that changed is rebuilt.
+        frees_by_system = getattr(self, '_free_trajectories_by_system', None)
+        if frees_by_system is None or len(frees_by_system) != len(systems):
+            frees_by_system = [[] for _ in systems]
+        self._free_trajectories_by_system = frees_by_system
+
         def must_stop():
             nonlocal pathensembles
             if self.must_stop:
                 self.termination_signal = 2
                 return True
             print(f'\nLoading current path ensembles {now()}')
+            _load_t0 = time.time()
             total_steps = total_frames = 0
             for k, (subdir, sid) in enumerate(systems):
+                # Split the timing: both reuse last round's Path objects now,
+                # but free trajectories only when unchanged (they grow), so
+                # seeing them apart is what tells us where the load time goes.
+                _t = time.time()
                 chains = params.shot_chains(
                     subdir, None, old=shot_chains_by_system[k])
                 shot_chains_by_system[k] = chains
-                frees = params.free_trajectories(subdir)
+                _t_chains = time.time() - _t
+                _t = time.time()
+                frees = params.free_trajectories(
+                    subdir, old=frees_by_system[k])
+                frees_by_system[k] = frees
+                _t_frees = time.time() - _t
+                print(f"... [system {sid!r}] loaded "
+                      f"{sum(len(c) for c in chains)} shot path(s) in "
+                      f"{_t_chains:.1f}s + {len(frees)} free trajectory(ies) in "
+                      f"{_t_frees:.1f}s")
                 for chain in chains:
                     total_frames += sum(chain.n_frames)
                     total_steps += len(chain)
@@ -782,6 +865,9 @@ class WorkerTrain(ABC):
                     return True
             self.total_steps = total_steps
             self.total_frames = total_frames
+            print(f'Path ensembles loaded in {time.time() - _load_t0:.1f}s '
+                  f'({total_steps:,} steps, {total_frames:,} frames); '
+                  f'{shm_cache.headroom_line()}')
             return False
 
         def make_eval_pes():
@@ -811,17 +897,41 @@ class WorkerTrain(ABC):
                 return
 
             # see the equivalent call in _train()
+            # The trainer only READS the shared graph cache: anything it has to
+            # compute stays in its memo and its own tmpfs replica, so it never
+            # contends with the ~35 MD writers for SQLite's single write lock.
+            shm_cache.set_reader_role()
             shm_cache.stage_replicas()
 
             # (re)compute descriptors (full ensemble, for fit) + committor values
             # (on the possibly-subsampled eval ensemble, to bound the value pass)
+            #
+            # Deliberately chatty: this is the phase that stalled in production
+            # (staging is interleaved here -- each system's replica is copied on
+            # its first cache lookup -- so a missing "staged ..." line pins the
+            # stall to a system, and the per-step timings and cache counters say
+            # whether it is descriptor compute, the value pass, or cache I/O).
             eval_pes = make_eval_pes()
+            print(f'\nValue pass over {len(systems)} system(s) {now()}')
             for k, (subdir, sid) in enumerate(systems):
                 if params.compute_descriptors_args is not None:
-                    pathensembles[k].compute(
+                    _t0 = time.time()
+                    print(f"... [system {sid!r}] descriptors: computing over "
+                          f"{len(pathensembles[k])} paths {now()}")
+                    n_desc = pathensembles[k].compute(
                         *params.compute_descriptors_args, system_id=sid)
+                    print(f"... [system {sid!r}] descriptors: {n_desc} frame(s) "
+                          f"computed in {time.time() - _t0:.1f}s "
+                          f"[{_graph_cache_line()}]")
                 cache_bias(eval_pes[k], sid)
-                eval_pes[k].compute(**values_kwargs('values', sid))
+                _t0 = time.time()
+                print(f"... [system {sid!r}] value pass: {len(eval_pes[k])} "
+                      f"paths {now()}")
+                n_val = eval_pes[k].compute(**values_kwargs('values', sid))
+                print(f"... [system {sid!r}] value pass: {n_val} frame(s) "
+                      f"in {time.time() - _t0:.1f}s [{_graph_cache_line()}]")
+            _flush_graph_backlog()
+            print(f'Value pass complete {now()}')
             if self.termination_signal:
                 return
 
@@ -844,7 +954,8 @@ class WorkerTrain(ABC):
                 if len(losses):
                     source = 'new'
                     rounds_done += 1
-                    print(f'*** training completed {now()}')
+                    print(f'*** training completed {now()} '
+                          f'[{_graph_cache_line()}]')
                     if self.termination_signal:
                         break
                 else:
@@ -868,14 +979,34 @@ class WorkerTrain(ABC):
                         print(f'*** copied {network_fname!r} to {backup!r}')
                 # rebuild the eval ensembles (frames may have grown during fit)
                 # and refresh committor values with the new network
-                shm_cache.refresh_replicas()
+                #
+                # This second pass had no instrumentation at all, so its cost
+                # was never once observed -- every stall analysis so far has
+                # been blind past this point.
+                added = shm_cache.refresh_replicas()
+                if added:
+                    # Rows added per cache: a system whose cache stops growing
+                    # while the others keep going is the one whose writers are
+                    # being starved.
+                    print('... replica top-up: ' + ', '.join(
+                        f'{os.path.basename(k)} +{v:,}' for k, v in added.items()))
                 eval_pes = make_eval_pes()
+                print(f'\nPost-training value pass over {len(systems)} '
+                      f'system(s) {now()}')
+                _post_t0 = time.time()
                 for k, (subdir, sid) in enumerate(systems):
                     pe = eval_pes[k]
                     target = 'new' if source == 'new' else 'values'
                     cache_bias(pe, sid)
-                    pe.compute(**values_kwargs(target, sid),
-                               overwrite=(source == 'new'))
+                    _t = time.time()
+                    n_post = pe.compute(**values_kwargs(target, sid),
+                                        overwrite=(source == 'new'))
+                    print(f"... [system {sid!r}] {target}: {n_post} frame(s) "
+                          f"over {len(pe)} paths in {time.time() - _t:.1f}s "
+                          f"[{_graph_cache_line()}]")
+                _flush_graph_backlog()
+                print(f'Post-training value pass complete in '
+                      f'{time.time() - _post_t0:.1f}s {now()}')
                 if self.termination_signal:
                     return
 
@@ -1160,7 +1291,9 @@ class WorkerTrain(ABC):
         self._shot_chains = params.shot_chains(
             directory, None,
             old=getattr(self, '_shot_chains', []))
-        self._free_trajectories = params.free_trajectories(directory)
+        # One-shot (runs once, not per round), so this saves a single rescan.
+        self._free_trajectories = params.free_trajectories(
+            directory, old=getattr(self, '_free_trajectories', []))
 
         # ── build margins from initial paths (same as _train) ─────────────
         margins = get_initial_frames_for_training(self.initial_paths)
@@ -1426,13 +1559,16 @@ class WorkerTrain(ABC):
         # per-system full chains/free + margins
         sys_chains, sys_free, margins = [], [], []
         _reusable = getattr(self, '_shot_chains_by_system', None) or []
+        _reusable_frees = getattr(self, '_free_trajectories_by_system', None) or []
         for _k, (subdir, sid) in enumerate(systems):
             # One-shot: this loop runs once, so reuse saves a single full
             # rescan rather than one per round. Cheap, but not the same win.
             chains = params.shot_chains(
                 subdir, None,
                 old=_reusable[_k] if _k < len(_reusable) else [])
-            frees = params.free_trajectories(subdir)
+            frees = params.free_trajectories(
+                subdir,
+                old=(_reusable_frees[_k] if _k < len(_reusable_frees) else []))
             sys_chains.append(chains)
             sys_free.append(frees)
             ip = PathEnsemble(f'{subdir}/initial{states}/*')

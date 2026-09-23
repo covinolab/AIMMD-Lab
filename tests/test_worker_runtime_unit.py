@@ -296,7 +296,7 @@ def test_shoot_registers_completed_path_and_updates_non_tps_weight(monkeypatch, 
         check_if_initialized=lambda *deffnms: False,
         shot_chains=lambda directory, t, k=None: chain,
         shot_paths=lambda directory, prefix, t, k=None: chain,
-        free_trajectories=lambda directory: [],
+        free_trajectories=lambda directory, old=None: [],
         initialize_simulation=lambda shooting_point, *deffnms: None,
         compute_values_args=(lambda x: np.array([0.0]), "values", "positions"),
     )
@@ -383,7 +383,7 @@ def test_train_performs_one_round_and_saves_outputs(monkeypatch, tmp_path):
         network_save_interval=1,
         update_network=lambda directory, timeout=0, raise_if_failure=False: None,
         shot_chains=lambda directory, target_state=None, old=None: [ensemble],
-        free_trajectories=lambda directory: [],
+        free_trajectories=lambda directory, old=None: [],
         network=TinyNetwork(),
     )
     worker = TinyTrainWorker(params, aimmd.PathEnsemble(initial), tmp_path)
@@ -396,3 +396,66 @@ def test_train_performs_one_round_and_saves_outputs(monkeypatch, tmp_path):
     worker._train(nrounds=1, keep_running=False)
     assert any("networkARB.h5" in str(item[0]) for item in save_calls)
     assert any("binsARB.npy" in str(item[0]) for item in save_calls)
+
+
+# ------------------------------------- the worker must say WHY it is stopping --
+def _stub_worker(**over):
+    """Minimal object satisfying the counters `must_stop` reads."""
+    from aimmd.worker._properties import WorkerProperties
+    import time as _t
+
+    class W(WorkerProperties):
+        # shadow the tqdm-backed properties with plain values: this test is
+        # about must_stop's decision, not the progress bars
+        total_steps = 0
+        total_frames = 0
+    w = W()
+    w.termination_signal = 0
+    w._t0 = _t.time()
+    w.walltime = float('inf')
+    w.nframes = float('inf')
+    w.nsteps = float('inf')
+    for k, v in over.items():
+        setattr(w, k, v)
+    return w
+
+
+def test_must_stop_reports_the_step_limit(capsys):
+    """A silent stop cost us a whole investigation.
+
+    The trainer exited after one round because `nsteps=5000` (job.sh) is
+    compared against the *accumulated* path count, which had reached 38,511.
+    `must_stop` said nothing, so the job looked like it had crashed.
+    """
+    w = _stub_worker(nsteps=5000.0, total_steps=38511)
+    assert w.must_stop is True
+    out = capsys.readouterr().out
+    assert 'step limit' in out.lower(), f'no reason given; got {out!r}'
+    assert '38,511' in out or '38511' in out
+    assert '5,000' in out or '5000' in out
+
+
+def test_must_stop_reports_walltime_and_frames(capsys):
+    w = _stub_worker(walltime=0.0)
+    assert w.must_stop is True
+    assert 'walltime' in capsys.readouterr().out.lower()
+
+    w = _stub_worker(nframes=10.0, total_frames=99)
+    assert w.must_stop is True
+    assert 'frame limit' in capsys.readouterr().out.lower()
+
+
+def test_must_stop_reports_once_not_every_call(capsys):
+    """It is a property read in hot loops -- it must not spam the log."""
+    w = _stub_worker(nsteps=1.0, total_steps=5)
+    assert w.must_stop is True
+    capsys.readouterr()
+    for _ in range(5):
+        assert w.must_stop is True
+    assert capsys.readouterr().out.strip() == '', 'repeated the stop reason'
+
+
+def test_must_stop_silent_when_not_stopping(capsys):
+    w = _stub_worker()
+    assert w.must_stop is False
+    assert capsys.readouterr().out.strip() == ''

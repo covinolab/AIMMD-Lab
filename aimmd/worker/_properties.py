@@ -219,13 +219,29 @@ class WorkerProperties(ABC):
         
         if self.termination_signal:
             return True
-        
-        if (time.time() - self._t0 >= self.walltime or
-            self.total_frames >= self.nframes or
-            self.total_steps >= self.nsteps):
+
+        # Name the reason. A silent stop is expensive to diagnose: a trainer
+        # that exits because its accumulated step count passed `nsteps` looks
+        # exactly like a crash from outside, and the job script's
+        # `wait -n; scancel` then tears the whole allocation down.
+        reason = None
+        if time.time() - self._t0 >= self.walltime:
+            reason = (f'walltime reached '
+                      f'({time.time() - self._t0:.0f}s >= {self.walltime:.0f}s)')
+        elif self.total_frames >= self.nframes:
+            reason = (f'frame limit reached '
+                      f'({self.total_frames:,} >= {self.nframes:,.0f})')
+        elif self.total_steps >= self.nsteps:
+            reason = (f'step limit reached '
+                      f'({self.total_steps:,} >= {self.nsteps:,.0f})')
+
+        if reason is not None:
             self.termination_signal = 2  # sigint
+            # Printed once: the early return above short-circuits every later
+            # read, and this is a property consulted in hot loops.
+            print(f'\n*** stopping: {reason}')
             return True
-        
+
         return False
     
     @property

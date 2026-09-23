@@ -531,3 +531,314 @@ def test_topup_breakage_is_retried_next_cycle(tmp_path, monkeypatch):
     conn.execute('INSERT INTO graphs_cache VALUES (?,?)', ('b', pickle.dumps(2)))
     conn.commit()
     assert shm_cache.refresh_replicas().get(conn._aimmd_db_path) == 1
+
+
+# ------------------------------------------- staging must never be able to hang --
+def test_stage_cache_aborts_on_deadline_and_falls_back(tmp_path, monkeypatch):
+    """Staging must be bounded by a wall-clock deadline.
+
+    The production hang was `conn.backup(dest, pages=-1)`: it holds one WAL
+    read-snapshot for the entire uninterruptible copy, which blocks WAL
+    checkpointing, so under concurrent writers the WAL grows without bound and
+    the single copy never returns -- 6-12 h of silent trainer idle. The
+    replacement must instead have a deadline it cannot exceed, and on the
+    deadline it must degrade to "no replica, read the real DB" (return None,
+    attach nothing, leave no partial files) rather than block.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {chr(97 + i): i for i in range(6)})
+    monkeypatch.setattr(shm_cache, '_STAGE_DEADLINE_SECONDS', 0.0, raising=True)
+
+    result = shm_cache.stage_cache(conn)
+
+    assert result is None, 'a blown deadline must fall back, not stage'
+    assert getattr(conn, '_aimmd_replica', None) is None
+    # no half-written replica left behind anywhere under the shm root
+    root = shm_cache.shm_root()
+    leftovers = []
+    for dirpath, _dirs, files in os.walk(root):
+        leftovers += [f for f in files if '.partial' in f or f.endswith('.sqlite')]
+    assert leftovers == [], f'staging left files behind: {leftovers}'
+
+
+def test_stage_cache_completes_under_concurrent_writers(tmp_path):
+    """A cache written continuously during staging must still stage, bounded.
+
+    This is the scenario that hung in production (writers appending while the
+    trainer copies). The replica must come out queryable and contain at least
+    the rows present when staging began.
+    """
+    import threading
+
+    path = tmp_path / 'c.sqlite'
+    conn = _make_cache(path, {f'k{i}': i for i in range(200)})
+
+    stop = threading.Event()
+
+    def writer():
+        w = sqlite3.connect(str(path), timeout=5.0)
+        w.execute('PRAGMA busy_timeout=5000')
+        i = 0
+        while not stop.is_set():
+            try:
+                w.execute('INSERT OR REPLACE INTO graphs_cache VALUES (?,?)',
+                          (f'w{i}', pickle.dumps(i)))
+                w.commit()
+                i += 1
+            except sqlite3.OperationalError:
+                pass
+        w.close()
+
+    threads = [threading.Thread(target=writer) for _ in range(3)]
+    for t in threads:
+        t.start()
+    try:
+        t0 = __import__('time').monotonic()
+        result = shm_cache.stage_cache(conn)
+        elapsed = __import__('time').monotonic() - t0
+    finally:
+        stop.set()
+        for t in threads:
+            t.join(timeout=10)
+
+    assert result is not None and os.path.exists(result)
+    assert elapsed < 60, f'staging took {elapsed:.1f}s under writers (should be seconds)'
+    n = conn._aimmd_replica.execute(
+        'SELECT count(*) FROM graphs_cache').fetchone()[0]
+    assert n >= 200, f'replica has {n} rows, lost data present at stage start'
+
+
+def test_stage_cache_never_raises_on_copy_failure(tmp_path, monkeypatch):
+    """Any staging failure must degrade to None, never propagate."""
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1})
+
+    def boom(*a, **k):
+        raise OSError('simulated tmpfs failure')
+    monkeypatch.setattr(shm_cache, '_snapshot_copy', boom)
+
+    result = shm_cache.stage_cache(conn)   # must not raise
+    assert result is None
+    assert getattr(conn, '_aimmd_replica', None) is None
+
+
+def test_blown_deadline_does_not_retry_on_every_lookup(tmp_path, monkeypatch):
+    """A failed stage must not re-arm itself for the very next lookup.
+
+    `_aimmd_stage_pending` was cleared only on success, and graph_utils'
+    load path retries stage_cache whenever it is still set. So one blown
+    deadline turned into a fresh full staging attempt -- up to another whole
+    deadline -- before EVERY subsequent cache lookup: the unbounded hang this
+    module exists to prevent, merely chunked, and hidden because _warn_once
+    suppresses the repeats. Bound it instead: give up the pending flag on
+    failure, and stop re-arming after a few consecutive failures.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {chr(97 + i): i for i in range(6)})
+    calls = {'n': 0}
+    real = shm_cache._snapshot_copy
+
+    def slow_fail(*a, **k):
+        calls['n'] += 1
+        raise TimeoutError('simulated blown deadline')
+    monkeypatch.setattr(shm_cache, '_snapshot_copy', slow_fail)
+
+    # arm it the way the trainer does: stage_replicas marks it pending, the
+    # first cache lookup then triggers the copy
+    shm_cache.stage_replicas()
+    assert getattr(conn, '_aimmd_stage_pending', False) is True
+    assert shm_cache.stage_cache(conn) is None
+    assert calls['n'] == 1
+    # the load path only retries while the pending flag is set
+    assert getattr(conn, '_aimmd_stage_pending', False) is False, (
+        'a failed stage left itself armed; the next lookup would restage')
+
+    # and re-arming across rounds must be bounded, not forever
+    for _ in range(10):
+        shm_cache.stage_replicas()
+        if getattr(conn, '_aimmd_stage_pending', False):
+            shm_cache.stage_cache(conn)
+    assert calls['n'] <= shm_cache._STAGE_MAX_ATTEMPTS, (
+        f'{calls["n"]} staging attempts; must stop after '
+        f'{shm_cache._STAGE_MAX_ATTEMPTS} consecutive failures')
+
+    monkeypatch.setattr(shm_cache, '_snapshot_copy', real)
+
+
+def test_owned_accounting_includes_the_replica_wal(tmp_path, monkeypatch):
+    """tmpfs accounting must count the replica's -wal, not just the main file.
+
+    The old backup() produced no -wal, so main-only accounting was exact. The
+    copy can bring one across (up to 2.79 GB for the biggest production cache),
+    and it is real tmpfs -- invisible to both AIMMD_SHM_MAX_BYTES and the npy
+    budget handover, i.e. node memory over-commit in the unsafe direction.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {chr(97 + i): i for i in range(6)})
+    dst = shm_cache.stage_cache(conn)
+    assert dst is not None
+
+    # simulate a replica that carries a WAL (busy TRUNCATE leaves one behind)
+    with open(dst + '-wal', 'wb') as fh:
+        fh.write(b'\0' * (3 * 1024 * 1024))
+
+    shm_cache._recount_owned(dst)
+    on_disk = os.path.getsize(dst) + os.path.getsize(dst + '-wal')
+    assert shm_cache._OWNED[dst] == on_disk, (
+        f'accounted {shm_cache._OWNED[dst]} but {on_disk} bytes are in tmpfs')
+
+
+# ------------------------------------------------ reader role (the trainer) --
+def test_reader_role_defaults_off_and_toggles():
+    """Writers must be unaffected; only the trainer opts in."""
+    assert shm_cache.reader_role() is False
+    try:
+        shm_cache.set_reader_role()
+        assert shm_cache.reader_role() is True
+    finally:
+        shm_cache.set_reader_role(False)
+    assert shm_cache.reader_role() is False
+
+
+def test_headroom_reports_staged_budget_and_free(tmp_path):
+    """Per-round tmpfs headroom, so the ceiling is seen coming, not hit.
+
+    Production is already at ~64 GB staged against a ~128 GB default ceiling.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1, 'b': 2})
+    shm_cache.stage_cache(conn)
+    h = shm_cache.headroom()
+    assert set(h) >= {'staged_bytes', 'budget_bytes', 'free_bytes'}
+    assert h['staged_bytes'] > 0
+    assert h['budget_bytes'] > 0
+    line = shm_cache.headroom_line()
+    assert 'GB' in line and 'staged' in line
+
+
+# --------------------------------------- staging checkpoint, made visible --
+def test_staging_reports_a_clean_checkpoint(tmp_path, capsys):
+    """A checkpoint that reset the WAL says so, and does not warn.
+
+    The outcome of the staging ``wal_checkpoint(TRUNCATE)`` used to be
+    discarded, so a WAL that never reset was invisible for three production
+    runs. Reporting it is the whole point of the change.
+    """
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1, 'b': 2})
+    assert shm_cache.stage_cache(conn) is not None
+    out = capsys.readouterr().out
+    assert 'checkpoint' in out.lower()
+    assert '!!' not in out, 'a clean checkpoint must not warn'
+
+
+def test_staging_warns_when_the_checkpoint_is_busy(tmp_path, capsys):
+    """A reader pinning the WAL blocks the reset -- the production failure.
+
+    This is the exact shape of the G4 case: the checkpoint backfills but cannot
+    reset, so the WAL grows without bound while the log says nothing.
+    """
+    db = tmp_path / 'c.sqlite'
+    conn = _make_cache(db, {'a': 1, 'b': 2})
+    conn.execute('PRAGMA busy_timeout=100')
+    other = sqlite3.connect(str(db), timeout=0.1)
+    other.execute('BEGIN')
+    other.execute('SELECT 1 FROM graphs_cache LIMIT 1').fetchone()
+    try:
+        shm_cache.stage_cache(conn)
+    finally:
+        other.rollback()
+        other.close()
+    out = capsys.readouterr().out
+    assert 'busy' in out.lower()
+    assert 'c.sqlite' in out
+
+
+def test_a_non_wal_database_reports_nothing(tmp_path, capsys):
+    """``(0, -1, -1)`` means "not a WAL database", not "reset -1 frames"."""
+    shm_cache._report_checkpoint('/nowhere/plain.sqlite', (0, -1, -1))
+    assert capsys.readouterr().out == ''
+
+
+def test_staging_survives_a_checkpoint_that_errors(tmp_path):
+    """The checkpoint is best-effort: an error must not stop staging."""
+    conn = _make_cache(tmp_path / 'c.sqlite', {'a': 1})
+    real = conn.execute
+
+    def boom(sql, *a, **k):
+        if 'wal_checkpoint' in str(sql).lower():
+            raise sqlite3.OperationalError('no')
+        return real(sql, *a, **k)
+
+    conn.execute = boom
+    try:
+        assert shm_cache.stage_cache(conn) is not None
+    finally:
+        del conn.execute
+    assert _get(conn, 'a') == 1
+
+
+# ------------------------------ pending writes the reader must not discard --
+def test_buffer_write_accumulates_and_reports_its_size(tmp_path):
+    conn = _make_cache(tmp_path / 'c.sqlite', {})
+    shm_cache.buffer_write(conn, ['k1'], [b'xxxx'])
+    shm_cache.buffer_write(conn, ['k2'], [b'yyyyyy'])
+    assert shm_cache.pending_count(conn) == 2
+    assert shm_cache.pending_bytes(conn) == 10
+
+
+def test_buffer_write_dedupes_by_key(tmp_path):
+    """Content-addressed keys: the same key twice is one row, counted once."""
+    conn = _make_cache(tmp_path / 'c.sqlite', {})
+    shm_cache.buffer_write(conn, ['k'], [b'aaaa'])
+    shm_cache.buffer_write(conn, ['k'], [b'aaaa'])
+    assert shm_cache.pending_count(conn) == 1
+    assert shm_cache.pending_bytes(conn) == 4
+
+
+def test_buffer_write_signals_when_over_the_byte_cap(tmp_path, monkeypatch):
+    """Over the cap the caller must flush early, or a long round grows forever."""
+    monkeypatch.setattr(shm_cache, '_PENDING_WRITE_BYTES', 8)
+    conn = _make_cache(tmp_path / 'c.sqlite', {})
+    assert shm_cache.buffer_write(conn, ['a'], [b'1234']) is False
+    # reaching the cap is enough; it is a budget, not a threshold to exceed
+    assert shm_cache.buffer_write(conn, ['b'], [b'5678']) is True
+
+
+def test_take_pending_drains_the_buffer(tmp_path):
+    conn = _make_cache(tmp_path / 'c.sqlite', {})
+    shm_cache.buffer_write(conn, ['k1', 'k2'], [b'a', b'b'])
+    keys, blobs = shm_cache.take_pending(conn)
+    assert list(keys) == ['k1', 'k2']
+    assert list(blobs) == [b'a', b'b']
+    assert shm_cache.pending_count(conn) == 0
+    assert shm_cache.pending_bytes(conn) == 0
+    assert shm_cache.take_pending(conn) == ([], [])
+
+
+def test_pending_buffers_are_per_connection(tmp_path):
+    """One system's backlog must never be written into another's database."""
+    c1 = _make_cache(tmp_path / 'one.sqlite', {})
+    c2 = _make_cache(tmp_path / 'two.sqlite', {})
+    shm_cache.buffer_write(c1, ['k'], [b'aaaa'])
+    assert shm_cache.pending_count(c1) == 1
+    assert shm_cache.pending_count(c2) == 0
+
+
+def test_pending_helpers_are_safe_on_an_untouched_connection(tmp_path):
+    conn = _make_cache(tmp_path / 'c.sqlite', {})
+    assert shm_cache.pending_count(conn) == 0
+    assert shm_cache.pending_bytes(conn) == 0
+    assert shm_cache.take_pending(conn) == ([], [])
+
+
+def test_buffer_write_on_a_plain_connection_degrades_quietly(tmp_path):
+    """A cache optimisation must never raise into `descriptors_function`.
+
+    `init_db` always builds a CacheConnection, but these are public functions
+    and a plain sqlite3.Connection has no ``__dict__``. Raising here would
+    propagate through Path.compute into the engine and cancel every task in the
+    job -- the failure mode `_store_blobs` was written to prevent.
+    """
+    plain = sqlite3.connect(':memory:')
+    try:
+        assert shm_cache.buffer_write(plain, ['k'], [b'v']) is False
+        assert shm_cache.pending_count(plain) == 0
+        assert shm_cache.pending_bytes(plain) == 0
+        assert shm_cache.take_pending(plain) == ([], [])
+    finally:
+        plain.close()
