@@ -295,6 +295,25 @@ selection bins. This to prevent the simulations from getting stuck close to the
 state boundaries."""
                  })
 
+    uniform_selection_on_initial_paths: bool = field(
+        default=True,
+        metadata={'description':
+"""If True: while a TPS shooting chain has not yet accepted a transition,
+shooting points drawn from an initial path (the seeds in
+`<run>/initial<states>/`) are chosen uniformly among the path's internal
+frames, ignoring network values and bins. Until the first
+transition the network has been trained on in-state frames and failed
+excursions only, so its values on the seed carry no committor information; the
+value-guided rule then picks the seed frame whose value happens to be closest to
+the (initially [-0.5, 0.5]) bins, i.e. typically ONE frame, every time, which
+can pin all chains to a frame that never reaches the product state. With
+`chain_type='tps'` and `selection_pool_size=1` this is exact, because the first
+transition is accepted with probability 1 whatever its selection probability
+was; once a transition is accepted the normal value-guided selection resumes.
+Applies to TPS chains only (RFPS weights depend on the selection probabilities).
+Default True; set False for the old behaviour."""
+                 })
+
     retry_with_state_definition_glitches: bool = field(
         default=False,
         metadata={'description':
