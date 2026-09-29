@@ -650,6 +650,23 @@ backward segment with them and its forward segment with them reversed. A
 frame without velocities starts with zero velocities (with a warning)."""
                  })
 
+    masses_from_topology: bool = field(
+        default=False,
+        metadata={'description':
+"""Where the masses of the generated velocities (gen_temperature > 0) come from.
+False (default, the previous behaviour): MDAnalysis guesses them from the atom
+names of `topology`. The guess can be wrong: CHARMM carbons whose names start
+with 'CL' are read as chlorine (35.45 instead of 12.011 amu), so their
+velocities are drawn at a third of the intended temperature.
+True: they are read from the GROMACS topology that grompp uses (the `-p` file
+of `gmx_grompp`, else 'topol.top' next to the params file; force-field
+includes are looked up in GROMACS' share directory: GMXLIB, GMXDATA, or the
+installation of the grompp executable). That file must then be readable and
+have as many atoms as `topology`, which is checked when the params are loaded.
+Whenever both sets of masses are available and differ, a warning naming the
+atoms is printed once."""
+                 })
+
     # ------------------------------------------------------------------
     # Simulation options
     # ------------------------------------------------------------------

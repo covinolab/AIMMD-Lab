@@ -19,7 +19,9 @@ sorted_states
 universe
     Cached MDAnalysis Universe created when setting `topology` (may be None).
 masses
-    Per-atom masses inferred from the cached Universe (or None if unavailable).
+    Per-atom masses of the system (guessed from the cached Universe, or read
+    from the GROMACS topology with ``masses_from_topology``; None if
+    unavailable).
 compute_states_args
     Argument tuple used by Path/PathEnsemble `.compute()` to compute states.
 compute_descriptors_args
@@ -40,13 +42,17 @@ Notes
 """
 
 # external
+import os
 import numpy as np
 import torch
 from abc import ABC
 from dataclasses import MISSING
 
 # aimmd imports
-from .utils import create_default_values_function
+from .utils import (create_default_values_function,
+                    gromacs_topology_file, gromacs_include_dir,
+                    read_topology_masses, masses_disagreement)
+from .._config import print
 from ..core.utils import guess_masses
 from ..network.fit import default as default_fit
 from ..core.decorators import classproperty
@@ -164,23 +170,102 @@ class ParamsProperties(ABC):
     @property
     def masses(self):
         """
-        Per-atom masses inferred from the cached Universe.
+        Per-atom masses of the system, used to draw velocities.
 
         Returns
         -------
         numpy.ndarray or None
-            1D array of length `n_atoms` containing masses if `self._universe`
-            is available, otherwise None.
+            1D array of length `n_atoms` if `self._universe` is available,
+            otherwise None.
 
         Notes
         -----
-        Masses are guessed via `guess_masses(self._universe.atoms)`.
-        The exact units depend on the conventions used by `guess_masses` and
-        the topology format.
+        With ``masses_from_topology`` False (the default) the masses are
+        guessed via `guess_masses(self._universe.atoms)` (MDAnalysis' guess
+        from the atom names); with True they are read from the GROMACS
+        topology grompp uses (the ``-p`` of ``gmx_grompp``, else
+        ``topol.top`` in ``params.parent``). The topology is read once per
+        file version and cached; when both sets of masses are available and
+        differ, a warning is printed once.
         """
         if self._universe is None:
             return
-        return guess_masses(self._universe.atoms)
+        return self._masses_of_universe(self._universe, self.gmx_grompp)
+
+    def _masses_of_universe(self, universe, gmx_grompp):
+        """Guessed or topology masses of `universe` (see ``masses``)."""
+        guessed = guess_masses(universe.atoms)
+        strict = bool(getattr(self, 'masses_from_topology', False))
+        if not strict and getattr(self, 'engine', 'gromacs') != 'gromacs':
+            return guessed                      # no GROMACS topology to compare with
+        if not isinstance(gmx_grompp, str):     # multi-system, not bound to a system
+            return guessed
+        topology = self._topology_masses(len(universe.atoms), gmx_grompp, strict=strict)
+        if topology is None:
+            return guessed
+        key = ('warned', self._topology_masses_key(gmx_grompp))
+        cache = self.__dict__.setdefault('_topology_masses_cache', {})
+        if key not in cache:
+            cache[key] = True
+            try:
+                names = [str(name) for name in universe.atoms.names]
+            except Exception:                   # noqa: BLE001  (no names)
+                names = [str(i) for i in range(len(universe.atoms))]
+            differ = masses_disagreement(names, guessed, topology)
+            if differ:
+                top = gromacs_topology_file(gmx_grompp, self.parent)
+                if strict:
+                    used = ('velocities are drawn from the topology masses '
+                            '(masses_from_topology = True)')
+                else:
+                    used = ('velocities are drawn from the guessed masses; set '
+                            'masses_from_topology = True to use the topology masses')
+                print(f'Warning: the masses MDAnalysis guesses from the atom names '
+                      f'of {self.topology!r} differ from those of the GROMACS '
+                      f'topology {top!r} for {differ} (guessed vs topology, amu); '
+                      f'{used}')
+        return topology if strict else guessed
+
+    def _topology_masses_key(self, gmx_grompp):
+        top = os.path.abspath(gromacs_topology_file(gmx_grompp, self.parent))
+        try:
+            stat = os.stat(top)
+            version = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            version = None
+        return top, version
+
+    def _topology_masses(self, n_atoms, gmx_grompp, strict=False):
+        """Masses of the GROMACS topology of `gmx_grompp`, cached per file version.
+
+        Returns None when the file is missing, unreadable or has another atom
+        count than `n_atoms`; with `strict` those cases raise TypeError.
+        """
+        top, version = key = self._topology_masses_key(gmx_grompp)
+        cache = self.__dict__.setdefault('_topology_masses_cache', {})
+        if key not in cache:
+            if version is None:
+                cache[key] = ValueError(f'{top!r} does not exist')
+            else:
+                try:
+                    cache[key] = read_topology_masses(
+                        top, include_dir=gromacs_include_dir(gmx_grompp))
+                except ValueError as exception:
+                    cache[key] = exception
+        masses = cache[key]
+        if isinstance(masses, Exception):
+            if strict:
+                raise TypeError(f'masses_from_topology = True needs the GROMACS topology '
+                                f'grompp uses (the -p of gmx_grompp, else topol.top next '
+                                f'to the params file): {masses}')
+            return None
+        if len(masses) != n_atoms:
+            if strict:
+                raise TypeError(f'masses_from_topology = True: the GROMACS topology {top!r} '
+                                f'has {len(masses)} atoms, the structure {self.topology!r} '
+                                f'{n_atoms}')
+            return None
+        return masses
 
     def universe_of(self, system_id=None):
         """
@@ -205,7 +290,8 @@ class ParamsProperties(ABC):
         universe = self.universe_of(system_id)
         if universe is None:
             return
-        return guess_masses(universe.atoms)
+        return self._masses_of_universe(
+            universe, self._per_system_value(self.gmx_grompp, system_id))
 
     def _per_system_value(self, value, system_id):
         """Resolve a scalar-or-per-system-list field for ``system_id``.
