@@ -107,3 +107,20 @@ def test_shot_paths_follow_round_shooting_index(tmp_path, round_index,
 
     assert len(shot) == 1
     assert shot[0].shooting_index == expected
+
+
+def test_find_calls_find_shooting_index_without_arguments(monkeypatch,
+                                                          tmp_path):
+    """'find' keeps calling `find_shooting_index()` exactly as it used to.
+
+    Code that overrides the method with its original signature, a `Path`
+    subclass or a runtime patch taking only `self`, must keep working when
+    the rounding is not asked for.
+    """
+    from aimmd.path._methods import PathMethods
+
+    fname = _write_path(tmp_path)
+    monkeypatch.setattr(PathMethods, 'find_shooting_index', lambda self: 2)
+
+    assert aimmd.Path(fname, shooting_index='find').shooting_index == 2
+    assert aimmd.Path(fname, shooting_index=None).shooting_index == 2
