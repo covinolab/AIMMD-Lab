@@ -345,7 +345,8 @@ class WorkerShoot(ABC):
             # load shooting chain and selection pool (Markov chains)
             if not sweep:
                 print(f'\nLoading shooting chain and selection pool {now()}')
-                chain = params.shot_chains(directory, t, k)  # weights accounted
+                chain = params.shot_chains(  # weights accounted
+                    directory, t, k + chain_id)
                 pool = PathEnsemble(f'{folder}/pool.log')
                 update_selection_pool(
                     pool, pool_size, chain,
