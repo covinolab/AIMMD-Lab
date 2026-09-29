@@ -304,6 +304,24 @@ selection, where transitions have 100% acceptance rate in the pool, and
 non-transitions are always rejected.""" 
                  })
     
+    round_shooting_index: bool = field(
+        default=False,
+        metadata={'description':
+"""How the shooting frame of a shot path loaded from disk is found.
+A registered two-way path starts with its backward segment, so its shooting
+frame (time 0) is reconstructed from the first two time stamps as
+``-t0 / dt``. False (default, the previous behaviour): the ratio is truncated.
+True: it is rounded to the nearest frame. The two differ whenever the frame
+spacing is not exact in binary: with 0.05 ps frames, ``-t0 / dt`` evaluates to
+e.g. 3.9999999999999982, and truncation puts the shooting index one frame
+before the frame at time 0, while the shoot worker that registered the path
+used the frame at time 0. The index enters shooting-point selection,
+reweighting and training. Spacings that are exact in binary (e.g. integer
+picoseconds) are unaffected.
+Changing it in an existing run changes the shooting index of every affected
+path the next time it is loaded."""
+                 })
+
     always_select_inside_the_bins: bool = field(
         default=False,
         metadata={'description':

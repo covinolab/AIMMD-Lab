@@ -86,9 +86,12 @@ class PathProperties(ABC):
     
     @shooting_index.setter
     def shooting_index(self, shooting_index):
-        # Non-integral inputs trigger inference (e.g. 'find').
+        # Non-integral inputs trigger inference (e.g. 'find'); 'find_nearest'
+        # rounds to the nearest frame instead of truncating.
         if not isinstance(shooting_index, Integral):
-            self._shooting_index = self.find_shooting_index()
+            nearest = (isinstance(shooting_index, str)
+                       and shooting_index == 'find_nearest')
+            self._shooting_index = self.find_shooting_index(nearest=nearest)
             return
         self._shooting_index = min(max(0, shooting_index), len(self) - 1)
     

@@ -297,7 +297,9 @@ class ParamsPaths(ABC):
 
                 # must create new
                 if path is None:
-                    path = Path(fname, shooting_index='find')
+                    path = Path(fname, shooting_index=(
+                        'find_nearest' if self.round_shooting_index
+                        else 'find'))
                     if self.chain_type != 'tps':
                         path.weight = path.is_complete(t, states)
                     else:
