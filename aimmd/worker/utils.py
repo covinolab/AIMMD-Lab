@@ -380,9 +380,11 @@ def get_initial_frames_for_free_simulations(
                     _match_untrimmed(untrimmed_paths, path, states),
                     target_state, states, position, rng))
 
-        # check
-        states = initial_frames[-1].states
-        if states[0] != reactive_state and states[1] != target_state:
+        # check (a local name of its own: `states` is params.states, which
+        # the untrimmed-path lookup of the next initial path still needs)
+        couple_states = initial_frames[-1].states
+        if (couple_states[0] != reactive_state
+                and couple_states[1] != target_state):
             raise RuntimeError(f'{path.fname} must allow to extract a'
                             f'"{reactive_state}{target_state}" segment')
     return initial_frames
