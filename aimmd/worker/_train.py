@@ -324,7 +324,7 @@ class WorkerTrain(ABC):
         bias_reactive_threshold = params.bias_reactive_threshold
 
         # get frames in first and last state for training
-        margins = get_initial_frames_for_training(self.initial_paths)
+        margins = get_initial_frames_for_training(self.initial_paths, states)
         
         # update kwargs to fit function
         kwargs['worker'] = self
@@ -1310,7 +1310,7 @@ class WorkerTrain(ABC):
             directory, old=getattr(self, '_free_trajectories', []))
 
         # ── build margins from initial paths (same as _train) ─────────────
-        margins = get_initial_frames_for_training(self.initial_paths)
+        margins = get_initial_frames_for_training(self.initial_paths, states)
 
         # ── pre-compute sizes for fraction arithmetic ──────────────────────
         chain_lengths = [len(c) for c in self._shot_chains]
