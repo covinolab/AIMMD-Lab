@@ -567,8 +567,13 @@ class ParamsMethods(ABC):
         -----
         - Velocity generation:
 
-          * if `params.gen_temperature < 0` and velocities are present: reuse them
-            (with a sign flip for the first branch).
+          * if `params.gen_temperature < 0` and the frame has velocities: reuse
+            them. The sign is flipped before every branch after the first: a
+            single `deffnm` (free simulation) continues with the frame's
+            velocities, and of a two-way shot (`back`, `forw`) the `back`
+            branch starts with them, the `forw` branch with them reversed.
+          * if `params.gen_temperature < 0` and the frame has no velocities:
+            zero velocities (with a warning).
           * else randomize from `params.masses` if available.
           * else set zeros (with a warning).
         - For GROMACS:
@@ -587,8 +592,10 @@ class ParamsMethods(ABC):
             previous_frames.times = -np.arange(1, len(frame)) * abs(frame.dt)
             frame = frame[-1]
 
-        # gen_temperature
-        if self.gen_temperature < 0 and hasattr(frame, 'velocities'):
+        # gen_temperature (< 0: reuse the frame's velocities, if it has any)
+        if self.gen_temperature < 0 and not hasattr(frame, 'velocities'):
+            print('Warning: gen_temperature < 0 but the initial frame has '
+                  'no velocities to reuse, set them to zero')
             gen_temperature = 0
         else:
             gen_temperature = self.gen_temperature

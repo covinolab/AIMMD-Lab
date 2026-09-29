@@ -626,7 +626,10 @@ behaviour until a meaningful in-basin sample exists."""
 """Velocity generation temperature (Kelvin).
 If > 0: generate new velocities at this temperature.
 If < 0: reuse velocities from the parent trajectory (requires
-`trajectory_extension == '.trr'` so velocities are available)."""
+`trajectory_extension == '.trr'` so velocities are available). A free
+simulation continues with the frame's velocities; a two-way shot starts its
+backward segment with them and its forward segment with them reversed. A
+frame without velocities starts with zero velocities (with a warning)."""
                  })
 
     # ------------------------------------------------------------------
