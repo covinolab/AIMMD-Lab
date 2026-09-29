@@ -490,9 +490,9 @@ class ParamsHelpers(ABC):
             elif name == 'chain_type':
                 value = value.lower()
                 if value.startswith('tp'):
-                    values = 'tps'
+                    value = 'tps'
                 elif value.startswith('rf'):
-                    values = 'rfps'
+                    value = 'rfps'
                 else:
                     raise TypeError(f'{name!r} must be either "tps" or '
                                     f'"rfps", got {value!r}')

@@ -277,7 +277,9 @@ Paths are validated to contain transitions according to `states_function` and
 """Path-sampling chain type.
 Supported values:
 - 'tps'  : transition path sampling,
-- 'rfps' : rejection-free path sampling."""
+- 'rfps' : rejection-free path sampling.
+The value is case-insensitive, and any value starting with 'tp' or 'rf' is
+stored as 'tps' or 'rfps'."""
                  })
 
     selection_pool_size: int = field(
