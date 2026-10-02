@@ -580,8 +580,18 @@ def is_initial_path(path):
     Returns
     -------
     is_initial : bool
+
+    Notes
+    -----
+    The Launcher writes initial paths to ``<run>/initial<states>/<name>``, so
+    the test is on the name of the containing folder. ``PosixPath.root`` is
+    ``''`` for a relative and ``'/'`` for an absolute path and never starts
+    with ``'initial'``, so testing it made this function always return False:
+    the values of an initial path in the selection pool were then computed
+    once, by whatever network existed at the first selection, and never
+    re-evaluated (``*** updated 0 frame values`` at every later selection).
     """
-    return PosixPath(path.fname).root.startswith('initial')
+    return PosixPath(path.fname).parent.name.startswith('initial')
 
 
 def update_selection_pool(pool, size, chain,
@@ -1132,6 +1142,14 @@ def select_shooting_point(pool, params, folder,
     overriding_bins = np.zeros(nbins, dtype=bool)
     overriding_bins[params.free_overriding_bins] = True
     
+    # before the chain has produced its first path with non-zero weight (for
+    # TPS: its first accepted transition), the pool can only hold seeds
+    # (TPS only: RFPS path weights depend on the selection probabilities)
+    uniform_on_seed = (getattr(params, 'uniform_selection_on_initial_paths',
+                               False)
+                       and str(params.chain_type).lower().startswith('tp')
+                       and (chain is None or chain.path is None))
+
     # process chain
     if chain is not None:
         chain = chain[chain.accepted]
@@ -1291,10 +1309,24 @@ def select_shooting_point(pool, params, folder,
     fname = path.fname
     print(f'=== selecting path {fname!r}')
     
-    # assign selection probabilities (weights)
+    # seed path, no transition in the chain yet: the network has not seen a
+    # single transition, so its values on the seed carry no committor
+    # information and must not decide the shooting point. Draw uniformly among
+    # the internal frames (plain TPS selection). With chain_type='tps' and
+    # selection_pool_size=1 this is exact: the first transition is accepted
+    # with probability 1 whatever the selection probability was.
     histogram = histograms[pool_index]
     mask = histogram > 0
-    if mask.any():
+    if uniform_on_seed and is_initial_path(path):
+        i = np.random.choice(len(indices))
+        k = None
+        overriding = None
+        print(f'=== uniform selection among the {len(indices)} internal '
+              f'frames of the initial path (no transition in the chain yet; '
+              f'uniform_selection_on_initial_paths=True)')
+
+    # assign selection probabilities (weights)
+    elif mask.any():
         bin_weights = np.zeros(len(histogram))
         bin_weights[mask] = combined_histograms[mask] / densities[mask]
         bin_weights /= bin_weights.sum()
