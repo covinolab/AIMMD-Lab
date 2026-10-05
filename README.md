@@ -72,12 +72,15 @@ performance; see the [GROMACS install guide](https://manual.gromacs.org/current/
 
 ### Optional: graph neural networks
 
-Graph-based committor models need extra packages (`torch-cluster` can be awkward
-to build). Install the `graphs` extra plus `mlcolvar`:
+Graph-based committor models need extra packages. `torch-cluster` can be
+awkward to build (PyPI has only its source distribution), so first install a
+prebuilt wheel matching your torch and CUDA versions from
+https://data.pyg.org/whl/. The `graphs` extra (`torch-geometric`,
+`torch-cluster`, `lz4`) then provides everything `aimmd.network.graph_utils`
+needs:
 
 ```bash
 pip install "aimmd-lab[graphs]"
-pip install mlcolvar
 ```
 
 If the default wheels do not match your CUDA/Python build, install them

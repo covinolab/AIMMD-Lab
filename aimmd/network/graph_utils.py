@@ -1,37 +1,20 @@
 """ Contributes functions used for AIMMD with GNNs, including graph generation and caching."""
 
+from __future__ import annotations
+
 # Test if modules are available. If not, this module cannot be used.
 try:
-    import mlcolvar
     import torch_geometric
-    import mdtraj as md
     import numpy as np
     import torch
     from tqdm import tqdm
-    from torch_geometric.data import Batch, Data
+    from torch_geometric.data import Data
     import MDAnalysis as mda
-    import aimmd
     import hashlib
     import pickle
     import gzip
-    import lz4
+    import lz4.frame  # explicit: a bare `import lz4` does not load lz4.frame
     import sqlite3
-    from mlcolvar.data.dataset import DictDataset
-    from mlcolvar.data.graph.utils import create_dataset_from_configurations
-    try:
-        # old name (older mlcolvar versions)
-        from mlcolvar.utils.io import (
-            _configures_from_trajectory,
-            _z_table_from_top,
-            _names_from_top,
-        )
-    except ImportError:
-        # new name (newer mlcolvar versions)
-        from mlcolvar.utils.io import (
-            _configurations_from_trajectory as _configures_from_trajectory,
-            _z_table_from_top,
-            _names_from_top,
-        )
     from torch_geometric.nn import radius_graph
     import os
     import random
@@ -39,9 +22,16 @@ try:
     import MDAnalysis.transformations as transformations
     from . import shm_cache
 except ImportError as e:
-    raise ImportError(f"Module {e.name} not found. "
-                      f"The module 'aimmd.network.graph_utils'"
-                      f"requires additional dependencies.") from e
+    # A missing dependency raises ModuleNotFoundError (an ImportError subclass),
+    # so `except ImportError` still catches it and `pytest.importorskip` skips.
+    # An installed but broken one is re-raised unchanged, so it gets reported
+    # rather than silently treated as absent.
+    if not isinstance(e, ModuleNotFoundError):
+        raise
+    raise ModuleNotFoundError(f"Module {e.name} not found. "
+                              f"The module 'aimmd.network.graph_utils' "
+                              f"requires additional dependencies.",
+                              name=e.name) from e
 
 #: How long a writer keeps retrying a locked graph cache before giving up.
 #: Overridable with ``AIMMD_STORE_RETRY_SECONDS``.
@@ -267,7 +257,7 @@ def _store_blobs(conn, keys, blobs) -> bool:
 
     **A lock must never be fatal.** The graph cache is a cache: callers already
     hold the graphs in memory (`process_descriptors_pyg` assembles its result
-    from `new_graphs`, `load_or_create` returns the graph it just built) and
+    from `new_graphs`, a `store_in_sqlite` caller passes the graph it holds) and
     write only so a later process can skip the recompute. Raising propagated out
     of `descriptors_function` into `Path.compute` -> `trajectory.extend` ->
     `execute_command.stop_condition`, killed `gmx mdrun`, and cancelled every
@@ -457,13 +447,16 @@ def flush_pending_writes(conn=None, verbose=False):
     return written
 
 
-def get_stable_hash(config: mlcolvar.data.graph.atomic.Configurations) -> str:
+def get_stable_hash(config: np.ndarray) -> str:
     """ Get a stable hash for a configuration.
     
     Parameters
     ----------
-    config : mlcolvar.data.graph.atomic.Configurations
-        The configuration to be hashed.
+    config : np.ndarray
+        The configuration to be hashed: one row of the descriptors array (a
+        flattened coordinate frame). The hash, ``sha256(pickle.dumps(config))``,
+        is the graph-cache key, so changing how it is computed invalidates every
+        existing cache.
     
     Returns
     -------
@@ -473,131 +466,6 @@ def get_stable_hash(config: mlcolvar.data.graph.atomic.Configurations) -> str:
     encoded = pickle.dumps(config)
     stable_hash = hashlib.sha256(encoded).hexdigest()
     return stable_hash
-
-def create_graph(config: mlcolvar.data.graph.atomic.Configurations, z_table: mlcolvar.data.graph.atomic.AtomicNumberTable, atomnames: list, cutoff: float) -> torch_geometric.data.Data:
-    """ Create a graph from a configuration.
-    
-    Parameters
-    ----------
-    config : mlcolvar.data.graph.atomic.Configurations
-        The configuration to be converted to a graph.
-    z_table : dict
-        The atomic number table.
-    atomnames : list of str
-        The list of atom names.
-    cutoff : float
-        The cutoff distance for edge creation.
-    
-    Returns
-    -------
-    torch_geometric.data.Data
-        The graph representation of the configuration.
-    """
-    graph = create_dataset_from_configurations(
-        config=[config], z_table=z_table, cutoff=cutoff, buffer=0,
-        atom_names=atomnames, remove_isolated_nodes=True, show_progress=False
-    )
-    return graph['data_list'][0]
-
-def load_or_create(conn: sqlite3.Connection, config: mlcolvar.data.graph.atomic.Configurations, z_table: mlcolvar.data.graph.atomic.AtomicNumberTable, atomnames: list, cutoff: float) -> torch_geometric.data.Data:
-    """ Load a graph from SQLite cache, or create it if not present.
-    
-    Parameters
-    ----------
-    conn : sqlite3.Connection
-        The SQLite connection.
-    config : mlcolvar.data.graph.atomic.Configurations
-        The configuration to be converted to a graph.
-    z_table : dict
-        The atomic number table.
-    atomnames : list of str
-        The list of atom names.
-    cutoff : float
-        The cutoff distance for edge creation.
-
-    Returns
-    -------
-    torch_geometric.data.Data
-        The graph representation of the configuration.
-    """
-    stable_hash = get_stable_hash(config)
-
-    graph = load_from_sqlite(stable_hash, conn)
-    if graph is not None:
-        return graph
-    else:
-        graph = create_graph(config, z_table, atomnames, cutoff)
-        store_in_sqlite(stable_hash, graph, conn)
-        return graph
-
-def process_descriptors(descriptors: np.ndarray, mdtraj_frame: md.Trajectory, system_selection: str, environment_selection: str, cutoff: float, conn: sqlite3.Connection, verbose: bool = False) -> DictDataset:
-    """ Transform the descriptors to network input.
-    Here, we transform the atomic positions to a graph embedding using mlcolvar.
-
-    Parameters
-    ----------
-    descriptors : np.ndarray
-        The input descriptors to be transformed. Shape (n_frames, n_atoms * 3).
-    mdtraj_frame : md.Trajectory
-        A mdtraj frame with the topology and unit cell information.
-    system_selection : str
-        The selection string for the system atoms.
-    environment_selection : str
-        The selection string for the environment atoms.
-    cutoff : float
-        The cutoff distance for edge creation.
-    conn : sqlite3.Connection
-        The SQLite connection for caching.
-    verbose : bool, optional
-        Whether to show a progress bar, by default False.
-
-    Returns
-    -------
-    mlcolvar.data.dataset.DictDataset
-        The transformed descriptors suitable for network input.
-    """
-
-    if verbose:
-        print(f"Processing descriptors with shape: {descriptors.shape}")
-
-    # First, we need to transform the descriptors to an md.Trajectory object
-    n_atoms = mdtraj_frame.n_atoms
-    n_frames = descriptors.shape[0]
-    assert descriptors.shape[1] == n_atoms * 3, \
-        f"Descriptors should have shape (n_frames, {n_atoms * 3}), got {descriptors.shape}"
-    xyz = descriptors.reshape((n_frames, n_atoms, 3)) / 10.0  # convert from Angstrom to nm
-    # replicate unit cell info
-    unit_cell_lengths = np.tile(mdtraj_frame.unitcell_lengths, (n_frames, 1))
-    unit_cell_angles = np.tile(mdtraj_frame.unitcell_angles, (n_frames, 1))
-    # create trajectory
-    traj = md.Trajectory(xyz=xyz, topology=mdtraj_frame.topology, unitcell_lengths=unit_cell_lengths,
-                        unitcell_angles=unit_cell_angles)
-
-    # now we get mlcolvar.data.graph.atomic.Configurations from this trajectory
-    configurations = _configures_from_trajectory(
-        traj,
-        system_selection = system_selection,
-        environment_selection = environment_selection,
-    )
-
-    z_table = _z_table_from_top([traj.topology])
-    atomnames = _names_from_top([traj.topology])
-
-    # create graphs list
-    graphs_list = []
-
-    for config in tqdm(configurations, disable=not verbose, position=0):
-        graph = load_or_create(conn, config, z_table, atomnames, cutoff)
-        graphs_list.append(graph)
-
-    dataset = mlcolvar.data.DictDataset(
-        dictionary={
-            'data_list': graphs_list
-        },
-        data_type = "graphs",
-    )    
-
-    return dataset
 
 
 def get_graphs_pyg(
@@ -718,6 +586,31 @@ def get_graphs_pyg(
     return data_list
 
 
+class GraphList(list):
+    """The graphs returned by :func:`process_descriptors_pyg`, one per frame.
+
+    A plain ``list`` of ``torch_geometric.data.Data``: ``len``, iteration and
+    integer/slice indexing behave exactly as for a list, and it can be passed
+    straight to ``torch_geometric.data.Batch.from_data_list``.
+
+    The one addition is the legacy ``'data_list'`` key. `process_descriptors_pyg`
+    used to return a dict-like dataset holding the graphs under that key, so
+    params files written against it unwrap the result with
+    ``process_descriptors_pyg(...)['data_list']``. That key still works and
+    returns a plain ``list`` of the same ``Data`` objects -- the type those
+    callers have always received. Any other string key raises ``KeyError``.
+    """
+
+    __slots__ = ()
+
+    def __getitem__(self, index):
+        if isinstance(index, str):
+            if index == 'data_list':
+                return list(self)
+            raise KeyError(index)
+        return super().__getitem__(index)
+
+
 def process_descriptors_pyg(
         descriptors: np.ndarray,
         mdanalysis_universe: mda.Universe,
@@ -729,7 +622,7 @@ def process_descriptors_pyg(
         compression_lib: str = "lz4",
         atom_indices: np.ndarray | None = None,
         atom_types: list | None = None,
-    ) -> list[torch_geometric.data.Data]:
+    ) -> GraphList:
     """ Transform the descriptors to network input using MDAnalysis and torch_geometric.
     Here, we transform the atomic positions to a graph embedding using MDAnalysis for pbc
     handling and torch_geometric with torch_cluster for graph construction.
@@ -772,8 +665,10 @@ def process_descriptors_pyg(
 
     Returns
     -------
-    mlcolvar.data.DictDataset
-        The dataset containing the processed graphs.
+    GraphList
+        One ``torch_geometric.data.Data`` graph per frame, in input order: a
+        ``list`` subclass that also accepts the legacy ``result['data_list']``
+        (see :class:`GraphList`).
     """
 
     if verbose:
@@ -831,10 +726,4 @@ def process_descriptors_pyg(
         for i, graph in enumerate(new_graphs):
             loaded_graphs[missing_indices[i]] = graph
 
-    dataset = mlcolvar.data.DictDataset(
-        dictionary={
-            'data_list': loaded_graphs
-        },
-        data_type = "graphs",
-    )
-    return dataset
+    return GraphList(loaded_graphs)

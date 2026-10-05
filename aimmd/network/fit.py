@@ -454,8 +454,10 @@ def fit(params,
           I/O and transform overhead each epoch.
 
     graphs : bool, default=False
-        If True, descriptors are assumed to be graph objects in an mlcolvar-like
-        DataDict format, requiring `torch_geometric` for batching.
+        If True, descriptors (after ``descriptor_transform``) are assumed to be
+        lists of ``torch_geometric.data.Data`` graphs (e.g. as returned by
+        ``process_descriptors_pyg(...)['data_list']``), requiring
+        `torch_geometric` for batching.
 
     lsr_weight : float, default=0.0
         If non-zero, add a latent space regularization (LSR) term to the loss,
@@ -1150,7 +1152,8 @@ def fit(params,
             d_val = torch.tensor(d_val, dtype=dtype, device=device)
             d_val.requires_grad = True
         else:
-            # when using graphs, we need to process the DataDict objects
+            # when using graphs, we need to process lists of torch_geometric
+            # Data objects (e.g. process_descriptors_pyg(...)['data_list'])
             # instead of arrays
             if in_memory:
                 # descriptors is already a list of Data objects after the pre-transform
@@ -1307,7 +1310,8 @@ def fit(params,
             d = torch.tensor(d, dtype=dtype, device=device)
             d.requires_grad = True
         else:
-            # when using graphs, we need to process the DataDict objects
+            # when using graphs, we need to process lists of torch_geometric
+            # Data objects (e.g. process_descriptors_pyg(...)['data_list'])
             # instead of arrays
             if in_memory:
                 # descriptors is already a list of Data objects after the pre-transform

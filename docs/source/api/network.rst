@@ -37,9 +37,11 @@ Graph-neural-network support
 The module ``aimmd.network.graph_utils`` provides optional support for
 graph-neural-network committor models (atom-coordinate descriptors, PyG graph
 construction and SQLite graph caching, and a shared ``atom_types`` one-hot
-encoding for multi-system runs). It requires the optional ``graphs`` extras
-(``torch-geometric``, ``torch-cluster``) plus ``mlcolvar`` and ``lz4``; install
-them with ``pip install "aimmd-lab[graphs]"`` and see :doc:`../advanced`.
+encoding for multi-system runs). The optional ``graphs`` extra
+(``torch-geometric``, ``torch-cluster``, ``lz4``) is all it requires; install it
+with ``pip install "aimmd-lab[graphs]"`` (see :doc:`../installation` for
+``torch-cluster`` wheels matching your torch/CUDA build) and see
+:doc:`../advanced`.
 
 Graph-cache acceleration
 ------------------------

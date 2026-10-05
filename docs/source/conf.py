@@ -312,38 +312,6 @@ def _install_doc_stubs() -> None:
         torch_geometric.data = tg_data
         torch_geometric.nn = tg_nn
 
-    if not _can_import("mlcolvar"):
-        mlcolvar = _ensure_module("mlcolvar")
-        mlcolvar_data = _ensure_module("mlcolvar.data")
-        mlcolvar_dataset = _ensure_module("mlcolvar.data.dataset")
-
-        class DictDataset(dict):
-            pass
-
-        mlcolvar_dataset.DictDataset = DictDataset
-        mlcolvar_graph = _ensure_module("mlcolvar.data.graph")
-        mlcolvar_graph_atomic = _ensure_module("mlcolvar.data.graph.atomic")
-
-        class Configurations:
-            pass
-
-        mlcolvar_graph_atomic.Configurations = Configurations
-        mlcolvar_graph_utils = _ensure_module("mlcolvar.data.graph.utils")
-        mlcolvar_graph_utils.create_dataset_from_configurations = (
-            lambda *args, **kwargs: None
-        )
-        mlcolvar_utils = _ensure_module("mlcolvar.utils")
-        mlcolvar_utils_io = _ensure_module("mlcolvar.utils.io")
-        mlcolvar_utils_io._configures_from_trajectory = lambda *args, **kwargs: None
-        mlcolvar_utils_io._topology_from_selection = lambda *args, **kwargs: None
-        mlcolvar_data.dataset = mlcolvar_dataset
-        mlcolvar_data.graph = mlcolvar_graph
-        mlcolvar_graph.atomic = mlcolvar_graph_atomic
-        mlcolvar_graph.utils = mlcolvar_graph_utils
-        mlcolvar.utils = mlcolvar_utils
-        mlcolvar_utils.io = mlcolvar_utils_io
-        mlcolvar.data = mlcolvar_data
-
 
 _install_doc_stubs()
 
