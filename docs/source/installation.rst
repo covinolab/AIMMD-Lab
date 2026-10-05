@@ -57,13 +57,15 @@ Optional Graph-Network Dependencies
 -----------------------------------
 
 Graph-neural-network workflows need extra packages that are not installed by
-default (``torch-cluster`` in particular can be awkward to build). The ``graphs``
-extra pulls in ``torch-geometric`` and ``torch-cluster``:
+default. ``torch-cluster`` in particular can be awkward to build: PyPI has only
+its source distribution, so first install a prebuilt wheel matching your
+``torch`` and CUDA versions from https://data.pyg.org/whl/. The ``graphs`` extra
+then pulls in ``torch-geometric``, ``torch-cluster`` and ``lz4``, which is all
+``aimmd.network.graph_utils`` needs:
 
 .. code-block:: bash
 
    pip install "aimmd-lab[graphs]"
-   pip install mlcolvar
 
 If the default wheels do not match your CUDA / Python build, install them
 explicitly. The following is **one confirmed-working example** for Linux with an
@@ -75,7 +77,7 @@ your own setup:
    pip install torch==2.7.1 -f https://download.pytorch.org/whl/cu118/torch-2.7.1%2Bcu118-cp313-cp313-manylinux_2_28_x86_64.whl
    pip install torch-geometric==2.7.0
    pip install torch-cluster==1.6.3 -f https://data.pyg.org/whl/torch-2.7.0%2Bcu118/torch_cluster-1.6.3%2Bpt27cu118-cp313-cp313-linux_x86_64.whl
-   pip install mlcolvar
+   pip install lz4
 
 These packages matter only if you use the optional graph utilities in
 ``aimmd.network.graph_utils`` or graph-based descriptor pipelines.

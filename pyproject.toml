@@ -53,11 +53,11 @@ dependencies = [
 graphs = [
     "torch-geometric",
     "torch-cluster",
+    "lz4",
 ]
 tests = [
     "pytest",
     "pytest-cov",
-    "mlcolvar",
 ]
 docs = [
     "sphinx",

@@ -283,7 +283,7 @@ def test_flush_helper_is_a_no_op_without_the_graph_stack(monkeypatch):
     """A run with no graph cache must not pay to import the GNN stack.
 
     `_flush_graph_backlog` runs up to four times per round. Importing
-    `graph_utils` there drags in torch_geometric/mlcolvar/mdtraj even for a toy
+    `graph_utils` there drags in the torch_geometric stack even for a toy
     1-D run that never stores a graph -- which pushed `test_toy_1d` past its
     training-time guard. If `graph_utils` was never imported, nothing was ever
     stored, so there is nothing to flush.

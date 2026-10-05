@@ -2,7 +2,7 @@
 
 These tests are intentionally separated from the default unit-test suite because
 `aimmd.network.graph_utils` depends on the larger graph/GNN stack
-(`mlcolvar`, `torch_geometric`, `torch_cluster`, `mdtraj`, ...).
+(`torch_geometric`, `torch_cluster` and `lz4`, i.e. the `graphs` extra).
 
 How to run
 ----------
@@ -239,6 +239,124 @@ def test_process_descriptors_pyg_populates_and_reuses_cache(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# process_descriptors_pyg: return type and graph-cache keys.
+# ---------------------------------------------------------------------------
+def test_process_descriptors_pyg_returns_a_graph_list(tmp_path, monkeypatch):
+    """The result is a list of graphs that still accepts the legacy key.
+
+    `process_descriptors_pyg` used to return a dict-like dataset, and params
+    files unwrap it with `result['data_list']`. It now returns a list
+    subclass: that key must give a plain `list` of the very same `Data` objects,
+    while `len`, iteration, indexing and batching work on the result directly --
+    for freshly built graphs and for graphs served from the cache alike.
+    """
+
+    graph_utils = _import_graph_utils()
+    from torch_geometric.data import Batch
+    import torch
+
+    universe = _graph_test_universe()
+    descriptors = _graph_descriptors()
+
+    def _must_not_recompute(*args, **kwargs):
+        raise AssertionError("graphs were rebuilt although they are cached")
+
+    conn = graph_utils.init_db(str(tmp_path / "graphs.sqlite"))
+    try:
+        for source in ("fresh", "cache"):
+            if source == "cache":
+                monkeypatch.setattr(graph_utils, "get_graphs_pyg", _must_not_recompute)
+            result = graph_utils.process_descriptors_pyg(
+                descriptors=descriptors,
+                mdanalysis_universe=universe,
+                system_selection="index 0 1",
+                environment_selection="index 2",
+                cutoff=2.0,
+                conn=conn,
+            )
+            assert isinstance(result, list)
+            assert isinstance(result, graph_utils.GraphList)
+
+            # the legacy key: a plain list holding the identical Data objects
+            data_list = result["data_list"]
+            assert type(data_list) is list
+            assert len(data_list) == len(result) == len(descriptors)
+            assert all(a is b for a, b in zip(data_list, result))
+
+            # list behaviour on the result itself
+            assert all(result[i] is graph for i, graph in enumerate(result))
+            assert result[-1] is data_list[-1]
+            head = result[:1]
+            assert len(head) == 1 and head[0] is data_list[0]
+
+            batched = Batch.from_data_list(result).to_dict()
+            legacy = Batch.from_data_list(data_list).to_dict()
+            assert batched.keys() == legacy.keys()
+            for key, value in legacy.items():
+                assert torch.equal(batched[key], value), key
+
+            # any other key fails like the old dict lookup did
+            with pytest.raises(KeyError):
+                result["positions"]
+    finally:
+        conn.close()
+
+
+#: Float32 descriptor rows and their graph-cache keys, as computed by the
+#: implementation the existing caches were written with. Production caches are
+#: multi-GB and addressed by exactly these digests.
+_GOLDEN_DESCRIPTORS = np.array(
+    [
+        [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.25, 0.0, 0.0, 0.0, 1.25, 0.0],
+    ],
+    dtype=np.float32,
+)
+_GOLDEN_KEYS = [
+    "f66d06949ad999a67ee8c6109595f0eda6cb4b866d4aec961970b1015b914c38",
+    "c945a700bc74b9e7c0e067049451cccfb6cfd8a89c4bdb7faf2645dba7d8713c",
+]
+
+
+def test_graph_cache_keys_match_the_golden_digests(tmp_path):
+    """Cache keys must never change by accident.
+
+    The key is ``sha256(pickle.dumps(row))`` of each descriptor row. A change to
+    `get_stable_hash`, or to how `process_descriptors_pyg` derives its keys,
+    would silently turn every existing graph cache into a full recompute. The
+    digests also depend on pickle's default protocol (4 up to Python 3.13; 3.14
+    made it 5) and on numpy's pickle format, so an upgrade that changes either
+    is caught here as well.
+    """
+    import pickle
+    import sys
+
+    graph_utils = _import_graph_utils()
+
+    keys = [graph_utils.get_stable_hash(row) for row in _GOLDEN_DESCRIPTORS]
+    assert keys == _GOLDEN_KEYS, (
+        f"graph-cache keys changed (Python {sys.version.split()[0]}, numpy "
+        f"{np.__version__}, pickle.DEFAULT_PROTOCOL={pickle.DEFAULT_PROTOCOL}); "
+        f"existing caches would no longer be hit")
+
+    # ... and they are the keys the high-level path stores its graphs under
+    conn = graph_utils.init_db(str(tmp_path / "graphs.sqlite"))
+    try:
+        graph_utils.process_descriptors_pyg(
+            descriptors=_GOLDEN_DESCRIPTORS,
+            mdanalysis_universe=_graph_test_universe(),
+            system_selection="index 0 1",
+            environment_selection="index 2",
+            cutoff=2.0,
+            conn=conn,
+        )
+        stored = sorted(row[0] for row in conn.execute("SELECT key FROM graphs_cache"))
+        assert stored == sorted(_GOLDEN_KEYS)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Batched insertion, codec handling, and the /dev/shm replica end to end.
 # These need real `Data` objects, so they live here rather than in
 # tests/test_shm_cache.py (which is stdlib-only and runs by default).
@@ -469,7 +587,7 @@ def test_persistent_lock_does_not_populate_memo_or_replica(monkeypatch):
 
 
 def test_single_store_is_also_non_fatal(monkeypatch):
-    """`store_in_sqlite` shares the hazard -- load_or_create writes through it."""
+    """`store_in_sqlite`, the single-graph write path, shares the hazard."""
     import sqlite3
     gu = _import_graph_utils()
     monkeypatch.setattr(gu, '_STORE_RETRY_SECONDS', 0.2, raising=True)
