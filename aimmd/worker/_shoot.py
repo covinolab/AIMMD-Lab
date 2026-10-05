@@ -494,6 +494,10 @@ class WorkerShoot(ABC):
                         forw = Path()  #  no need to simulate at all
                         forw_simulation_completed = True
                         nframes_back = max_length
+                        # the path is the backward half alone (forw[1:1] is empty). Set it here: on
+                        # a restart this can be the first shot of the process, where no earlier shot
+                        # has left nframes_forw behind
+                        nframes_forw = 1
 
                 # check mid cycle
                 if self.must_stop:
