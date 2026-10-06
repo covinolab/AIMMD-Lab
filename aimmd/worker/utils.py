@@ -842,6 +842,24 @@ def _write_colvar(fname, header, rows):
             fh.write(' '.join(f'{v:.6f}' for v in row) + '\n')
 
 
+def _lacks_series(path, attribute):
+    """
+    Whether a file of `path` lacks rows of `attribute` that the path needs.
+
+    True for a missing, unreadable or short ``.npy`` series file. Only the
+    npy headers are read (memory-mapped), never the rows.
+    """
+    for fname, first, last in zip(path._fnames, path._first, path._last):
+        try:
+            rows = np.load(get_cache_fname(fname, attribute),
+                           mmap_mode='r').shape[0]
+        except (OSError, ValueError, IndexError):
+            return True
+        if rows <= max(first, last):
+            return True
+    return False
+
+
 def ensure_source(paths, params):
     """
     Compute the per-frame series that value passes read, where it is missing.
@@ -853,8 +871,14 @@ def ensure_source(paths, params):
     would then fail on an empty array. This happens to a path registered in
     the other ``descriptor_cache`` mode (e.g. right after switching back to
     'npy') or whose series file was lost. Running the series' own
-    computation first fills it in; when it is complete, that only checks
-    the file the value pass loads anyway.
+    computation first fills it in.
+
+    - Graph keys: the key ledger runs on all `paths` (key files are small),
+      and keys every frame whose row is zero.
+    - Descriptors: only paths with a missing or short descriptor file are
+      computed, found from the npy headers. A complete descriptor file is
+      not read: a value pass that finds every value already computed never
+      loads its source, and descriptor files can be many GB.
 
     Parameters
     ----------
@@ -871,6 +895,16 @@ def ensure_source(paths, params):
     args = params.compute_descriptors_args
     if args is None or not len(paths):
         return 0
+    attribute = args[1]
+    if attribute != GRAPHKEYS:
+        if isinstance(paths, Path):
+            if not _lacks_series(paths, attribute):
+                return 0
+        else:
+            paths = PathEnsemble([path for path in paths
+                                  if _lacks_series(path, attribute)])
+            if not len(paths):
+                return 0
     return paths.compute(*args)
 
 

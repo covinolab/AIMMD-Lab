@@ -438,3 +438,36 @@ def test_trainer_verify_in_reader_role_defers_the_write(tmp_path, monkeypatch,
     assert conn.execute(count).fetchone()[0] == 5
     assert gu.graphs_present(keys, conn).all()
     conn.close()
+
+
+def test_ensure_source_reads_no_complete_descriptor_file(tmp_path,
+                                                         monkeypatch):
+    """npy runs: complete descriptor files (many GB in production) stay
+    unread; missing and short ones are computed."""
+    from aimmd.worker.utils import ensure_source
+    toy = ToyCache()
+    params = _value_params('npy', toy, np.array([-np.inf, np.inf]))
+    complete, rows = _transition(tmp_path, 'complete', 7, 0.0, ('descriptors',))
+    missing, _ = _transition(tmp_path, 'missing', 6, 1.0)
+    short, short_rows = _transition(tmp_path, 'short', 5, 2.0, ('descriptors',))
+    save_npy(f'{short}.descriptors.npy', short_rows[:2])
+    read = []
+    for name in ('get', 'load', 'pop'):
+        original = getattr(NPY_CACHE, name)
+
+        def spy(fname, *args, _original=original, **kwargs):
+            read.append(str(fname))
+            return _original(fname, *args, **kwargs)
+
+        monkeypatch.setattr(NPY_CACHE, name, spy)
+    ensemble = PathEnsemble([Path(complete), Path(missing), Path(short)])
+    assert ensure_source(ensemble, params) == 6 + 3
+    assert not any(name.startswith(complete) for name in read), read
+    assert ensure_source(Path(complete)[1:-1], params) == 0
+    assert not any(name.startswith(complete) for name in read), read
+    monkeypatch.undo()
+    NPY_CACHE.clear()
+    for fname in (missing, short):
+        assert np.array_equal(np.load(f'{fname}.descriptors.npy'),
+                              np.asarray(Path(fname).coordinates,
+                                         dtype=np.float32))
