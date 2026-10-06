@@ -195,10 +195,8 @@ def test_fit_trains_on_synthetic_data_with_validation(monkeypatch):
         train_validation_early_stopping=True,
         early_stopping_min_samples=1,
         early_stopping_patience=2,
-        # The current implementation keeps the full probability vector while
-        # shrinking `training_set_size`, so a non-zero split can make the
-        # sampling dimensions inconsistent. Using a zero-sized validation set
-        # still exercises the branch without triggering that known issue.
+        # A zero-sized validation set: the edge case of the branch (a
+        # non-zero split is covered by test_fit_validation_split_holds_out_frames).
         early_stopping_split=0.0,
         loss_regularization_weight=0.01,
         epochs=2,
@@ -215,6 +213,50 @@ def test_fit_trains_on_synthetic_data_with_validation(monkeypatch):
     assert results.shape[1] == 2
     assert np.isclose(selection_probabilities.sum(), 1.0)
     assert np.isfinite(results).all()
+
+
+def test_fit_validation_split_holds_out_frames(monkeypatch):
+    """A non-zero early-stopping split trains on the other frames only.
+
+    The validation frames keep their slot in the selection probabilities,
+    with probability zero, so every training batch is drawn from the whole
+    set and never contains them.
+    """
+
+    _install_synthetic_extractors(monkeypatch)
+    np.random.seed(0)
+    draws = []
+    choice = np.random.choice
+
+    def recording_choice(a, size=None, replace=True, p=None):
+        out = choice(a, size=size, replace=replace, p=p)
+        draws.append((out, None if p is None else np.array(p)))
+        return out
+
+    monkeypatch.setattr(fit_module.np.random, "choice", recording_choice)
+    losses, *_ = fit_module.fit(
+        _params(),
+        DummyPathEnsemble(),
+        augment="yes",
+        nbins=2,
+        state_bins="all",
+        train_validation_early_stopping=True,
+        early_stopping_min_samples=1,
+        early_stopping_split=0.3,
+        epochs=3,
+        batch_size=4,
+        stop=100.0,
+        verbose=False,
+    )
+
+    assert losses
+    (held_out, _), *batches = draws
+    assert len(held_out) == 3                         # int(10 * 0.3) frames
+    assert batches
+    for drawn, p in batches:
+        assert len(p) == 10                           # the whole set ...
+        assert (p[held_out] == 0).all()               # ... minus validation
+        assert not np.isin(drawn, held_out).any()
 
 
 def test_fit_supports_smoothness_penalty_without_validation(monkeypatch):
