@@ -43,7 +43,7 @@ from collections.abc import Iterable
 # aimmd imports
 from .utils import (update_source, create_default_values_function,
                     canonical_restart_source, canonical_seeding_position,
-                    legacy_transitions_replacement)
+                    legacy_transitions_replacement, check_descriptors_series)
 from ..core.utils import accepts_system_id
 from ..path import Path
 from ..pathensemble import PathEnsemble
@@ -76,6 +76,19 @@ def _check_caps_dict(value):
                             f"None, got {cap!r}")
         out[key] = int(cap)
     return out
+
+
+def _store_seed_descriptors(path, series, descriptors):
+    """Attach the descriptors of an initial path as its `series` array.
+
+    Descriptor arrays of other series (from an earlier `descriptors_series`)
+    are dropped first: the launcher exports every array of an initial path
+    to ``initial{states}``, and only the current series is read.
+    """
+    for name in [name for name in path.__dict__
+                 if name == 'descriptors' or name.startswith('descriptors-')]:
+        del path.__dict__[name]
+    setattr(path, series, descriptors)
 
 
 # params' helpers
@@ -352,6 +365,10 @@ class ParamsHelpers(ABC):
                             f'could not get any initial paths from {value!r}')
                     value = initial_paths
 
+            # name of the descriptors cache series (part of a file name)
+            elif name == 'descriptors_series':
+                value = check_descriptors_series(value)
+
             # engine
             elif name == 'engine':
                 value = value.lower()
@@ -554,12 +571,14 @@ class ParamsHelpers(ABC):
                         'states_function' in fields or
                         check_paths)
         check_descrs = (self.descriptors_function is not None and
-                       ('descriptors_function' in fields or check_paths))
+                       ('descriptors_function' in fields or
+                        'descriptors_series' in fields or check_paths))
         if self.descriptors_function is None:
             check_values = 'values_function' in fields or check_paths
         else:
             check_values = ('values_function' in fields or
                             'descriptors_function' in fields or
+                            'descriptors_series' in fields or
                             check_paths)
 
         # go through paths
@@ -604,13 +623,16 @@ class ParamsHelpers(ABC):
                          'Perhaps you are using it for brute-force shooting?')
             
             if check_descrs:
-                # Cache descriptors on the Path object.
-                path.descriptors = path.compute(self.descriptors_function)
+                # Cache descriptors on the Path object, as the series array
+                # (exported next to the initial path by the launcher).
+                _store_seed_descriptors(
+                    path, self.descriptors_series,
+                    path.compute(self.descriptors_function))
 
             if check_values:
                 # Ensure values_function returns exactly one value per frame.
                 if self.descriptors_function is not None:
-                    source = path.descriptors[:1]
+                    source = getattr(path, self.descriptors_series)[:1]
                 else:
                     source = path.coordinates[:1]
                 assert self.values_function(source).shape == (1,)
@@ -688,12 +710,14 @@ class ParamsHelpers(ABC):
         check_states = ('states' in fields or 'states_function' in fields
                         or check_paths)
         check_descrs = (self.descriptors_function is not None and
-                        ('descriptors_function' in fields or check_paths))
+                        ('descriptors_function' in fields or
+                         'descriptors_series' in fields or check_paths))
         if self.descriptors_function is None:
             check_values = 'values_function' in fields or check_paths
         else:
             check_values = ('values_function' in fields or
-                            'descriptors_function' in fields or check_paths)
+                            'descriptors_function' in fields or
+                            'descriptors_series' in fields or check_paths)
         values_takes_sid = accepts_system_id(self.values_function)
 
         # go through each system's group of paths
@@ -733,12 +757,14 @@ class ParamsHelpers(ABC):
                               f"as it is.")
 
                 if check_descrs:
-                    path.descriptors = path.compute(self.descriptors_function,
-                                                    system_id=sid)
+                    _store_seed_descriptors(
+                        path, self.descriptors_series,
+                        path.compute(self.descriptors_function,
+                                     system_id=sid))
 
                 if check_values:
                     if self.descriptors_function is not None:
-                        source = path.descriptors[:1]
+                        source = getattr(path, self.descriptors_series)[:1]
                     else:
                         source = path.coordinates[:1]
                     if values_takes_sid:

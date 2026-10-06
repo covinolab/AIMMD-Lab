@@ -21,6 +21,9 @@ create_default_values_function(network, descriptor_transform=None)
     - evaluates `network` in inference mode,
     - returns a 1D numpy array of outputs.
 
+check_descriptors_series(value)
+    Validate the name of the descriptors cache series.
+
 Notes
 -----
 These helpers are intentionally lightweight and do not depend on higher-level
@@ -479,3 +482,37 @@ def resolve_path_names(value):
 
     walk(value)
     return out
+
+
+# 'descriptors', or 'descriptors-' and a non-empty, file-name-safe suffix
+_DESCRIPTORS_SERIES = re.compile(r'descriptors(-[A-Za-z0-9_.-]+)?')
+
+
+def check_descriptors_series(value):
+    """
+    Validate a ``descriptors_series`` value.
+
+    Parameters
+    ----------
+    value : object
+        Candidate series name.
+
+    Returns
+    -------
+    str
+        `value`, unchanged.
+
+    Raises
+    ------
+    ValueError
+        Unless `value` is ``'descriptors'`` or ``'descriptors-'`` followed by
+        letters, digits, ``'_'``, ``'.'`` or ``'-'``. The name becomes part of
+        the cache file name ``{trajectory}.{descriptors_series}.npy``, and the
+        ``'descriptors'`` prefix keeps it apart from the other series
+        (states, values, bias, ...).
+    """
+    if not (isinstance(value, str) and _DESCRIPTORS_SERIES.fullmatch(value)):
+        raise ValueError(
+            f"descriptors_series must be 'descriptors' or 'descriptors-' "
+            f"followed by letters, digits, '_', '.' or '-', got {value!r}")
+    return value

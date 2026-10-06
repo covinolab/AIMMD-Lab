@@ -18,7 +18,8 @@ The build step also prepares the working directory structure for each run by:
 
 1) creating the main run directory (if missing),
 2) exporting initial paths into ``initial{sorted_states}``,
-3) exporting per-path cached arrays (e.g., states/descriptors) as `.npy` files,
+3) exporting per-path cached arrays (e.g., states and the
+   ``params.descriptors_series``) as `.npy` files,
 4) creating task folders for free simulations, shooting chains, sweep shooting,
    and trainers,
 5) creating per-worker log files when multiple processes are launched.

@@ -24,10 +24,10 @@ compute_states_args
     Argument tuple used by Path/PathEnsemble `.compute()` to compute states.
 compute_descriptors_args
     Argument tuple used by Path/PathEnsemble `.compute()` to compute descriptors
-    (or None if descriptors are disabled).
+    into the `descriptors_series` (or None if descriptors are disabled).
 compute_values_args
     Argument tuple used by Path/PathEnsemble `.compute()` to compute values,
-    specifying whether the source is coordinates or descriptors.
+    specifying whether the source is coordinates or the descriptors series.
 pipeline
     Ordered tuple of compute-argument tuples describing the preferred compute
     pipeline for a Path/PathEnsemble under the current configuration.
@@ -259,7 +259,8 @@ class ParamsProperties(ABC):
         -------
         tuple or None
             If `descriptors_function` is configured, returns:
-            `(descriptors_function, 'descriptors')`.
+            `(descriptors_function, descriptors_series)`, i.e.
+            `(descriptors_function, 'descriptors')` by default.
             Otherwise returns None.
 
         Examples
@@ -269,7 +270,7 @@ class ParamsProperties(ABC):
         """
         if not self.descriptors_function:
             return
-        return self.descriptors_function, 'descriptors'
+        return self.descriptors_function, self.descriptors_series
 
     @property
     def compute_values_args(self):
@@ -281,7 +282,8 @@ class ParamsProperties(ABC):
         tuple
             ``(values_function, 'values', source)`` where ``source`` is
             ``'coordinates'`` if descriptors are disabled and
-            ``'descriptors'`` if descriptors are enabled.
+            `descriptors_series` (by default ``'descriptors'``) if
+            descriptors are enabled.
 
         Examples
         --------
@@ -294,7 +296,7 @@ class ParamsProperties(ABC):
         """
         if not self.descriptors_function:
             return self.values_function, 'values', 'coordinates'
-        return self.values_function, 'values', 'descriptors'
+        return self.values_function, 'values', self.descriptors_series
 
     @property
     def pipeline(self):

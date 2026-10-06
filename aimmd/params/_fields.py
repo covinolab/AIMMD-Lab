@@ -229,6 +229,21 @@ Typical uses:
 If None, no transform is applied."""
                  })
 
+    descriptors_series: str = field(
+        default='descriptors',
+        metadata={'description':
+"""Name of the cache series that stores the `descriptors_function` output,
+i.e. the per-trajectory file `{trajectory}.{descriptors_series}.npy`.
+'descriptors' (default) is the historical series. Any other name must be
+'descriptors-' followed by letters, digits, '_', '.' or '-' (e.g. the
+fingerprinted name of a featurizer), and gives a separate series:
+- files of other series are never read; frames without a row in this one
+  are featurized from the trajectories when a value pass needs them (the
+  trainer's round-start descriptor check covers the whole ensemble);
+- changing the descriptors_function output (e.g. its selections) under the
+  same name would mix old and new rows: pick a new name instead."""
+                 })
+
     network_batch_size: int = field(
         default=4096,
         metadata={'description':
