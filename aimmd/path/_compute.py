@@ -175,7 +175,8 @@ class PathCompute(ABC):
             Mapping `{reference_name: predicate}`. For each file-segment `k`,
             the method attempts to load `reference_name` via `_extract(k, ...)`
             and applies `predicate(...)` to obtain a boolean mask. Masks are
-            multiplied together.
+            multiplied together. They are applied before the `target` cache
+            is checked, which then only looks at the frames they leave.
         overwrite : bool, optional
             If False (default), try to skip frames already present in the target
             cache file (if it exists and is recent enough).
@@ -255,26 +256,6 @@ class PathCompute(ABC):
             locs = self._extract(k, 'locs')
             mask = np.ones(len(locs), dtype=bool)
                         
-            # get target and check mtime
-            if target:
-                targ_fname = get_cache_fname(fname, target)
-                targ_fnames.add(targ_fname)
-                if not overwrite:
-                    ledger = _ledger_rows(targ_fname, locs)
-                    # will remove from NPY_CACHE later
-                    if ledger is not None:
-                        # update mask: do not compute where old is not "0"
-                        if (mtime is None or
-                            os.path.getmtime(targ_fname) >= mtime):
-                            length, old = ledger
-                            keepers = locs < length
-                            if len(old.shape) > 1:
-                                mask[keepers] &= ~old.any(axis=1)
-                            elif target != 'states':
-                                mask[keepers] &= ~old.astype(bool)
-                            else:
-                                mask[keepers] &= old == ''
-                                                
             # apply conditions (if possible)
             for reference, condition in conditions.items():
                 try:
@@ -282,6 +263,29 @@ class PathCompute(ABC):
                 except Exception as exception:
                     if raise_if_error:
                         raise exception
+
+            # get target and check mtime
+            # (only on the frames the conditions left, so that the ledger
+            #  reads nothing when they exclude every frame)
+            if target:
+                targ_fname = get_cache_fname(fname, target)
+                targ_fnames.add(targ_fname)
+                if not overwrite and mask.any():
+                    candidates = np.flatnonzero(mask)
+                    ledger = _ledger_rows(targ_fname, locs[candidates])
+                    # will remove from NPY_CACHE later
+                    if ledger is not None:
+                        # update mask: do not compute where old is not "0"
+                        if (mtime is None or
+                            os.path.getmtime(targ_fname) >= mtime):
+                            length, old = ledger
+                            keepers = candidates[locs[candidates] < length]
+                            if len(old.shape) > 1:
+                                mask[keepers] &= ~old.any(axis=1)
+                            elif target != 'states':
+                                mask[keepers] &= ~old.astype(bool)
+                            else:
+                                mask[keepers] &= old == ''
                         
             if verbose:
                 # Frames skipped by mask are "already done" for the purpose of progress.

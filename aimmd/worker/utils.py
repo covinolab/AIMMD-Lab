@@ -1018,6 +1018,80 @@ def register_path(path, chain, eneconv=None, bias_function=None):
           f'with {len(path)} frames {now()}')
 
 
+def _lacks_value(values):
+    """Ledger convention of a values series: 0 means "not computed yet"."""
+    return ~np.asarray(values).astype(bool)
+
+
+def ensure_descriptors(paths, params, missing_values_only=False):
+    """
+    Featurize the frames a value pass is about to read, where needed.
+
+    Values are computed from the cached descriptor series. With a cached
+    series as source, :meth:`aimmd.path.Path.compute` skips a file whose
+    series is missing or too short (silently, unless ``raise_if_error``), so
+    a value pass on such a path returns fewer values than frames. A path can
+    lack its series after a lost file, a registration that found one half
+    without it, or a change of descriptor series (the path was registered
+    before it). Calling this function on the same frames right before the
+    value pass computes the missing rows; for a complete series it only
+    checks the ledger.
+
+    Parameters
+    ----------
+    paths : aimmd.path.Path or aimmd.pathensemble.PathEnsemble
+        The frames of the value pass that follows.
+    params : aimmd.params.Params
+        Parameters providing ``compute_descriptors_args`` (and
+        ``compute_values_args`` when `missing_values_only`).
+    missing_values_only : bool, default False
+        Restrict to the frames that have no cached value yet, i.e. the frames
+        a ``compute(*params.compute_values_args)`` pass (without
+        ``overwrite``) computes. Frames with a value need no descriptors, and
+        their series is then not even read.
+
+    Returns
+    -------
+    int
+        Number of frames featurized (0 without a ``descriptors_function``).
+    """
+    args = getattr(params, 'compute_descriptors_args', None)
+    if args is None:
+        return 0
+    conditions = {}
+    if missing_values_only:
+        conditions[params.compute_values_args[1]] = _lacks_value
+    return paths.compute(*args, conditions=conditions)
+
+
+def compute_shooting_point_value(path, params):
+    """
+    Compute and cache the value of a path's shooting point if it is missing.
+
+    A path with zero weight never enters the selection pool, so without a
+    trainer its shooting-point value would never be computed. The descriptor
+    row of that frame is ensured first (see :func:`ensure_descriptors`).
+
+    Parameters
+    ----------
+    path : aimmd.path.Path
+        Registered path; its ``shooting_index`` selects the frame.
+    params : aimmd.params.Params
+        Parameters providing the descriptor and value functions.
+
+    Returns
+    -------
+    numpy.ndarray
+        The newly computed value (one element), or an empty array if the
+        value was already cached.
+    """
+    si = path.shooting_index
+    shooting_point = path[si:si + 1]
+    ensure_descriptors(shooting_point, params, missing_values_only=True)
+    return shooting_point.compute(*params.compute_values_args,
+                                  return_result=True)
+
+
 def select_shooting_point(pool, params, folder,
                           chain=None,
                           free_trajectories=[],
@@ -1184,6 +1258,10 @@ def select_shooting_point(pool, params, folder,
         bins, densities = params.load_bins_and_densities(f'{folder}/..')
 
         # compute simulated values only where there are none (yet)
+        # (featurize first the frames whose descriptors are missing)
+        ensure_descriptors(pool, params, missing_values_only=True)
+        ensure_descriptors(overriding_unique, params,
+                           missing_values_only=True)
         n1 = pool.compute(*compute_values_args,
                           raise_if_error=True)
         n2 = overriding_unique.compute(*compute_values_args,
@@ -1192,6 +1270,7 @@ def select_shooting_point(pool, params, folder,
         # also recompute initial paths' values if they still feature in pool
         initial_paths_in_pool = PathEnsemble(
             [path for path in pool if is_initial_path(path)])
+        ensure_descriptors(initial_paths_in_pool, params)
         n1 += initial_paths_in_pool.compute(
             *compute_values_args, overwrite=True)
 
@@ -1221,6 +1300,7 @@ def select_shooting_point(pool, params, folder,
         populations_for_adjustment = np.zeros_like(populations)
     if shared_density_adjustment:
         try:  # catch instabilities in try/except loop
+            ensure_descriptors(shared_shooting_points, params)
             shared_populations_for_adjustment = np.histogram(
                 shared_shooting_points.compute(
                     compute_values_args[0], '',
@@ -1483,8 +1563,12 @@ def accept_or_reject_last_path(chain, params):
     # the last bin is for handling special cases outside of bin range
 
     # get (internal) values
+    # (featurize first the frames whose descriptors are missing: a path
+    #  without its series would give no values and break the step below)
     source = 'descriptors' if params.descriptors_function else 'reader'
     batch_size = params.network_batch_size
+    ensure_descriptors(current[1:-1], params)
+    ensure_descriptors(leading[1:-1], params)
     current_values = current[1:-1].compute(
         params.values_function, source=source, batch_size=batch_size)
     leading_values = leading[1:-1].compute(
