@@ -229,6 +229,24 @@ Typical uses:
 If None, no transform is applied."""
                  })
 
+    descriptor_cache: str = field(
+        default='npy',
+        metadata={'description':
+"""What AIMMD caches per frame, next to each trajectory, for the network.
+- 'npy' (default): the rows returned by `descriptors_function`, in
+  `<traj>.descriptors.npy`. Right for order parameters and other small
+  descriptors.
+- 'graphkeys': for graph networks whose `descriptor_transform` reads a graph
+  cache (as `aimmd.network.graph_utils.process_descriptors_pyg` does): only
+  the 32-byte graph-cache key of each frame, in `<traj>.graphkeys.npy`.
+  `descriptor_transform` and `values_function` then receive key rows
+  ((n, 32) uint8) and look the graphs up by key. Coordinates are decoded from
+  the trajectory only to key new frames and to repair a missing graph, and no
+  `<traj>.descriptors.npy` is read or written.
+Takes effect only together with `descriptors_function`. Switching back to
+'npy' is safe: missing descriptors are recomputed from the trajectories."""
+                 })
+
     network_batch_size: int = field(
         default=4096,
         metadata={'description':

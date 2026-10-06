@@ -59,7 +59,8 @@ from .graph_lookup import (GraphCacheMiss, graph_overlay, graphs_present,
                            capture_connection)
 
 
-__all__ = ['SERIES', 'GraphKeysFunction', 'KeyedFunction', 'Repair',
+__all__ = ['SERIES', 'DESCRIPTOR_CACHES', 'uses_graph_keys',
+           'GraphKeysFunction', 'KeyedFunction', 'Repair',
            'repair', 'call_with_repair', 'verify', 'verify_enabled',
            'key_file', 'load_keys', 'frame_refs', 'coordinate_rows',
            'repair_stats', 'reset_repair_stats',
@@ -67,6 +68,10 @@ __all__ = ['SERIES', 'GraphKeysFunction', 'KeyedFunction', 'Repair',
 
 #: Name of the per-frame series: ``<traj>.graphkeys.npy``.
 SERIES = 'graphkeys'
+
+#: Values of ``Params.descriptor_cache``: per-frame descriptor rows
+#: (``<traj>.descriptors.npy``, the default) or graph keys.
+DESCRIPTOR_CACHES = ('npy', SERIES)
 
 #: Frames decoded and rebuilt per step of a repair. Bounds the graphs held in
 #: memory at once when :func:`verify` repairs a whole trajectory, and makes
@@ -103,6 +108,18 @@ def reset_repair_stats():
     """Set every :func:`repair_stats` counter to zero."""
     for name in _STATS:
         _STATS[name] = 0
+
+
+def uses_graph_keys(params):
+    """Whether a run caches graph keys instead of descriptor rows.
+
+    True for ``descriptor_cache == 'graphkeys'`` together with a
+    ``descriptors_function``; without one, frames reach the network as
+    coordinates, whatever the field says. The field is read with
+    ``getattr`` (default ``'npy'``), so any params-like object will do.
+    """
+    return (getattr(params, 'descriptor_cache', 'npy') == SERIES
+            and bool(getattr(params, 'descriptors_function', None)))
 
 
 def _call(function, data, system_id=None):

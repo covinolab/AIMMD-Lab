@@ -48,6 +48,7 @@ from ..core.utils import accepts_system_id
 from ..path import Path
 from ..pathensemble import PathEnsemble
 from ..network.rescalable import Rescalable as RescalableNetwork
+from ..network.graph_keys import DESCRIPTOR_CACHES
 
 
 _SUBSAMPLE_CAP_KEYS = ('shot', 'free', 'in_state')
@@ -166,6 +167,8 @@ class ParamsHelpers(ABC):
         TypeError
             If the field does not exist, if the type is invalid, or if
             post-validation fails.
+        ValueError
+            If `descriptor_cache` is not 'npy' or 'graphkeys'.
 
         Notes
         -----
@@ -305,6 +308,15 @@ class ParamsHelpers(ABC):
                                         f'strings or None, got '
                                         f'{type(value).__name__}')
                     value = [str(v) for v in value]
+
+            # per-frame cache of the network input: 'npy' or 'graphkeys'
+            elif name == 'descriptor_cache':
+                if isinstance(value, str):
+                    value = value.strip().lower()
+                if value not in DESCRIPTOR_CACHES:
+                    raise ValueError(
+                        f"'descriptor_cache' must be 'npy' or 'graphkeys', "
+                        f'got {value!r}')
 
             # reactive-bias threshold: scalar (all systems) or per-system list
             elif name == 'bias_reactive_threshold':

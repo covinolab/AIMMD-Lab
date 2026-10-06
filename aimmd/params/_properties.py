@@ -22,12 +22,20 @@ masses
     Per-atom masses inferred from the cached Universe (or None if unavailable).
 compute_states_args
     Argument tuple used by Path/PathEnsemble `.compute()` to compute states.
+graphkeys_mode
+    Whether the run caches graph keys instead of descriptor rows
+    (``descriptor_cache='graphkeys'`` with a `descriptors_function`).
+graphkeys_function
+    The run's key function (reader -> graph keys), or None.
+descriptors_source
+    Name of the per-frame series the network consumes: 'coordinates',
+    'descriptors' or 'graphkeys'.
 compute_descriptors_args
     Argument tuple used by Path/PathEnsemble `.compute()` to compute descriptors
-    (or None if descriptors are disabled).
+    or graph keys (or None if descriptors are disabled).
 compute_values_args
     Argument tuple used by Path/PathEnsemble `.compute()` to compute values,
-    specifying whether the source is coordinates or descriptors.
+    specifying whether the source is coordinates, descriptors or graph keys.
 pipeline
     Ordered tuple of compute-argument tuples describing the preferred compute
     pipeline for a Path/PathEnsemble under the current configuration.
@@ -50,6 +58,8 @@ from .utils import create_default_values_function
 from ..core.utils import guess_masses
 from ..network.fit import default as default_fit
 from ..core.decorators import classproperty
+from ..network.graph_keys import (SERIES as GRAPHKEYS, GraphKeysFunction,
+                                  KeyedFunction, uses_graph_keys)
 
 
 # params' properties
@@ -251,6 +261,70 @@ class ParamsProperties(ABC):
         return self.states_function, 'states'
 
     @property
+    def graphkeys_mode(self):
+        """
+        Whether this run caches graph keys instead of descriptor rows.
+
+        Returns
+        -------
+        bool
+            True if ``descriptor_cache == 'graphkeys'`` and a
+            `descriptors_function` is configured. Without one, frames reach
+            the network as coordinates, whatever `descriptor_cache` says.
+        """
+        return uses_graph_keys(self)
+
+    @property
+    def graphkeys_function(self):
+        """
+        The run's key function, in graph-key mode.
+
+        Returns
+        -------
+        aimmd.network.graph_keys.GraphKeysFunction or None
+            ``reader -> (n_frames, 32) uint8`` graph keys, built from
+            `descriptors_function` and `descriptor_transform`: it keys the
+            frames and builds the graphs that are not cached yet. None
+            unless `graphkeys_mode`.
+
+        Notes
+        -----
+        The same object is returned as long as `descriptors_function` and
+        `descriptor_transform` stay the same, so that it finds the graph
+        cache only once.
+        """
+        if not self.graphkeys_mode:
+            return
+        function = self.__dict__.get('_graphkeys_function')
+        if (function is None
+                or function.descriptors_function
+                is not self.descriptors_function
+                or function.descriptor_transform
+                is not self.descriptor_transform):
+            function = GraphKeysFunction(self.descriptors_function,
+                                         self.descriptor_transform)
+            self.__dict__['_graphkeys_function'] = function
+        return function
+
+    @property
+    def descriptors_source(self):
+        """
+        Name of the per-frame series the network consumes.
+
+        Returns
+        -------
+        str
+            ``'coordinates'`` without `descriptors_function`, otherwise
+            ``'graphkeys'`` in `graphkeys_mode` and ``'descriptors'``
+            (``<traj>.descriptors.npy``) in the default ``'npy'`` mode.
+        """
+        if not self.descriptors_function:
+            return 'coordinates'
+        if self.graphkeys_mode:
+            return GRAPHKEYS
+        return 'descriptors'
+
+    @property
     def compute_descriptors_args(self):
         """
         Arguments for computing descriptors on a Path/PathEnsemble.
@@ -259,7 +333,8 @@ class ParamsProperties(ABC):
         -------
         tuple or None
             If `descriptors_function` is configured, returns:
-            `(descriptors_function, 'descriptors')`.
+            `(descriptors_function, 'descriptors')`, or, in `graphkeys_mode`,
+            `(graphkeys_function, 'graphkeys')`.
             Otherwise returns None.
 
         Examples
@@ -269,6 +344,8 @@ class ParamsProperties(ABC):
         """
         if not self.descriptors_function:
             return
+        if self.graphkeys_mode:
+            return self.graphkeys_function, GRAPHKEYS
         return self.descriptors_function, 'descriptors'
 
     @property
@@ -281,7 +358,11 @@ class ParamsProperties(ABC):
         tuple
             ``(values_function, 'values', source)`` where ``source`` is
             ``'coordinates'`` if descriptors are disabled and
-            ``'descriptors'`` if descriptors are enabled.
+            ``'descriptors'`` if descriptors are enabled. In
+            `graphkeys_mode` it is ``(KeyedFunction(values_function,
+            graphkeys_function), 'values', 'graphkeys')``: the values are
+            computed from graph keys, and frames whose key is not computed
+            yet or whose graph is missing are repaired on the way.
 
         Examples
         --------
@@ -294,6 +375,10 @@ class ParamsProperties(ABC):
         """
         if not self.descriptors_function:
             return self.values_function, 'values', 'coordinates'
+        if self.graphkeys_mode:
+            return (KeyedFunction(self.values_function,
+                                  self.graphkeys_function),
+                    'values', GRAPHKEYS)
         return self.values_function, 'values', 'descriptors'
 
     @property
