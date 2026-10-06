@@ -316,8 +316,14 @@ class ParamsIO(ABC):
 
         except Exception as exception:
 
-            # restore modules
-            sys.modules = backup_modules
+            # restore modules, in place: the import system keeps using the
+            # dict sys.modules was bound to, so rebinding the name to the
+            # backup would leave the two out of step (later imports could
+            # fail half way)
+            for name in [name for name in sys.modules
+                         if name not in backup_modules]:
+                del sys.modules[name]
+            sys.modules.update(backup_modules)
 
             # restore attributes
             self.__dict__.update(backup_dict)
