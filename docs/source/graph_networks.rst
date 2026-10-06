@@ -222,6 +222,11 @@ convert the graph) against about 25 ms per frame to featurize it.
            --run run1 --db graphs_cache.sqlite -j 64 --verify 200 \
            --report prefill.json
 
+   Every frame is one random read from the cache: for a cache of several GB
+   on a parallel filesystem, copy it to node-local storage (e.g.
+   ``/dev/shm``) first and pass the copy to ``--db``. ``--report`` records
+   the time per frame of each step.
+
 5. **Check**: ``verify --sample 32`` exits with status 0.
 6. **Regenerate** the worker params file (``params1.py``) and the job script
    on the cluster: :meth:`aimmd.Params.load` writes this host's paths into
