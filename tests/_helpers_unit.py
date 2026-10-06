@@ -1,3 +1,6 @@
+import builtins
+import functools
+import os
 from pathlib import Path
 
 import numpy as np
@@ -155,3 +158,32 @@ topology = '{Path(initial_fname).name}'
 """
     path.write_text(source)
     return path
+
+
+def forbid_opening(monkeypatch, marker):
+    """Refuse, and record, every attempt to open a file named like `marker`.
+
+    Wraps ``open``, ``os.open`` and ``np.load`` for the rest of the test
+    (restored by `monkeypatch`). A call on a file whose name contains
+    `marker` (its lock and temporary files included) raises PermissionError
+    and is appended to the returned list. Check the list at the end of the
+    test: code under test may swallow the error.
+    """
+    opened = []
+
+    def guarded(function):
+        @functools.wraps(function)
+        def wrapper(file, *args, **kwargs):
+            if isinstance(file, (str, bytes, os.PathLike)):
+                name = os.fsdecode(file)
+                if marker in os.path.basename(name):
+                    opened.append(name)
+                    raise PermissionError(f"test guard: {name} is not to be "
+                                          f"opened")
+            return function(file, *args, **kwargs)
+        return wrapper
+
+    monkeypatch.setattr(builtins, "open", guarded(builtins.open))
+    monkeypatch.setattr(os, "open", guarded(os.open))
+    monkeypatch.setattr(np, "load", guarded(np.load))
+    return opened

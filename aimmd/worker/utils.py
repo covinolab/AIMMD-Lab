@@ -871,7 +871,8 @@ def _rows_or_zeros(series, indices, like):
     return result
 
 
-def register_path(path, chain, eneconv=None, bias_function=None):
+def register_path(path, chain, eneconv=None, bias_function=None,
+                  descriptors_series='descriptors'):
     """
     Register a newly generated path into the shooting chain and persist it.
 
@@ -882,7 +883,7 @@ def register_path(path, chain, eneconv=None, bias_function=None):
 
     1) Writes per-frame cached arrays:
        - ``...states.npy`` (always),
-       - ``...descriptors.npy`` (if present).
+       - ``...{descriptors_series}.npy`` (if present).
 
        Arrays are taken from :data:`NPY_CACHE` for the temporary segment files
        (``back`` / ``forw``) and then concatenated/selected according to the
@@ -924,6 +925,11 @@ def register_path(path, chain, eneconv=None, bias_function=None):
           ``bias_function``).
 
         If ``None`` (default), no bias files are written.
+    descriptors_series : str, default 'descriptors'
+        ``params.descriptors_series``: the cache series of the descriptors
+        (see :attr:`aimmd.Params.descriptors_series`). Only this series is
+        read from the segments and written for the path; files of other
+        descriptor series are never opened.
 
     Returns
     -------
@@ -948,15 +954,15 @@ def register_path(path, chain, eneconv=None, bias_function=None):
     temp_fname = f'{folder}/.{name}{ext}'
     fname = f'{folder}/{name}{ext}'
     fname_states = get_cache_fname(fname, 'states')
-    fname_descr = get_cache_fname(fname, 'descriptors')
+    fname_descr = get_cache_fname(fname, descriptors_series)
 
     # backward and forward
     forw_fname = f'{folder}/back{ext}'
     forw_fname = f'{folder}/forw{ext}'
     back_fname_states = get_cache_fname(back_fname, 'states')
     forw_fname_states = get_cache_fname(forw_fname, 'states')
-    back_fname_descr = get_cache_fname(back_fname, 'descriptors')
-    forw_fname_descr = get_cache_fname(forw_fname, 'descriptors')
+    back_fname_descr = get_cache_fname(back_fname, descriptors_series)
+    forw_fname_descr = get_cache_fname(forw_fname, descriptors_series)
 
     # only back
     if path.n_files == 1:
@@ -1603,7 +1609,8 @@ def accept_or_reject_last_path(chain, params):
     # get (internal) values
     # (featurize first the frames whose descriptors are missing: a path
     #  without its series would give no values and break the step below)
-    source = 'descriptors' if params.descriptors_function else 'reader'
+    source = (getattr(params, 'descriptors_series', 'descriptors')
+              if params.descriptors_function else 'reader')
     batch_size = params.network_batch_size
     ensure_descriptors(current[1:-1], params)
     ensure_descriptors(leading[1:-1], params)

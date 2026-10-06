@@ -540,7 +540,10 @@ class WorkerShoot(ABC):
                             if (params.record_bias
                                 and params.bias_source == 'file')
                             else None)
-                register_path(path, chain, eneconv, bias_function=_bias_fn)
+                register_path(path, chain, eneconv, bias_function=_bias_fn,
+                              descriptors_series=getattr(
+                                  params, 'descriptors_series',
+                                  'descriptors'))
                 self.total_steps += 1
                 self.total_frames += path.n_frames
                 
