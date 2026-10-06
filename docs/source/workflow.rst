@@ -120,5 +120,6 @@ A typical run directory contains:
 - ``free*`` trajectory folders for unbiased simulations,
 - ``network*.h5`` snapshots for the learned model,
 - ``bins*.npy`` and ``densities*.npy`` for adaptive sampling state,
-- and the cached ``states``, ``descriptors``, and ``values`` arrays used during
-  training and analysis, in the appropriate subfolders.
+- and the cached ``states``, descriptors (series ``descriptors_series``,
+  ``'descriptors'`` by default), and ``values`` arrays used during training and
+  analysis, in the appropriate subfolders.
