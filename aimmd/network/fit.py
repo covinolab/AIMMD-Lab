@@ -323,8 +323,12 @@ def fit(params,
             State labels in the order ``(state1, reactant, state2)`` assigned to
             variables ``a, r, b`` in the implementation.
         - ``params.descriptors_function`` : bool or callable-like
-            Used to decide whether descriptors are read from ``'descriptors'`` or
-            ``'positions'`` in the path storage model.
+            Used to decide whether descriptors are read from the descriptors
+            series or from ``'coordinates'`` in the path storage model.
+        - ``params.descriptors_series`` : str, optional
+            Name of the descriptors series (default ``'descriptors'``): the
+            rows of ``{trajectory}.{descriptors_series}.npy`` are the
+            training inputs.
         - ``params.descriptor_transform`` : callable or None
             Optional transformation applied to raw descriptors to obtain network
             inputs. If None, an identity transform is used.
@@ -558,8 +562,9 @@ def fit(params,
     a, r, b = states = params.sorted_states
 
     # choose where descriptors are sourced from in Path storage
-    descriptors_source = ('descriptors' if params.descriptors_function else
-                          'coordinates')
+    descriptors_series = getattr(params, 'descriptors_series', 'descriptors')
+    descriptors_source = (descriptors_series if params.descriptors_function
+                          else 'coordinates')
     descriptor_transform = params.descriptor_transform
     if params.descriptor_transform is None:
         descriptor_transform = lambda x: x
@@ -767,7 +772,7 @@ def fit(params,
             desc_locs = (np.concatenate(_lc) if _lc
                          else np.array([], dtype=int))
             desc_npy_paths = np.array(
-                [get_cache_fname(f, 'descriptors') for f in desc_fnames])
+                [get_cache_fname(f, descriptors_series) for f in desc_fnames])
 
     # Report collection statistics
     lengths = [len(in1_back), len(in2_back),
@@ -904,7 +909,7 @@ def fit(params,
                 pathensemble, lsr_key_B, lsr_lagtime, 'filenames')
             lc_t_B, lc_tau_B, _, _ = extract_lsr_pairs(
                 pathensemble, lsr_key_B, lsr_lagtime, 'locs')
-            _gcf = lambda arr: np.array([get_cache_fname(f, 'descriptors') for f in arr]) if len(arr) else arr
+            _gcf = lambda arr: np.array([get_cache_fname(f, descriptors_series) for f in arr]) if len(arr) else arr
             lsr_npy_t_A, lsr_locs_t_A     = _gcf(fn_t_A),   lc_t_A
             lsr_npy_tau_A, lsr_locs_tau_A = _gcf(fn_tau_A), lc_tau_A
             lsr_npy_t_B, lsr_locs_t_B     = _gcf(fn_t_B),   lc_t_B
@@ -939,7 +944,7 @@ def fit(params,
                 pathensemble, mar_key_used, mar_lagtime, 'filenames')
             lc_seqs, _, _ = extract_mar_sequences(
                 pathensemble, mar_key_used, mar_lagtime, 'locs')
-            _gcf_mar = lambda f: get_cache_fname(f, 'descriptors')
+            _gcf_mar = lambda f: get_cache_fname(f, descriptors_series)
             for fn_seq, lc_seq in zip(fn_seqs, lc_seqs):
                 npy_seq = np.array([_gcf_mar(f) for f in fn_seq])
                 mar_sequences_refs.append((npy_seq, lc_seq))
@@ -976,7 +981,7 @@ def fit(params,
                                          shot1to1_desc_ref[1], shot2to2_desc_ref[1],
                                          shot1to2_desc_ref[1], shot2to1_desc_ref[1]])
             desc_npy_paths = np.array(
-                [get_cache_fname(f, 'descriptors') for f in desc_fnames])
+                [get_cache_fname(f, descriptors_series) for f in desc_fnames])
     results = concatenate([in1_results, in2_results,
                            free1to1_results, free2to2_results,
                            free1to2_results, free2to1_results,
