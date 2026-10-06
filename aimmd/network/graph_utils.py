@@ -20,7 +20,9 @@ try:
     import time
     import MDAnalysis.transformations as transformations
     from . import shm_cache
-    from ..core.graphkey import graph_key
+    from ..core.graphkey import graph_key, graph_keys, is_key_batch
+    from .graph_lookup import (GraphCacheMiss, graph_overlay, graphs_present,
+                               lookup_graphs, collect_graphs)
 except ImportError as e:
     # A missing dependency raises ModuleNotFoundError (an ImportError subclass),
     # so `except ImportError` still catches it and `pytest.importorskip` skips.
@@ -670,10 +672,34 @@ def process_descriptors_pyg(
         One ``torch_geometric.data.Data`` graph per frame, in input order: a
         ``list`` subclass that also accepts the legacy ``result['data_list']``
         (see :class:`GraphList`).
+
+    Raises
+    ------
+    GraphCacheMiss
+        Only for graph keys (see Notes): a key without a cached graph, or an
+        all-zero row. Carries the missing keys.
+
+    Notes
+    -----
+    ``descriptors`` may instead be graph keys, an ``(n_frames, 32)`` uint8
+    array as stored in ``<traj>.graphkeys.npy`` with
+    ``Params.descriptor_cache = 'graphkeys'``. The graphs are then only looked
+    up -- overlay, memo, pending backlog, replica, database; see
+    :mod:`aimmd.network.graph_lookup` -- and never built, so the remaining
+    arguments other than ``conn`` are not used. AIMMD repairs a
+    :class:`GraphCacheMiss` from the trajectory and retries
+    (:func:`aimmd.network.graph_keys.call_with_repair`).
+
+    Inside a :func:`graph_overlay` block the graphs returned for coordinate
+    rows are also added to the overlay.
     """
 
     if verbose:
         print(f"Processing descriptors with shape: {descriptors.shape}")
+
+    # Graph keys instead of coordinate rows: a pure lookup that never builds.
+    if is_key_batch(descriptors):
+        return GraphList(lookup_graphs(descriptors, conn, decode=_decode))
 
     # Expected atom count is either the subset or the full universe
     n_atoms = len(atom_indices) if atom_indices is not None else len(mdanalysis_universe.atoms)
@@ -727,4 +753,7 @@ def process_descriptors_pyg(
         for i, graph in enumerate(new_graphs):
             loaded_graphs[missing_indices[i]] = graph
 
+    # hand them to an open overlay (graph keys: a repair's retry must find the
+    # graphs it built even if their store gave up)
+    collect_graphs(stable_hashes, loaded_graphs)
     return GraphList(loaded_graphs)
