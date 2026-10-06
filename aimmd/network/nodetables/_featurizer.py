@@ -128,9 +128,9 @@ class NodeTableFeaturizer:
     Raises
     ------
     ValueError
-        If the universe has no box, the system selection is empty or larger
-        than `n_max`, a system atom has a type outside `atom_types`, or a
-        numeric setting is not positive.
+        If the universe has no box, the system atoms have no bonds, the system
+        selection is empty or larger than `n_max`, a system atom has a type
+        outside `atom_types`, or a numeric setting is not positive.
 
     Notes
     -----
@@ -149,11 +149,13 @@ class NodeTableFeaturizer:
     be stored, since it runs inside the MD stop-condition loop. A frame with
     more than `n_max` nodes, or with an environment atom whose type is not in
     `atom_types`, is reported as an error on stdout and gets an all-zero row.
-    The ledger then treats the row as missing, and `graphs` and `batch_dict`
-    refuse zero rows with an error naming ``python -m aimmd.network.nodetables
-    repack --n-max N``, so training and value passes stop instead of using a
-    wrong value. Frames with more than 80 % of `n_max` nodes are reported as a
-    warning.
+    The ledger treats the row as missing, so every later pass featurizes and
+    reports the frame again, and `graphs` and `batch_dict` refuse zero rows
+    with an error naming ``python -m aimmd.network.nodetables repack --n-max
+    N``: training and value passes (the trainer's, and a worker's selection
+    or TPS acceptance on a path with such a frame) stop instead of using a
+    wrong value. Frames with more than 80 % of `n_max` nodes are reported as
+    a warning.
 
     **Params files.** `aimmd.Params` stores functions, not objects: a bound
     method such as ``FEATURIZER.descriptors_function`` would lose its

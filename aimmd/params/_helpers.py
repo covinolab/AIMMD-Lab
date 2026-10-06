@@ -214,7 +214,9 @@ class ParamsHelpers(ABC):
         -----
         Many fields require special handling:
 
-        - callable fields: unwrap bound methods, attach `__source__`.
+        - callable fields: unwrap bound methods, attach `__source__`. Bound
+          methods of objects with ``_params_requires_wrapper`` (node-table
+          featurizers) are refused: they need module-level wrappers.
         - `states`: normalized to uppercase letters and validated.
         - `topology`: attempts to build an MDAnalysis Universe to cache masses.
         - `initial_paths`: immediately coerced into a PathEnsemble.
