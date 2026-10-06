@@ -131,7 +131,38 @@ from ..analysis.utils import compute_bins
 from ..pathensemble.utils import assemble_pathensemble
 from ..network.rescale_utils import find_knots_and_values, rescale
 from ..network import shm_cache
+from ..network import graph_keys
 from ..path.utils import get_cache_fname
+
+
+def _series_label(params):
+    """What the round-start ledger computes, for the log."""
+    if graph_keys.uses_graph_keys(params):
+        return 'graph keys'
+    return 'descriptor frames'
+
+
+def _verify_graph_keys(params, paths, system_id=None, prefix='...'):
+    """Round-start check of graph-key runs: every frame has a cached graph.
+
+    Runs after the key ledger, which keys the frames whose key row is zero.
+    Graphs that are missing from the cache (a pending backlog lost with its
+    process, a store that never landed) are rebuilt here, in one bulk step,
+    instead of batch by batch inside fit and the value passes. In the
+    reader role the rebuilt graphs go to the memo and the pending backlog
+    and are written back with the round's flush. Nothing happens in npy
+    runs or with ``AIMMD_GRAPHKEYS_VERIFY=0``.
+    """
+    if not graph_keys.uses_graph_keys(params):
+        return
+    counts = graph_keys.verify(paths, params.graphkeys_function,
+                               system_id=system_id)
+    if counts is None:
+        return
+    print(f"{prefix} graph keys: {counts['frames']:,} frame(s) checked in "
+          f"{counts['seconds']:.1f}s; {counts['zero']} without a key, "
+          f"{counts['missing']} without a graph; {counts['repaired']} "
+          f"repaired ({counts['stale']} stale)")
 
 # WorkerTrain mixin class
 class WorkerTrain(ABC):
@@ -425,15 +456,18 @@ class WorkerTrain(ABC):
             shm_cache.stage_replicas()
 
             # Recompute any missing descriptor cache files (e.g. after deletion)
+            # (graph-key runs: missing keys, then missing graphs)
             if params.compute_descriptors_args is not None:
+                label = _series_label(params)
                 n = pathensemble.compute(*params.compute_descriptors_args)
                 if n:
-                    print(f'... (re)computed {n} missing descriptor frames')
+                    print(f'... (re)computed {n} missing {label}')
                 # also recompute initial path descriptor frames, if not present
                 n = margins.compute(*params.compute_descriptors_args)
                 if n:
                     print(f"... (re)computed {n} missing "
-                          "inital path descriptor frames")
+                          f"inital path {label}")
+                _verify_graph_keys(params, pathensemble + margins)
 
             # Value-pass subsample: bounds the (growing) committor value pass and
             # the bins/reweighting that consume it by evaluating them on a random
@@ -916,13 +950,18 @@ class WorkerTrain(ABC):
             for k, (subdir, sid) in enumerate(systems):
                 if params.compute_descriptors_args is not None:
                     _t0 = time.time()
-                    print(f"... [system {sid!r}] descriptors: computing over "
+                    label = ('graph keys' if graph_keys.uses_graph_keys(params)
+                             else 'descriptors')
+                    print(f"... [system {sid!r}] {label}: computing over "
                           f"{len(pathensembles[k])} paths {now()}")
                     n_desc = pathensembles[k].compute(
                         *params.compute_descriptors_args, system_id=sid)
-                    print(f"... [system {sid!r}] descriptors: {n_desc} frame(s) "
+                    print(f"... [system {sid!r}] {label}: {n_desc} frame(s) "
                           f"computed in {time.time() - _t0:.1f}s "
                           f"[{_graph_cache_line()}]")
+                    _verify_graph_keys(params, pathensembles[k] + margins[k],
+                                       system_id=sid,
+                                       prefix=f'... [system {sid!r}]')
                 cache_bias(eval_pes[k], sid)
                 _t0 = time.time()
                 print(f"... [system {sid!r}] value pass: {len(eval_pes[k])} "
@@ -1341,13 +1380,15 @@ class WorkerTrain(ABC):
             # values — mirrors the equivalent provision in _train so that the
             # convergence loop is robust to missing/deleted descriptor files.
             if params.compute_descriptors_args is not None:
+                label = _series_label(params)
                 n = pathensemble.compute(*params.compute_descriptors_args)
                 if n:
-                    print(f'... (re)computed {n} missing descriptor frames')
+                    print(f'... (re)computed {n} missing {label}')
                 n = margins.compute(*params.compute_descriptors_args)
                 if n:
                     print(f'... (re)computed {n} missing initial path '
-                          f'descriptor frames')
+                          f'{label}')
+                _verify_graph_keys(params, pathensemble + margins)
 
             # ensure existing value files are present (fill missing only)
             n = pathensemble.compute(**_compute_kwargs('values'))
@@ -1598,6 +1639,8 @@ class WorkerTrain(ABC):
                 pe = assemble_pathensemble(sub_chains, sub_free)
                 if params.compute_descriptors_args is not None:
                     pe.compute(*params.compute_descriptors_args, system_id=sid)
+                    _verify_graph_keys(params, pe + margins[k], system_id=sid,
+                                       prefix=f'... [system {sid!r}]')
                 cache_bias(pe, sid)
                 pe.compute(**values_kwargs('values', sid))
                 sub_pes.append(pe)

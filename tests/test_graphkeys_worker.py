@@ -340,3 +340,101 @@ def test_ensure_source_is_a_no_op_without_descriptors(tmp_path):
     params = aimmd.Params.placeholder
     assert ensure_source(PathEnsemble(Path(fname)), params) == 0
     assert not os.path.exists(f'{fname}.descriptors.npy')
+
+
+# --------------------------------------------------------- trainer verify --
+def _keyed_path(folder, toy, n_frames=6, stem='path000001', seed=7):
+    rng = np.random.default_rng(seed)
+    positions = rng.integers(1, 10, (n_frames, 2, 3)).astype(np.float32)
+    fname = write_trajectory(folder, stem=stem, positions=positions)
+    rows = np.asarray(Path(fname).coordinates, dtype=np.float32)
+    toy.cache(rows)
+    save_npy(f'{fname}.graphkeys.npy', graph_keys(rows))
+    return fname, rows
+
+
+def _keys_params(toy, cache='graphkeys'):
+    from types import SimpleNamespace
+    keys_function = gk.GraphKeysFunction(descriptors_function, toy.transform)
+    return SimpleNamespace(descriptor_cache=cache,
+                           descriptors_function=descriptors_function,
+                           graphkeys_function=keys_function)
+
+
+def test_trainer_verify_repairs_injected_missing_graphs(tmp_path, capsys,
+                                                        monkeypatch):
+    from aimmd.worker._train import _verify_graph_keys
+    monkeypatch.delenv('AIMMD_GRAPHKEYS_VERIFY', raising=False)
+    toy = ToyCache()
+    fname, rows = _keyed_path(tmp_path, toy)
+    other, _ = _keyed_path(tmp_path, toy, 4, 'path000002', seed=8)
+    hexes = gk.keys_to_hex(graph_keys(rows))
+    for h in hexes[1:3]:
+        del toy.store[h]                            # lost graphs
+    stored = np.load(f'{other}.graphkeys.npy')
+    stored[0] = 0                                   # a frame never keyed
+    save_npy(f'{other}.graphkeys.npy', stored)
+    NPY_CACHE.clear()
+
+    ensemble = PathEnsemble([Path(fname), Path(other)])
+    _verify_graph_keys(_keys_params(toy), ensemble)
+    out = capsys.readouterr().out
+    assert '10 frame(s) checked' in out
+    assert '1 without a key, 2 without a graph; 3 repaired (0 stale)' in out
+    assert all(h in toy.store for h in hexes)
+    NPY_CACHE.clear()
+    assert np.array_equal(np.load(f'{other}.graphkeys.npy'), graph_keys(
+        np.asarray(Path(other).coordinates, dtype=np.float32)))
+
+
+def test_trainer_verify_is_silent_in_npy_runs_and_when_off(tmp_path, capsys,
+                                                           monkeypatch):
+    from aimmd.worker._train import _verify_graph_keys
+    toy = ToyCache()
+    fname, rows = _keyed_path(tmp_path, toy)
+    del toy.store[gk.keys_to_hex(graph_keys(rows[:1]))[0]]
+    _verify_graph_keys(_keys_params(toy, cache='npy'), Path(fname))
+    monkeypatch.setenv('AIMMD_GRAPHKEYS_VERIFY', '0')
+    _verify_graph_keys(_keys_params(toy), Path(fname))
+    assert capsys.readouterr().out == ''
+    assert len(toy.store) == len(rows) - 1
+
+
+@pytest.mark.graph
+def test_trainer_verify_in_reader_role_defers_the_write(tmp_path, monkeypatch,
+                                                        capsys):
+    """Graphs the trainer repairs wait in the pending backlog for the flush."""
+    from types import SimpleNamespace
+    from aimmd.network import shm_cache
+    from aimmd.worker._train import _verify_graph_keys, _flush_graph_backlog
+    from tests.test_graphkeys_repair import (_GraphParams, _graph_trajectory,
+                                             _import_graph_utils)
+    monkeypatch.delenv('AIMMD_GRAPHKEYS_VERIFY', raising=False)
+    monkeypatch.setenv('AIMMD_SHM_DIR', 'off')
+    gu = _import_graph_utils()
+    conn = gu.init_db(str(tmp_path / 'g.sqlite'))
+    functions = _GraphParams(gu, {None: conn})
+    keys_function = gk.GraphKeysFunction(functions.descriptors_function,
+                                         functions.descriptor_transform)
+    fname = _graph_trajectory(tmp_path, 5)
+    keys = keys_function(Path(fname).reader)           # writer role: stored
+    save_npy(f'{fname}.graphkeys.npy', keys)
+    lost = gk.keys_to_hex(keys[2:4])
+    conn.executemany('DELETE FROM graphs_cache WHERE key = ?',
+                     [(h,) for h in lost])
+    conn.commit()
+    conn._aimmd_memo.clear()
+
+    shm_cache.set_reader_role()
+    params = SimpleNamespace(descriptor_cache='graphkeys',
+                             descriptors_function=functions.descriptors_function,
+                             graphkeys_function=keys_function)
+    _verify_graph_keys(params, Path(fname))
+    assert '2 without a graph; 2 repaired' in capsys.readouterr().out
+    count = 'SELECT COUNT(*) FROM graphs_cache'
+    assert conn.execute(count).fetchone()[0] == 3, 'no write in reader role'
+    assert shm_cache.pending_count(conn) == 2
+    _flush_graph_backlog()
+    assert conn.execute(count).fetchone()[0] == 5
+    assert gu.graphs_present(keys, conn).all()
+    conn.close()
