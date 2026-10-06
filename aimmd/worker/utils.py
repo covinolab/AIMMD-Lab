@@ -840,6 +840,37 @@ def _write_colvar(fname, header, rows):
             fh.write(' '.join(f'{v:.6f}' for v in row) + '\n')
 
 
+def _rows_or_zeros(series, indices, like):
+    """
+    Rows of a per-frame series, zero where the series has none.
+
+    Parameters
+    ----------
+    series : numpy.ndarray or None
+        Cached series of one trajectory file, None if the file has none.
+    indices : array-like of int
+        Rows to take.
+    like : numpy.ndarray
+        A series with the same row shape and dtype, used when `series` is
+        None.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``series[indices]``, with zero rows where `series` is None or too
+        short. Zero rows mean "not computed" to the ledger of
+        :meth:`aimmd.path.Path.compute`, which refills them.
+    """
+    indices = np.asarray(indices)
+    reference = series if series is not None else like
+    result = np.zeros((len(indices),) + reference.shape[1:],
+                      dtype=reference.dtype)
+    if series is not None:
+        inside = indices < len(series)
+        result[inside] = series[indices[inside]]
+    return result
+
+
 def register_path(path, chain, eneconv=None, bias_function=None):
     """
     Register a newly generated path into the shooting chain and persist it.
@@ -934,10 +965,11 @@ def register_path(path, chain, eneconv=None, bias_function=None):
         states = NPY_CACHE.pop(back_fname_states)[path.locs]
         save_npy(fname_states, states)
 
-        # save descriptors time series (if existing)
+        # save descriptors time series (if existing; zero rows where the
+        # series is too short, the ledger refills them)
         descriptors = NPY_CACHE.pop(back_fname_descr)
         if descriptors is not None:
-            descriptors = descriptors[path.locs]
+            descriptors = _rows_or_zeros(descriptors, path.locs, descriptors)
             save_npy(fname_descr, descriptors)
 
     else:  # backward and forward
@@ -952,12 +984,18 @@ def register_path(path, chain, eneconv=None, bias_function=None):
             NPY_CACHE.pop(forw_fname_states)[forw_indices]])
         save_npy(fname_states, states)
 
-        # save descriptors time series (if existing)
-        descriptors = NPY_CACHE.pop(forw_fname_descr)
-        if descriptors is not None:
+        # save descriptors time series (if existing for either half; zero
+        # rows for a half without a series or with a too short one, e.g.
+        # begun before a change of descriptor series: the ledger refills
+        # them)
+        back_descriptors = NPY_CACHE.pop(back_fname_descr)
+        forw_descriptors = NPY_CACHE.pop(forw_fname_descr)
+        if back_descriptors is not None or forw_descriptors is not None:
             descriptors = np.concatenate([
-                NPY_CACHE.pop(back_fname_descr)[back_indices],
-                descriptors[forw_indices]])
+                _rows_or_zeros(back_descriptors, back_indices,
+                               forw_descriptors),
+                _rows_or_zeros(forw_descriptors, forw_indices,
+                               back_descriptors)])
             save_npy(fname_descr, descriptors)
 
         # merge energies (if existing)
