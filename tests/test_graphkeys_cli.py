@@ -1,7 +1,8 @@
 """The offline graph-key tools (aimmd.network.graph_keys_cli).
 
 ``backfill`` keys every trajectory a run has ingested from the trajectory
-itself. It works on a toy run folder with the production layout:
+itself, ``verify`` reports, and ``gc`` deletes graphs no key file
+references. They work on a toy run folder with the production layout:
 initialARB, a chain path, the in-flight halves of a chain and the parts
 of a free simulation, each with its states file; a stray trajectory without
 one; and a toy graph cache in a real sqlite file.
@@ -406,6 +407,8 @@ def test_a_trajectory_with_nothing_ingested_blocks_nothing(toy):
     report = _backfill(toy)
     assert report['ok'], report['problems']
     assert report['files'][fname]['ingested'] == 0
+    assert cli.verify([toy['run']], toy['db'])['ok']
+    assert cli.gc([toy['run']], toy['db'])['ok']
 
 
 def test_main_writes_the_report(toy, tmp_path):
@@ -435,3 +438,158 @@ def test_the_command_line_keys_with_atom_coordinate_descriptors(toy):
         reader.close()
         assert np.array_equal(np.load(_key_file(fname)), graph_keys(rows))
     assert 'missing' in out.stdout
+
+
+# ----------------------------------------------------------------- verify --
+def test_verify_passes_after_a_backfill(toy):
+    _backfill(toy)
+    report = cli.verify([toy['run']], toy['db'])
+    assert report['ok'], report['problems']
+    assert report['totals']['ingested'] == FRAMES - 2
+    assert report['totals']['incomplete'] == 0
+    assert report['totals']['missing'] == 0
+    assert cli.main(['verify', '--run', toy['run'], '--db', toy['db']]) == 0
+
+
+def test_verify_reports_missing_keys_and_graphs(toy):
+    _backfill(toy)
+    trajs = toy['trajs']
+    os.remove(_key_file(trajs['initialARB/initial']))           # no key file
+    part = _key_file(trajs['freeA/traj000001.part0001'])
+    keys = np.load(part)
+    keys[[2, 9]] = 0                                            # zero rows
+    np.save(part, keys)
+    path = _key_file(trajs['chainR0/path000001'])
+    np.save(path, np.load(path)[:7])                            # short
+    _drop_graphs(toy['db'], toy['keys']['chainR0/back'][:2])    # lost graphs
+    tree, db = _tree(toy['run']), _digest(toy['db'])
+
+    report = cli.verify([toy['run']], toy['db'])
+    assert not report['ok']
+    files = report['files']
+    assert files[trajs['initialARB/initial']]['status'] == 'no key file'
+    assert files[trajs['freeA/traj000001.part0001']]['status'] == 'zero rows'
+    assert files[trajs['freeA/traj000001.part0001']]['zero'] == 2
+    assert files[trajs['chainR0/path000001']]['status'] == 'short'
+    assert files[trajs['chainR0/path000001']]['short'] == 2
+    assert files[trajs['chainR0/back']]['missing'] == 2
+    assert files[trajs['chainR0/forw']]['status'] == 'ok'   # 7 keys for 5
+    assert report['totals']['incomplete'] == 3
+    assert report['totals']['missing'] == 2
+    assert _tree(toy['run']) == tree and _digest(toy['db']) == db
+    assert cli.main(['verify', '--run', toy['run'], '--db', toy['db']]) == 1
+
+
+# --------------------------------------------------------------------- gc --
+def _sql(db, statement, *args):
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute(statement, *args).fetchall()
+        conn.commit()
+        return rows
+    finally:
+        conn.close()
+
+
+def _cached(db):
+    return {key for (key,) in _sql(db, 'SELECT key FROM graphs_cache')}
+
+
+def _add_unreferenced(db, count=5, seed=1):
+    """Graphs of frames no run has: ``{hex key: blob}``."""
+    import pickle
+    rng = np.random.default_rng(seed)
+    rows = rng.uniform(0, 30, (count, 30)).astype(np.float32)
+    extra = {h: pickle.dumps(('graph', float(r.sum())))
+             for h, r in zip(keys_to_hex(graph_keys(rows)), rows)}
+    for h, blob in extra.items():
+        _sql(db, 'INSERT INTO graphs_cache VALUES (?, ?)', (h, blob))
+    return extra
+
+
+@pytest.fixture
+def wal(toy):
+    """The toy cache in WAL mode, as production caches are."""
+    assert _sql(toy['db'], 'PRAGMA journal_mode=WAL') == [('wal',)]
+    return toy
+
+
+@pytest.mark.parametrize('damage', ['no key file', 'zero rows', 'short'])
+def test_gc_refuses_while_a_key_file_is_incomplete(wal, damage):
+    toy = wal
+    _backfill(toy)
+    _add_unreferenced(toy['db'])
+    fname = toy['trajs']['chainR0/path000001']
+    if damage == 'no key file':
+        os.remove(_key_file(fname))
+    elif damage == 'zero rows':
+        keys = np.load(_key_file(fname))
+        keys[3] = 0
+        np.save(_key_file(fname), keys)
+    else:
+        np.save(_key_file(fname), np.load(_key_file(fname))[:8])
+    before = _cached(toy['db'])
+    for apply in (False, True):
+        report = cli.gc([toy['run']], toy['db'], apply=apply)
+        assert report['refused'] and not report['ok']
+        assert report['incomplete'] == {fname: damage}
+    assert cli.main(['gc', '--run', toy['run'], '--db', toy['db'],
+                     '--apply']) == 1
+    assert _cached(toy['db']) == before
+
+
+def test_gc_refuses_without_trajectories(toy, tmp_path):
+    os.makedirs(tmp_path / 'empty')
+    report = cli.gc([str(tmp_path / 'empty')], toy['db'], apply=True)
+    assert report['refused'] and not report['ok']
+    assert _cached(toy['db'])
+
+
+def test_gc_dry_run_counts_and_changes_nothing(wal):
+    toy = wal
+    _backfill(toy)
+    extra = _add_unreferenced(toy['db'])
+    _drop_graphs(toy['db'], toy['keys']['chainR0/back'][:1])
+    _sql(toy['db'], 'PRAGMA wal_checkpoint(TRUNCATE)')
+    before = _digest(toy['db'])
+    report = cli.gc([toy['run']], toy['db'])
+    assert report['ok'] and not report['refused'] and not report['applied']
+    assert report['referenced'] == FRAMES
+    assert report['db_rows'] == FRAMES - 1 + 5
+    assert report['unreferenced'] == 5
+    assert report['unreferenced_bytes'] == sum(map(len, extra.values()))
+    assert report['missing'] == 1
+    assert report['deleted'] == 0
+    assert _digest(toy['db']) == before
+    assert len(_cached(toy['db'])) == FRAMES - 1 + 5
+
+
+def test_gc_apply_deletes_exactly_the_unreferenced_rows(wal):
+    toy = wal
+    _backfill(toy)
+    extra = _add_unreferenced(toy['db'])
+    # a key file without a states file beside it still references its graphs
+    stray = toy['trajs']['chainR0/stray']
+    save_npy(_key_file(stray), toy['keys']['chainR0/stray'])
+    cache = SqliteToyCache(toy['db'])
+    cache.add(toy['rows']['chainR0/stray'])
+    cache.conn.close()
+    before = _cached(toy['db'])
+    assert set(extra) < before
+
+    report = cli.gc([toy['run']], toy['db'], apply=True, vacuum=True)
+    assert report['ok'] and report['applied'] and report['vacuumed']
+    assert report['deleted'] == report['unreferenced'] == 5
+    assert _cached(toy['db']) == before - set(extra)
+    assert set(keys_to_hex(toy['keys']['chainR0/stray'])) <= _cached(toy['db'])
+    assert report['db_bytes_after'] <= report['db_bytes_before']
+    again = cli.gc([toy['run']], toy['db'], apply=True)
+    assert again['ok'] and again['unreferenced'] == again['deleted'] == 0
+
+
+def test_gc_vacuums_only_with_apply(toy):
+    with pytest.raises(ValueError):
+        cli.gc([toy['run']], toy['db'], vacuum=True)
+    assert cli.main(['gc', '--run', toy['run'], '--db', toy['db'],
+                     '--vacuum']) == 2

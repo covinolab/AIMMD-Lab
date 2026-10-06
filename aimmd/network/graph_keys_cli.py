@@ -8,6 +8,10 @@ Offline tools for runs that cache graph keys
     python -m aimmd.network.graph_keys_cli backfill --run RUN [--run RUN ...]
         [--db DB] [-j N] [--verify-npy K] [--only-missing] [--out-root DIR]
         [--report FILE]
+    python -m aimmd.network.graph_keys_cli verify --run RUN [...] --db DB
+        [--report FILE]
+    python -m aimmd.network.graph_keys_cli gc --run RUN [...] --db DB
+        [--apply [--vacuum]] [--report FILE]
 
 ``backfill``
     Writes ``<traj>.graphkeys.npy`` for every trajectory of the runs, with
@@ -21,9 +25,20 @@ Offline tools for runs that cache graph keys
     this machine exactly as they did when the rows were written.
     ``--only-missing`` computes only the rows a key file lacks (no file,
     short, zero rows), so running it again does nothing.
+``verify``
+    Reports for every trajectory whether its key file covers its ingested
+    frames, and how many keys have no graph in the cache. Writes nothing.
+``gc``
+    Deletes the graphs of the cache that no key file of the runs references,
+    which the cache would otherwise keep forever. A dry run unless
+    ``--apply``; ``--vacuum`` then also gives the space back to the
+    filesystem. It refuses while a trajectory lacks a complete key file,
+    since that trajectory's graphs would count as unreferenced: run
+    ``backfill --only-missing`` first. Give it every run that uses the cache.
 
-Run it between jobs, while no worker or trainer uses the runs. It only
-reads the cache.
+Run them between jobs, while no worker or trainer uses the runs or the
+cache. ``backfill`` and ``verify`` only read the cache; ``gc --apply``
+deletes rows from it.
 
 Trajectories of a run
 ---------------------
@@ -52,8 +67,9 @@ Exit status
 -----------
 0 if everything checks out. 1 if ``backfill`` could not key a trajectory, a
 key differs from the key of an old descriptor row (``--verify-npy``), or
-more than 1 % of the keys have no graph in a non-empty cache. 2 on a usage
-error.
+more than 1 % of the keys have no graph in a non-empty cache; if ``verify``
+finds a trajectory without a complete key file or more than 1 % of the keys
+without a graph; if ``gc`` refuses. 2 on a usage error.
 """
 
 # external
@@ -80,13 +96,14 @@ from ..cache.npy import lock_fname
 from ..core.graphkey import KEY_BYTES, graph_key, graph_keys, keys_to_hex
 from ..core.graphkey import pad_keys
 from ..path.utils import get_cache_fname
-from .graph_keys import key_file
+from .graph_keys import SERIES, key_file
 
 
-__all__ = ['trajectories', 'backfill', 'main', 'MISSING_LIMIT']
+__all__ = ['trajectories', 'backfill', 'verify', 'gc', 'main',
+           'MISSING_LIMIT']
 
 #: Fraction of keys without a graph, in a cache that holds graphs, above
-#: which ``backfill`` fails.
+#: which ``backfill`` and ``verify`` fail.
 MISSING_LIMIT = 0.01
 
 #: Frames per decode task: what one process decodes and keys in one go.
@@ -95,6 +112,9 @@ _CHUNK = 1024
 #: Frames decoded into memory at once inside a task (about 44 MB of
 #: production rows).
 _DECODE_BATCH = 64
+
+#: Keys per SQL statement of ``gc``.
+_SQL_BATCH = 500
 
 #: The covering-index scan of every key of a graph cache.
 _KEY_SCAN = 'SELECT key FROM graphs_cache'
@@ -129,6 +149,18 @@ def trajectories(run, extension='.xtc'):
     return sorted(found)
 
 
+def _key_files(run):
+    """Every key file under a run, whether or not its trajectory has states."""
+    suffix = f'.{SERIES}.npy'
+    found = []
+    for folder, folders, files in os.walk(run):
+        folders[:] = [name for name in folders if not name.startswith('.')]
+        found += [os.path.join(folder, name) for name in files
+                  if name.endswith(suffix)
+                  and not name.startswith(('.', 'temp.'))]
+    return sorted(found)
+
+
 def _npy_shape(fname):
     """Shape of a ``.npy`` file, from its header."""
     with open(fname, 'rb') as fh:
@@ -160,13 +192,43 @@ def _stored(fname):
         return None, f'not a key file: {exception}'
 
 
+def _status(fname):
+    """How completely the key file of trajectory ``fname`` covers it.
+
+    Returns
+    -------
+    dict
+        ``ingested`` frames, ``keys`` (rows of the key file, or None),
+        ``short`` (ingested frames beyond its end), ``zero`` (zero rows among
+        the ingested frames) and ``status``: ``'ok'``, ``'no key file'``,
+        ``'not a key file: ...'``, ``'short'`` or ``'zero rows'``; and the
+        stored rows under ``stored`` (not for the report).
+    """
+    ingested = _ingested(fname)
+    stored, why = _stored(key_file(fname))
+    record = {'ingested': ingested, 'keys': None, 'short': ingested,
+              'zero': 0, 'status': why if ingested else 'ok',
+              'stored': stored}
+    if stored is None:
+        return record
+    record['keys'] = len(stored)
+    record['short'] = max(0, ingested - len(stored))
+    record['zero'] = int((~stored[:ingested].any(axis=1)).sum())
+    record['status'] = ('short' if record['short'] else
+                        'zero rows' if record['zero'] else 'ok')
+    return record
+
+
 # -------------------------------------------------------------- the cache --
-def _connect(db):
-    """A read-only connection to graph cache ``db``."""
+def _connect(db, write=False):
+    """A connection to graph cache ``db``; read-only unless ``write``."""
     if not os.path.isfile(db):
         raise FileNotFoundError(f'graph cache {db!r} does not exist')
-    uri = f'file:{urllib.parse.quote(os.path.abspath(db))}?mode=ro'
-    conn = sqlite3.connect(uri, uri=True, timeout=60.0)
+    if write:
+        conn = sqlite3.connect(db, timeout=60.0, isolation_level=None)
+    else:
+        uri = f'file:{urllib.parse.quote(os.path.abspath(db))}?mode=ro'
+        conn = sqlite3.connect(uri, uri=True, timeout=60.0)
     conn.execute('PRAGMA busy_timeout=60000')
     return conn
 
@@ -185,6 +247,14 @@ def _db_keys(db):
     finally:
         conn.close()
     return keys, time.monotonic() - start
+
+
+def _db_bytes(db):
+    """Size of the cache: database plus WAL."""
+    size = os.path.getsize(db)
+    if os.path.exists(f'{db}-wal'):
+        size += os.path.getsize(f'{db}-wal')
+    return size
 
 
 def _missing(keys, cached):
@@ -685,6 +755,183 @@ def _totals(files, names):
     return {name: sum(r[name] or 0 for r in files.values()) for name in names}
 
 
+# ----------------------------------------------------------------- verify --
+def verify(runs, db, extension='.xtc'):
+    """Report the key files of some runs and their graphs. Writes nothing.
+
+    Parameters
+    ----------
+    runs : list of str
+        Run folders.
+    db : str
+        Graph cache (read only).
+    extension : str, default '.xtc'
+        Trajectory file extension.
+
+    Returns
+    -------
+    dict
+        The report: per trajectory (``files``) its ``ingested`` frames, the
+        rows of its key file (``keys``), ingested frames beyond its end
+        (``short``), ``zero`` rows among them, ``status`` and keys without a
+        graph (``missing``); ``totals``, ``problems`` and ``ok``.
+    """
+    start = time.monotonic()
+    cached, scan = _db_keys(db)
+    owner = {fname: run for run in runs
+             for fname in trajectories(run, extension)}
+    names = _names(runs, owner)
+    files, problems, checked = {}, [], 0
+    for fname in owner:
+        try:
+            record = _status(fname)
+        except Exception as exception:                     # noqa: BLE001
+            record = {'ingested': 0, 'keys': None, 'short': 0, 'zero': 0,
+                      'status': f'cannot read its states file: {exception!r}',
+                      'stored': None}
+        stored = record.pop('stored')
+        record['missing'] = 0
+        if stored is not None:
+            record['missing'], count = _missing(stored, cached)
+            checked += count
+        files[fname] = record
+    incomplete = [f for f, r in files.items() if r['status'] != 'ok']
+    if incomplete:
+        problems.append(f'{len(incomplete)} of {len(files)} trajectories '
+                        f'lack a complete key file: run backfill')
+    totals = _totals(files, ('ingested', 'keys', 'short', 'zero', 'missing'))
+    totals.update(files=len(files), incomplete=len(incomplete),
+                  db_keys=len(cached),
+                  missing_fraction=totals['missing'] / checked if checked
+                  else None,
+                  db_scan_s=scan, wall_s=time.monotonic() - start)
+    problem = _missing_problem(totals['missing'], checked, cached, db)
+    if problem:
+        problems.append(problem)
+    return {'command': 'verify', 'runs': list(runs), 'db': db,
+            'options': {'extension': extension}, 'names': names,
+            'files': files, 'totals': totals, 'problems': problems,
+            'ok': not problems}
+
+
+# --------------------------------------------------------------------- gc --
+def _in(keys):
+    return f'({",".join("?" * len(keys))})'
+
+
+def gc(runs, db, apply=False, vacuum=False, extension='.xtc'):
+    """Delete the graphs no key file of some runs references.
+
+    Parameters
+    ----------
+    runs : list of str
+        Every run folder that uses the cache.
+    db : str
+        Graph cache.
+    apply : bool, default False
+        Delete; otherwise only count (dry run, read only).
+    vacuum : bool, default False
+        After deleting, rebuild the database file to give the space back.
+    extension : str, default '.xtc'
+        Trajectory file extension.
+
+    Returns
+    -------
+    dict
+        The report: ``refused`` (and the ``incomplete`` trajectories),
+        ``db_rows``, ``referenced`` keys, ``unreferenced`` rows and their
+        ``unreferenced_bytes``, referenced keys ``missing`` from the cache,
+        rows ``deleted``, the cache size before and after
+        (``db_bytes_before``, ``db_bytes_after``), ``problems`` and ``ok``.
+
+    Raises
+    ------
+    ValueError
+        For ``vacuum`` without ``apply``.
+    """
+    if vacuum and not apply:
+        raise ValueError('--vacuum needs --apply')
+    start = time.monotonic()
+    if not os.path.isfile(db):
+        raise FileNotFoundError(f'graph cache {db!r} does not exist')
+    report = {'command': 'gc', 'runs': list(runs), 'db': db,
+              'options': {'apply': apply, 'vacuum': vacuum,
+                          'extension': extension},
+              'refused': True, 'incomplete': {}, 'trajectories': 0,
+              'key_files': 0, 'db_rows': None, 'referenced': None,
+              'unreferenced': None, 'unreferenced_bytes': None,
+              'missing': None, 'deleted': 0,
+              'db_bytes_before': _db_bytes(db), 'db_bytes_after': None,
+              'applied': False, 'vacuumed': False, 'problems': []}
+    found = [fname for run in runs for fname in trajectories(run, extension)]
+    report['trajectories'] = len(found)
+    for fname in found:
+        try:
+            status = _status(fname)['status']
+        except Exception as exception:                     # noqa: BLE001
+            status = f'cannot read its states file: {exception!r}'
+        if status != 'ok':
+            report['incomplete'][fname] = status
+    if not found:
+        report['problems'].append(f'no trajectory with a states file under '
+                                  f'{", ".join(runs)}')
+    if report['incomplete']:
+        report['problems'].append(
+            f'{len(report["incomplete"])} of {len(found)} trajectories lack '
+            f'a complete key file, so their graphs would count as '
+            f'unreferenced: run backfill --only-missing first')
+    if report['problems']:
+        report['ok'] = False
+        report['wall_s'] = time.monotonic() - start
+        return report
+
+    referenced = set()
+    key_files = [f for run in runs for f in _key_files(run)]
+    for fname in key_files:
+        stored, _ = _stored(fname)
+        if stored is not None:
+            referenced.update(keys_to_hex(stored[stored.any(axis=1)]))
+    report.update(refused=False, key_files=len(key_files),
+                  referenced=len(referenced))
+    conn = _connect(db, write=apply)
+    try:
+        cached = _scan(conn)
+        unreferenced = sorted(cached - referenced)
+        report.update(db_rows=len(cached), unreferenced=len(unreferenced),
+                      missing=len(referenced - cached))
+        size = 0
+        for begin in range(0, len(unreferenced), _SQL_BATCH):
+            batch = unreferenced[begin:begin + _SQL_BATCH]
+            size += conn.execute(
+                f'SELECT COALESCE(SUM(LENGTH(data)), 0) FROM graphs_cache '
+                f'WHERE key IN {_in(batch)}', batch).fetchone()[0]
+        report['unreferenced_bytes'] = size
+        if apply:
+            for begin in range(0, len(unreferenced), _SQL_BATCH):
+                batch = unreferenced[begin:begin + _SQL_BATCH]
+                conn.execute('BEGIN IMMEDIATE')
+                try:
+                    report['deleted'] += conn.execute(
+                        f'DELETE FROM graphs_cache WHERE key IN {_in(batch)}',
+                        batch).rowcount
+                    conn.execute('COMMIT')
+                except BaseException:
+                    conn.execute('ROLLBACK')
+                    raise
+            conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+            report['applied'] = True
+            if vacuum:
+                conn.execute('VACUUM')
+                conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+                report['vacuumed'] = True
+    finally:
+        conn.close()
+    report['db_bytes_after'] = _db_bytes(db)
+    report['ok'] = True
+    report['wall_s'] = time.monotonic() - start
+    return report
+
+
 # ------------------------------------------------------------ command line --
 def _seconds(value):
     return '-' if value is None else f'{value:.2f} s'
@@ -729,6 +976,47 @@ def _show_backfill(report):
               f'{totals["spot_skipped"]} skipped (zero rows)')
 
 
+def _show_verify(report):
+    names, totals = report['names'], report['totals']
+    width = max([len(n) for n in names.values()] + [10])
+    print(f'{"trajectory":<{width}}  {"ingested":>8}  {"keys":>8}  '
+          f'{"missing":>7}  status')
+    for fname, r in report['files'].items():
+        print(f'{names[fname]:<{width}}  {r["ingested"]:>8}  '
+              f'{"-" if r["keys"] is None else r["keys"]:>8}  '
+              f'{r["missing"]:>7}  {r["status"]}')
+    fraction = totals['missing_fraction']
+    print(f'\n{totals["files"]} trajectories, {totals["ingested"]} ingested '
+          f'frames; {totals["incomplete"]} without a complete key file '
+          f'({totals["short"]} frames beyond a key file, {totals["zero"]} '
+          f'zero rows); graph cache: {totals["db_keys"]} graphs, '
+          f'{totals["missing"]} key(s) missing'
+          + ('' if fraction is None else f' ({100 * fraction:.3f} %)'))
+
+
+def _show_gc(report):
+    for fname, status in list(report['incomplete'].items())[:20]:
+        print(f'  incomplete: {fname}: {status}')
+    if len(report['incomplete']) > 20:
+        print(f'  ... and {len(report["incomplete"]) - 20} more')
+    if report['refused']:
+        return
+    gb = 1e-9
+    print(f'{report["trajectories"]} trajectories, {report["key_files"]} key '
+          f'files: {report["referenced"]} referenced keys, '
+          f'{report["missing"]} of them without a graph')
+    print(f'graph cache: {report["db_rows"]} graphs, '
+          f'{report["unreferenced"]} unreferenced '
+          f'({report["unreferenced_bytes"] * gb:.3f} GB of graph data)')
+    if report['applied']:
+        print(f'deleted {report["deleted"]} graphs'
+              + (', vacuumed' if report['vacuumed'] else '')
+              + f'; cache {report["db_bytes_before"] * gb:.3f} GB -> '
+                f'{report["db_bytes_after"] * gb:.3f} GB')
+    else:
+        print('dry run: nothing deleted (--apply deletes)')
+
+
 def _parser():
     parser = argparse.ArgumentParser(
         prog='python -m aimmd.network.graph_keys_cli',
@@ -759,6 +1047,17 @@ def _parser():
                          help='write the key files under DIR/<run name>/')
     command.add_argument('--only-missing', action='store_true',
                          help='compute only the rows key files lack')
+    command = commands.add_parser(
+        'verify', parents=[common],
+        help='report key files and missing graphs (writes nothing)')
+    command.add_argument('--db', required=True, help='graph cache')
+    command = commands.add_parser(
+        'gc', parents=[common],
+        help='delete graphs no key file references (dry run by default)')
+    command.add_argument('--db', required=True, help='graph cache')
+    command.add_argument('--apply', action='store_true', help='delete')
+    command.add_argument('--vacuum', action='store_true',
+                         help='with --apply: shrink the database file')
     return parser
 
 
@@ -766,12 +1065,21 @@ def main(argv=None):
     """Run the command line; returns the exit status."""
     args = _parser().parse_args(argv)
     try:
-        print(f'backfill: {", ".join(args.run)}, {args.jobs} job(s)')
-        report = backfill(args.run, db=args.db, jobs=args.jobs,
-                          verify_npy=args.verify_npy, out_root=args.out_root,
-                          only_missing=args.only_missing,
-                          extension=args.extension, verbose=True)
-        _show_backfill(report)
+        if args.command == 'backfill':
+            print(f'backfill: {", ".join(args.run)}, {args.jobs} job(s)')
+            report = backfill(args.run, db=args.db, jobs=args.jobs,
+                              verify_npy=args.verify_npy,
+                              out_root=args.out_root,
+                              only_missing=args.only_missing,
+                              extension=args.extension, verbose=True)
+            _show_backfill(report)
+        elif args.command == 'verify':
+            report = verify(args.run, args.db, extension=args.extension)
+            _show_verify(report)
+        else:
+            report = gc(args.run, args.db, apply=args.apply,
+                        vacuum=args.vacuum, extension=args.extension)
+            _show_gc(report)
     except (FileNotFoundError, ValueError, ImportError) as exception:
         print(f'error: {exception}', file=sys.stderr)
         return 2

@@ -30,6 +30,9 @@ only write is ``INSERT OR REPLACE``, and there is no ``UPDATE`` and no ``DELETE`
 anywhere in ``graph_utils``.  For a fixed ``(cutoff, selections, atom_types,
 universe)`` the key -> value map is a pure function, so **a replica can never be
 wrong, only incomplete.**  A miss simply falls through to the real database.
+(The one ``DELETE`` is the offline garbage collection of graph-key runs,
+``python -m aimmd.network.graph_keys_cli gc``, between jobs; a replica staged
+before it can only hold graphs the database no longer has.)
 
 (The one way to break that is to change ``CUTOFF`` or the selections mid-campaign,
 which already invalidates the real cache today; the replica inherits the problem
