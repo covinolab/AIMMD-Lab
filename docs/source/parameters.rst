@@ -32,6 +32,11 @@ In practice, the most important inputs are:
 ``descriptors_function`` and ``descriptor_transform``
    Optional feature pipeline before the network is evaluated.
 
+``descriptor_cache``
+   What is cached per frame for the network: the descriptor rows
+   (``'npy'``, the default) or, for graph networks, only each frame's
+   graph-cache key (``'graphkeys'``). See :ref:`graph-keys`.
+
 ``values_function``
    Optional, if evaluating the network forward pass requires any special care. If not given, will default to network(descriptors).
 

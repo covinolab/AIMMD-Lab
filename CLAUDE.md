@@ -125,7 +125,7 @@ path.write(filename)
 
 Cache files live next to trajectories:
 - `traj.xtc.states.npy`
-- `traj.xtc.descriptors.npy`
+- `traj.xtc.descriptors.npy` (or, with `descriptor_cache='graphkeys'`, `traj.xtc.graphkeys.npy`: one 32-byte graph-cache key per frame)
 - `traj.xtc.values.npy`
 
 ---
@@ -244,6 +244,7 @@ When using GNN-based networks (like PaiNN):
 - Graph construction (edges based on cutoff) is typically cached in SQLite to avoid recomputing every call
 - The network subclasses `torch.nn.Module`; implement `forward(batch)` returning per-graph scalars
 - Use `aimmd.network.fit` utilities for the training loop; a custom `fit` callable can be passed to `Params`
+- Set `descriptor_cache = 'graphkeys'` so AIMMD stores each frame's 32-byte graph-cache key (`<traj>.graphkeys.npy`) instead of its coordinate row (`<traj>.descriptors.npy`, ~680 kB/frame for a solvated protein); `descriptor_transform`/`values_function` then receive `(n, 32)` uint8 key rows and look graphs up by key (`aimmd/network/graph_keys.py`, `graph_lookup.py`, `aimmd/core/graphkey.py`). Offline tools for running campaigns: `python -m aimmd.network.graph_keys_cli {backfill,verify,gc}`. See `docs/source/advanced.rst` ("Graph Keys for Graph-Network Runs").
 - For a **shared multi-ligand network**, pass a fixed `atom_types` table (params field, forwarded to `get_graphs_pyg`) so all systems featurize into the same one-hot columns, and call `fit` with a *list* of PathEnsembles (it pools them balanced). Different atom counts are fine: graphs are batched per system via `Batch.from_data_list`, and the in-memory descriptor transform is applied per system before pooling — see `aimmd/network/fit.py` (`_assemble_inmemory_multi`, `_load_batch_descriptors_routed`).
 
 ---

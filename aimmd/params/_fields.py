@@ -244,7 +244,11 @@ If None, no transform is applied."""
   the trajectory only to key new frames and to repair a missing graph, and no
   `<traj>.descriptors.npy` is read or written.
 Takes effect only together with `descriptors_function`. Switching back to
-'npy' is safe: missing descriptors are recomputed from the trajectories."""
+'npy' is safe: missing descriptors are recomputed from the trajectories.
+Deploy an AIMMD that knows this field before setting it: an older one
+ignores it. To switch a running campaign, write the key files first with
+`python -m aimmd.network.graph_keys_cli backfill` (see the advanced usage
+docs, "Graph Keys for Graph-Network Runs")."""
                  })
 
     network_batch_size: int = field(

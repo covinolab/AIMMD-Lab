@@ -5,13 +5,12 @@ aimmd.network.graph_keys_cli
 Offline tools for runs that cache graph keys
 (``Params.descriptor_cache = 'graphkeys'``, :mod:`aimmd.network.graph_keys`)::
 
-    python -m aimmd.network.graph_keys_cli backfill --run RUN [--run RUN ...]
-        [--db DB] [-j N] [--verify-npy K] [--only-missing] [--out-root DIR]
-        [--report FILE]
-    python -m aimmd.network.graph_keys_cli verify --run RUN [...] --db DB
-        [--report FILE]
-    python -m aimmd.network.graph_keys_cli gc --run RUN [...] --db DB
-        [--apply [--vacuum]] [--report FILE]
+   python -m aimmd.network.graph_keys_cli backfill --run RUN [--db DB] [-j N]
+   python -m aimmd.network.graph_keys_cli verify --run RUN --db DB
+   python -m aimmd.network.graph_keys_cli gc --run RUN --db DB [--apply]
+
+``--run`` may be repeated, every command takes ``--report FILE`` (the report
+as JSON) and ``--extension``, and ``--help`` lists the rest.
 
 ``backfill``
     Writes ``<traj>.graphkeys.npy`` for every trajectory of the runs, with

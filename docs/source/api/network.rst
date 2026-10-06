@@ -43,6 +43,27 @@ with ``pip install "aimmd-lab[graphs]"`` (see :doc:`../installation` for
 ``torch-cluster`` wheels matching your torch/CUDA build) and see
 :doc:`../advanced`.
 
+Graph keys
+----------
+
+With ``descriptor_cache = 'graphkeys'`` (see :ref:`graph-keys`) AIMMD keeps the
+32-byte graph-cache key of every frame instead of its descriptor row. These
+modules pin the key, look graphs up by key and repair misses; none of them
+needs the graph stack. The command-line tools backfill key files for a running
+campaign and collect unreferenced graphs.
+
+.. automodule:: aimmd.core.graphkey
+   :members:
+
+.. automodule:: aimmd.network.graph_lookup
+   :members:
+
+.. automodule:: aimmd.network.graph_keys
+   :members:
+
+.. automodule:: aimmd.network.graph_keys_cli
+   :members:
+
 Graph-cache acceleration
 ------------------------
 

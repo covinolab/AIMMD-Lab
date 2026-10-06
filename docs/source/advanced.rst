@@ -347,3 +347,203 @@ Aggregation via :meth:`aimmd.PathEnsemble.shooting_results` attributes each shot
 to its tagged frame (falling back to positional ``i % sweep_size`` for untagged
 legacy shots), and :meth:`aimmd.PathEnsemble.report_shooting_results` compares
 the empirical committor against the model prediction.
+
+.. _graph-keys:
+
+Graph Keys for Graph-Network Runs (``descriptor_cache``)
+--------------------------------------------------------
+
+A graph network never reads coordinates directly: ``descriptor_transform``
+turns each frame's coordinate row into a graph, which
+:mod:`aimmd.network.graph_utils` builds once and keeps in a SQLite graph cache
+under the SHA-256 key of the row. By default AIMMD still caches every row in
+``<traj>.descriptors.npy`` -- about 680 kB per frame for a solvated protein,
+hundreds of GB per campaign -- and reads and hashes those rows again whenever
+it needs the graphs.
+
+With
+
+.. code-block:: python
+
+    descriptor_cache = 'graphkeys'
+
+AIMMD keeps, next to every trajectory, ``<traj>.graphkeys.npy`` instead: the
+32-byte graph-cache key of each frame, an ``(n_frames, 32)`` ``uint8`` array
+in which an all-zero row means "not computed yet" (32 B per frame, 21 MB for
+650k frames). Shooting-point selection, TPS acceptance, the trainer's value
+passes and ``fit`` receive key rows and look the graphs up by key; no
+``<traj>.descriptors.npy`` is read or written. Coordinates are decoded from the
+trajectory only to key new frames and to rebuild a graph that is missing. The
+keys are exactly the keys the graph cache already uses (the computation is
+pinned in :mod:`aimmd.core.graphkey`), so switching an existing campaign
+rebuilds no graph, and switching back is a one-line change.
+
+Setting it up
+~~~~~~~~~~~~~
+
+The switch takes effect together with a ``descriptors_function``. It needs a
+``descriptor_transform`` and a ``values_function`` that accept key rows as well
+as coordinate rows, as functions built on
+:func:`aimmd.network.graph_utils.process_descriptors_pyg` do -- the usual GNN
+params need no other change:
+
+.. code-block:: python
+
+    from aimmd.network.graph_utils import (
+        atom_coordinate_descriptors_function, init_db, process_descriptors_pyg)
+
+    conn = init_db('graphs_cache.sqlite')
+
+    def descriptor_transform(descriptors):         # coordinate or key rows
+        return process_descriptors_pyg(
+            descriptors, mdanalysis_universe=universe,
+            system_selection=SYSTEM, environment_selection=ENVIRONMENT,
+            cutoff=CUTOFF, conn=conn, atom_types=ATOM_TYPES)['data_list']
+
+    def descriptors_function(trajectory):          # frames -> coordinate rows
+        return atom_coordinate_descriptors_function(trajectory)
+
+    descriptor_cache = 'graphkeys'
+
+``descriptors_function`` still defines the rows whose hash is the key. In
+graph-key runs it no longer needs to build the graphs as a side effect (the
+``descriptor_transform(desc)`` call many GNN params make inside it): AIMMD
+builds and stores the graphs of new frames itself, once. Keeping the call is
+harmless.
+
+``fit`` reads training batches as key rows; ``in_memory=True`` is ignored with
+a notice, and ``graphs=False`` raises.
+
+At every ``Params.load`` the frames of the initial paths are keyed (and their
+graphs built if missing), and two checks run:
+
+- if the graph cache already held graphs but none of the initial frames'
+  graphs, the keys cannot be the ones the cache was filled with (a different
+  ``descriptors_function``, atom selection or trajectory decoder), and loading
+  stops with an explanation;
+- ``values_function`` must return one value for one key row, and must raise
+  ``GraphCacheMiss`` for an all-zero key rather than read the key bytes as
+  numbers.
+
+What happens where
+~~~~~~~~~~~~~~~~~~
+
+- **Ingestion** (shooting and free workers): new frames are decoded, keyed,
+  and only the graphs the cache lacks are built and stored; the 32-byte rows
+  are written.
+- **Registration** of a shot copies the key rows of its halves, like the
+  states.
+- **Trainer**: at the start of a round, after the key ledger, a verify pass
+  checks every frame of the ensemble against the cache (one index scan) and
+  rebuilds missing graphs in bulk. It logs ``graph keys: N frame(s) checked``
+  with the frames without a key, without a graph, and repaired.
+- **Misses**: a frame whose key row is zero, or whose graph is missing, is
+  decoded from its trajectory, its graph rebuilt and its key row rewritten;
+  the call is then retried once with the rebuilt graphs, and if the cache still
+  misses, the frames are evaluated from coordinates as without graph keys. A
+  cache miss never stops a worker or the trainer.
+
+Environment variables:
+
+``AIMMD_GRAPHKEYS_VERIFY``
+   ``0`` skips the trainer's round-start verify pass (default: on).
+``AIMMD_GRAPHKEYS_SKIP_SELFTEST``
+   ``1`` skips the ``Params.load`` check against the graph cache (for a cache
+   that was filled for other trajectories) and the all-zero-key check of
+   ``values_function``.
+``AIMMD_STAGE_DEADLINE``
+   Seconds the trainer may spend copying the graph cache to its ``/dev/shm``
+   replica (default ``max(300 s, cache size / 50 MB/s)``); see
+   :mod:`aimmd.network.shm_cache`.
+
+Working with a graph-key run
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Trajectories of a graph-key run have no descriptor file, and ``path.descriptors``
+raises an error that says so. Use the coordinates, or look the graphs up by
+key:
+
+.. code-block:: python
+
+    params = aimmd.Params.load('params.py')
+    path = params.pathensemble('run1')[0]
+
+    coordinates = path.coordinates      # (n_frames, 3 * n_atoms), from the trajectory
+    keys = path.graphkeys               # (n_frames, 32) uint8
+    graphs = params.descriptor_transform(keys)  # from the graph cache
+    values = params.values_function(keys)
+
+``path.compute(params.descriptors_function)`` recomputes the coordinate rows
+exactly as AIMMD keyed them.
+
+Switching a running campaign
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+All steps that touch run folders run **between two jobs**, while no worker or
+trainer runs.
+
+1. **Deploy AIMMD first**, with the params unchanged (``'npy'``), and run the
+   tests on the cluster. An older AIMMD silently ignores the
+   ``descriptor_cache`` line (``Params`` keeps only the fields it knows) and
+   stays in ``'npy'`` mode: safe, but nothing is gained.
+2. **Backfill the keys** on a CPU node of the cluster that runs the campaign:
+
+   .. code-block:: bash
+
+       python -m aimmd.network.graph_keys_cli backfill --run run1 \
+           --db graphs_cache.sqlite -j 64 --verify-npy 5 --report backfill.json
+
+   It writes ``<traj>.graphkeys.npy`` for every trajectory with a
+   ``<traj>.states.npy`` (initial paths, chain paths, the halves of shots in
+   flight, free parts), decoding each frame from the trajectory; offsets are
+   built once per trajectory, chunks of frames are keyed in parallel, and each
+   file is written atomically. It only reads the graph cache, and reports how
+   many keys have no graph there (expect about 0). ``--verify-npy K`` compares
+   ``K`` keys per trajectory with the keys of its old descriptor rows, which
+   checks that the trajectories decode on this machine exactly as they did when
+   the rows were written. Exit status 0 means all is well. Decoding and keying
+   take about 4 ms of CPU per frame for a 57k-atom system (about 45 CPU-min
+   for 650k frames), so reading the trajectories once usually bounds the wall
+   time.
+
+   The backfill is optional: without it, the trainer's first round keys the
+   whole ensemble itself (about 6 ms per frame, serially) and resumed workers
+   key their halves in flight. It assumes the all-atom rows of
+   ``atom_coordinate_descriptors_function``; a run with another
+   ``descriptors_function`` relies on that lazy keying instead (the backfill
+   would report almost every key as missing). A multi-system run keeps one
+   graph cache per system: backfill each system folder with its own cache,
+   ``--run run1/<system_id> --db <that system's cache>``.
+3. **Switch**: add ``descriptor_cache = 'graphkeys'`` to the params file, and
+   regenerate the derived params file and job script where the jobs run
+   (``Params.load`` writes local paths into them).
+4. **Resubmit and validate** over a few rounds: the round-start log should
+   report 0 frames without a key and next to no missing graphs, the first value
+   pass should reproduce the values of unchanged frames, and repairs should stay
+   rare.
+5. **Delete the descriptor files** once validated:
+   ``find run1 -name '*.descriptors.npy' -delete``. Keep them until then:
+   switching back after deleting them means recomputing about 680 kB per frame.
+6. **Collect garbage** in the graph cache now and then, between jobs. It only
+   grows: graphs of frames no path holds any more stay. First make every key
+   file complete, then look, then delete:
+
+   .. code-block:: bash
+
+       python -m aimmd.network.graph_keys_cli backfill --run run1 \
+           --db graphs_cache.sqlite -j 64 --only-missing
+       python -m aimmd.network.graph_keys_cli gc --run run1 --db graphs_cache.sqlite
+       python -m aimmd.network.graph_keys_cli gc --run run1 --db graphs_cache.sqlite \
+           --apply --vacuum
+
+   ``gc`` deletes every graph that no key file under the given runs references,
+   so give it **every** run that uses the cache. It refuses while a trajectory
+   lacks a complete key file. ``python -m aimmd.network.graph_keys_cli verify``
+   reports key files and missing graphs without writing anything.
+
+**Switching back** is the line ``descriptor_cache = 'npy'`` (or removing it).
+Frames keyed in the meantime have no descriptor file; workers compute it
+before their value passes and the trainer at its round start, from the
+trajectories, bitwise as before -- the same rows, so the same keys, and no
+graph is rebuilt. That costs a decode and about 680 kB written per frame, so
+expect slow first rounds after a long graph-key period.
