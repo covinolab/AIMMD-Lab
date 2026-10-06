@@ -56,6 +56,13 @@ The "filled" test depends on the target type:
 
 This convention allows sparse/incremental population of caches.
 
+The check reads as little as it can: a copy of the target already resident
+in `NPY_CACHE` is used directly; when the requested frames are a small part
+of the file (at most `LEDGER_PARTIAL_READ_FRACTION`, e.g. the new frames of a
+growing trajectory), only the header and those rows are read, and rows beyond
+the end of the file count as missing without being read; otherwise the whole
+file is loaded into `NPY_CACHE`.
+
 Notes on termination
 --------------------
 If `worker` is provided and has a truthy attribute `termination_signal`,
@@ -80,8 +87,56 @@ from tqdm import tqdm
 
 # aimmd imports
 from .utils import get_cache_fname, compute_batch
+from ..cache.npy import read_npy_rows
 from ..core.utils import accepts_system_id
 from .._config import NPY_CACHE
+
+# The "already computed" check reads only the rows it needs when they are at
+# most this fraction of the cached file (e.g. the tail of a growing
+# trajectory). Above it, the whole file is loaded into NPY_CACHE, where the
+# value pass that usually follows finds it again.
+LEDGER_PARTIAL_READ_FRACTION = 0.25
+
+
+def _ledger_rows(fname, locs):
+    """
+    Rows of a cached target series, for the "already computed" check.
+
+    Parameters
+    ----------
+    fname : str
+        Cache file of the target series.
+    locs : numpy.ndarray of int
+        Frame indices (rows) to check, in Path order.
+
+    Returns
+    -------
+    tuple or None
+        ``(length, rows)``: the length of the series and its rows at the
+        `locs` smaller than that length, in order; None if there is no
+        series to read.
+
+    Notes
+    -----
+    A copy resident in NPY_CACHE that is long enough is used as is, exactly
+    as ``NPY_CACHE.get(fname, min_length=locs[-1])`` would. Otherwise, when
+    the requested rows are a small part of the file, only the header and
+    those rows are read (:func:`aimmd.cache.npy.read_npy_rows`, under the
+    file's lock); rows beyond the end of the file are not read at all. In
+    every other case (large requests, unusual files) the whole file is loaded
+    through NPY_CACHE as before. All three give the same result.
+    """
+    old = NPY_CACHE.peek(fname, min_length=locs[-1])
+    if old is None:
+        partial = read_npy_rows(fname, locs,
+                                max_fraction=LEDGER_PARTIAL_READ_FRACTION)
+        if partial is not None:
+            return partial
+        old = NPY_CACHE.get(fname, min_length=locs[-1])
+        if old is None:
+            return None
+    return len(old), old[locs[locs < len(old)]]
+
 
 # compute methods for path
 class PathCompute(ABC):
@@ -205,14 +260,14 @@ class PathCompute(ABC):
                 targ_fname = get_cache_fname(fname, target)
                 targ_fnames.add(targ_fname)
                 if not overwrite:
-                    old = NPY_CACHE.get(targ_fname, min_length=locs[-1])
-                    # will remove later
-                    if old is not None:
+                    ledger = _ledger_rows(targ_fname, locs)
+                    # will remove from NPY_CACHE later
+                    if ledger is not None:
                         # update mask: do not compute where old is not "0"
                         if (mtime is None or
                             os.path.getmtime(targ_fname) >= mtime):
-                            keepers = locs < len(old)
-                            old = old[locs[keepers]]
+                            length, old = ledger
+                            keepers = locs < length
                             if len(old.shape) > 1:
                                 mask[keepers] &= ~old.any(axis=1)
                             elif target != 'states':

@@ -10,6 +10,8 @@ This module has two responsibilities:
    - `save_npy`: write an array atomically (temp file + replace),
       protected by a lock.
    - `load_npy`: read an array under the same lock.
+   - `read_npy_rows`: read only selected rows of a `.npy` file, under the
+     same lock.
    - `update_npy`: update selected rows of an existing `.npy` file in place,
      also protected by a lock.
 
@@ -146,6 +148,93 @@ def load_npy(fname, timeout=10.):
             return np.load(fname)
     except:
         return None
+
+
+def read_npy_rows(fname, indices, max_fraction=1., timeout=10.):
+    """
+    Read selected rows (axis 0) of a `.npy` file without loading all of it.
+
+    Only the header and the requested rows are read (one ``os.pread`` per
+    contiguous run of rows), under the same lock as :func:`update_npy`, so the
+    result is a consistent snapshot of a file another process is growing.
+    Rows at or beyond the current length are not read: they are simply left
+    out of the result, and the caller treats them as missing.
+
+    Parameters
+    ----------
+    fname : str
+        `.npy` file to read.
+    indices : array-like of int
+        Rows to read, in any order; repetitions are allowed.
+    max_fraction : float, default 1.0
+        Read nothing and return None if the requested rows that exist are
+        more than this fraction of the file. Above it, loading the whole file
+        (and keeping it in a cache) is the better deal.
+    timeout : float
+        FileLock timeout.
+
+    Returns
+    -------
+    tuple or None
+        ``(length, rows)`` with the current length of axis 0 and the rows at
+        those `indices` that are smaller than `length`, in the order given.
+        None if the file is missing or cannot be read this way (not a
+        version 1.0 header, Fortran order, object or structured dtype, 0-d
+        array, data shorter than the header says, lock timeout) or if too
+        many rows are requested; the caller then loads the whole file, as
+        :func:`load_npy` does.
+
+    Notes
+    -----
+    The data offset is taken from the header itself, so the rows read are
+    the rows ``np.load`` would return.
+    """
+    indices = np.asarray(indices).ravel()
+    if indices.size and (indices.dtype.kind not in 'iu' or indices.min() < 0):
+        return None
+    indices = indices.astype(np.int64)
+    folder, name = extract_folder_and_name(fname)
+    lock = f'{folder}/.{name}.lock'
+    try:
+        with FileLock(lock, timeout=timeout):
+            # unbuffered: read the header bytes and nothing else
+            with open(fname, 'rb', buffering=0) as file:
+                if np.lib.format.read_magic(file) != (1, 0):
+                    return None
+                shape, fortran_order, dtype = \
+                    np.lib.format.read_array_header_1_0(file)
+                offset = file.tell()
+                if (fortran_order or not shape or dtype.hasobject
+                        or dtype.fields is not None):
+                    return None
+                length = int(shape[0])
+                rowsize = dtype.itemsize * int(np.prod(shape[1:]))
+                if os.fstat(file.fileno()).st_size < offset + length * rowsize:
+                    return None
+
+                # unique rows inside the file, read in contiguous runs
+                inside = indices[indices < length]
+                wanted, inverse = np.unique(inside, return_inverse=True)
+                if len(wanted) > max_fraction * length:
+                    return None
+                buffer = bytearray(len(wanted) * rowsize)
+                breaks = np.flatnonzero(np.diff(wanted) != 1) + 1
+                begins = [0, *breaks]
+                ends = [*breaks, len(wanted)]
+                for begin, end in zip(begins, ends):
+                    if begin == end:
+                        continue
+                    nbytes = (end - begin) * rowsize
+                    chunk = os.pread(file.fileno(), nbytes,
+                                     offset + int(wanted[begin]) * rowsize)
+                    if len(chunk) != nbytes:
+                        return None
+                    buffer[begin * rowsize:end * rowsize] = chunk
+    except Exception:
+        return None
+    rows = np.frombuffer(buffer, dtype=dtype).reshape(
+        (len(wanted),) + tuple(shape[1:]))
+    return length, rows[inverse.ravel()]
 
 
 def update_npy(fname, data, indices, timeout=10.):

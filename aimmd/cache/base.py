@@ -217,6 +217,32 @@ class AbstractCache(ABC):
 
         return instance
 
+    def peek(self, fname, min_length=0):
+        """
+        Return the resident instance for `fname`, never loading it.
+
+        Parameters
+        ----------
+        fname : str
+            File path used as cache key.
+        min_length : int, default 0
+            Minimum length the resident instance must have.
+
+        Returns
+        -------
+        object or None
+            The cached instance, or None in exactly the cases in which
+            :meth:`get` would (re)load it: not resident, unsized, shorter
+            than `min_length`, or inaccessible.
+        """
+        instance = self._cache.get(fname, None)
+        try:
+            if instance is None or len(instance) < min_length:
+                return None
+        except Exception:
+            return None
+        return instance
+
     def open(self, fname):
         """
         Safe wrapper around :meth:`_open`.
