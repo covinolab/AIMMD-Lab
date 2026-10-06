@@ -25,7 +25,7 @@ import sqlite3
 import numpy as np
 import pytest
 
-from aimmd.core.graphkey import graph_key, graph_keys, keys_to_hex
+from aimmd.core.graphkey import graph_keys, keys_to_hex
 from aimmd.network import graph_lookup, shm_cache
 
 
