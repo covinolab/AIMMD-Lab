@@ -69,6 +69,11 @@ HEADER_BYTES = 128
 #: Default number of frames per prefill task.
 DEFAULT_CHUNK_FRAMES = 1000
 
+#: Frames per trajectory that a prefill from a graph cache verifies by
+#: default: the cache keys hash coordinates only, so graphs cached with other
+#: selections would otherwise pass unnoticed.
+DEFAULT_DB_VERIFY = 4
+
 #: Timing categories of the reports (seconds of task time, all processes).
 SECONDS = ('plan', 'read', 'hash', 'lookup', 'graph', 'featurize', 'write',
            'verify', 'install')
@@ -947,7 +952,7 @@ def _merge(entry, result):
             entry[key] = value
 
 
-def prefill(params, runs, db=None, jobs=1, verify=0, only_missing=False,
+def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
             chunk_frames=DEFAULT_CHUNK_FRAMES, seed=0, log=print):
     """Write the node-table series of every trajectory of AIMMD runs.
 
@@ -963,9 +968,11 @@ def prefill(params, runs, db=None, jobs=1, verify=0, only_missing=False,
         Without, every row is featurized from the coordinates.
     jobs : int, default=1
         Processes.
-    verify : int, default=0
+    verify : int, optional
         Frames per trajectory to featurize directly and compare bit for bit
-        with the rows (a mismatching file is not installed).
+        with the rows (a mismatching file is not installed). By default
+        `DEFAULT_DB_VERIFY` with `db` (a graph cache of other settings is
+        caught: its keys hash coordinates only), else 0.
     only_missing : bool, default=False
         Compute only rows that are missing (beyond the end of the series
         file, or no file) or zero; keep the others. Without it, every row is
@@ -995,6 +1002,8 @@ def prefill(params, runs, db=None, jobs=1, verify=0, only_missing=False,
     featurizer = params.featurizer
     runs = _run_folders(runs)
     databases = _databases(db, featurizer)
+    if verify is None:
+        verify = DEFAULT_DB_VERIFY if databases else 0
     found = find_trajectories(runs, featurizer)
     if not found:
         raise UsageError(f'no trajectories with a states series '

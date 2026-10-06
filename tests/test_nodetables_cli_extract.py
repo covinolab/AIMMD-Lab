@@ -28,7 +28,7 @@ import MDAnalysis as mda
 import numpy as np
 import pytest
 
-from aimmd.network.nodetables import _cli
+from aimmd.network.nodetables import _cli, _tool
 from tests._helpers_unit import forbid_opening
 from tests._nodetables_run import (LAYOUT, bits, expected_rows,
                                    hidden_temporaries, load_report,
@@ -56,13 +56,10 @@ def _key(row):
     return graph_utils.get_stable_hash(row)
 
 
-@pytest.fixture
-def cached(tmp_path):
-    """A toy campaign and the graph cache its frames went through."""
-    pytest.importorskip('torch_geometric')
+def _build_cache(campaign, folder,
+                 environment_selection=ENVIRONMENT_SELECTION):
+    """The graph cache of the campaign's frames, as ingestion wrote it."""
     from aimmd.network import graph_utils
-    campaign = make_campaign(tmp_path / 'campaign')
-    folder = tmp_path / 'cache'
     folder.mkdir()
     database = folder / 'graphs_cache.sqlite'
     universe = mda.Universe(str(Path(campaign.folder) / 'toy.gro'),
@@ -72,7 +69,7 @@ def cached(tmp_path):
         graph_utils.process_descriptors_pyg(
             _coordinates(campaign, trajectory), mdanalysis_universe=universe,
             system_selection=SYSTEM_SELECTION,
-            environment_selection=ENVIRONMENT_SELECTION, cutoff=CUTOFF,
+            environment_selection=environment_selection, cutoff=CUTOFF,
             conn=connection, atom_types=ATOM_TYPES)
     graph_utils.flush_pending_writes(connection)
     connection.execute('PRAGMA wal_checkpoint(TRUNCATE)')
@@ -84,7 +81,15 @@ def cached(tmp_path):
         assert check.execute('SELECT COUNT(*) FROM graphs_cache'
                              ).fetchone()[0] == N_FRAMES
     check.close()
-    return campaign, str(database)
+    return str(database)
+
+
+@pytest.fixture
+def cached(tmp_path):
+    """A toy campaign and the graph cache its frames went through."""
+    pytest.importorskip('torch_geometric')
+    campaign = make_campaign(tmp_path / 'campaign')
+    return campaign, _build_cache(campaign, tmp_path / 'cache')
 
 
 def _edit_cache(database, statement, *parameters):
@@ -200,6 +205,32 @@ def test_verify_catches_a_wrong_graph_in_the_cache(cached, tmp_path):
     assert result['totals']['mismatch'] == 1
     assert result['totals']['written'] == len(LAYOUT) - 1
     assert hidden_temporaries(campaign.run) == []
+
+
+def test_a_cache_of_other_settings_is_caught_without_verify(cached,
+                                                          tmp_path):
+    """Cache keys hash coordinates only, and a graph of another environment
+    selection is a valid node table. With --db, prefill therefore verifies
+    a few frames per file by default: such a cache is caught (exit status
+    1, nothing installed) without --verify."""
+    campaign, _ = cached
+    other = _build_cache(campaign, tmp_path / 'other',
+                         ENVIRONMENT_SELECTION.replace('5.0', '6.0'))
+    report = tmp_path / 'report.json'
+
+    assert _cli.main(['prefill', '--params', campaign.params, '--run',
+                      campaign.run, '--db', other, '--report',
+                      str(report)]) == 1
+
+    result = load_report(report)
+    assert result['verify'] == _tool.DEFAULT_DB_VERIFY > 0
+    assert result['totals']['db_hits'] == N_FRAMES
+    assert result['totals']['mismatch'] == len(LAYOUT)
+    assert not any(os.path.exists(series_file(t, campaign.featurizer.series))
+                   for t in trajectories(campaign.run))
+    # an explicit --verify 0 still skips the check
+    assert _cli.main(['prefill', '--params', campaign.params, '--run',
+                      campaign.run, '--db', other, '--verify', '0']) == 0
 
 
 def test_graphs_of_another_definition_are_featurized_instead(cached,

@@ -173,6 +173,8 @@ reported. It runs on CPUs only.
    are there and computes only missing, short and zero rows; running it twice
    changes nothing. ``--verify K`` featurizes ``K`` random frames per file
    directly and compares them bit for bit; a mismatching file is not written.
+   With ``--db`` it defaults to 4: the cache keys hash the coordinates only,
+   so graphs cached with other selections would otherwise go unnoticed.
 ``repack``
    Rewrites every series file of the featurizer for ``--n-max N`` (a new
    series name, printed at the end). Rows of frames that did not fit stay

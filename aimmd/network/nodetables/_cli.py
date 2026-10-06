@@ -92,9 +92,10 @@ def _parser():
              'mode to extract rows from; SYSTEM_ID=DB for one system of a '
              'multi-system run (repeatable)')
     prefill.add_argument(
-        '--verify', type=_non_negative, default=0, metavar='K',
+        '--verify', type=_non_negative, metavar='K',
         help='featurize K random frames per trajectory directly and compare '
-             'them bit for bit with the rows (default: 0)')
+             'them bit for bit with the rows (default: '
+             f'{_tool.DEFAULT_DB_VERIFY} with --db, else 0)')
     prefill.add_argument(
         '--only-missing', action='store_true',
         help='compute only missing and zero rows and keep the others '
