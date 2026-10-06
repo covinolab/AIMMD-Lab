@@ -315,6 +315,59 @@ def test_prefill_reports_frames_that_overflow_n_max(tmp_path, capsys):
     assert 'repack --n-max' in out
 
 
+def _truncate_last_frame(trajectory):
+    """Cut the last frame short, as a job killed while mdrun writes does."""
+    size = os.path.getsize(trajectory)
+    with open(trajectory, 'r+b') as file:
+        file.truncate(size - 200)
+
+
+def test_a_truncated_last_frame_is_left_out_as_aimmd_does(campaign, tmp_path,
+                                                          capsys):
+    """AIMMD reads only the readable frames of a trajectory (MDA_CACHE,
+    count_safe_frames); prefill and verify cover the same frames and report
+    the cut one, instead of an empty row blamed on n_max."""
+    from aimmd._config import MDA_CACHE
+    victim = trajectories(campaign.run)[3]               # chainR0/back.xtc
+    _truncate_last_frame(victim)
+    n_frames = LAYOUT['chainR0/back.xtc'][0] - 1
+    assert len(MDA_CACHE.get(victim)) == n_frames
+    MDA_CACHE.clear()
+    report = tmp_path / 'report.json'
+
+    assert _prefill(campaign, '--verify', '9', report=report) == 0
+
+    rows = np.load(series_file(victim, campaign.featurizer.series))
+    expected = expected_rows(campaign.featurizer, victim)
+    assert len(rows) == len(expected) == n_frames
+    assert np.array_equal(bits(rows), bits(expected))
+    item = load_report(report)['by_trajectory'][victim]
+    assert item['status'] == 'written' and item['frames'] == n_frames
+    assert item['unreadable_frames'] == 1 and item['empty_rows'] == 0
+    out = capsys.readouterr().out
+    assert 'unreadable' in out and 'repack' not in out
+
+    assert _prefill(campaign, '--only-missing') == 0
+    report = tmp_path / 'verify.json'
+    assert _cli.main(['verify', '--params', campaign.params, '--run',
+                      campaign.run, '--sample', '9', '--report',
+                      str(report)]) == 0
+    item = load_report(report)['by_trajectory'][victim]
+    assert item['status'] == 'complete' and item['unreadable_frames'] == 1
+
+
+def test_a_chunk_with_unreadable_frames_fails(campaign):
+    """Frames that cannot be read never become empty rows."""
+    victim = trajectories(campaign.run)[3]
+    _truncate_last_frame(victim)
+    temp = str(tmp_series := Path(campaign.folder) / 'chunk.npy')
+    _tool._create(temp, 5, campaign.featurizer.width)
+    task = dict(trajectory=victim, system_id=None, frames=np.arange(5),
+                db=None, temporary=str(tmp_series))
+    with pytest.raises(OSError, match='4 of the 5 frames'):
+        _tool._prefill_chunk(campaign.featurizer, task)
+
+
 # ----------------------------------------------------------------------
 # verify
 

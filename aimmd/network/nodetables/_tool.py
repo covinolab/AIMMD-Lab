@@ -5,7 +5,10 @@ The work behind ``python -m aimmd.network.nodetables`` (the command line is in
 states series ``{trajectory}.states.npy``: the exported initial paths, the
 chain paths, the halves of shots in flight and the parts of free simulations.
 Its node-table series is ``{trajectory}.{series}.npy``, where ``series`` is
-the series name of the featurizer of the params file.
+the series name of the featurizer of the params file. Like AIMMD itself
+(`aimmd.cache.mda.count_safe_frames`), the tools cover the readable frames of
+a trajectory: a last frame cut short (by a job killed while it wrote) is left
+out and reported.
 
 - `prefill` computes node-table rows for every frame (with ``only_missing``:
   for the frames whose rows are missing or zero). With a graph cache of the
@@ -53,6 +56,7 @@ from filelock import FileLock, Timeout
 
 from ._featurizer import (MultiSystemNodeTableFeaturizer, NodeTableFeaturizer,
                           repack_rows)
+from ...cache.mda import count_safe_frames
 
 #: Suffix of the series that makes a trajectory part of a run.
 STATES_SUFFIX = '.states.npy'
@@ -337,6 +341,17 @@ def _open_reader(trajectory, featurizer):
         yield frames
     finally:
         frames.close()
+
+
+def _readable_frames(reader):
+    """``(readable, unreadable)``: the number of frames ``0..readable - 1``
+    that can be read, as AIMMD counts them, and of the frames after them
+    (e.g. a last frame cut short)."""
+    try:
+        readable = count_safe_frames(reader)
+    except RuntimeError:                     # no readable frame
+        readable = 0
+    return readable, reader.n_frames - readable
 
 
 def _header(n_rows, width):
@@ -710,9 +725,9 @@ def _plan_prefill(featurizer, task):
     featurizer = _system(featurizer, task['system_id'])
     target, temp = task['series_file'], task['temporary']
     with _open_reader(task['trajectory'], featurizer) as reader:
-        n_frames = reader.n_frames
-    plan = dict(frames=n_frames, kept=0, extra_rows=0,
-                identity=_identity(target))
+        n_frames, unreadable = _readable_frames(reader)
+    plan = dict(frames=n_frames, unreadable_frames=unreadable, kept=0,
+                extra_rows=0, identity=_identity(target))
     try:
         if plan['identity'] is not None and task['only_missing']:
             with _lock(target), open(target, 'rb') as file:
@@ -764,6 +779,7 @@ def _prefill_chunk(featurizer, task):
         connection = _connect(task['db'])
     clock = time.perf_counter
     misses = []
+    n_read = 0
     try:
         with _open_reader(task['trajectory'], featurizer) as reader:
             first, last = int(frames[0]), int(frames[-1])
@@ -773,6 +789,7 @@ def _prefill_chunk(featurizer, task):
                 selection = reader[frames.tolist()]
             before = clock()
             for index, ts in enumerate(selection):
+                n_read += 1
                 now = clock()
                 seconds['read'] += now - before
                 if connection is not None:
@@ -807,6 +824,11 @@ def _prefill_chunk(featurizer, task):
                     counts['recomputed'] += len(misses)
                     misses = []
                 before = clock()
+        if n_read != len(frames):
+            # an iteration can end early on a frame it cannot read: never
+            # leave its row empty, as if it did not fit the layout
+            raise OSError(f'{task["trajectory"]}: read {n_read} of the '
+                          f'{len(frames)} frames {first}..{last}')
         start = clock()
         _featurize_into(featurizer, rows, misses)
         seconds['featurize'] += clock() - start
@@ -870,7 +892,8 @@ def _finalize_prefill(featurizer, task):
 def _file_entry(trajectory, system_id, series):
     return dict(trajectory=trajectory, system_id=system_id,
                 series_file=series_file(trajectory, series), status='pending',
-                error=None, frames=0, computed=0, kept=0, extra_rows=0,
+                error=None, frames=0, unreadable_frames=0, computed=0, kept=0,
+                extra_rows=0,
                 db_hits=0, db_unusable=0, recomputed=0, empty_rows=0,
                 verified=0, verify_mismatches=0, mismatched_frames=[],
                 seconds=_new_seconds())
@@ -884,8 +907,9 @@ def _merge(entry, result):
         elif key in ('computed', 'db_hits', 'db_unusable', 'recomputed',
                      'empty_rows'):
             entry[key] += value
-        elif key in ('frames', 'kept', 'extra_rows', 'verified',
-                     'verify_mismatches', 'mismatched_frames', 'status'):
+        elif key in ('frames', 'unreadable_frames', 'kept', 'extra_rows',
+                     'verified', 'verify_mismatches', 'mismatched_frames',
+                     'status'):
             entry[key] = value
 
 
@@ -1040,6 +1064,8 @@ def _prefill_line(entry):
                  f'the graph cache, {entry["recomputed"]} featurized)')
     if entry['kept']:
         line += f', {entry["kept"]} kept'
+    if entry['unreadable_frames']:
+        line += _unreadable_text(entry['unreadable_frames'])
     if entry['verified']:
         line += (f', {entry["verified"]} verified '
                  f'({entry["verify_mismatches"]} mismatched')
@@ -1053,12 +1079,17 @@ def _prefill_line(entry):
     return line
 
 
+def _unreadable_text(count):
+    return (f' (+{count} unreadable frame(s) at the end, left out as AIMMD '
+            f'does)')
+
+
 def _prefill_summary(report):
     files = report['files']
     totals = {key: sum(entry[key] for entry in files)
-              for key in ('frames', 'computed', 'kept', 'db_hits',
-                          'db_unusable', 'recomputed', 'empty_rows',
-                          'verified', 'verify_mismatches')}
+              for key in ('frames', 'unreadable_frames', 'computed', 'kept',
+                          'db_hits', 'db_unusable', 'recomputed',
+                          'empty_rows', 'verified', 'verify_mismatches')}
     totals['trajectories'] = len(files)
     for status in ('written', 'complete', 'mismatch', 'failed'):
         totals[status] = sum(entry['status'] == status for entry in files)
@@ -1084,6 +1115,12 @@ def _prefill_summary(report):
     report.update(totals=totals, seconds=seconds, ms_per_frame=per_frame)
     report['ok'] = not (totals['failed'] or totals['mismatch'] or
                         totals['empty_rows'])
+
+
+def _unreadable_note(count):
+    return (f'NOTE: {count} frame(s) at the end of trajectories cannot be '
+            f'read (cut short, e.g. by a job killed while it wrote). AIMMD '
+            f'reads only the frames before them; they get no rows.')
 
 
 def _ms(seconds, count):
@@ -1120,6 +1157,8 @@ def _prefill_summary_lines(report):
     if report['verify']:
         lines.append(f'  verify: {totals["verified"]} frames featurized '
                      f'directly, {totals["verify_mismatches"]} mismatched')
+    if totals['unreadable_frames']:
+        lines.append(_unreadable_note(totals['unreadable_frames']))
     if totals['empty_rows']:
         lines.append(
             f'ERROR: {totals["empty_rows"]} row(s) are empty: their frames do '
@@ -1305,8 +1344,9 @@ def _verify_file(featurizer, task):
     featurizer = _system(featurizer, task['system_id'])
     target = task['series_file']
     with _open_reader(task['trajectory'], featurizer) as reader:
-        n_frames = reader.n_frames
-    result = dict(frames=n_frames, rows=0, missing_rows=n_frames,
+        n_frames, unreadable = _readable_frames(reader)
+    result = dict(frames=n_frames, unreadable_frames=unreadable, rows=0,
+                  missing_rows=n_frames,
                   zero_rows=0, extra_rows=0, verified=0, verify_mismatches=0,
                   mismatched_frames=[], status='missing', error=None)
     if os.path.exists(target):
@@ -1400,11 +1440,12 @@ def verify(params, runs, sample=0, jobs=1, seed=0, log=print):
                 entry.update(status='failed', error=_error_text(error))
             else:
                 entry.update(result)
-            if entry['status'] != 'complete':
+            if entry['status'] != 'complete' or entry.get(
+                    'unreadable_frames'):
                 log(_verify_line(entry))
 
-    keys = ('frames', 'rows', 'missing_rows', 'zero_rows', 'extra_rows',
-            'verified', 'verify_mismatches')
+    keys = ('frames', 'unreadable_frames', 'rows', 'missing_rows',
+            'zero_rows', 'extra_rows', 'verified', 'verify_mismatches')
     totals = {key: sum(entry.get(key, 0) for entry in files) for key in keys}
     totals['trajectories'] = len(files)
     for status in ('complete', 'incomplete', 'missing', 'layout', 'mismatch',
@@ -1420,6 +1461,8 @@ def verify(params, runs, sample=0, jobs=1, seed=0, log=print):
         f'rows of {totals["frames"]} frames'
         + (f'; {totals["verified"]} rows featurized directly, '
            f'{totals["verify_mismatches"]} mismatched' if sample else ''))
+    if totals['unreadable_frames']:
+        log(_unreadable_note(totals['unreadable_frames']))
     log('OK' if report['ok'] else 'INCOMPLETE')
     return report
 
@@ -1431,6 +1474,8 @@ def _verify_line(entry):
                  f'{entry["missing_rows"]} missing, {entry["zero_rows"]} zero')
     if entry.get('mismatched_frames'):
         line += f', mismatched frames {entry["mismatched_frames"]}'
+    if entry.get('unreadable_frames'):
+        line += _unreadable_text(entry['unreadable_frames'])
     if entry.get('error'):
         line += f'; {entry["error"]}'
     return line

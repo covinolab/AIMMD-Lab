@@ -142,7 +142,9 @@ module in its folder, without :class:`aimmd.Params`, and takes its featurizer
 (``FEATURIZER``, the only featurizer it defines, or ``--featurizer NAME``). It
 covers every trajectory of the given run folders that has a states series:
 exported initial paths, chain paths, the halves of shots in flight and
-free-simulation parts. It runs on CPUs only.
+free-simulation parts. Like AIMMD, it covers the frames that can be read: a
+last frame cut short (by a job killed while it wrote) gets no row and is
+reported. It runs on CPUs only.
 
 .. code-block:: bash
 
