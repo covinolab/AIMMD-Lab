@@ -33,6 +33,12 @@ except ImportError as e:
                               f"requires additional dependencies.",
                               name=e.name) from e
 
+# Node tables, the graph input stored as a descriptor series (no graph cache):
+# implemented in aimmd.network.nodetables, which imports without the graph
+# dependencies, and re-exported here next to get_graphs_pyg, whose graphs they
+# reproduce.
+from .nodetables import NodeTableFeaturizer, NodeTableOverflowError  # noqa: F401
+
 #: How long a writer keeps retrying a locked graph cache before giving up.
 #: Overridable with ``AIMMD_STORE_RETRY_SECONDS``.
 _STORE_RETRY_SECONDS = float(os.environ.get('AIMMD_STORE_RETRY_SECONDS', 300.0))
