@@ -98,6 +98,8 @@ from ..params.utils import (SEEDING_POSITION_ALIASES,
 from ..execute.utils import execute_command
 from ..analysis.utils import bin_centers, merge_empty_bins
 from ..network.rescale_utils import rescale
+from ..network.graph_keys import SERIES as GRAPHKEYS
+from ..core.graphkey import pad_keys
 
 
 def get_initial_transitions_for_shooting_chain(initial_paths, states='ARB'):
@@ -840,7 +842,62 @@ def _write_colvar(fname, header, rows):
             fh.write(' '.join(f'{v:.6f}' for v in row) + '\n')
 
 
-def register_path(path, chain, eneconv=None, bias_function=None):
+def _series_rows(attribute, parts):
+    """
+    Rows of a per-frame series for a path assembled from trajectory parts.
+
+    Parameters
+    ----------
+    attribute : str
+        Name of the series, e.g. ``'descriptors'`` or ``'graphkeys'``.
+    parts : list of tuple
+        ``(trajectory fname, frame indices)`` of each part, in path order.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        The rows of the parts' series files, concatenated in path order.
+
+        - Graph keys: rows of a missing or short key file (or of a key file
+          that cannot be read) are zero rows, "not computed"; they are
+          repaired on first use.
+        - Any other series: None if a part lacks it (no file, or fewer rows
+          than its frames need). Nothing is written then, and the series is
+          recomputed when it is next needed.
+
+    Notes
+    -----
+    Every part's series file is evicted from :data:`NPY_CACHE`, and only the
+    files of `attribute` are opened.
+    """
+    rows, missing, found = [], 0, 0
+    for fname, indices in parts:
+        indices = np.asarray(indices, dtype=np.int64)
+        need = int(indices.max()) + 1 if len(indices) else 0
+        cache_fname = get_cache_fname(fname, attribute)
+        data = NPY_CACHE.pop(cache_fname)
+        found += data is not None
+        if attribute == GRAPHKEYS:
+            try:
+                data = pad_keys(data, need, cache_fname)
+            except RuntimeError as exception:
+                print(f'!!! {exception}: its frames are registered '
+                      f'without keys')
+                data = pad_keys(None, need)
+        elif data is None or len(data) < need:
+            missing += 1
+            continue
+        rows.append(data[indices])
+    if missing:
+        if found:   # some part has the series: say why the path has none
+            print(f'--- {attribute} of the back/forw segments not complete: '
+                  f'not copied, recomputed when needed')
+        return None
+    return np.concatenate(rows)
+
+
+def register_path(path, chain, eneconv=None, bias_function=None,
+                  frame_series=('descriptors',)):
     """
     Register a newly generated path into the shooting chain and persist it.
 
@@ -851,7 +908,8 @@ def register_path(path, chain, eneconv=None, bias_function=None):
 
     1) Writes per-frame cached arrays:
        - ``...states.npy`` (always),
-       - ``...descriptors.npy`` (if present).
+       - each series of `frame_series`: ``...descriptors.npy`` (if present)
+         or, with ``descriptor_cache='graphkeys'``, ``...graphkeys.npy``.
 
        Arrays are taken from :data:`NPY_CACHE` for the temporary segment files
        (``back`` / ``forw``) and then concatenated/selected according to the
@@ -893,6 +951,13 @@ def register_path(path, chain, eneconv=None, bias_function=None):
           ``bias_function``).
 
         If ``None`` (default), no bias files are written.
+    frame_series : tuple of str, optional
+        Per-frame network series to carry over from the segments:
+        ``('descriptors',)`` (default) or ``('graphkeys',)`` (runs with
+        ``descriptor_cache='graphkeys'``, whose segment ``*.descriptors.npy``
+        are then never opened). Key rows a segment lacks become zero rows,
+        repaired on first use; a descriptor series that a segment lacks is
+        not copied and is recomputed when needed.
 
     Returns
     -------
@@ -917,15 +982,12 @@ def register_path(path, chain, eneconv=None, bias_function=None):
     temp_fname = f'{folder}/.{name}{ext}'
     fname = f'{folder}/{name}{ext}'
     fname_states = get_cache_fname(fname, 'states')
-    fname_descr = get_cache_fname(fname, 'descriptors')
 
     # backward and forward
     forw_fname = f'{folder}/back{ext}'
     forw_fname = f'{folder}/forw{ext}'
     back_fname_states = get_cache_fname(back_fname, 'states')
     forw_fname_states = get_cache_fname(forw_fname, 'states')
-    back_fname_descr = get_cache_fname(back_fname, 'descriptors')
-    forw_fname_descr = get_cache_fname(forw_fname, 'descriptors')
 
     # only back
     if path.n_files == 1:
@@ -933,12 +995,7 @@ def register_path(path, chain, eneconv=None, bias_function=None):
         # save states time series (delete cached)
         states = NPY_CACHE.pop(back_fname_states)[path.locs]
         save_npy(fname_states, states)
-
-        # save descriptors time series (if existing)
-        descriptors = NPY_CACHE.pop(back_fname_descr)
-        if descriptors is not None:
-            descriptors = descriptors[path.locs]
-            save_npy(fname_descr, descriptors)
+        parts = [(back_fname, path.locs)]
 
     else:  # backward and forward
 
@@ -951,14 +1008,7 @@ def register_path(path, chain, eneconv=None, bias_function=None):
             NPY_CACHE.pop(back_fname_states)[back_indices],
             NPY_CACHE.pop(forw_fname_states)[forw_indices]])
         save_npy(fname_states, states)
-
-        # save descriptors time series (if existing)
-        descriptors = NPY_CACHE.pop(forw_fname_descr)
-        if descriptors is not None:
-            descriptors = np.concatenate([
-                NPY_CACHE.pop(back_fname_descr)[back_indices],
-                descriptors[forw_indices]])
-            save_npy(fname_descr, descriptors)
+        parts = [(back_fname, back_indices), (forw_fname, forw_indices)]
 
         # merge energies (if existing)
         if eneconv:
@@ -968,6 +1018,12 @@ def register_path(path, chain, eneconv=None, bias_function=None):
             command = f'{eneconv} -f {back_edr} {forw_edr} -o {fname_edr}'
             execute_command(command, log_file='')
             print(f'+++ created {fname_edr}')
+
+    # save the network series: descriptors or graph keys (if existing)
+    for attribute in frame_series:
+        rows = _series_rows(attribute, parts)
+        if rows is not None:
+            save_npy(get_cache_fname(fname, attribute), rows)
 
     # Save COLVAR + bias.npy for PLUMED file-mode bias tracking.
     # Uses the same back/forw COLVAR files (renamed by run_simulation) and

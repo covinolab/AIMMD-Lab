@@ -138,6 +138,7 @@ from .._config import print
 from ..cache.npy import save_npy, load_npy
 from ..core.utils import now, remove, cycle, process_state
 from ..pathensemble import PathEnsemble
+from ..network.graph_keys import SERIES as GRAPHKEYS, uses_graph_keys
 
 # worker "shoot" run method
 class WorkerShoot(ABC):
@@ -539,7 +540,11 @@ class WorkerShoot(ABC):
                             if (params.record_bias
                                 and params.bias_source == 'file')
                             else None)
-                register_path(path, chain, eneconv, bias_function=_bias_fn)
+                # graph-key runs carry keys over, never descriptors
+                frame_series = ((GRAPHKEYS,) if uses_graph_keys(params)
+                                else ('descriptors',))
+                register_path(path, chain, eneconv, bias_function=_bias_fn,
+                              frame_series=frame_series)
                 self.total_steps += 1
                 self.total_frames += path.n_frames
                 
