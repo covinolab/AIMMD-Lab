@@ -25,6 +25,13 @@ NodeTableOverflowError
 NODE_TABLE_LAYOUT, DEFAULT_N_MAX, SERIES_PREFIX
     Layout version, default row capacity and series-name prefix.
 
+Command line
+------------
+``python -m aimmd.network.nodetables {prefill,repack,verify}`` writes the
+node-table series of existing runs (from an old graph cache or from the
+trajectories), rewrites them for another ``n_max`` and reports missing rows;
+see ``python -m aimmd.network.nodetables --help``.
+
 Writing rows needs only numpy and MDAnalysis; building graphs from them needs
 the optional ``graphs`` extra (torch_geometric, torch_cluster).
 """
