@@ -48,6 +48,7 @@ import numpy as np
 from math import inf
 from tqdm import tqdm
 from scipy.special import expit
+from collections.abc import Mapping
 
 # aimmd imports
 from .utils import extract_indices_and_series, extract_lsr_pairs, extract_mar_sequences
@@ -86,6 +87,34 @@ def _load_batch_descriptors(npy_paths, locs):
             cache[npy_path] = arr
         result[i] = cache[npy_path][loc]
     return np.array(result)
+
+
+def _graph_batch(transformed, device):
+    """Network input of one batch of graph descriptors (``graphs=True``).
+
+    Parameters
+    ----------
+    transformed : list or Mapping
+        What ``descriptor_transform`` returned for the batch: a list of
+        ``torch_geometric.data.Data`` graphs, batched here with
+        ``Batch.from_data_list``, or a batch dict ready for the network (e.g.
+        `aimmd.network.nodetables.NodeTableFeaturizer.batch_dict`), used as
+        it is. The dict skips building one ``Data`` object per frame and
+        batching them again.
+    device : torch.device
+        Device of the network.
+
+    Returns
+    -------
+    dict
+        The batch, its tensors on `device`.
+    """
+    if isinstance(transformed, Mapping):
+        return {key: (value.to(device) if isinstance(value, torch.Tensor)
+                      else value)
+                for key, value in transformed.items()}
+    from torch_geometric.data import Batch
+    return Batch.from_data_list(transformed).to(device).to_dict()
 
 
 # ----------------------------------------------------------------------------
@@ -202,6 +231,12 @@ def _load_batch_descriptors_routed(npy_paths, locs, system_id, system_labels,
             transformed = descriptor_transform(raw, system_id=label)
         else:
             transformed = descriptor_transform(raw)
+        if graphs and isinstance(transformed, Mapping):
+            raise TypeError(
+                'descriptor_transform returned a batch dict, but a '
+                'multi-system fit transforms every system separately and '
+                'reassembles the graphs in batch order: return a list of '
+                'graphs instead (e.g. MultiSystemNodeTableFeaturizer.graphs)')
         for k, idx in enumerate(sel):
             out[idx] = transformed[k]
     if graphs:
@@ -462,10 +497,15 @@ def fit(params,
         built per batch, as with ``False``.
 
     graphs : bool, default=False
-        If True, descriptors (after ``descriptor_transform``) are assumed to be
-        lists of ``torch_geometric.data.Data`` graphs (e.g. as returned by
-        ``process_descriptors_pyg(...)['data_list']``), requiring
-        `torch_geometric` for batching. Implies ``in_memory=False``.
+        If True, ``descriptor_transform`` returns graphs for each batch:
+        either a list of ``torch_geometric.data.Data`` graphs (e.g. as
+        returned by ``process_descriptors_pyg(...)['data_list']`` or
+        `aimmd.network.nodetables.NodeTableFeaturizer.graphs`), batched with
+        ``Batch.from_data_list`` and requiring `torch_geometric`, or a batch
+        dict ready for the network (e.g.
+        `~aimmd.network.nodetables.NodeTableFeaturizer.batch_dict`), which
+        is only moved to the network's device. Multi-system fits need the
+        list. Implies ``in_memory=False``.
 
     lsr_weight : float, default=0.0
         If non-zero, add a latent space regularization (LSR) term to the loss,
@@ -544,10 +584,11 @@ def fit(params,
 
     # Optional dependency only when graph descriptors are enabled
     if graphs:
-        # only need to import this torch_geometric Batch if graphs
-        # are used as descriptors. Otherwise, avoid the dependency.
-        from torch_geometric.data import Batch
-    
+        # only need torch_geometric (Batch, in _graph_batch) if graphs are
+        # used as descriptors. Otherwise, avoid the dependency. Imported here
+        # to fail before the extraction rather than at the first batch.
+        from torch_geometric.data import Batch  # noqa: F401
+
     # Initialization: network, optimizer, descriptor handling
     t0 = time.time()
     losses, scales = [], []
@@ -1180,7 +1221,7 @@ def fit(params,
             else:
                 d_val_list = descriptor_transform(_load_batch_descriptors(
                     desc_npy_paths[validation_indices], desc_locs[validation_indices]))
-            d_val = Batch.from_data_list(d_val_list).to(device).to_dict()
+            d_val = _graph_batch(d_val_list, device)
         r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
     
     print(f'\nTraining set size {training_set_size}')
@@ -1343,7 +1384,7 @@ def fit(params,
             else:  # load raw frames on-the-fly from NPY_CACHE
                 d = descriptor_transform(
                     _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))
-            d = Batch.from_data_list(d).to(device).to_dict()
+            d = _graph_batch(d, device)
 
         # flatten non-graph descriptors for dense networks
         if not graphs:
@@ -1457,8 +1498,8 @@ def fit(params,
                     else:
                         dv_t_list = descriptor_transform(raw_t)
                         dv_tau_list = descriptor_transform(raw_tau)
-                    dv_t = Batch.from_data_list(dv_t_list).to(device).to_dict()
-                    dv_tau = Batch.from_data_list(dv_tau_list).to(device).to_dict()
+                    dv_t = _graph_batch(dv_t_list, device)
+                    dv_tau = _graph_batch(dv_tau_list, device)
 
                 network.train()
                 chi_t = _get_latent(network, dv_t)
@@ -1486,7 +1527,7 @@ def fit(params,
                             start_dim=1)
                     else:
                         graph_list = descriptor_transform(raw_seq)
-                        dv_mar = Batch.from_data_list(graph_list).to(device).to_dict()
+                        dv_mar = _graph_batch(graph_list, device)
                     network.train()
                     z_seq = _get_latent(network, dv_mar)   # (n_frames_i, latent_dim)
                     latent_seqs.append(z_seq)
