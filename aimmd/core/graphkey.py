@@ -180,6 +180,51 @@ def is_key_batch(x):
             and x.ndim == 2 and x.shape[1] == KEY_BYTES)
 
 
+def pad_keys(stored, length, source='graph-key array'):
+    """Stored key rows, padded with zero rows to at least ``length`` rows.
+
+    A per-frame key file may be missing or shorter than its trajectory (a
+    frame not keyed yet, a half that was never ingested); its absent rows
+    are zero rows, which mean "not computed".
+
+    Parameters
+    ----------
+    stored : numpy.ndarray or None
+        The stored rows, e.g. the content of ``<traj>.graphkeys.npy``; None
+        if there are none.
+    length : int
+        Minimum number of rows of the result.
+    source : str, optional
+        What ``stored`` is, for the error message (e.g. the file name).
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(max(len(stored), length), 32)`` uint8: ``stored`` itself if it is
+        long enough, otherwise a padded copy.
+
+    Raises
+    ------
+    RuntimeError
+        If ``stored`` is not an ``(n, 32)`` uint8 array.
+    """
+    if stored is None:
+        return np.zeros((max(int(length), 0), KEY_BYTES), dtype=np.uint8)
+    if (getattr(stored, 'dtype', None) != np.uint8
+            or getattr(stored, 'ndim', 0) != 2
+            or stored.shape[1] != KEY_BYTES):
+        raise RuntimeError(
+            f'{source!r} is not a graph-key file (dtype '
+            f'{getattr(stored, "dtype", None)}, shape '
+            f'{getattr(stored, "shape", None)}; expected uint8 rows of '
+            f'{KEY_BYTES})')
+    if len(stored) >= length:
+        return stored
+    result = np.zeros((int(length), KEY_BYTES), dtype=np.uint8)
+    result[:len(stored)] = stored
+    return result
+
+
 def keys_to_hex(keys):
     """Hex strings (the graph-cache keys) of an ``(n, 32)`` uint8 key batch."""
     keys = np.ascontiguousarray(keys, dtype=np.uint8).reshape(-1, KEY_BYTES)

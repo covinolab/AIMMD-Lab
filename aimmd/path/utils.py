@@ -219,7 +219,7 @@ def split(states):
 def compute_batch(function,
                   batch_input, batch_targets,
                   source_is_reader, return_result=False,
-                  system_id=None):
+                  system_id=None, source=None, batch_refs=None):
     """Compute a batch and optionally update per-file cache targets.
 
     Parameters
@@ -245,6 +245,17 @@ def compute_batch(function,
         single-system convention. The caller is responsible for passing None
         when `function` does not accept the keyword (see
         `aimmd.core.utils.accepts_system_id`).
+    source : str or None, optional
+        Name of the series `batch_input` was taken from. With ``'graphkeys'``
+        and a `function` that exposes ``keys_function`` (the
+        ``KeyedFunction`` of ``params.compute_values_args`` in runs with
+        ``descriptor_cache='graphkeys'``), the batch is evaluated through
+        :func:`aimmd.network.graph_keys.call_with_repair`: frames whose key
+        row is zero, or whose graph is missing, are repaired from their
+        trajectory frames (`batch_refs`) and the call is retried.
+    batch_refs : list[tuple[str, array-like]] or None, optional
+        ``(trajectory fname, frame locs)`` of each chunk of `batch_input`,
+        in the same order.
 
     Returns
     -------
@@ -257,7 +268,18 @@ def compute_batch(function,
         data = ChainReader(*batch_input)
     else:
         data = np.concatenate(batch_input, axis=0)
-    if system_id is None:
+    keys_function = getattr(function, 'keys_function', None)
+    if (source == 'graphkeys' and keys_function is not None
+            and batch_refs is not None):
+        # imported here: importing aimmd.network imports aimmd.path
+        from ..network.graph_keys import call_with_repair
+        fnames = np.concatenate([np.repeat(str(fname), len(locs))
+                                 for fname, locs in batch_refs])
+        locs = np.concatenate([np.asarray(locs, dtype=np.int64)
+                               for _, locs in batch_refs])
+        result = np.asarray(call_with_repair(
+            function, data, fnames, locs, keys_function, system_id=system_id))
+    elif system_id is None:
         result = np.asarray(function(data))
     else:
         result = np.asarray(function(data, system_id=system_id))

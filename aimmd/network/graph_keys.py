@@ -52,7 +52,8 @@ import numpy as np
 # aimmd imports
 from .._config import MDA_CACHE, NPY_CACHE, print
 from ..cache.npy import update_npy
-from ..core.graphkey import KEY_BYTES, graph_keys, keys_to_hex, hex_to_keys
+from ..core.graphkey import (KEY_BYTES, graph_keys, keys_to_hex, hex_to_keys,
+                             pad_keys)
 from ..core.utils import accepts_system_id
 from .graph_lookup import (GraphCacheMiss, graph_overlay, graphs_present,
                            capture_connection)
@@ -149,17 +150,10 @@ def load_keys(fnames, locs):
     for fname in dict.fromkeys(fnames):
         rows = np.flatnonzero(fnames == fname)
         target = key_file(fname)
-        stored = NPY_CACHE.get(target, min_length=int(locs[rows].max()) + 1)
-        if stored is None:
-            continue
-        if (stored.dtype != np.uint8 or stored.ndim != 2
-                or stored.shape[1] != KEY_BYTES):
-            raise RuntimeError(
-                f'{target!r} is not a graph-key file '
-                f'(dtype {stored.dtype}, shape {stored.shape}; expected '
-                f'uint8 rows of {KEY_BYTES})')
-        inside = locs[rows] < len(stored)
-        result[rows[inside]] = stored[locs[rows[inside]]]
+        length = int(locs[rows].max()) + 1
+        stored = pad_keys(NPY_CACHE.get(target, min_length=length), length,
+                          target)
+        result[rows] = stored[locs[rows]]
     return result
 
 

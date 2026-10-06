@@ -26,7 +26,11 @@ Terminology
   - 'reader' (MDAnalysis reader slice; function is called per-timestep),
   - 'frames' (list of timesteps),
   - 'positions', 'coordinates', 'velocities', 'times', 'dimensions',
-  - any other cached attribute stored as `.npy` (loaded via NPY_CACHE).
+  - any other cached attribute stored as `.npy` (loaded via NPY_CACHE);
+    with 'graphkeys' (``descriptor_cache='graphkeys'``), a function that
+    exposes ``keys_function`` (``params.compute_values_args``) is evaluated
+    through :func:`aimmd.network.graph_keys.call_with_repair`, which repairs
+    frames whose key is zero or whose graph is missing from the trajectory.
 
 - **target**:
   Name of the time series that will be written to cache (e.g. 'states',
@@ -179,6 +183,7 @@ class PathCompute(ABC):
 
         # compute in batches
         batch_input = []
+        batch_refs = []     # (trajectory fname, frame locs) of each chunk
         batch_targets = []  # info for batch
         current_size = 0
         result = [] if return_result else 0
@@ -282,6 +287,7 @@ class PathCompute(ABC):
                 delta = min(batch_size - current_size, remaining)
                 current_slice = slice(current, current + delta, 1)
                 batch_input.append(input_data[current_slice])
+                batch_refs.append((fname, locs[current_slice]))
                 if target:
                     batch_targets.append((targ_fname, locs[current_slice]))
                 current += delta
@@ -291,7 +297,9 @@ class PathCompute(ABC):
                     this = compute_batch(function,
                                          batch_input, batch_targets,
                                          source_is_reader, return_result,
-                                         system_id=batch_system_id)
+                                         system_id=batch_system_id,
+                                         source=source,
+                                         batch_refs=batch_refs)
                     if return_result:
                         result.extend(this)
                     else:
@@ -300,6 +308,7 @@ class PathCompute(ABC):
                         progress.update(current_size)
                     current_size = 0
                     batch_input = []
+                    batch_refs = []
                     batch_targets = []
         
         # last computation
@@ -307,7 +316,9 @@ class PathCompute(ABC):
             this = compute_batch(function,
                                  batch_input, batch_targets,
                                  source_is_reader, return_result,
-                                 system_id=batch_system_id)
+                                 system_id=batch_system_id,
+                                 source=source,
+                                 batch_refs=batch_refs)
             if return_result:
                 result.extend(this)
             else:

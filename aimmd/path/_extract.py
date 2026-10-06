@@ -29,8 +29,8 @@ Extraction modes
 3) File-based cached series
    For other attribute names, `_extract` attempts to load a `.npy` array from
    `NPY_CACHE` at the file produced by `get_cache_fname(fname, attribute)`.
-   In case `attribute` is not 'descriptors' or 'states', will directly load the
-   `.npy` array as the values may be updated.
+   In case `attribute` is not 'descriptors', 'states' or 'graphkeys', will
+   directly load the `.npy` array as the values may be updated.
 
 Special attributes
 ------------------
@@ -51,6 +51,11 @@ the method returns a default:
 - for 'states': array of empty strings
 - for everything else: array of zeros
 
+'graphkeys' (``descriptor_cache='graphkeys'``) never counts as missing: rows
+of a missing or short key file are zero rows of 32 bytes ("not computed"),
+whatever `raise_if_missing`. 'descriptors' of a trajectory that has a key
+file but no descriptor file raise a RuntimeError instead of returning zeros.
+
 Notes and caveats
 -----------------
 - This function assumes `MDA_CACHE.get(fname, min_length)[locs]` returns an
@@ -69,6 +74,7 @@ from itertools import islice
 # aimmd imports
 from .utils import get_cache_fname
 from .._config import NPY_CACHE, MDA_CACHE, DEFAULT_DIMENSIONS
+from ..core.graphkey import pad_keys
 
 # class with _extract function
 class PathExtract(ABC):
@@ -96,9 +102,11 @@ class PathExtract(ABC):
             - .npy array
               * any other string, interpreted as a `.npy` series stored under
                 `get_cache_fname(fname, attribute)`
-              * in case `attribute` is 'descriptors' or 'states' and the
-                array is already loaded in `NPY_CACHE` with the expected length,
-                will get it from there
+              * in case `attribute` is 'descriptors', 'states' or
+                'graphkeys' and the array is already loaded in `NPY_CACHE`
+                with the expected length, will get it from there
+              * 'graphkeys' rows that were never written come back as zero
+                rows (see Missing data in the module docstring)
 
             - Modification times:
               * '<name>_mtimes' returns an array filled with the mtime of the
@@ -126,6 +134,10 @@ class PathExtract(ABC):
         TypeError
             If the requested series cannot be obtained and `raise_if_missing`
             is True.
+        RuntimeError
+            For 'descriptors' of a trajectory with graph keys and no
+            descriptors, and for a 'graphkeys' file that is not an
+            ``(n, 32)`` uint8 array.
 
         Notes
         -----
@@ -257,17 +269,36 @@ class PathExtract(ABC):
             return np.repeat(os.path.getmtime(fname), length)
         
         # data are in .npy file
-        if attribute == 'descriptors' or attribute == 'states':
+        if attribute in ('descriptors', 'states', 'graphkeys'):
             # use cached data if present
             data = NPY_CACHE.get(get_cache_fname(fname, attribute),
                                  min_length=min_length)
         else:
             # force reload because values can change
             data = NPY_CACHE.load(get_cache_fname(fname, attribute))
-        
+
+        # graph keys: rows never written (missing or short file) are zero
+        # rows, "not computed"; padded before indexing, so that a reversed
+        # slice keeps every row on its frame
+        if attribute == 'graphkeys':
+            return pad_keys(data, min_length,
+                            get_cache_fname(fname, attribute))[locs]
+
         if data is not None:
             return data[locs]
-        
+
+        # a run with descriptor_cache='graphkeys' keeps no descriptors: say
+        # so, rather than returning zeros
+        if (attribute == 'descriptors'
+                and os.path.exists(get_cache_fname(fname, 'graphkeys'))):
+            raise RuntimeError(
+                f'{fname!r} has graph keys but no descriptors: it was '
+                f"ingested with descriptor_cache='graphkeys', which keeps "
+                f'no {get_cache_fname(fname, attribute)!r}. Use '
+                f'path.coordinates (or params.descriptors_function on '
+                f'path.reader) for the coordinates, or path.graphkeys to '
+                f'look the graphs up by key')
+
         # process exceptions
         if raise_if_missing:
             raise TypeError(f'could not obtain {attribute!r} '
