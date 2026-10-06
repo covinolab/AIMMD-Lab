@@ -43,6 +43,25 @@ with ``pip install "aimmd-lab[graphs]"`` (see :doc:`../installation` for
 ``torch-cluster`` wheels matching your torch/CUDA build) and see
 :doc:`../advanced`.
 
+Node tables
+-----------
+
+The package below stores the inputs of a graph network as an ordinary
+descriptor series instead of caching graphs: ``NodeTableFeaturizer`` writes one
+fixed-width row per frame (the positions and atom types of the frame's graph
+nodes) to ``{trajectory}.{descriptors_series}.npy`` under a fingerprinted
+series name, and rebuilds the network input from the rows per batch, bitwise
+equal to the graphs of ``get_graphs_pyg``. Writing rows needs only numpy and
+MDAnalysis; building graphs needs the ``graphs`` extra. Both classes are also
+importable from ``aimmd.network.graph_utils``. Use their methods through
+module-level wrapper functions in the params file (``Params`` refuses bound
+methods of the featurizers).
+
+.. automodule:: aimmd.network.nodetables
+   :members: NodeTableFeaturizer, MultiSystemNodeTableFeaturizer,
+             NodeTableOverflowError
+   :show-inheritance:
+
 Graph-cache acceleration
 ------------------------
 
