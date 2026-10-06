@@ -55,7 +55,10 @@ equal to the graphs of ``get_graphs_pyg``. Writing rows needs only numpy and
 MDAnalysis; building graphs needs the ``graphs`` extra. Both classes are also
 importable from ``aimmd.network.graph_utils``. Use their methods through
 module-level wrapper functions in the params file (``Params`` refuses bound
-methods of the featurizers).
+methods of the featurizers). ``python -m aimmd.network.nodetables`` prefills,
+repacks and verifies the node tables of existing runs. See
+:doc:`../graph_networks` for the params template, the command-line tool and
+switching a running campaign.
 
 .. automodule:: aimmd.network.nodetables
    :members: NodeTableFeaturizer, MultiSystemNodeTableFeaturizer,
@@ -72,6 +75,8 @@ replica and an in-process memo, falling back to the database on any miss or
 failure. It is enabled automatically for the trainer and needs no configuration;
 the environment variables in its docstring exist only to constrain or disable it.
 Unlike ``graph_utils`` it has no optional dependencies, so it imports anywhere.
+It serves the graph cache only: runs with node tables open no database and do
+not use it.
 
 .. automodule:: aimmd.network.shm_cache
    :members:

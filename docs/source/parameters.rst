@@ -42,7 +42,9 @@ In practice, the most important inputs are:
    Use a new name whenever the ``descriptors_function`` output changes.
    Reading ``'descriptors'`` from a trajectory that only has a named series
    raises an error instead of returning zeros; analysis scripts read
-   ``getattr(path, params.descriptors_series)``.
+   ``getattr(path, params.descriptors_series)``. Graph-network runs with node
+   tables use a fingerprinted name, ``'descriptors-gn...'``, pinned in the
+   params file (see :doc:`graph_networks`).
 
 ``values_function``
    Optional, if evaluating the network forward pass requires any special care. If not given, will default to network(descriptors).

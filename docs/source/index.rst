@@ -75,6 +75,7 @@ License.
    workflow
    parameters
    advanced
+   graph_networks
 
 .. toctree::
    :hidden:
