@@ -26,7 +26,8 @@ import pytest
 import aimmd
 import aimmd.path._compute as compute_module
 from aimmd._config import NPY_CACHE
-from aimmd.cache.npy import load_npy, read_npy_rows, save_npy, update_npy
+from aimmd.cache.npy import (load_npy, read_npy_ledger, read_npy_rows,
+                             save_npy, update_npy)
 from aimmd.path.utils import get_cache_fname
 from tests._helpers_unit import write_trajectory
 
@@ -68,8 +69,8 @@ class _Recorder:
 def _run(fname, path_slice, initial, whole_file, monkeypatch, target="descriptors"):
     """Run `Path.compute` from a fresh copy of `initial`; report what happened.
 
-    ``whole_file=True`` disables the partial read, i.e. reproduces the old
-    ledger, which always loaded the whole file through `NPY_CACHE`.
+    ``whole_file=True`` disables the ledger's own read, i.e. reproduces the
+    old ledger, which always loaded the whole file through `NPY_CACHE`.
     """
     targ_fname = get_cache_fname(fname, target)
     if os.path.exists(targ_fname):
@@ -78,17 +79,18 @@ def _run(fname, path_slice, initial, whole_file, monkeypatch, target="descriptor
         save_npy(targ_fname, initial)
     NPY_CACHE.clear()
     partial_reads = []
-    real = compute_module.read_npy_rows
+    real = compute_module.read_npy_ledger
 
     def spy(*args, **kwargs):
         if whole_file:
             return None
         result = real(*args, **kwargs)
-        partial_reads.append(result is not None)
+        # only the requested rows were read (not the whole array)
+        partial_reads.append(result is not None and result[2] is None)
         return result
 
     with monkeypatch.context() as patch:
-        patch.setattr(compute_module, "read_npy_rows", spy)
+        patch.setattr(compute_module, "read_npy_ledger", spy)
         recorder = _Recorder()
         path = aimmd.Path(fname)[path_slice]
         n = path.compute(recorder, target, source="reader")
@@ -170,7 +172,7 @@ def test_partial_ledger_one_dimensional_series(tmp_path, monkeypatch, target, dt
         function.frames = []
         with monkeypatch.context() as patch:
             if whole_file:
-                patch.setattr(compute_module, "read_npy_rows", lambda *a, **k: None)
+                patch.setattr(compute_module, "read_npy_ledger", lambda *a, **k: None)
             n = aimmd.Path(fname)[30:45].compute(function, target, source="reader")
         results.append((n, list(function.frames), load_npy(targ_fname)))
         NPY_CACHE.clear()
@@ -223,11 +225,52 @@ def test_resident_series_is_used_without_reading_the_file(tmp_path, monkeypatch)
     save_npy(targ_fname, _series(N_FRAMES, zero_rows=(12,)))
     NPY_CACHE.clear()
     NPY_CACHE.get(targ_fname)
-    monkeypatch.setattr(compute_module, "read_npy_rows",
+    monkeypatch.setattr(compute_module, "read_npy_ledger",
                         lambda *a, **k: pytest.fail("read the file"))
     recorder = _Recorder()
     aimmd.Path(fname)[10:14].compute(recorder, "descriptors", source="reader")
     assert recorder.frames == [12]
+    NPY_CACHE.clear()
+
+
+def test_a_whole_file_ledger_opens_and_locks_the_file_once(tmp_path, monkeypatch):
+    """Above the fraction, the rows come from the whole array, read in the
+    same open and under the same lock as the header (not in a second
+    NPY_CACHE load), and the array is left in NPY_CACHE for the value pass
+    that usually follows, as the old whole-file path did."""
+    import builtins
+
+    import filelock
+
+    fname = _trajectory(tmp_path)
+    targ_fname = get_cache_fname(fname, "descriptors")
+    series = _series(N_FRAMES, zero_rows=(4, 41))
+    save_npy(targ_fname, series)
+    NPY_CACHE.clear()
+    counts = {"open": 0, "lock": 0}
+    real_open, real_acquire = builtins.open, filelock.BaseFileLock.acquire
+
+    def counting_open(file, *args, **kwargs):
+        counts["open"] += os.fspath(file) == targ_fname
+        return real_open(file, *args, **kwargs)
+
+    def counting_acquire(self, *args, **kwargs):
+        counts["lock"] += self.lock_file.endswith(
+            f".{os.path.basename(targ_fname)}.lock")
+        return real_acquire(self, *args, **kwargs)
+
+    locs = np.arange(1, N_FRAMES - 1)
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "open", counting_open)
+        patch.setattr(filelock.BaseFileLock, "acquire", counting_acquire)
+        length, rows = compute_module._ledger_rows(targ_fname, locs)
+
+    assert counts == {"open": 1, "lock": 1}
+    assert length == N_FRAMES
+    np.testing.assert_array_equal(rows, series[locs])
+    resident = NPY_CACHE.peek(targ_fname, min_length=N_FRAMES)
+    np.testing.assert_array_equal(resident, series)
+    assert not resident.flags.writeable
     NPY_CACHE.clear()
 
 
@@ -268,6 +311,45 @@ def test_read_npy_rows_contract(tmp_path):
     with open(truncated, "r+b") as file:
         file.truncate(os.path.getsize(truncated) - 5)
     assert read_npy_rows(truncated, [0]) is None
+
+
+@pytest.mark.parametrize("array", [
+    np.arange(40 * 3, dtype=np.float32).reshape(40, 3),
+    np.arange(40 * 6, dtype=np.float64).reshape(40, 2, 3),
+    np.arange(1.0, 41.0),
+    np.array(list("ARB" * 13 + "A"), dtype="<U1"),
+], ids=["float32", "3-d", "1-d", "states"])
+def test_read_npy_ledger_contract(tmp_path, array):
+    """Few rows: those rows only. Many rows: the same rows, and the whole
+    array as np.load returns it."""
+    fname = str(tmp_path / "series.npy")
+    np.save(fname, array)
+    requested = np.array([7, 3, 39, 40, 3, 100])
+
+    length, rows, whole = read_npy_ledger(fname, requested, max_fraction=0.25)
+    assert length == 40 and whole is None
+    np.testing.assert_array_equal(rows, array[[7, 3, 39, 3]])
+
+    requested = np.array([*range(39, 0, -1), 0, 0, 55])
+    length, rows, whole = read_npy_ledger(fname, requested, max_fraction=0.25)
+    assert length == 40
+    np.testing.assert_array_equal(rows, array[requested[requested < 40]])
+    expected = np.load(fname)
+    assert whole.dtype == expected.dtype and whole.shape == expected.shape
+    np.testing.assert_array_equal(whole, expected)
+    assert not whole.flags.writeable
+
+    # unusual files: None, as read_npy_rows
+    fortran = str(tmp_path / "fortran.npy")
+    np.save(fortran, np.asfortranarray(array))
+    if array.ndim > 1:
+        assert read_npy_ledger(fortran, np.arange(40)) is None
+    truncated = str(tmp_path / "truncated.npy")
+    np.save(truncated, array)
+    with open(truncated, "r+b") as file:
+        file.truncate(os.path.getsize(truncated) - 1)
+    assert read_npy_ledger(truncated, np.arange(40)) is None
+    assert read_npy_ledger(str(tmp_path / "missing.npy"), [0]) is None
 
 
 def _rchar():

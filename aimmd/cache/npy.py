@@ -11,7 +11,8 @@ This module has two responsibilities:
       protected by a lock.
    - `load_npy`: read an array under the same lock.
    - `read_npy_rows`: read only selected rows of a `.npy` file, under the
-     same lock.
+     same lock (`read_npy_ledger`: or the whole file, when many rows are
+     requested).
    - `update_npy`: update selected rows of an existing `.npy` file in place,
      also protected by a lock.
 
@@ -189,6 +190,44 @@ def read_npy_rows(fname, indices, max_fraction=1., timeout=10.):
     The data offset is taken from the header itself, so the rows read are
     the rows ``np.load`` would return.
     """
+    result = _read_npy(fname, indices, max_fraction, timeout, whole=False)
+    return None if result is None else result[:2]
+
+
+def read_npy_ledger(fname, indices, max_fraction=1., timeout=10.):
+    """
+    Read selected rows of a `.npy` file, alone or with the whole array.
+
+    As :func:`read_npy_rows`, except that when the requested rows are more
+    than `max_fraction` of the file, the whole array is read instead, in the
+    same open and under the same lock, and returned as well: the caller can
+    keep it (e.g. in `NpyReaderCache`) without reading the file again.
+
+    Parameters
+    ----------
+    fname : str
+        `.npy` file to read.
+    indices : array-like of int
+        Rows to read, in any order; repetitions are allowed.
+    max_fraction : float, default 1.0
+        Up to this fraction of the file's rows, only those rows are read.
+    timeout : float
+        FileLock timeout.
+
+    Returns
+    -------
+    tuple or None
+        ``(length, rows, array)``: as :func:`read_npy_rows`, and the whole
+        array (read-only, equal to ``np.load(fname)``) if it was read, else
+        None. None in the unusual cases in which :func:`read_npy_rows`
+        returns None.
+    """
+    return _read_npy(fname, indices, max_fraction, timeout, whole=True)
+
+
+def _read_npy(fname, indices, max_fraction, timeout, whole):
+    """`read_npy_rows` (``whole=False``) and `read_npy_ledger`
+    (``whole=True``); always ``(length, rows, array or None)`` or None."""
     indices = np.asarray(indices).ravel()
     if indices.size and (indices.dtype.kind not in 'iu' or indices.min() < 0):
         return None
@@ -216,7 +255,16 @@ def read_npy_rows(fname, indices, max_fraction=1., timeout=10.):
                 inside = indices[indices < length]
                 wanted, inverse = np.unique(inside, return_inverse=True)
                 if len(wanted) > max_fraction * length:
-                    return None
+                    if not whole:
+                        return None
+                    # the whole array, read as np.load reads it
+                    count = length * int(np.prod(shape[1:]))
+                    array = np.fromfile(file, dtype=dtype, count=count)
+                    if array.size != count:
+                        return None
+                    array = array.reshape(shape)
+                    array.flags.writeable = False
+                    return length, array[inside], array
                 buffer = bytearray(len(wanted) * rowsize)
                 breaks = np.flatnonzero(np.diff(wanted) != 1) + 1
                 begins = [0, *breaks]
@@ -234,7 +282,7 @@ def read_npy_rows(fname, indices, max_fraction=1., timeout=10.):
         return None
     rows = np.frombuffer(buffer, dtype=dtype).reshape(
         (len(wanted),) + tuple(shape[1:]))
-    return length, rows[inverse.ravel()]
+    return length, rows[inverse.ravel()], None
 
 
 def update_npy(fname, data, indices, timeout=10.):

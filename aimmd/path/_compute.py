@@ -87,14 +87,14 @@ from tqdm import tqdm
 
 # aimmd imports
 from .utils import get_cache_fname, compute_batch
-from ..cache.npy import read_npy_rows
+from ..cache.npy import read_npy_ledger
 from ..core.utils import accepts_system_id
 from .._config import NPY_CACHE
 
 # The "already computed" check reads only the rows it needs when they are at
 # most this fraction of the cached file (e.g. the tail of a growing
-# trajectory). Above it, the whole file is loaded into NPY_CACHE, where the
-# value pass that usually follows finds it again.
+# trajectory). Above it, the whole file is read (in the same open) and kept
+# in NPY_CACHE, where the value pass that usually follows finds it again.
 LEDGER_PARTIAL_READ_FRACTION = 0.25
 
 
@@ -119,19 +119,23 @@ def _ledger_rows(fname, locs):
     Notes
     -----
     A copy resident in NPY_CACHE that is long enough is used as is, exactly
-    as ``NPY_CACHE.get(fname, min_length=locs[-1])`` would. Otherwise, when
-    the requested rows are a small part of the file, only the header and
-    those rows are read (:func:`aimmd.cache.npy.read_npy_rows`, under the
-    file's lock); rows beyond the end of the file are not read at all. In
-    every other case (large requests, unusual files) the whole file is loaded
-    through NPY_CACHE as before. All three give the same result.
+    as ``NPY_CACHE.get(fname, min_length=locs[-1])`` would. Otherwise the
+    file is read once, under its lock
+    (:func:`aimmd.cache.npy.read_npy_ledger`): when the requested rows are a
+    small part of it, only the header and those rows (rows beyond the end of
+    the file are not read at all); else the whole array, which is put into
+    NPY_CACHE as ``NPY_CACHE.get`` would have loaded it. Unusual files are
+    loaded through NPY_CACHE as before. All of them give the same result.
     """
     old = NPY_CACHE.peek(fname, min_length=locs[-1])
     if old is None:
-        partial = read_npy_rows(fname, locs,
-                                max_fraction=LEDGER_PARTIAL_READ_FRACTION)
-        if partial is not None:
-            return partial
+        read = read_npy_ledger(fname, locs,
+                               max_fraction=LEDGER_PARTIAL_READ_FRACTION)
+        if read is not None:
+            length, rows, whole = read
+            if whole is not None:
+                NPY_CACHE.put(fname, whole)
+            return length, rows
         old = NPY_CACHE.get(fname, min_length=locs[-1])
         if old is None:
             return None

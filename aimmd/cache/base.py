@@ -291,7 +291,24 @@ class AbstractCache(ABC):
         instance = self.open(fname)
         if instance is None:
             return
+        return self.put(fname, instance)
 
+    def put(self, fname, instance):
+        """
+        Insert an instance opened elsewhere, as :meth:`load` inserts its own.
+
+        Parameters
+        ----------
+        fname : str
+            File path used as cache key.
+        instance : object
+            The opened resource; it replaces any entry for `fname`.
+
+        Returns
+        -------
+        object
+            `instance`.
+        """
         # Remove any existing entry for this key (refresh insertion order +
         # size). `_discard`, not `remove`: on a miss `remove` would open the
         # file a second time only to close and drop it.
