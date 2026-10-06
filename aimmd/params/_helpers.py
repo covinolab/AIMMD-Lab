@@ -91,6 +91,36 @@ def _store_seed_descriptors(path, series, descriptors):
     setattr(path, series, descriptors)
 
 
+def _bound_method_message(name, method):
+    """Why the bound `method` cannot be the callable field `name`, and the
+    module-level wrapper to write instead."""
+    owner = type(method.__self__).__name__
+    function = method.__func__.__name__
+    try:
+        parameters = list(inspect.signature(method).parameters.values())
+    except (TypeError, ValueError):
+        parameters = []
+    arguments = []
+    for parameter in parameters:
+        if parameter.kind is parameter.VAR_POSITIONAL:
+            arguments.append(f'*{parameter.name}')
+        elif parameter.kind is parameter.VAR_KEYWORD:
+            arguments.append(f'**{parameter.name}')
+        elif parameter.kind is parameter.KEYWORD_ONLY:
+            arguments.append(f'{parameter.name}={parameter.name}')
+        else:
+            arguments.append(parameter.name)
+    signature = ', '.join(str(parameter) for parameter in parameters)
+    return (f'{name!r} is the bound method {owner}.{function}. Params stores '
+            f'functions, not objects, and would lose the {owner} instance. '
+            f'Define a module-level wrapper in the params file instead, e.g.\n'
+            f'\n'
+            f'    def {name}({signature}):\n'
+            f'        return INSTANCE.{function}({", ".join(arguments)})\n'
+            f'\n'
+            f'where INSTANCE is your {owner}.')
+
+
 # params' helpers
 class ParamsHelpers(ABC):
     def _init(self, *args, **kwargs):
@@ -206,7 +236,13 @@ class ParamsHelpers(ABC):
                                     f'got {type(value).__name__}: {value}')
                 
                 # Bound methods are converted to underlying function objects.
+                # That drops the instance: objects whose methods need it (e.g.
+                # a NodeTableFeaturizer) are refused, the params file must
+                # wrap them in module-level functions.
                 elif isinstance(value, Method):
+                    if getattr(value.__self__, '_params_requires_wrapper',
+                               False):
+                        raise TypeError(_bound_method_message(name, value))
                     value = value.__func__
                     update_source(value, name)
                 
