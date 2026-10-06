@@ -29,8 +29,9 @@ Extraction modes
 3) File-based cached series
    For other attribute names, `_extract` attempts to load a `.npy` array from
    `NPY_CACHE` at the file produced by `get_cache_fname(fname, attribute)`.
-   In case `attribute` is not 'descriptors' or 'states', will directly load the
-   `.npy` array as the values may be updated.
+   In case `attribute` is not 'states' or a descriptors series ('descriptors'
+   or any 'descriptors-*' name, see `Params.descriptors_series`), will
+   directly load the `.npy` array as the values may be updated.
 
 Special attributes
 ------------------
@@ -51,6 +52,10 @@ the method returns a default:
 - for 'states': array of empty strings
 - for everything else: array of zeros
 
+Exception: 'descriptors' of a file that only has a named descriptors series
+('descriptors-*') raises in any case. The run stores its descriptors under
+that name, and zeros would pass for descriptors unnoticed.
+
 Notes and caveats
 -----------------
 - This function assumes `MDA_CACHE.get(fname, min_length)[locs]` returns an
@@ -62,6 +67,7 @@ Notes and caveats
 # external
 import os
 import numpy as np
+from glob import glob, escape as glob_escape
 from abc import ABC
 from math import inf
 from itertools import islice
@@ -96,9 +102,10 @@ class PathExtract(ABC):
             - .npy array
               * any other string, interpreted as a `.npy` series stored under
                 `get_cache_fname(fname, attribute)`
-              * in case `attribute` is 'descriptors' or 'states' and the
-                array is already loaded in `NPY_CACHE` with the expected length,
-                will get it from there
+              * in case `attribute` is 'states' or a descriptors series
+                ('descriptors' or 'descriptors-*') and the array is already
+                loaded in `NPY_CACHE` with the expected length, will get it
+                from there
 
             - Modification times:
               * '<name>_mtimes' returns an array filled with the mtime of the
@@ -125,7 +132,8 @@ class PathExtract(ABC):
         ------
         TypeError
             If the requested series cannot be obtained and `raise_if_missing`
-            is True.
+            is True; for 'descriptors', also when `raise_if_missing` is False
+            if the file has a named descriptors series instead.
 
         Notes
         -----
@@ -257,7 +265,8 @@ class PathExtract(ABC):
             return np.repeat(os.path.getmtime(fname), length)
         
         # data are in .npy file
-        if attribute == 'descriptors' or attribute == 'states':
+        if (attribute == 'descriptors' or attribute == 'states'
+                or attribute.startswith('descriptors-')):
             # use cached data if present
             data = NPY_CACHE.get(get_cache_fname(fname, attribute),
                                  min_length=min_length)
@@ -269,6 +278,17 @@ class PathExtract(ABC):
             return data[locs]
         
         # process exceptions
+        if attribute == 'descriptors':
+            # never zeros in place of descriptors stored under another name
+            named = sorted(glob(f"{glob_escape(fname)}.descriptors-*.npy"))
+            if named:
+                raise TypeError(
+                    f"could not obtain 'descriptors' time series for "
+                    f"{fname}: its descriptors are stored as "
+                    f"{', '.join(os.path.basename(n) for n in named)}. Read "
+                    f"the series named by params.descriptors_series "
+                    f"(e.g. getattr(path, params.descriptors_series)), "
+                    f"or the coordinates from the trajectory")
         if raise_if_missing:
             raise TypeError(f'could not obtain {attribute!r} '
                             f'time series for {self._fnames[k]}')
