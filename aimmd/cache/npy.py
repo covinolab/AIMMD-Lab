@@ -12,6 +12,8 @@ This module has two responsibilities:
    - `load_npy`: read an array under the same lock.
    - `update_npy`: update selected rows of an existing `.npy` file in place,
      also protected by a lock.
+   - `lock_fname`: the lock file of a `.npy` file, for other writers that
+     must exclude these.
 
 2) Faster repeated reads of `.npy` files
    - `NpyReaderCache`: a small in-memory cache for arrays loaded from `.npy`
@@ -73,6 +75,26 @@ from .base import AbstractCache
 from ..core.utils import extract_folder_and_name, extend_array
 
 
+def lock_fname(fname):
+    """
+    The lock file that guards a `.npy` file: ``<folder>/.<name>.lock``.
+
+    Every function of this module holds it while it reads or writes
+    ``fname``; another writer of ``fname`` should hold it too.
+
+    Parameters
+    ----------
+    fname : str
+        `.npy` filename.
+
+    Returns
+    -------
+    str
+    """
+    folder, name = extract_folder_and_name(fname)
+    return f'{folder}/.{name}.lock'
+
+
 def save_npy(fname, array, timeout=10.):
     """
     Save an array to a `.npy` file safely (lock + atomic replace).
@@ -103,7 +125,7 @@ def save_npy(fname, array, timeout=10.):
     folder, name = extract_folder_and_name(fname)
     max_retries = 10
     temp_fname = f'{folder}/temp.{name}'
-    lock = f'{folder}/.{name}.lock'
+    lock = lock_fname(fname)
     for _ in range(max_retries):
         try:
             with FileLock(lock, timeout=timeout):
@@ -139,8 +161,7 @@ def load_npy(fname, timeout=10.):
     -----
     This function is intentionally permissive and returns None on failure.
     """
-    folder, name = extract_folder_and_name(fname)
-    lock = f'{folder}/.{name}.lock'
+    lock = lock_fname(fname)
     try:
         with FileLock(lock, timeout=timeout):
             return np.load(fname)
@@ -235,7 +256,7 @@ def update_npy(fname, data, indices, timeout=10.):
     # "I/O Error" doesn't terminate the parent simulation process.
     max_retries = 5
     temp = fname
-    lock = f'{folder}/.{name}.lock'
+    lock = lock_fname(fname)
     for attempt in range(max_retries):
         try:
             with FileLock(lock, timeout=timeout):
