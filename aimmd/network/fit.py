@@ -1284,10 +1284,11 @@ def fit(params,
             # slowly increase lr
             param_group['lr'] = lr * min(1, (counter.n + 1) / (epochs / 20))
         
-        # sample batch
+        # sample batch (from the whole set: validation frames, if any, keep
+        # their slot with selection probability zero)
         if batching_strategy == 'draw-replace':
-            indices = np.random.choice(training_set_size, batch_size,
-                p=selection_probabilities)
+            indices = np.random.choice(len(selection_probabilities),
+                batch_size, p=selection_probabilities)
         elif batching_strategy == 'loop-all':
             # zero selection probabilities are ALREADY not in the training set
             training_indices = np.random.permutation(training_set_size)
