@@ -87,6 +87,52 @@ def _load_batch_descriptors(npy_paths, locs):
     return np.array(result)
 
 
+def _batch_files(fnames):
+    """Per-frame files that ``fit(in_memory=False)`` reads batches from.
+
+    Parameters
+    ----------
+    fnames : array-like of str
+        Trajectory file of each frame (the ``'filenames'`` series).
+
+    Returns
+    -------
+    numpy.ndarray
+        The descriptor cache file of each frame's trajectory.
+    """
+    return np.array([get_cache_fname(f, 'descriptors') for f in fnames])
+
+
+def _transform_batch(descriptor_transform, files, locs, system_id=None):
+    """Network inputs of a batch of frames, read from their files.
+
+    Every batch that ``fit(in_memory=False)`` reads -- training, validation,
+    LSR and MAR, single- and multi-system -- goes through this helper:
+    ``descriptor_transform(_load_batch_descriptors(files, locs))``.
+
+    Parameters
+    ----------
+    descriptor_transform : callable
+        Raw descriptor rows -> network inputs (an array, or a list of graphs).
+    files : array-like of str
+        Per-frame file, from :func:`_batch_files`.
+    locs : array-like of int
+        Frame index of each frame in its file.
+    system_id : hashable, optional
+        Passed to ``descriptor_transform`` as a keyword (multi-system batches;
+        the caller passes it only to a transform that accepts it).
+
+    Returns
+    -------
+    numpy.ndarray or list
+        What ``descriptor_transform`` returns.
+    """
+    raw = _load_batch_descriptors(files, locs)
+    if system_id is None:
+        return descriptor_transform(raw)
+    return descriptor_transform(raw, system_id=system_id)
+
+
 # ----------------------------------------------------------------------------
 # Multi-system (multi-ligand) helpers
 #
@@ -180,7 +226,7 @@ def _assign_balanced_uniform(selection_probabilities, start, stop,
         selection_probabilities[start + sub] = share / len(sub)
 
 
-def _load_batch_descriptors_routed(npy_paths, locs, system_id, system_labels,
+def _load_batch_descriptors_routed(files, locs, system_id, system_labels,
                                    descriptor_transform, transform_takes_sid,
                                    graphs):
     """Per-batch descriptor build for multi-system, ``in_memory=False``.
@@ -188,19 +234,17 @@ def _load_batch_descriptors_routed(npy_paths, locs, system_id, system_labels,
     A training batch mixes frames from several systems (different topologies /
     atom counts), so they cannot be stacked and transformed together. Frames are
     grouped by system, each group is loaded and transformed with its own
-    ``system_id`` into the shared network's input space, then reassembled in the
-    original batch order. Returns a list of ``Data`` (graphs) or a 2D array
-    (dense).
+    ``system_id`` into the shared network's input space
+    (:func:`_transform_batch`), then reassembled in the original batch order.
+    Returns a list of ``Data`` (graphs) or a 2D array (dense).
     """
-    out = [None] * len(npy_paths)
+    out = [None] * len(files)
     for j in np.unique(system_id):
         sel = np.flatnonzero(system_id == j)
-        raw = _load_batch_descriptors(npy_paths[sel], locs[sel])
         label = system_labels[j]
-        if transform_takes_sid:
-            transformed = descriptor_transform(raw, system_id=label)
-        else:
-            transformed = descriptor_transform(raw)
+        transformed = _transform_batch(
+            descriptor_transform, files[sel], locs[sel],
+            system_id=label if transform_takes_sid else None)
         for k, idx in enumerate(sel):
             out[idx] = transformed[k]
     if graphs:
@@ -446,12 +490,11 @@ def fit(params,
           training-set size (raw array + transformed representation).
         - If ``False``: **no large descriptor array is kept in memory**.
           Instead, only per-frame file references ``(npy_path, loc)`` are
-          stored.  Each training batch (and each LSR batch) loads its raw
-          frames on-the-fly from the NPY cache via
-          :func:`_load_batch_descriptors`, then applies
-          ``descriptor_transform`` immediately.  Peak RAM is proportional to
-          one batch rather than the full dataset, at the cost of repeated disk
-          I/O and transform overhead each epoch.
+          stored.  Each batch (training, validation, LSR and MAR) loads its
+          raw frames on-the-fly from the NPY cache and applies
+          ``descriptor_transform`` immediately (:func:`_transform_batch`).
+          Peak RAM is proportional to one batch rather than the full dataset,
+          at the cost of repeated disk I/O and transform overhead each epoch.
 
     graphs : bool, default=False
         If True, descriptors (after ``descriptor_transform``) are assumed to be
@@ -752,8 +795,7 @@ def fit(params,
             desc_fnames = np.concatenate(_fn) if _fn else np.array([])
             desc_locs = (np.concatenate(_lc) if _lc
                          else np.array([], dtype=int))
-            desc_npy_paths = np.array(
-                [get_cache_fname(f, 'descriptors') for f in desc_fnames])
+            desc_files = _batch_files(desc_fnames)
 
     # Report collection statistics
     lengths = [len(in1_back), len(in2_back),
@@ -867,8 +909,8 @@ def fit(params,
     # trajectories than the other (common early in an AIMMD run).
     lsr_desc_t_A = lsr_desc_tau_A = None
     lsr_desc_t_B = lsr_desc_tau_B = None
-    lsr_npy_t_A = lsr_locs_t_A = lsr_npy_tau_A = lsr_locs_tau_A = None
-    lsr_npy_t_B = lsr_locs_t_B = lsr_npy_tau_B = lsr_locs_tau_B = None
+    lsr_files_t_A = lsr_locs_t_A = lsr_files_tau_A = lsr_locs_tau_A = None
+    lsr_files_t_B = lsr_locs_t_B = lsr_files_tau_B = lsr_locs_tau_B = None
     n_lsr_A = n_lsr_B = 0
     n_lsr_pairs = 0
     if lsr_weight:
@@ -890,11 +932,10 @@ def fit(params,
                 pathensemble, lsr_key_B, lsr_lagtime, 'filenames')
             lc_t_B, lc_tau_B, _, _ = extract_lsr_pairs(
                 pathensemble, lsr_key_B, lsr_lagtime, 'locs')
-            _gcf = lambda arr: np.array([get_cache_fname(f, 'descriptors') for f in arr]) if len(arr) else arr
-            lsr_npy_t_A, lsr_locs_t_A     = _gcf(fn_t_A),   lc_t_A
-            lsr_npy_tau_A, lsr_locs_tau_A = _gcf(fn_tau_A), lc_tau_A
-            lsr_npy_t_B, lsr_locs_t_B     = _gcf(fn_t_B),   lc_t_B
-            lsr_npy_tau_B, lsr_locs_tau_B = _gcf(fn_tau_B), lc_tau_B
+            lsr_files_t_A, lsr_locs_t_A     = _batch_files(fn_t_A),   lc_t_A
+            lsr_files_tau_A, lsr_locs_tau_A = _batch_files(fn_tau_A), lc_tau_A
+            lsr_files_t_B, lsr_locs_t_B     = _batch_files(fn_t_B),   lc_t_B
+            lsr_files_tau_B, lsr_locs_tau_B = _batch_files(fn_tau_B), lc_tau_B
         n_lsr_pairs = n_lsr_A + n_lsr_B
         print(f'   {n_lsr_A} A-origin pairs ({n_sel_A} paths), '
               f'{n_lsr_B} B-origin pairs ({n_sel_B} paths)')
@@ -905,7 +946,7 @@ def fit(params,
     # Falls back to all available paths (e.g. initial seed paths) if no reactive
     # paths from TPS sampling are found yet, so MAR acts from the first training step.
     mar_sequences_in_mem = []   # in_memory=True : list of raw descriptor arrays (one per path)
-    mar_sequences_refs = []     # in_memory=False: list of (npy_paths, locs) tuples (one per path)
+    mar_sequences_refs = []     # in_memory=False: list of (files, locs) tuples (one per path)
     n_mar_sequences = 0
     if mar_weight:
         mar_key = np.flatnonzero(
@@ -925,10 +966,8 @@ def fit(params,
                 pathensemble, mar_key_used, mar_lagtime, 'filenames')
             lc_seqs, _, _ = extract_mar_sequences(
                 pathensemble, mar_key_used, mar_lagtime, 'locs')
-            _gcf_mar = lambda f: get_cache_fname(f, 'descriptors')
             for fn_seq, lc_seq in zip(fn_seqs, lc_seqs):
-                npy_seq = np.array([_gcf_mar(f) for f in fn_seq])
-                mar_sequences_refs.append((npy_seq, lc_seq))
+                mar_sequences_refs.append((_batch_files(fn_seq), lc_seq))
         print(f'   {n_mar_sequences} sequences ({n_mar_sel} paths selected)')
         if must_stop():
             return [], [], [], [], []
@@ -942,9 +981,9 @@ def fit(params,
     # in_memory=True : a single concatenated numpy array of raw descriptors
     #                  (transformed up-front on line ~716 below).
     # in_memory=False: two compact arrays storing per-frame file references
-    #                  (desc_npy_paths[i], desc_locs[i]) so raw data is
-    #                  loaded on demand per batch via _load_batch_descriptors.
-    # Multi-system already built desc_raw_blocks / desc_npy_paths above (it must
+    #                  (desc_files[i], desc_locs[i]) so raw data is
+    #                  loaded on demand per batch via _transform_batch.
+    # Multi-system already built desc_raw_blocks / desc_files above (it must
     # not stack different atom counts into one raw array).
     if not multi:
         _all_desc_ref0 = [in1_desc_ref[0], in2_desc_ref[0],
@@ -961,8 +1000,7 @@ def fit(params,
                                          free1to2_desc_ref[1], free2to1_desc_ref[1],
                                          shot1to1_desc_ref[1], shot2to2_desc_ref[1],
                                          shot1to2_desc_ref[1], shot2to1_desc_ref[1]])
-            desc_npy_paths = np.array(
-                [get_cache_fname(f, 'descriptors') for f in desc_fnames])
+            desc_files = _batch_files(desc_fnames)
     results = concatenate([in1_results, in2_results,
                            free1to1_results, free2to2_results,
                            free1to2_results, free2to1_results,
@@ -1105,14 +1143,14 @@ def fit(params,
                 desc_raw_blocks, keepers, descriptor_transform,
                 transform_takes_sid, system_labels, graphs)
         else:
-            desc_npy_paths = desc_npy_paths[keepers]
-            desc_locs      = desc_locs[keepers]
+            desc_files = desc_files[keepers]
+            desc_locs  = desc_locs[keepers]
         system_id = system_id[keepers]
     elif in_memory:
         descriptors = descriptors[keepers]
     else:
-        desc_npy_paths = desc_npy_paths[keepers]
-        desc_locs      = desc_locs[keepers]
+        desc_files = desc_files[keepers]
+        desc_locs  = desc_locs[keepers]
     results = results[keepers]
     k = results[:, 0] > 0
     training_set_size = len(selection_probabilities)
@@ -1144,11 +1182,11 @@ def fit(params,
         # create validation vectors
         if not graphs:
             if in_memory:
-                raw_val = descriptors[validation_indices]
+                d_val = descriptor_transform(descriptors[validation_indices])
             else:
-                raw_val = _load_batch_descriptors(
-                    desc_npy_paths[validation_indices], desc_locs[validation_indices])
-            d_val = descriptor_transform(raw_val)
+                d_val = _transform_batch(
+                    descriptor_transform, desc_files[validation_indices],
+                    desc_locs[validation_indices])
             d_val = torch.tensor(d_val, dtype=dtype, device=device)
             d_val.requires_grad = True
         else:
@@ -1159,8 +1197,9 @@ def fit(params,
                 # descriptors is already a list of Data objects after the pre-transform
                 d_val_list = [descriptors[i] for i in validation_indices]
             else:
-                d_val_list = descriptor_transform(_load_batch_descriptors(
-                    desc_npy_paths[validation_indices], desc_locs[validation_indices]))
+                d_val_list = _transform_batch(
+                    descriptor_transform, desc_files[validation_indices],
+                    desc_locs[validation_indices])
             d_val = Batch.from_data_list(d_val_list).to(device).to_dict()
         r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
     
@@ -1302,12 +1341,12 @@ def fit(params,
                 d = descriptors[indices]          # already transformed upfront
             elif multi:  # mixed-system batch: load + transform per system
                 d = _load_batch_descriptors_routed(
-                    desc_npy_paths[indices], desc_locs[indices],
+                    desc_files[indices], desc_locs[indices],
                     system_id[indices], system_labels, descriptor_transform,
                     transform_takes_sid, graphs=False)
             else:  # load raw frames on-the-fly from NPY_CACHE, then transform
-                d = descriptor_transform(
-                    _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))
+                d = _transform_batch(descriptor_transform, desc_files[indices],
+                                     desc_locs[indices])
             d = torch.tensor(d, dtype=dtype, device=device)
             d.requires_grad = True
         else:
@@ -1319,12 +1358,12 @@ def fit(params,
                 d = [descriptors[i] for i in indices]
             elif multi:  # mixed-system batch: load + transform per system
                 d = _load_batch_descriptors_routed(
-                    desc_npy_paths[indices], desc_locs[indices],
+                    desc_files[indices], desc_locs[indices],
                     system_id[indices], system_labels, descriptor_transform,
                     transform_takes_sid, graphs=True)
             else:  # load raw frames on-the-fly from NPY_CACHE
-                d = descriptor_transform(
-                    _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))
+                d = _transform_batch(descriptor_transform, desc_files[indices],
+                                     desc_locs[indices])
             d = Batch.from_data_list(d).to(device).to_dict()
 
         # flatten non-graph descriptors for dense networks
@@ -1394,14 +1433,15 @@ def fit(params,
                 # B-origin trajectories to prevent bias toward the more
                 # populated state.
                 half = lsr_bs // 2
-                raw_t_segs, raw_tau_segs = [], []
+                raw_t_segs, raw_tau_segs = [], []     # in memory: drawn rows
+                ref_t_segs, ref_tau_segs = [], []     # else: their (files, locs)
                 if in_memory:
                     _lsr_sides = ((lsr_desc_t_A, lsr_desc_tau_A, n_lsr_A),
                                   (lsr_desc_t_B, lsr_desc_tau_B, n_lsr_B))
                 else:
                     _lsr_sides = (
-                        (lsr_npy_t_A, lsr_npy_tau_A, lsr_locs_t_A, lsr_locs_tau_A, n_lsr_A),
-                        (lsr_npy_t_B, lsr_npy_tau_B, lsr_locs_t_B, lsr_locs_tau_B, n_lsr_B))
+                        (lsr_files_t_A, lsr_files_tau_A, lsr_locs_t_A, lsr_locs_tau_A, n_lsr_A),
+                        (lsr_files_t_B, lsr_files_tau_B, lsr_locs_t_B, lsr_locs_tau_B, n_lsr_B))
                 for side in _lsr_sides:
                     n_side = side[-1]
                     if n_side == 0:
@@ -1413,34 +1453,33 @@ def fit(params,
                         raw_t_segs.append(desc_t_side[v_idx])
                         raw_tau_segs.append(desc_tau_side[v_idx])
                     else:
-                        npy_t, npy_tau, locs_t, locs_tau = side[0], side[1], side[2], side[3]
-                        raw_t_segs.append(
-                            _load_batch_descriptors(npy_t[v_idx], locs_t[v_idx]))
-                        raw_tau_segs.append(
-                            _load_batch_descriptors(npy_tau[v_idx], locs_tau[v_idx]))
-                raw_t = np.concatenate(raw_t_segs, axis=0)
-                raw_tau = np.concatenate(raw_tau_segs, axis=0)
+                        files_t, files_tau, locs_t, locs_tau = side[:4]
+                        ref_t_segs.append((files_t[v_idx], locs_t[v_idx]))
+                        ref_tau_segs.append((files_tau[v_idx], locs_tau[v_idx]))
+
+                if in_memory:
+                    dv_t = np.concatenate(raw_t_segs, axis=0)
+                    dv_tau = np.concatenate(raw_tau_segs, axis=0)
+                    if graphs:  # (dense rows were transformed up front)
+                        dv_t = descriptor_transform(dv_t)
+                        dv_tau = descriptor_transform(dv_tau)
+                else:
+                    # the frames drawn on both sides form one batch per lag end
+                    dv_t = _transform_batch(
+                        descriptor_transform,
+                        *map(np.concatenate, zip(*ref_t_segs)))
+                    dv_tau = _transform_batch(
+                        descriptor_transform,
+                        *map(np.concatenate, zip(*ref_tau_segs)))
 
                 if not graphs:
-                    if in_memory:
-                        dv_t = raw_t
-                        dv_tau = raw_tau
-                    else:
-                        dv_t = descriptor_transform(raw_t)
-                        dv_tau = descriptor_transform(raw_tau)
                     dv_t = torch.flatten(
                         torch.tensor(dv_t, dtype=dtype, device=device), start_dim=1)
                     dv_tau = torch.flatten(
                         torch.tensor(dv_tau, dtype=dtype, device=device), start_dim=1)
                 else:
-                    if in_memory:
-                        dv_t_list = descriptor_transform(raw_t)
-                        dv_tau_list = descriptor_transform(raw_tau)
-                    else:
-                        dv_t_list = descriptor_transform(raw_t)
-                        dv_tau_list = descriptor_transform(raw_tau)
-                    dv_t = Batch.from_data_list(dv_t_list).to(device).to_dict()
-                    dv_tau = Batch.from_data_list(dv_tau_list).to(device).to_dict()
+                    dv_t = Batch.from_data_list(dv_t).to(device).to_dict()
+                    dv_tau = Batch.from_data_list(dv_tau).to(device).to_dict()
 
                 network.train()
                 chi_t = _get_latent(network, dv_t)
@@ -1457,18 +1496,17 @@ def fit(params,
                 latent_seqs = []
                 for pidx in path_idxs:
                     if in_memory:
-                        raw_seq = mar_sequences_in_mem[pidx]
+                        seq = descriptor_transform(mar_sequences_in_mem[pidx])
                     else:
-                        npy_seq, lc_seq = mar_sequences_refs[pidx]
-                        raw_seq = _load_batch_descriptors(npy_seq, lc_seq)
+                        files_seq, lc_seq = mar_sequences_refs[pidx]
+                        seq = _transform_batch(descriptor_transform,
+                                               files_seq, lc_seq)
                     if not graphs:
                         dv_mar = torch.flatten(
-                            torch.tensor(descriptor_transform(raw_seq),
-                                         dtype=dtype, device=device),
+                            torch.tensor(seq, dtype=dtype, device=device),
                             start_dim=1)
                     else:
-                        graph_list = descriptor_transform(raw_seq)
-                        dv_mar = Batch.from_data_list(graph_list).to(device).to_dict()
+                        dv_mar = Batch.from_data_list(seq).to(device).to_dict()
                     network.train()
                     z_seq = _get_latent(network, dv_mar)   # (n_frames_i, latent_dim)
                     latent_seqs.append(z_seq)
