@@ -43,6 +43,7 @@ import os
 import copy
 import time
 import torch
+import warnings
 import numpy as np
 from math import inf
 from tqdm import tqdm
@@ -453,11 +454,14 @@ def fit(params,
           one batch rather than the full dataset, at the cost of repeated disk
           I/O and transform overhead each epoch.
 
+        Ignored with ``graphs=True`` (with a warning): graphs are always
+        built per batch, as with ``False``.
+
     graphs : bool, default=False
         If True, descriptors (after ``descriptor_transform``) are assumed to be
         lists of ``torch_geometric.data.Data`` graphs (e.g. as returned by
         ``process_descriptors_pyg(...)['data_list']``), requiring
-        `torch_geometric` for batching.
+        `torch_geometric` for batching. Implies ``in_memory=False``.
 
     lsr_weight : float, default=0.0
         If non-zero, add a latent space regularization (LSR) term to the loss,
@@ -523,6 +527,16 @@ def fit(params,
         raise TypeError(f"Invalid batching strategy: {batching_strategy}")
     if augment not in ('no', 'yes', 'experimental'):
         raise TypeError(f"Invalid augment: {augment!r}")
+
+    # Graphs are built per batch: with in_memory=True, descriptor_transform
+    # would build every graph of the training set up front and keep them all
+    # in RAM (tens of GB for large PaiNN graphs).
+    if graphs and in_memory:
+        warnings.warn(
+            'fit(in_memory=True) is ignored with graphs=True: graphs are '
+            'built per batch, as with in_memory=False. Pass in_memory=False '
+            'to silence this warning.', UserWarning, stacklevel=2)
+        in_memory = False
 
     # Optional dependency only when graph descriptors are enabled
     if graphs:
