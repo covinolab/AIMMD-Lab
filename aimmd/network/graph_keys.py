@@ -39,8 +39,12 @@ unreadable trajectory, say) propagate.
 
 Environment
 -----------
-``AIMMD_GRAPHKEYS_VERIFY``  ``0``/``off``/``false``/``no`` skips :func:`verify`
-                            (default: on)
+``AIMMD_GRAPHKEYS_VERIFY``         ``0``/``off``/``false``/``no`` skips
+                                   :func:`verify` (default: on)
+``AIMMD_GRAPHKEYS_SKIP_SELFTEST``  ``1``/``on``/``true``/``yes`` skips the
+                                   load-time checks of :class:`SeedCheck`
+                                   and :func:`check_values_function` that
+                                   can be overridden (default: off)
 """
 
 # external
@@ -56,7 +60,8 @@ from ..core.graphkey import (KEY_BYTES, graph_keys, keys_to_hex, hex_to_keys,
                              pad_keys)
 from ..core.utils import accepts_system_id
 from .graph_lookup import (GraphCacheMiss, graph_overlay, graphs_present,
-                           capture_connection)
+                           capture_connection, cache_watermark,
+                           stored_before)
 
 
 __all__ = ['SERIES', 'DESCRIPTOR_CACHES', 'uses_graph_keys',
@@ -64,6 +69,7 @@ __all__ = ['SERIES', 'DESCRIPTOR_CACHES', 'uses_graph_keys',
            'repair', 'call_with_repair', 'verify', 'verify_enabled',
            'key_file', 'load_keys', 'frame_refs', 'coordinate_rows',
            'repair_stats', 'reset_repair_stats',
+           'SeedCheck', 'check_values_function', 'selftest_enabled',
            'GraphCacheMiss', 'graph_overlay', 'graphs_present']
 
 #: Name of the per-frame series: ``<traj>.graphkeys.npy``.
@@ -82,6 +88,7 @@ _REPAIR_CHUNK = 1024
 _KEY_SCAN = 'SELECT key FROM graphs_cache'
 
 _DISABLED = ('0', 'off', 'none', 'false', 'no')
+_ENABLED = ('1', 'on', 'true', 'yes')
 
 # counters since the last reset_repair_stats(), for the trainer log
 _STATS = {'filled': 0, 'repaired': 0, 'stale': 0, 'retries': 0, 'fallbacks': 0}
@@ -686,3 +693,176 @@ def verify(paths, keys_function, system_id=None, repair_missing=True):
         counts['stale'] = fixed.stale
     counts['seconds'] = round(time.monotonic() - start, 3)
     return counts
+
+
+# ------------------------------------------------------ load-time checks --
+def selftest_enabled():
+    """False if ``AIMMD_GRAPHKEYS_SKIP_SELFTEST`` switches the checks off."""
+    value = os.environ.get('AIMMD_GRAPHKEYS_SKIP_SELFTEST', '')
+    return value.strip().lower() not in _ENABLED
+
+
+def _database(conn):
+    """File name of a connection's main database, for messages."""
+    try:
+        for _, name, fname in conn.execute('PRAGMA database_list'):
+            if name == 'main':
+                return fname or '(in memory)'
+    except Exception:                                   # noqa: BLE001
+        pass
+    return '(unknown)'
+
+
+class SeedCheck:
+    """Key the initial paths and check the keys against the graph cache.
+
+    ``Params.load`` keys the frames of every initial path (32 bytes per
+    frame, kept on the Path) with the run's key function, which also builds
+    the graphs that are missing -- as it did in every earlier load, in
+    either mode. A graph cache that already held graphs must therefore
+    have known at least one of them before this load. If it knew none,
+    the keys computed here are not the ones the cache was filled with: a
+    different key scheme, trajectory decoder (platform, MDAnalysis
+    version) or ``descriptors_function``. Every lookup of the run would
+    then miss and rebuild its graph, so :meth:`check` stops the load.
+
+    "Before this load" is the database content up to a rowid watermark
+    taken when the check starts (the table only grows), so graphs that the
+    keying itself stores -- also by a ``descriptors_function`` that builds
+    graphs as a side effect -- do not count. A transform without a sqlite
+    cache is not checked.
+
+    Parameters
+    ----------
+    keys_function : GraphKeysFunction
+        The run's key function (``params.graphkeys_function``).
+    system_id : hashable, optional
+        The system whose cache to check (multi-system runs).
+
+    Examples
+    --------
+    >>> seeds = SeedCheck(params.graphkeys_function)
+    >>> for path in initial_paths:
+    ...     path.graphkeys = seeds.keys(path)
+    >>> seeds.check()
+    """
+
+    def __init__(self, keys_function, system_id=None):
+        self.keys_function = keys_function
+        self.system_id = system_id
+        self.conn = keys_function.connection(system_id)
+        self.watermark = (cache_watermark(self.conn)
+                          if self.conn is not None else 0)
+        self.frames = 0
+        self.known = 0
+
+    def keys(self, path):
+        """Graph keys of every frame of ``path``; builds missing graphs.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(len(path), 32)`` uint8.
+        """
+        keys = path.compute(self.keys_function, system_id=self.system_id)
+        keys = np.asarray(keys, dtype=np.uint8).reshape(-1, KEY_BYTES)
+        self.frames += len(keys)
+        if self.watermark and len(keys):
+            self.known += int(stored_before(
+                keys, self.conn, self.watermark).sum())
+        return keys
+
+    def check(self):
+        """Raise if the cache held graphs but none of the keyed frames'.
+
+        Raises
+        ------
+        RuntimeError
+            Unless ``AIMMD_GRAPHKEYS_SKIP_SELFTEST`` is set.
+        """
+        if not (self.watermark and self.frames) or self.known:
+            return
+        if not selftest_enabled():
+            print(f'!! graph keys: none of the {self.frames} initial-path '
+                  f'frames had a graph in {_database(self.conn)!r} '
+                  f'(check skipped by AIMMD_GRAPHKEYS_SKIP_SELFTEST)')
+            return
+        system = ('' if self.system_id is None
+                  else f' of system {self.system_id!r}')
+        raise RuntimeError(
+            f"descriptor_cache='graphkeys': none of the {self.frames} frames "
+            f'of the initial paths{system} has a graph in the graph cache '
+            f'{_database(self.conn)!r}, although it already holds graphs. '
+            f'Initial paths are keyed (and their graphs built) at every '
+            f'Params.load, so the keys computed now are not the keys the '
+            f'cache was filled with: a different descriptors_function or '
+            f'atom selection, a different trajectory decoder (platform, '
+            f'MDAnalysis version) or a different key scheme. Every graph '
+            f'lookup of this run would miss and rebuild its graph. If the '
+            f'cache was filled for other trajectories and this is '
+            f'intended, set AIMMD_GRAPHKEYS_SKIP_SELFTEST=1.')
+
+
+def check_values_function(values_function, path, keys, keys_function,
+                          system_id=None):
+    """Check at load time that ``values_function`` evaluates graph keys.
+
+    1. ``values_function(keys[:1])`` must return one value (shape
+       ``(1,)``). It is evaluated like a value pass, so a graph whose store
+       did not land is repaired rather than reported.
+    2. ``values_function`` of an all-zero key ("not computed") must raise
+       ``GraphCacheMiss``. A function that returns values for it reads the
+       key bytes as numbers instead of looking graphs up by key, and every
+       value of the run would be wrong. This one can be skipped with
+       ``AIMMD_GRAPHKEYS_SKIP_SELFTEST``.
+
+    Parameters
+    ----------
+    values_function : callable
+        ``params.values_function``.
+    path : aimmd.Path
+        An initial path; its first frame is evaluated.
+    keys : numpy.ndarray
+        The path's graph keys.
+    keys_function : GraphKeysFunction
+        The run's key function.
+    system_id : hashable, optional
+        Forwarded to the functions that accept it.
+
+    Raises
+    ------
+    RuntimeError
+        If a check fails, with the reason.
+    """
+    advice = ("With descriptor_cache='graphkeys', values_function and "
+              'descriptor_transform receive (n, 32) uint8 graph keys and '
+              'must look the graphs up by key, as functions built on '
+              'aimmd.network.graph_utils.process_descriptors_pyg do.')
+    fnames, locs = frame_refs(path[:1])
+    try:
+        values = np.asarray(call_with_repair(
+            values_function, keys[:1], fnames, locs, keys_function,
+            system_id))
+    except Exception as exception:
+        raise RuntimeError(
+            f'values_function failed on a graph-key row: {exception!r}. '
+            f'{advice}') from exception
+    if values.shape != (1,):
+        raise RuntimeError(
+            f'values_function returned shape {values.shape} for one '
+            f'graph-key row, expected (1,). {advice}')
+    if not selftest_enabled():
+        return
+    try:
+        values = _call(values_function,
+                       np.zeros((1, KEY_BYTES), dtype=np.uint8), system_id)
+    except GraphCacheMiss:
+        return
+    except Exception as exception:
+        raise RuntimeError(
+            f'values_function raised {exception!r} for an all-zero graph '
+            f'key instead of GraphCacheMiss. {advice}') from exception
+    raise RuntimeError(
+        f'values_function returned {np.asarray(values)!r} for an all-zero '
+        f'graph key ("not computed") instead of raising GraphCacheMiss: it '
+        f'does not look graphs up by key. {advice}')

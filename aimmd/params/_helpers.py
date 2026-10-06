@@ -48,7 +48,8 @@ from ..core.utils import accepts_system_id
 from ..path import Path
 from ..pathensemble import PathEnsemble
 from ..network.rescalable import Rescalable as RescalableNetwork
-from ..network.graph_keys import DESCRIPTOR_CACHES
+from ..network.graph_keys import (DESCRIPTOR_CACHES, SeedCheck,
+                                  check_values_function)
 
 
 _SUBSAMPLE_CAP_KEYS = ('shot', 'free', 'in_state')
@@ -478,7 +479,12 @@ class ParamsHelpers(ABC):
         This method may:
         - overwrite `values_function` if it is defaulted and the network changes,
         - reload initial paths from disk to recompute states if requested,
-        - compute and attach descriptors/values to initial paths.
+        - compute and attach descriptors/values to initial paths; with
+          ``descriptor_cache='graphkeys'``, graph keys instead of descriptors,
+          checked against the graph cache
+          (:class:`aimmd.network.graph_keys.SeedCheck`), and a check that
+          `values_function` evaluates graph keys
+          (:func:`aimmd.network.graph_keys.check_values_function`).
         """
 
         # check network
@@ -566,13 +572,17 @@ class ParamsHelpers(ABC):
                         'states_function' in fields or
                         check_paths)
         check_descrs = (self.descriptors_function is not None and
-                       ('descriptors_function' in fields or check_paths))
+                       ('descriptors_function' in fields or
+                        'descriptor_cache' in fields or check_paths))
         if self.descriptors_function is None:
             check_values = 'values_function' in fields or check_paths
         else:
             check_values = ('values_function' in fields or
                             'descriptors_function' in fields or
+                            'descriptor_cache' in fields or
                             check_paths)
+        graphkeys = self.graphkeys_mode
+        seeds = None  # SeedCheck, once a path is keyed
 
         # go through paths
         for i, path in enumerate(initial_paths):
@@ -615,11 +625,25 @@ class ParamsHelpers(ABC):
                         f'(path types: {types}), taking it as it is.\n'
                          'Perhaps you are using it for brute-force shooting?')
             
-            if check_descrs:
+            if graphkeys and (check_descrs or (
+                    check_values and 'graphkeys' not in path.__dict__)):
+                # Cache graph keys on the Path object (32 B per frame); the
+                # frames' graphs are built if missing, and the keys are
+                # checked against the graph cache after the loop.
+                if seeds is None:
+                    seeds = SeedCheck(self.graphkeys_function)
+                path.graphkeys = seeds.keys(path)
+                path.descriptors = None
+            elif check_descrs:
                 # Cache descriptors on the Path object.
                 path.descriptors = path.compute(self.descriptors_function)
+                path.graphkeys = None
 
-            if check_values:
+            if check_values and graphkeys:
+                # values_function must evaluate graph keys (one value each)
+                check_values_function(self.values_function, path,
+                                      path.graphkeys, self.graphkeys_function)
+            elif check_values:
                 # Ensure values_function returns exactly one value per frame.
                 if self.descriptors_function is not None:
                     source = path.descriptors[:1]
@@ -629,6 +653,9 @@ class ParamsHelpers(ABC):
 
             # reassign path
             self.initial_paths[i] = path
+
+        if seeds is not None:
+            seeds.check()
 
     def _process_and_check_multi_system(self, fields=[]):
         """
@@ -700,17 +727,22 @@ class ParamsHelpers(ABC):
         check_states = ('states' in fields or 'states_function' in fields
                         or check_paths)
         check_descrs = (self.descriptors_function is not None and
-                        ('descriptors_function' in fields or check_paths))
+                        ('descriptors_function' in fields or
+                         'descriptor_cache' in fields or check_paths))
         if self.descriptors_function is None:
             check_values = 'values_function' in fields or check_paths
         else:
             check_values = ('values_function' in fields or
-                            'descriptors_function' in fields or check_paths)
+                            'descriptors_function' in fields or
+                            'descriptor_cache' in fields or check_paths)
         values_takes_sid = accepts_system_id(self.values_function)
+        graphkeys = self.graphkeys_mode
 
         # go through each system's group of paths
         for s, sid in enumerate(system_ids):
             universe = universes[sid]
+            # graph keys: each system's keys are checked against its own cache
+            seeds = None
             for i, path in enumerate(initial_paths[s]):
                 if check_paths:
                     try:
@@ -744,11 +776,24 @@ class ParamsHelpers(ABC):
                               f"transitions (path types: {types}), taking it "
                               f"as it is.")
 
-                if check_descrs:
+                if graphkeys and (check_descrs or (
+                        check_values and 'graphkeys' not in path.__dict__)):
+                    if seeds is None:
+                        seeds = SeedCheck(self.graphkeys_function,
+                                          system_id=sid)
+                    path.graphkeys = seeds.keys(path)
+                    path.descriptors = None
+                elif check_descrs:
                     path.descriptors = path.compute(self.descriptors_function,
                                                     system_id=sid)
+                    path.graphkeys = None
 
-                if check_values:
+                if check_values and graphkeys:
+                    check_values_function(self.values_function, path,
+                                          path.graphkeys,
+                                          self.graphkeys_function,
+                                          system_id=sid)
+                elif check_values:
                     if self.descriptors_function is not None:
                         source = path.descriptors[:1]
                     else:
@@ -760,3 +805,6 @@ class ParamsHelpers(ABC):
                         assert self.values_function(source).shape == (1,)
 
                 self.initial_paths[s][i] = path
+
+            if seeds is not None:
+                seeds.check()

@@ -14,11 +14,17 @@ computed from key rows can be compared with values computed from coordinate
 rows.
 """
 
+import builtins
+import io
+import pickle
+import sqlite3
+from contextlib import contextmanager
+
 import numpy as np
 
 from aimmd.core.graphkey import graph_keys, is_key_batch, keys_to_hex
 from aimmd.network.graph_lookup import (GraphCacheMiss, collect_graphs,
-                                        overlay_get)
+                                        lookup_graphs, overlay_get)
 
 
 def descriptors_function(trajectory):
@@ -82,3 +88,99 @@ class ToyCache:
         rows = np.asarray(rows)
         for h, row in zip(keys_to_hex(graph_keys(rows)), rows):
             self.store[h] = toy_graph(row)
+
+
+class SqliteToyCache:
+    """A toy graph cache in a real sqlite file (the graph_utils schema).
+
+    Key rows go through ``graph_lookup.lookup_graphs`` with the connection,
+    so ``GraphKeysFunction`` finds the cache by its connection and asks it
+    for presence, exactly as with the production cache.
+    """
+
+    def __init__(self, db_path):
+        self.db_path = str(db_path)
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.execute('CREATE TABLE IF NOT EXISTS graphs_cache '
+                          '(key TEXT PRIMARY KEY, data BLOB)')
+        self.conn.commit()
+        self.built = []
+
+    def transform(self, x):
+        if is_key_batch(x):
+            return lookup_graphs(x, self.conn, decode=pickle.loads)
+        x = np.asarray(x)
+        hexes = keys_to_hex(graph_keys(x)) if len(x) else []
+        graphs = []
+        for h, row in zip(hexes, x):
+            blob = self.conn.execute(
+                'SELECT data FROM graphs_cache WHERE key = ?', (h,)).fetchone()
+            if blob is None:
+                graph = toy_graph(row)
+                self.built.append(h)
+                self.conn.execute('INSERT OR REPLACE INTO graphs_cache '
+                                  'VALUES (?, ?)', (h, pickle.dumps(graph)))
+            else:
+                graph = pickle.loads(blob[0])
+            graphs.append(graph)
+        self.conn.commit()
+        collect_graphs(hexes, graphs)
+        return graphs
+
+    def values(self, x):
+        if not len(x):
+            return np.zeros(0)
+        return np.array([g[1] for g in self.transform(x)])
+
+    def add(self, rows):
+        """Store graphs of ``rows`` (as an earlier campaign would have)."""
+        self.transform(np.asarray(rows, dtype=np.float32))
+
+    def count(self):
+        return self.conn.execute('SELECT COUNT(*) FROM graphs_cache').fetchone()[0]
+
+
+class DescriptorFileOpened(AssertionError):
+    """A ``*.descriptors.npy`` file was opened although it must not be."""
+
+
+@contextmanager
+def forbid_descriptor_files(monkeypatch, opened=None):
+    """Fail on any open (read or write) of a ``*.descriptors.npy`` file.
+
+    Covers ``builtins.open`` and ``io.open`` (np.load, np.save, update_npy
+    and pathlib use them) and ``np.load``. ``opened`` collects the
+    offending names, for tests that check the count instead.
+    """
+    original_open = builtins.open
+    original_io_open = io.open
+    original_load = np.load
+    record = opened if opened is not None else []
+
+    def check(file):
+        name = str(getattr(file, 'name', file))
+        if name.endswith('.descriptors.npy'):
+            record.append(name)
+            raise DescriptorFileOpened(f'opened {name!r}')
+
+    def guarded_open(file, *args, **kwargs):
+        check(file)
+        return original_open(file, *args, **kwargs)
+
+    def guarded_io_open(file, *args, **kwargs):
+        check(file)
+        return original_io_open(file, *args, **kwargs)
+
+    def guarded_load(file, *args, **kwargs):
+        check(file)
+        return original_load(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, 'open', guarded_open)
+    monkeypatch.setattr(io, 'open', guarded_io_open)
+    monkeypatch.setattr(np, 'load', guarded_load)
+    try:
+        yield record
+    finally:
+        monkeypatch.setattr(builtins, 'open', original_open)
+        monkeypatch.setattr(io, 'open', original_io_open)
+        monkeypatch.setattr(np, 'load', original_load)

@@ -51,7 +51,8 @@ from ..core.graphkey import KEY_BYTES, keys_to_hex
 
 
 __all__ = ['GraphCacheMiss', 'graph_overlay', 'overlay_get', 'collect_graphs',
-           'capture_connection', 'graphs_present', 'lookup_graphs']
+           'capture_connection', 'graphs_present', 'cache_watermark',
+           'stored_before', 'lookup_graphs']
 
 #: Keys per ``IN (...)`` query: well under SQLite's bound-parameter limit (999
 #: before 3.32), and large enough that a 4096-frame batch is a few statements.
@@ -270,6 +271,54 @@ def graphs_present(keys, conn):
     for h in found:
         present[rows_of[h]] = True
     return present
+
+
+def cache_watermark(conn):
+    """Highest rowid of a graph cache's database: 0 if it holds no graph.
+
+    The table only grows (``INSERT`` of keys that were looked up and
+    missed), so the rows at or below a watermark are the graphs the
+    database held when it was taken (see :func:`stored_before`).
+    """
+    try:
+        row = conn.execute('SELECT MAX(rowid) FROM graphs_cache').fetchone()
+    except sqlite3.Error:
+        return 0
+    return int(row[0] or 0)
+
+
+def stored_before(keys, conn, watermark):
+    """Whether each key's graph was in the database at a watermark.
+
+    Parameters
+    ----------
+    keys : array-like
+        ``(n, 32)`` uint8 graph keys.
+    conn : sqlite3.Connection
+        The graph cache.
+    watermark : int
+        A :func:`cache_watermark` taken earlier.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n,)`` bool: True for keys stored at a rowid up to ``watermark``.
+        Only the database is asked (graphs stored since, the memo, the
+        pending backlog and the overlays do not count); zero rows never
+        count.
+    """
+    keys = _as_keys(keys)
+    hexes = keys_to_hex(keys)
+    distinct = list(dict.fromkeys(
+        h for h, row in zip(hexes, keys) if row.any()))
+    found = set()
+    for start in range(0, len(distinct), _SQL_CHUNK):
+        chunk = distinct[start:start + _SQL_CHUNK]
+        marks = ','.join('?' * len(chunk))
+        found.update(row[0] for row in conn.execute(
+            f'SELECT key FROM graphs_cache WHERE rowid <= ? '
+            f'AND key IN ({marks})', [int(watermark)] + chunk))
+    return np.array([h in found for h in hexes], dtype=bool)
 
 
 def lookup_graphs(keys, conn, decode):
