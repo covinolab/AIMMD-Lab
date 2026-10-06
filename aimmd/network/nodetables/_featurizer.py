@@ -344,6 +344,30 @@ class NodeTableFeaturizer:
                 f'MDAnalysis guessed differently on this host.')
         return descriptors_series
 
+    def with_n_max(self, n_max):
+        """The featurizer of the same graphs with another row capacity.
+
+        Every setting but `n_max` is kept, so the rows of a frame differ only
+        in their padding (see `repack_rows`); the series name changes with
+        `n_max`.
+
+        Parameters
+        ----------
+        n_max : int
+            Maximum number of graph nodes per row.
+
+        Returns
+        -------
+        NodeTableFeaturizer
+            A new featurizer on the same universe. Like any featurizer it
+            overwrites the universe's positions when it featurizes, so use
+            the two one after the other, not concurrently.
+        """
+        return type(self)(self.universe, self.system_selection,
+                          self.environment_selection, self.atom_types,
+                          self.cutoff, n_max=n_max,
+                          max_num_neighbors=self.max_num_neighbors)
+
     # ------------------------------------------------------------------
     # frames -> rows
 
@@ -664,6 +688,70 @@ def _keys(graph):
     return keys() if callable(keys) else keys
 
 
+def repack_rows(rows, n_max):
+    """Node-table rows rewritten for another row capacity.
+
+    The positions and atom types of each row are copied into a layout of
+    capacity `n_max`; zero rows stay zero. The result equals featurizing the
+    same frames with ``featurizer.with_n_max(n_max)``, bit for bit, for every
+    row that is not zero. No trajectory is read.
+
+    Parameters
+    ----------
+    rows : numpy.ndarray
+        float32 node-table rows, shape ``(n_frames, 2 + 4 * n)`` for any
+        capacity ``n``.
+    n_max : int
+        Capacity of the new rows.
+
+    Returns
+    -------
+    numpy.ndarray
+        float32, shape ``(n_frames, 2 + 4 * n_max)``.
+
+    Raises
+    ------
+    NodeTableOverflowError
+        If a row has more than `n_max` nodes (narrowing).
+    ValueError
+        If `rows` are not float32 node-table rows of layout
+        `NODE_TABLE_LAYOUT`, or `n_max` is not a positive integer.
+    """
+    if int(n_max) != n_max or n_max < 1:
+        raise ValueError(f'n_max must be a positive integer, got {n_max!r}')
+    n_max = int(n_max)
+    rows = np.asarray(rows)
+    if rows.ndim != 2:
+        raise ValueError(f'node-table rows must be 2-d, got shape '
+                         f'{rows.shape}')
+    if rows.dtype != np.float32:
+        raise ValueError(f'node-table rows must be float32, got {rows.dtype}')
+    width = rows.shape[1]
+    if width < 6 or (width - 2) % 4:
+        raise ValueError(f'a node-table row has width 2 + 4 * n_max, got '
+                         f'width {width}')
+    old_n_max = (width - 2) // 4
+    n_nodes = rows[:, 0]
+    computed = n_nodes != 0
+    bad = np.flatnonzero(computed & ((rows[:, 1] != NODE_TABLE_LAYOUT) |
+                                     (n_nodes != np.round(n_nodes)) |
+                                     (n_nodes < 0) | (n_nodes > old_n_max)))
+    if len(bad):
+        raise ValueError(f'row(s) {bad[:_MAX_REPORTED_FRAMES].tolist()} are '
+                         f'not layout-{NODE_TABLE_LAYOUT} node-table rows of '
+                         f'width {width}')
+    if len(rows) and n_nodes.max() > n_max:
+        raise NodeTableOverflowError(
+            f'{int((n_nodes > n_max).sum())} row(s) have more than '
+            f'n_max={n_max} nodes (largest {int(n_nodes.max())})')
+    keep = min(old_n_max, n_max)
+    result = np.zeros((len(rows), 2 + 4 * n_max), dtype=np.float32)
+    result[:, :2 + 3 * keep] = rows[:, :2 + 3 * keep]
+    result[:, 2 + 3 * n_max:2 + 3 * n_max + keep] = \
+        rows[:, 2 + 3 * old_n_max:2 + 3 * old_n_max + keep]
+    return result
+
+
 class MultiSystemNodeTableFeaturizer:
     """One `NodeTableFeaturizer` per system, dispatched on ``system_id``.
 
@@ -775,6 +863,12 @@ class MultiSystemNodeTableFeaturizer:
                 f'differs, e.g. an edited selection or atom types that '
                 f'MDAnalysis guessed differently on this host.')
         return descriptors_series
+
+    def with_n_max(self, n_max):
+        """The featurizers of every system with row capacity `n_max`; see
+        `NodeTableFeaturizer.with_n_max`."""
+        return type(self)({system_id: featurizer.with_n_max(n_max)
+                           for system_id, featurizer in self.featurizers.items()})
 
     def descriptors_function(self, trajectory, system_id):
         """`NodeTableFeaturizer.descriptors_function` of system
