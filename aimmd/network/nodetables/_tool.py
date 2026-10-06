@@ -37,6 +37,7 @@ params file once; the work is split into chunks of frames.
 
 from __future__ import annotations
 
+import ast
 import concurrent.futures
 import contextlib
 import io
@@ -130,7 +131,10 @@ def load_featurizer(params_file, name=None):
 
     The file is executed in its own folder, like `aimmd.Params.load` does,
     but no `aimmd.Params` is built (Params.load featurizes the initial paths
-    and saves a params file with this host's paths).
+    and saves a params file with this host's paths). A file that sets
+    ``GRAPH_INPUT`` (as the template does) to another string than
+    ``'nodetables'`` is refused before it runs: in ``'sqlite'`` mode it would
+    open (and could create) its graph cache.
 
     Parameters
     ----------
@@ -148,13 +152,20 @@ def load_featurizer(params_file, name=None):
     Raises
     ------
     UsageError
-        If the file is missing or fails to import (e.g. its pinned
-        ``descriptors_series`` does not match the featurizer), defines no
-        such featurizer or several, or pins another series name.
+        If the file is missing, is not in node-table mode, fails to import
+        (e.g. its pinned ``descriptors_series`` does not match the
+        featurizer), defines no such featurizer or several, or pins another
+        series name.
     """
     params_file = os.path.abspath(params_file)
     if not os.path.isfile(params_file):
         raise UsageError(f'params file {params_file!r} not found')
+    graph_input = _graph_input(params_file)
+    if graph_input not in (None, 'nodetables'):
+        raise UsageError(
+            f'{params_file!r} sets GRAPH_INPUT = {graph_input!r}: switch it '
+            f"to GRAPH_INPUT = 'nodetables' first. It was not executed (in "
+            f"'sqlite' mode it would open its graph cache read-write).")
     try:
         module = _import_module(params_file)
     except Exception as error:
@@ -168,6 +179,29 @@ def load_featurizer(params_file, name=None):
         except ValueError as error:
             raise UsageError(str(error)) from error
     return ParamsFeaturizer(params_file, name, featurizer, pinned)
+
+
+def _graph_input(params_file):
+    """The string a params file assigns to ``GRAPH_INPUT`` at module level
+    (the last such assignment), read without executing the file; None if it
+    assigns none, or something else than a string."""
+    try:
+        tree = ast.parse(Path(params_file).read_text(), params_file)
+    except (SyntaxError, ValueError, UnicodeDecodeError):
+        return None                 # the import reports the error
+    value = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, assigned = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, assigned = [node.target], node.value
+        else:
+            continue
+        if any(isinstance(target, ast.Name) and target.id == 'GRAPH_INPUT'
+               for target in targets):
+            value = (assigned.value if isinstance(assigned, ast.Constant)
+                     and isinstance(assigned.value, str) else None)
+    return value
 
 
 def _import_module(params_file):

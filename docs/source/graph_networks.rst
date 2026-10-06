@@ -139,7 +139,10 @@ The Command-Line Tool
 ``python -m aimmd.network.nodetables`` writes, rewrites and checks the node
 tables of existing runs. It imports the params file (in node-table mode) as a
 module in its folder, without :class:`aimmd.Params`, and takes its featurizer
-(``FEATURIZER``, the only featurizer it defines, or ``--featurizer NAME``). It
+(``FEATURIZER``, the only featurizer it defines, or ``--featurizer NAME``). A
+params file that sets ``GRAPH_INPUT`` to another string is refused before it
+runs, since in ``'sqlite'`` mode it would open its graph cache; a params file
+without ``GRAPH_INPUT`` is run, so do not pass an old one. It
 covers every trajectory of the given run folders that has a states series:
 exported initial paths, chain paths, the halves of shots in flight and
 free-simulation parts. Like AIMMD, it covers the frames that can be read: a

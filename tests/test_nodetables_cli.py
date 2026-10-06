@@ -519,11 +519,38 @@ def test_repack_from_an_older_n_max_and_existing_targets(tmp_path):
 def test_a_params_file_without_featurizer_is_refused(campaign, tmp_path,
                                                      capsys):
     params = Path(campaign.folder) / 'legacy.py'
-    params.write_text("GRAPH_INPUT = 'sqlite'\n")
+    params.write_text("descriptors_function = None\n")
     assert _cli.main(['prefill', '--params', str(params), '--run',
                       campaign.run]) == 2
     err = capsys.readouterr().err
     assert 'NodeTableFeaturizer' in err and "GRAPH_INPUT" in err
+
+
+def test_a_params_file_in_sqlite_mode_is_not_executed(campaign, capsys):
+    """A params file in 'sqlite' mode opens its graph cache when it runs
+    (init_db: read-write, may create the file or -wal and -shm files): the
+    tools refuse it before executing anything."""
+    params = Path(campaign.folder) / 'legacy.py'
+    marker = Path(campaign.folder) / 'graphs_cache.sqlite'
+    params.write_text(
+        "GRAPH_INPUT = 'sqlite'                 # 'nodetables' | 'sqlite'\n"
+        "if GRAPH_INPUT == 'sqlite':\n"
+        f"    open({str(marker)!r}, 'w').close()   # stands for init_db\n")
+    for command in ('prefill', 'verify', 'repack'):
+        argv = [command, '--params', str(params), '--run', campaign.run]
+        if command == 'repack':
+            argv += ['--n-max', '1024']
+        assert _cli.main(argv) == 2
+        err = capsys.readouterr().err
+        assert "GRAPH_INPUT = 'sqlite'" in err and "'nodetables'" in err
+    assert not marker.exists()
+
+    # a GRAPH_INPUT that is not a plain string is left to the import
+    params.write_text("import os\n"
+                      "GRAPH_INPUT = os.environ.get('MODE', 'sqlite')\n")
+    assert _cli.main(['verify', '--params', str(params), '--run',
+                      campaign.run]) == 2
+    assert 'defines no NodeTableFeaturizer' in capsys.readouterr().err
 
 
 def test_a_mismatched_pinned_series_is_refused(campaign, capsys):
