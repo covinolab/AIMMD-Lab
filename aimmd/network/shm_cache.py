@@ -58,6 +58,8 @@ Environment
 ``AIMMD_SHM_RESERVE``      bytes of tmpfs never to consume (default max(4 GiB, 10%))
 ``AIMMD_SHM_MAX_BYTES``    ceiling on total AIMMD replica bytes (default 50% of tmpfs)
 ``AIMMD_SHM_MAX_AGE``      seconds before an orphaned replica dir is reaped (default 3 d)
+``AIMMD_STAGE_DEADLINE``   seconds a cache may take to stage before staging gives up
+                           (default max(300 s, cache size / 50 MB/s))
 ``AIMMD_GRAPH_MEMO_BYTES`` per-connection blob memo budget (default 64 MiB, 0 disables)
 ``AIMMD_PENDING_WRITE_BYTES`` reader backlog held per cache before an early flush
                            (default 256 MiB)
@@ -77,19 +79,30 @@ from .._config import print
 
 __all__ = ['CacheConnection', 'BlobMemo', 'register', 'registered_connections',
            'shm_root', 'replica_path', 'free_bytes', 'reserve_bytes',
-           'budget_bytes', 'stage_cache', 'stage_replicas', 'refresh_replicas',
-           'cleanup_replicas', 'replica_stats', 'detach',
+           'budget_bytes', 'stage_deadline', 'stage_cache', 'stage_replicas',
+           'refresh_replicas', 'cleanup_replicas', 'replica_stats', 'detach',
            'set_reader_role', 'reader_role', 'headroom', 'headroom_line',
            'buffer_write', 'pending_count', 'pending_bytes', 'take_pending']
 
 
 _GIB = 1024 ** 3
-#: Hard wall-clock ceiling for staging ONE cache into tmpfs. The old
-#: ``backup(pages=-1)`` had no ceiling and could block for the whole SLURM
-#: allocation (6-12 h of silent trainer idle observed in production); this bounds
-#: it, and on the ceiling staging degrades to "no replica, read the real DB"
-#: rather than hang. Overridable with ``AIMMD_STAGE_DEADLINE``.
-_STAGE_DEADLINE_SECONDS = float(os.environ.get('AIMMD_STAGE_DEADLINE', 300.0))
+#: Hard wall-clock ceiling, in seconds, for staging ONE cache into tmpfs, set
+#: with ``AIMMD_STAGE_DEADLINE``; None (the default) scales it with the size of
+#: the cache (:func:`stage_deadline`). The old ``backup(pages=-1)`` had no
+#: ceiling and could block for the whole SLURM allocation (6-12 h of silent
+#: trainer idle observed in production); this bounds it, and on the ceiling
+#: staging degrades to "no replica, read the real DB" rather than hang.
+_STAGE_DEADLINE_SECONDS = (float(os.environ['AIMMD_STAGE_DEADLINE'])
+                           if os.environ.get('AIMMD_STAGE_DEADLINE', '').strip()
+                           else None)
+#: Smallest size-scaled staging deadline: the whole deadline up to 15 GB.
+_STAGE_DEADLINE_FLOOR = 300.0
+#: Copy rate the size-scaled deadline allows for. A quarter of the 183 MB/s
+#: measured on JUPITER's GPFS (6.9 GB cache), so that a slow filesystem does
+#: not cost the replica, while a copy that has stalled is still cut off. A
+#: fixed 300 s gave up on caches above about 55 GB, which a graph cache that
+#: grows by about 2.8 GB per job-day reaches within a campaign.
+_STAGE_RATE = 50e6
 #: Sequential copy chunk; matches JUPITER's GPFS block size (8 MiB).
 _COPY_CHUNK = 8 * 1024 * 1024
 #: Busy timeout for the short-lived checkpoint/pin connection used while staging.
@@ -644,6 +657,27 @@ def _snapshot_copy(conn, db_path, partial, deadline_s):
         pin.close()
 
 
+def stage_deadline(nbytes):
+    """Wall-clock ceiling, in seconds, for staging a cache of ``nbytes``.
+
+    ``AIMMD_STAGE_DEADLINE`` if it is set; otherwise
+    ``max(300 s, nbytes / 50 MB/s)``: 300 s up to 15 GB, then growing with
+    the cache, so that a cache too large to copy in 300 s keeps its replica.
+
+    Parameters
+    ----------
+    nbytes : int
+        Size of the cache: database plus WAL.
+
+    Returns
+    -------
+    float
+    """
+    if _STAGE_DEADLINE_SECONDS is not None:
+        return _STAGE_DEADLINE_SECONDS
+    return max(_STAGE_DEADLINE_FLOOR, nbytes / _STAGE_RATE)
+
+
 def stage_cache(conn, shm_dir=None, force=False):
     """Copy one cache into tmpfs and attach the replica to ``conn``.
 
@@ -667,11 +701,12 @@ def stage_cache(conn, shm_dir=None, force=False):
         return None
 
     try:
-        need = os.path.getsize(db_path)
+        nbytes = os.path.getsize(db_path)
         wal = db_path + '-wal'
         if os.path.exists(wal):
-            need += os.path.getsize(wal)
-        need = int(need * 1.05)
+            nbytes += os.path.getsize(wal)
+        need = int(nbytes * 1.05)
+        deadline = stage_deadline(nbytes)
     except OSError as exc:
         _warn_once('size', f'cannot size {db_path} ({exc}); not staging')
         _stage_failed(conn)
@@ -691,7 +726,7 @@ def stage_cache(conn, shm_dir=None, force=False):
     try:
         os.makedirs(root, mode=0o700, exist_ok=True)
         t0 = time.time()
-        _snapshot_copy(conn, db_path, partial, _STAGE_DEADLINE_SECONDS)
+        _snapshot_copy(conn, db_path, partial, deadline)
         os.replace(partial, dst)                    # atomic on tmpfs
         # Move the (now tiny) WAL alongside, or clear any stale one, so the
         # replica opens against a matched pair.
@@ -713,7 +748,7 @@ def stage_cache(conn, shm_dir=None, force=False):
                 pass
         _warn_once(f'stage-{dst}',
                    f'could not stage {os.path.basename(db_path)} within '
-                   f'{_STAGE_DEADLINE_SECONDS:.0f}s ({exc}); '
+                   f'{deadline:.0f}s ({exc}); '
                    f'continuing on the real database')
         _stage_failed(conn)
         return None
