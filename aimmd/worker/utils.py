@@ -1275,10 +1275,12 @@ def select_shooting_point(pool, params, folder,
         chain = PathEnsemble()
     
     # shared density adjustment: obtain shared_shooting_points
-    shared_shooting_points = Path()
+    # (registered chain paths, then frame 0 of the backward halves in flight)
+    shared_shooting_points = registered_shooting_points = Path()
     if shared_density_adjustment:
         shooting_chains = PathEnsemble(shooting_chains)
-        shared_shooting_points = shooting_chains.shooting('self').join()
+        registered_shooting_points = shooting_chains.shooting('self').join()
+        shared_shooting_points = registered_shooting_points
         for fname in glob(f'{folder}/../chain{t}*/back{ext}'):
             shared_shooting_points += Path(fname, stop=1)
 
@@ -1344,7 +1346,10 @@ def select_shooting_point(pool, params, folder,
         populations_for_adjustment = np.zeros_like(populations)
     if shared_density_adjustment:
         try:  # catch instabilities in try/except loop
-            ensure_descriptors(shared_shooting_points, params)
+            # featurize registered paths only: the halves in flight belong
+            # to other workers, which write their series while ingesting
+            # them (and replace them with every shot), so they are only read
+            ensure_descriptors(registered_shooting_points, params)
             shared_populations_for_adjustment = np.histogram(
                 shared_shooting_points.compute(
                     compute_values_args[0], '',

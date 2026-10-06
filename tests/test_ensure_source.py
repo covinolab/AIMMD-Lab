@@ -181,6 +181,40 @@ def test_pool_selection_fills_only_the_frames_lacking_values(tmp_path, capsys):
     NPY_CACHE.clear()
 
 
+def test_shared_density_never_writes_into_shots_in_flight(tmp_path, capsys):
+    """Shared density adjustment also reads frame 0 of the backward halves
+    other workers are running. Their owners write those series while they
+    ingest the frames (and replace the files with every new shot), so a
+    selecting worker must only read them: rows it wrote there could come
+    from a reader of the previous shot and would be taken as computed.
+    Registered chain paths are featurized where needed."""
+    run = tmp_path / "run"
+    own = run / "chainR0"
+    pool_path = _path(own, "path000001", LEADING_X, 3, drop=())
+    other = run / "chainR1"
+    registered = _path(other, "path000001", CURRENT_X, 2,
+                       drop=("descriptors", "values"))
+    in_flight = _path(other, "back", CURRENT_X[:3], 0,
+                      drop=("descriptors", "values", "states"))
+    params = _params(shared_density_adjustment=True)
+    NPY_CACHE.clear()
+    np.random.seed(0)
+
+    select_shooting_point(PathEnsemble(pool_path), params, str(own),
+                          shooting_chains=[PathEnsemble(registered)],
+                          target_state="R")
+
+    out = capsys.readouterr().out
+    assert "=== selecting frame" in out
+    assert not os.path.exists(get_cache_fname(in_flight.fname, "descriptors"))
+    # the registered path's shooting point (x = -0.1, value -1) is counted
+    assert "*** shared adj.  [0 1 0 0]" in out
+    series = load_npy(get_cache_fname(registered.fname, "descriptors"))
+    np.testing.assert_array_equal(
+        series[2], np.asarray(simple_descriptors_function(registered.reader))[2])
+    NPY_CACHE.clear()
+
+
 def test_zero_weight_shooting_point_value_without_series(tmp_path):
     folder = tmp_path / "run" / "chainR0"
     path = _path(folder, "path000001", LEADING_X, 4,
