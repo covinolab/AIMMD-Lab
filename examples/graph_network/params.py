@@ -163,11 +163,13 @@ from aimmd.network import fit as _fit
 
 def fit(params, pathensemble, verbose=False, worker=None):
     # graphs=True batches the rows through descriptor_transform; in_memory=False (graph
-    # inputs are built per batch, not kept for the whole ensemble)
+    # inputs are built per batch, not kept for the whole ensemble); worker lets the trainer
+    # stop a fit early (e.g. near the job's time limit)
     return _fit(params, pathensemble, nbins=0, lr=1e-3, epochs=3000,
                 state_bins='AB', augment='yes', loss_bayesian_factor=20,
                 loss_regularization_weight=1e-8, loss_regularization_exponent=2,
-                in_memory=False, graphs=True, batch_size=32, verbose=verbose)
+                in_memory=False, graphs=True, batch_size=32, verbose=verbose,
+                worker=worker)
 
 
 # --- sampling ----------------------------------------------------------------------------

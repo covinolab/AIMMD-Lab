@@ -116,6 +116,19 @@ def test_the_template_names_the_series_to_pin(tmp_path):
     assert f'pin descriptors_series = {series!r}' in str(info.value)
 
 
+def test_the_template_fit_passes_the_worker_on(tmp_path):
+    """aimmd.network.fit stops a fit early when the trainer's worker asks it
+    to (termination_signal, e.g. near the job's time limit)."""
+    module = _tool._import_module(str(_fill_template(tmp_path)))
+    calls = []
+    module._fit = lambda *args, **kwargs: calls.append(kwargs)
+    worker = object()
+
+    module.fit(None, None, verbose=False, worker=worker)
+
+    assert calls[0]['worker'] is worker
+
+
 @pytest.mark.graph
 def test_the_template_loads_in_node_table_mode(tmp_path, monkeypatch):
     pytest.importorskip('torch_geometric')
