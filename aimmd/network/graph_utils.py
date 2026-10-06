@@ -10,7 +10,6 @@ try:
     from tqdm import tqdm
     from torch_geometric.data import Data
     import MDAnalysis as mda
-    import hashlib
     import pickle
     import gzip
     import lz4.frame  # explicit: a bare `import lz4` does not load lz4.frame
@@ -21,6 +20,7 @@ try:
     import time
     import MDAnalysis.transformations as transformations
     from . import shm_cache
+    from ..core.graphkey import graph_key
 except ImportError as e:
     # A missing dependency raises ModuleNotFoundError (an ImportError subclass),
     # so `except ImportError` still catches it and `pytest.importorskip` skips.
@@ -454,18 +454,19 @@ def get_stable_hash(config: np.ndarray) -> str:
     ----------
     config : np.ndarray
         The configuration to be hashed: one row of the descriptors array (a
-        flattened coordinate frame). The hash, ``sha256(pickle.dumps(config))``,
-        is the graph-cache key, so changing how it is computed invalidates every
-        existing cache.
+        flattened coordinate frame). The hash is the graph-cache key, so
+        changing how it is computed invalidates every existing cache. It is
+        the historical ``sha256(pickle.dumps(config))`` with the pickle bytes
+        pinned to protocol 4 / numpy >= 2 (:func:`aimmd.core.graphkey.graph_key`),
+        so it no longer depends on the default pickle protocol, the numpy
+        version or the array subclass.
     
     Returns
     -------
     str
-        The stable hash of the configuration.
+        The stable hash of the configuration (64 hex characters).
     """
-    encoded = pickle.dumps(config)
-    stable_hash = hashlib.sha256(encoded).hexdigest()
-    return stable_hash
+    return graph_key(config).hex()
 
 
 def get_graphs_pyg(

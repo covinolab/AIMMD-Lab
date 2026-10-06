@@ -20,6 +20,12 @@ import os
 import numpy as np
 import pytest
 
+# The golden graph-cache rows and digests are shared with
+# tests/test_graphkeys_key.py, which pins the key itself without the graph
+# stack (so it runs by default).
+from tests.test_graphkeys_key import (GOLDEN_DESCRIPTORS as _GOLDEN_DESCRIPTORS,
+                                      GOLDEN_KEYS as _GOLDEN_KEYS)
+
 
 # Graph imports can trigger matplotlib cache initialization through the wider
 # dependency stack, so we direct that cache to a writable temp location.
@@ -302,31 +308,15 @@ def test_process_descriptors_pyg_returns_a_graph_list(tmp_path, monkeypatch):
         conn.close()
 
 
-#: Float32 descriptor rows and their graph-cache keys, as computed by the
-#: implementation the existing caches were written with. Production caches are
-#: multi-GB and addressed by exactly these digests.
-_GOLDEN_DESCRIPTORS = np.array(
-    [
-        [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.25, 0.0, 0.0, 0.0, 1.25, 0.0],
-    ],
-    dtype=np.float32,
-)
-_GOLDEN_KEYS = [
-    "f66d06949ad999a67ee8c6109595f0eda6cb4b866d4aec961970b1015b914c38",
-    "c945a700bc74b9e7c0e067049451cccfb6cfd8a89c4bdb7faf2645dba7d8713c",
-]
-
-
 def test_graph_cache_keys_match_the_golden_digests(tmp_path):
     """Cache keys must never change by accident.
 
-    The key is ``sha256(pickle.dumps(row))`` of each descriptor row. A change to
-    `get_stable_hash`, or to how `process_descriptors_pyg` derives its keys,
-    would silently turn every existing graph cache into a full recompute. The
-    digests also depend on pickle's default protocol (4 up to Python 3.13; 3.14
-    made it 5) and on numpy's pickle format, so an upgrade that changes either
-    is caught here as well.
+    The key is ``sha256(pickle.dumps(row))`` of each descriptor row, pinned to
+    pickle protocol 4 / numpy >= 2 by `aimmd.core.graphkey.graph_key` (checked
+    on its own, without the graph stack, in tests/test_graphkeys_key.py). A
+    change to `get_stable_hash`, or to how `process_descriptors_pyg` derives
+    its keys, would silently turn every existing graph cache into a full
+    recompute.
     """
     import pickle
     import sys
