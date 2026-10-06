@@ -20,6 +20,7 @@ params file (no torch_geometric), all workers run in this process:
 
 import glob
 import os
+from collections import Counter
 from pathlib import Path as PosixPath
 
 import numpy as np
@@ -245,10 +246,16 @@ def test_switch_to_graph_keys_and_back(campaign, monkeypatch, capsys):
         aimmd.Worker(params, 'run1', nframes=_more_frames(run, 20),
                      walltime=120).free(0, 0, 1)
 
-        # two graphs of the newest registered path are lost
+        # two graphs of the newest registered path are lost, of frames no
+        # other trajectory shares (a path shares its shooting point with
+        # the path it was shot from, and the trainer counts every frame)
         newest = sorted(glob.glob(f'{chain}/path*.xtc'))[-1]
         assert newest not in npy_era
-        lost = keys_to_hex(np.load(f'{newest}.graphkeys.npy')[[1, 2]])
+        frames = Counter(h for fname in _trajectories(run)
+                         for h in keys_to_hex(graph_keys(_rows(fname))))
+        lost = [h for h in keys_to_hex(np.load(f'{newest}.graphkeys.npy'))[1:]
+                if frames[h] == 1][:2]
+        assert len(lost) == 2
         for h in lost:
             graphs.pop(h)
         aimmd.Worker(params, 'run1', walltime=120).train(nrounds=1)
