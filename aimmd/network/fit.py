@@ -30,6 +30,15 @@ The training objective is a log-binomial loss (optionally modified near the end
 states by a Bayesian-like quadratic penalty), with optional smoothness and L1
 regularization terms.
 
+Graph keys
+----------
+With ``Params.descriptor_cache = 'graphkeys'`` (:mod:`aimmd.network.graph_keys`)
+no descriptor rows are stored: every batch is read as graph keys from
+``<traj>.graphkeys.npy`` and ``descriptor_transform`` looks its graphs up in the
+graph cache by key. A frame without a key, or whose graph is missing, is rebuilt
+from its trajectory on the way. This needs ``graphs=True``; ``in_memory`` is
+ignored (key rows are always read per batch).
+
 Side effects
 ------------
 :func:`fit` **modifies the network in-place**. Training begins after calling
@@ -54,9 +63,11 @@ from ..core.utils import concatenate, now, accepts_system_id
 from ..analysis.utils import compute_bins, merge_marginal_bins
 from ..path.utils import get_cache_fname
 from .._config import NPY_CACHE
+from .graph_keys import (GraphKeysFunction, call_with_repair, load_keys,
+                         uses_graph_keys)
 
 
-def _load_batch_descriptors(npy_paths, locs):
+def _load_batch_descriptors(npy_paths, locs, keys=False):
     """Load a batch of raw descriptors by indexing per-trajectory NPY cache files.
 
     Groups frame lookups by file to avoid redundant disk reads within a batch.
@@ -64,15 +75,23 @@ def _load_batch_descriptors(npy_paths, locs):
     Parameters
     ----------
     npy_paths : array-like of str
-        Descriptor ``.npy`` file path for each frame in the batch.
+        Descriptor ``.npy`` file path for each frame in the batch; with
+        ``keys``, the trajectory file of each frame instead.
     locs : array-like of int
         Absolute frame index within the corresponding ``.npy`` file.
+    keys : bool, default False
+        Load graph keys (``descriptor_cache='graphkeys'``): the key rows of
+        the frames, from the key file of each trajectory
+        (:func:`aimmd.network.graph_keys.load_keys`).
 
     Returns
     -------
     numpy.ndarray
-        Raw descriptor array, shape ``(batch, *frame_shape)``.
+        Raw descriptor array, shape ``(batch, *frame_shape)``; with ``keys``,
+        ``(batch, 32)`` uint8 key rows, all-zero for frames without a key.
     """
+    if keys:
+        return load_keys(npy_paths, locs)
     result = [None] * len(npy_paths)
     cache = {}
     for i, (npy_path, loc) in enumerate(zip(npy_paths, locs)):
@@ -87,46 +106,72 @@ def _load_batch_descriptors(npy_paths, locs):
     return np.array(result)
 
 
-def _batch_files(fnames):
+def _batch_files(fnames, keys=False):
     """Per-frame files that ``fit(in_memory=False)`` reads batches from.
 
     Parameters
     ----------
     fnames : array-like of str
         Trajectory file of each frame (the ``'filenames'`` series).
+    keys : bool, default False
+        Graph keys: the files are the trajectories themselves. Their key
+        rows are read from ``<traj>.graphkeys.npy``, and a frame whose graph
+        is missing is rebuilt from the trajectory.
 
     Returns
     -------
     numpy.ndarray
-        The descriptor cache file of each frame's trajectory.
+        The descriptor cache file of each frame's trajectory, or with
+        ``keys`` the trajectory file.
     """
+    if keys:
+        return np.asarray(fnames).astype(str)
     return np.array([get_cache_fname(f, 'descriptors') for f in fnames])
 
 
-def _transform_batch(descriptor_transform, files, locs, system_id=None):
+def _transform_batch(descriptor_transform, files, locs, keys=False,
+                     system_id=None, keys_function=None):
     """Network inputs of a batch of frames, read from their files.
 
     Every batch that ``fit(in_memory=False)`` reads -- training, validation,
     LSR and MAR, single- and multi-system -- goes through this helper:
     ``descriptor_transform(_load_batch_descriptors(files, locs))``.
 
+    With ``keys`` the batch is read as graph keys instead and the transform
+    looks its graphs up by key, through
+    :func:`aimmd.network.graph_keys.call_with_repair`: frames without a key
+    or whose graph is missing are rebuilt from their trajectories (``files``,
+    ``locs``) and the call is retried, so a graph-cache miss never ends a
+    fit.
+
     Parameters
     ----------
     descriptor_transform : callable
-        Raw descriptor rows -> network inputs (an array, or a list of graphs).
+        Raw descriptor rows -> network inputs (an array, or a list of graphs);
+        with ``keys``, key rows -> graphs.
     files : array-like of str
         Per-frame file, from :func:`_batch_files`.
     locs : array-like of int
         Frame index of each frame in its file.
+    keys : bool, default False
+        Read graph keys (``descriptor_cache='graphkeys'``).
     system_id : hashable, optional
         Passed to ``descriptor_transform`` as a keyword (multi-system batches;
-        the caller passes it only to a transform that accepts it).
+        the caller passes it only to a transform that accepts it). With
+        ``keys`` it is forwarded only to the functions that accept it, and
+        selects the system whose frames are repaired.
+    keys_function : aimmd.network.graph_keys.GraphKeysFunction, optional
+        The run's key function, which repairs frames; required with ``keys``.
 
     Returns
     -------
     numpy.ndarray or list
         What ``descriptor_transform`` returns.
     """
+    if keys:
+        rows = _load_batch_descriptors(files, locs, keys=True)
+        return call_with_repair(descriptor_transform, rows, files, locs,
+                                keys_function, system_id)
     raw = _load_batch_descriptors(files, locs)
     if system_id is None:
         return descriptor_transform(raw)
@@ -228,7 +273,7 @@ def _assign_balanced_uniform(selection_probabilities, start, stop,
 
 def _load_batch_descriptors_routed(files, locs, system_id, system_labels,
                                    descriptor_transform, transform_takes_sid,
-                                   graphs):
+                                   graphs, keys=False, keys_function=None):
     """Per-batch descriptor build for multi-system, ``in_memory=False``.
 
     A training batch mixes frames from several systems (different topologies /
@@ -237,14 +282,19 @@ def _load_batch_descriptors_routed(files, locs, system_id, system_labels,
     ``system_id`` into the shared network's input space
     (:func:`_transform_batch`), then reassembled in the original batch order.
     Returns a list of ``Data`` (graphs) or a 2D array (dense).
+
+    With graph ``keys`` each group's key rows are looked up, and repaired,
+    with its own system's functions, so its ``system_id`` is always passed on
+    (to the functions that accept it).
     """
     out = [None] * len(files)
     for j in np.unique(system_id):
         sel = np.flatnonzero(system_id == j)
         label = system_labels[j]
         transformed = _transform_batch(
-            descriptor_transform, files[sel], locs[sel],
-            system_id=label if transform_takes_sid else None)
+            descriptor_transform, files[sel], locs[sel], keys=keys,
+            system_id=label if transform_takes_sid or keys else None,
+            keys_function=keys_function)
         for k, idx in enumerate(sel):
             out[idx] = transformed[k]
     if graphs:
@@ -371,6 +421,15 @@ def fit(params,
         - ``params.descriptor_transform`` : callable or None
             Optional transformation applied to raw descriptors to obtain network
             inputs. If None, an identity transform is used.
+        - ``params.descriptor_cache`` : str, optional
+            ``'graphkeys'`` (with a ``descriptors_function``): batches are
+            read as graph keys and ``descriptor_transform`` looks their graphs
+            up by key (see `in_memory` and `graphs`). Read with ``getattr``;
+            default ``'npy'``.
+        - ``params.graphkeys_function`` : optional
+            The run's :class:`~aimmd.network.graph_keys.GraphKeysFunction`,
+            which repairs frames in graph-key mode; built from
+            ``descriptors_function`` and ``descriptor_transform`` if absent.
 
 
     pathensemble : PathEnsemble
@@ -496,11 +555,17 @@ def fit(params,
           Peak RAM is proportional to one batch rather than the full dataset,
           at the cost of repeated disk I/O and transform overhead each epoch.
 
+        With ``params.descriptor_cache = 'graphkeys'`` this is ignored (with a
+        notice): each batch reads the 32-byte graph keys of its frames from
+        ``<traj>.graphkeys.npy`` and looks their graphs up by key, repairing
+        frames whose key or graph is missing from their trajectories.
+
     graphs : bool, default=False
         If True, descriptors (after ``descriptor_transform``) are assumed to be
         lists of ``torch_geometric.data.Data`` graphs (e.g. as returned by
         ``process_descriptors_pyg(...)['data_list']``), requiring
-        `torch_geometric` for batching.
+        `torch_geometric` for batching. Required with
+        ``params.descriptor_cache = 'graphkeys'`` (ValueError otherwise).
 
     lsr_weight : float, default=0.0
         If non-zero, add a latent space regularization (LSR) term to the loss,
@@ -566,6 +631,29 @@ def fit(params,
         raise TypeError(f"Invalid batching strategy: {batching_strategy}")
     if augment not in ('no', 'yes', 'experimental'):
         raise TypeError(f"Invalid augment: {augment!r}")
+
+    # Graph-key runs (descriptor_cache='graphkeys'): every batch is read as
+    # graph keys from <traj>.graphkeys.npy, and descriptor_transform looks its
+    # graphs up by key; frames whose key or graph is missing are repaired.
+    keys = uses_graph_keys(params)
+    keys_function = None
+    if keys:
+        if not graphs:
+            raise ValueError(
+                "fit: with descriptor_cache='graphkeys' the network trains on "
+                "graphs looked up by key; call fit with graphs=True")
+        if params.descriptor_transform is None:
+            raise ValueError(
+                "fit: descriptor_cache='graphkeys' needs a "
+                "descriptor_transform that looks graphs up by key")
+        if in_memory:
+            print("... fit: descriptor_cache='graphkeys' reads the graph keys "
+                  "of every batch from <traj>.graphkeys.npy; in_memory=True "
+                  "is ignored")
+            in_memory = False
+        keys_function = (getattr(params, 'graphkeys_function', None)
+                         or GraphKeysFunction(params.descriptors_function,
+                                              params.descriptor_transform))
 
     # Optional dependency only when graph descriptors are enabled
     if graphs:
@@ -795,7 +883,7 @@ def fit(params,
             desc_fnames = np.concatenate(_fn) if _fn else np.array([])
             desc_locs = (np.concatenate(_lc) if _lc
                          else np.array([], dtype=int))
-            desc_files = _batch_files(desc_fnames)
+            desc_files = _batch_files(desc_fnames, keys=keys)
 
     # Report collection statistics
     lengths = [len(in1_back), len(in2_back),
@@ -932,10 +1020,12 @@ def fit(params,
                 pathensemble, lsr_key_B, lsr_lagtime, 'filenames')
             lc_t_B, lc_tau_B, _, _ = extract_lsr_pairs(
                 pathensemble, lsr_key_B, lsr_lagtime, 'locs')
-            lsr_files_t_A, lsr_locs_t_A     = _batch_files(fn_t_A),   lc_t_A
-            lsr_files_tau_A, lsr_locs_tau_A = _batch_files(fn_tau_A), lc_tau_A
-            lsr_files_t_B, lsr_locs_t_B     = _batch_files(fn_t_B),   lc_t_B
-            lsr_files_tau_B, lsr_locs_tau_B = _batch_files(fn_tau_B), lc_tau_B
+            lsr_files_t_A   = _batch_files(fn_t_A, keys=keys)
+            lsr_files_tau_A = _batch_files(fn_tau_A, keys=keys)
+            lsr_files_t_B   = _batch_files(fn_t_B, keys=keys)
+            lsr_files_tau_B = _batch_files(fn_tau_B, keys=keys)
+            lsr_locs_t_A, lsr_locs_tau_A = lc_t_A, lc_tau_A
+            lsr_locs_t_B, lsr_locs_tau_B = lc_t_B, lc_tau_B
         n_lsr_pairs = n_lsr_A + n_lsr_B
         print(f'   {n_lsr_A} A-origin pairs ({n_sel_A} paths), '
               f'{n_lsr_B} B-origin pairs ({n_sel_B} paths)')
@@ -967,7 +1057,8 @@ def fit(params,
             lc_seqs, _, _ = extract_mar_sequences(
                 pathensemble, mar_key_used, mar_lagtime, 'locs')
             for fn_seq, lc_seq in zip(fn_seqs, lc_seqs):
-                mar_sequences_refs.append((_batch_files(fn_seq), lc_seq))
+                mar_sequences_refs.append(
+                    (_batch_files(fn_seq, keys=keys), lc_seq))
         print(f'   {n_mar_sequences} sequences ({n_mar_sel} paths selected)')
         if must_stop():
             return [], [], [], [], []
@@ -1000,7 +1091,7 @@ def fit(params,
                                          free1to2_desc_ref[1], free2to1_desc_ref[1],
                                          shot1to1_desc_ref[1], shot2to2_desc_ref[1],
                                          shot1to2_desc_ref[1], shot2to1_desc_ref[1]])
-            desc_files = _batch_files(desc_fnames)
+            desc_files = _batch_files(desc_fnames, keys=keys)
     results = concatenate([in1_results, in2_results,
                            free1to1_results, free2to2_results,
                            free1to2_results, free2to1_results,
@@ -1186,7 +1277,8 @@ def fit(params,
             else:
                 d_val = _transform_batch(
                     descriptor_transform, desc_files[validation_indices],
-                    desc_locs[validation_indices])
+                    desc_locs[validation_indices], keys=keys,
+                    keys_function=keys_function)
             d_val = torch.tensor(d_val, dtype=dtype, device=device)
             d_val.requires_grad = True
         else:
@@ -1199,7 +1291,8 @@ def fit(params,
             else:
                 d_val_list = _transform_batch(
                     descriptor_transform, desc_files[validation_indices],
-                    desc_locs[validation_indices])
+                    desc_locs[validation_indices], keys=keys,
+                    keys_function=keys_function)
             d_val = Batch.from_data_list(d_val_list).to(device).to_dict()
         r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
     
@@ -1343,10 +1436,12 @@ def fit(params,
                 d = _load_batch_descriptors_routed(
                     desc_files[indices], desc_locs[indices],
                     system_id[indices], system_labels, descriptor_transform,
-                    transform_takes_sid, graphs=False)
+                    transform_takes_sid, graphs=False, keys=keys,
+                    keys_function=keys_function)
             else:  # load raw frames on-the-fly from NPY_CACHE, then transform
                 d = _transform_batch(descriptor_transform, desc_files[indices],
-                                     desc_locs[indices])
+                                     desc_locs[indices], keys=keys,
+                                     keys_function=keys_function)
             d = torch.tensor(d, dtype=dtype, device=device)
             d.requires_grad = True
         else:
@@ -1360,10 +1455,12 @@ def fit(params,
                 d = _load_batch_descriptors_routed(
                     desc_files[indices], desc_locs[indices],
                     system_id[indices], system_labels, descriptor_transform,
-                    transform_takes_sid, graphs=True)
-            else:  # load raw frames on-the-fly from NPY_CACHE
+                    transform_takes_sid, graphs=True, keys=keys,
+                    keys_function=keys_function)
+            else:  # load raw frames (or graph keys) on-the-fly
                 d = _transform_batch(descriptor_transform, desc_files[indices],
-                                     desc_locs[indices])
+                                     desc_locs[indices], keys=keys,
+                                     keys_function=keys_function)
             d = Batch.from_data_list(d).to(device).to_dict()
 
         # flatten non-graph descriptors for dense networks
@@ -1467,10 +1564,12 @@ def fit(params,
                     # the frames drawn on both sides form one batch per lag end
                     dv_t = _transform_batch(
                         descriptor_transform,
-                        *map(np.concatenate, zip(*ref_t_segs)))
+                        *map(np.concatenate, zip(*ref_t_segs)),
+                        keys=keys, keys_function=keys_function)
                     dv_tau = _transform_batch(
                         descriptor_transform,
-                        *map(np.concatenate, zip(*ref_tau_segs)))
+                        *map(np.concatenate, zip(*ref_tau_segs)),
+                        keys=keys, keys_function=keys_function)
 
                 if not graphs:
                     dv_t = torch.flatten(
@@ -1500,7 +1599,8 @@ def fit(params,
                     else:
                         files_seq, lc_seq = mar_sequences_refs[pidx]
                         seq = _transform_batch(descriptor_transform,
-                                               files_seq, lc_seq)
+                                               files_seq, lc_seq, keys=keys,
+                                               keys_function=keys_function)
                     if not graphs:
                         dv_mar = torch.flatten(
                             torch.tensor(seq, dtype=dtype, device=device),

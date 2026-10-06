@@ -40,13 +40,17 @@ def toy_graph(row):
 
 
 class ToyCache:
-    """A dict-backed graph cache with a key-aware transform."""
+    """A dict-backed graph cache with a key-aware transform.
 
-    def __init__(self, fail_store=False):
+    ``graph(row)`` builds the graph of a frame (default :func:`toy_graph`).
+    """
+
+    def __init__(self, fail_store=False, graph=toy_graph):
         self.store = {}
         self.built = []
         self.calls = []
         self.fail_store = fail_store
+        self.graph = graph
 
     def transform(self, x):
         if is_key_batch(x):
@@ -71,7 +75,7 @@ class ToyCache:
         for h, row in zip(hexes, x):
             graph = self.store.get(h)
             if graph is None:
-                graph = toy_graph(row)
+                graph = self.graph(row)
                 self.built.append(h)
                 if not self.fail_store:
                     self.store[h] = graph
@@ -87,7 +91,7 @@ class ToyCache:
     def cache(self, rows):
         rows = np.asarray(rows)
         for h, row in zip(keys_to_hex(graph_keys(rows)), rows):
-            self.store[h] = toy_graph(row)
+            self.store[h] = self.graph(row)
 
 
 class SqliteToyCache:
