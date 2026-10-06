@@ -21,6 +21,7 @@ import os
 import shutil
 import subprocess
 import sys
+import warnings
 
 import numpy as np
 import pytest
@@ -105,8 +106,8 @@ def _key_file(fname):
 @pytest.fixture(autouse=True)
 def _toy_rows(monkeypatch):
     """Key frames with the toy descriptors function: no torch_geometric."""
-    monkeypatch.setattr(cli, '_default_rows_function',
-                        lambda: descriptors_function)
+    monkeypatch.setattr(cli, 'ROWS_FUNCTION',
+                        'tests._helpers_graphkeys:descriptors_function')
 
 
 def _backfill(toy, **kwargs):
@@ -198,6 +199,39 @@ def test_backfill_writes_no_offsets_file_into_the_run(toy):
                    for name in files)
 
 
+def test_workers_are_not_forked_from_this_process(toy):
+    """Forking a process that runs threads (torch_geometric starts one,
+    OpenMP pools more) can deadlock the child: the workers come from a fork
+    server, and the graph stack is imported only by them."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        report = _backfill(toy, jobs=2)
+    assert report['ok'], report['problems']
+    assert not [w for w in caught if 'fork' in str(w.message)]
+
+
+def test_rows_function_by_name_or_function(toy):
+    first = _backfill(toy, jobs=2)
+    tree = _tree(toy['run'])
+    for fname in _ingested(toy).values():
+        os.remove(_key_file(fname))
+    second = _backfill(toy, jobs=2, rows_function=descriptors_function)
+    assert first['ok'] and second['ok']
+    assert _tree(toy['run']) == tree
+
+
+@pytest.mark.parametrize('jobs', [1, 2])
+def test_rows_function_that_cannot_be_imported_fails_early(toy, jobs,
+                                                         monkeypatch):
+    with pytest.raises(ImportError):
+        _backfill(toy, jobs=jobs, rows_function='aimmd.no_such_module:rows')
+    with pytest.raises(ImportError):
+        _backfill(toy, jobs=jobs, rows_function='aimmd.network:no_such_name')
+    assert not any(os.path.exists(_key_file(f)) for f in toy['trajs'].values())
+    monkeypatch.setattr(cli, 'ROWS_FUNCTION', 'aimmd.no_such_module:rows')
+    assert cli.main(['backfill', '--run', toy['run'], '-j', str(jobs)]) == 2
+
+
 def test_only_missing_is_idempotent(toy):
     _backfill(toy)
     tree = _tree(toy['run'])
@@ -283,10 +317,11 @@ def test_backfill_never_writes_the_db_or_opens_descriptors(toy, monkeypatch):
     folder = os.path.dirname(toy['db'])
     before = {f: _digest(os.path.join(folder, f)) for f in os.listdir(folder)
               if f.startswith('graphs_cache')}
-    with forbid_descriptor_files(monkeypatch) as opened:
-        report = _backfill(toy, jobs=2)
+    with forbid_descriptor_files(monkeypatch) as opened:    # in this process
+        report = _backfill(toy)
     assert report['ok'], report['problems']
     assert opened == []
+    assert _backfill(toy, jobs=2)['ok']
     after = {f: _digest(os.path.join(folder, f)) for f in os.listdir(folder)
              if f.startswith('graphs_cache')}
     assert after == before

@@ -73,6 +73,7 @@ without a graph; if ``gc`` refuses. 2 on a usage error.
 
 # external
 import argparse
+import importlib
 import json
 import multiprocessing
 import os
@@ -84,6 +85,7 @@ import time
 import urllib.parse
 from concurrent.futures import (FIRST_COMPLETED, Future, ProcessPoolExecutor,
                                 wait)
+from contextlib import contextmanager
 import numpy as np
 from filelock import FileLock
 from MDAnalysis.coordinates.core import reader as Reader
@@ -99,7 +101,12 @@ from .graph_keys import SERIES, key_file
 
 
 __all__ = ['trajectories', 'backfill', 'verify', 'gc', 'main',
-           'MISSING_LIMIT']
+           'MISSING_LIMIT', 'ROWS_FUNCTION']
+
+#: The rows ``backfill`` keys, as ``'module:function'``: the all-atom
+#: coordinate rows of graph runs. Imported only by the worker processes.
+ROWS_FUNCTION = ('aimmd.network.graph_utils:'
+                 'atom_coordinate_descriptors_function')
 
 #: Fraction of keys without a graph, in a cache that holds graphs, above
 #: which ``backfill`` and ``verify`` fail.
@@ -117,6 +124,13 @@ _SQL_BATCH = 500
 
 #: The covering-index scan of every key of a graph cache.
 _KEY_SCAN = 'SELECT key FROM graphs_cache'
+
+#: Thread counts of the numerical libraries, 1 in the worker processes.
+_THREAD_VARIABLES = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS',
+                     'OPENBLAS_NUM_THREADS')
+
+# rows functions resolved in this process, by 'module:function'
+_RESOLVED = {}
 
 
 # ---------------------------------------------------------- the run folder --
@@ -289,23 +303,67 @@ class _Inline:
 
 
 def _pool(jobs):
-    """``jobs`` worker processes, or :class:`_Inline` for one."""
+    """``jobs`` worker processes, or :class:`_Inline` for one.
+
+    The workers come from a fork server that has imported this module (and
+    with it aimmd) once: forking the calling process instead could deadlock
+    the workers, since importing torch_geometric starts a thread and the
+    numerical libraries may run thread pools. Without a fork server
+    (Windows), they are spawned, and import aimmd each.
+    """
     if jobs <= 1:
         return _Inline()
-    # forked workers inherit the imported modules; spawned ones would import
-    # aimmd (and torch) again, about 5 s each
-    context = (multiprocessing.get_context('fork')
-               if 'fork' in multiprocessing.get_all_start_methods() else None)
+    if 'forkserver' in multiprocessing.get_all_start_methods():
+        context = multiprocessing.get_context('forkserver')
+        context.set_forkserver_preload(['aimmd.network.graph_keys_cli'])
+    else:
+        context = multiprocessing.get_context('spawn')
     return ProcessPoolExecutor(max_workers=jobs, mp_context=context)
 
 
-def _default_rows_function():
-    """``graph_utils.atom_coordinate_descriptors_function``.
+@contextmanager
+def _one_thread():
+    """Processes started inside the block run single-threaded numerics.
 
-    Imported on use: graph_utils needs the graph stack (torch_geometric).
+    The fork server and the workers inherit the environment at their
+    start; the caller's is restored on leaving.
     """
-    from .graph_utils import atom_coordinate_descriptors_function
-    return atom_coordinate_descriptors_function
+    saved = {name: os.environ.get(name) for name in _THREAD_VARIABLES}
+    os.environ.update(dict.fromkeys(_THREAD_VARIABLES, '1'))
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def _rows_function(rows):
+    """The rows function: ``rows`` itself, or imported from
+    ``'module:function'`` (once per process).
+
+    Raises
+    ------
+    ImportError
+        If the module or the function cannot be imported.
+    """
+    if callable(rows):
+        return rows
+    if rows not in _RESOLVED:
+        module, _, name = str(rows).partition(':')
+        try:
+            _RESOLVED[rows] = getattr(importlib.import_module(module), name)
+        except AttributeError as exception:
+            raise ImportError(f'cannot import {name!r} from {module!r}, the '
+                              f'rows function {rows!r}') from exception
+    return _RESOLVED[rows]
+
+
+def _check_task(rows):
+    """Import the rows function in a worker (to fail before any work)."""
+    _rows_function(rows)
 
 
 def _link(scratch, index, fname):
@@ -339,8 +397,10 @@ def _index_task(link):
     return frames, time.perf_counter() - start
 
 
-def _keys_task(link, frames, rows_function):
+def _keys_task(link, frames, rows):
     """Keys of ``frames`` (sorted, distinct) of a trajectory.
+
+    ``rows`` is the rows function or its ``'module:function'``.
 
     Returns
     -------
@@ -348,6 +408,7 @@ def _keys_task(link, frames, rows_function):
         ``(keys, cpu seconds, wall seconds)``.
     """
     cpu, wall = time.process_time(), time.perf_counter()
+    rows_function = _rows_function(rows)
     reader = Reader(link)                     # offsets from the index task
     try:
         keys = np.empty((len(frames), KEY_BYTES), dtype=np.uint8)
@@ -494,7 +555,7 @@ class _Backfill:
             else:
                 self.plan[fname] = {'target': target, 'stored': stored}
 
-    def run(self, pool, scratch, rows_function, verify_npy, seed, verbose):
+    def run(self, pool, scratch, rows, verify_npy, seed, verbose):
         """Index, key and store every planned trajectory; spot-check.
 
         Every trajectory is indexed by one task; its frames are then keyed
@@ -529,7 +590,7 @@ class _Backfill:
                     self.spots[fname] = result
                 elif record['error'] is None:
                     if kind == 'index':
-                        tasks = self._indexed(fname, result, rows_function)
+                        tasks = self._indexed(fname, result, rows)
                         for task, part in tasks:
                             future = pool.submit(*task)
                             pending[future] = ('keys', fname, part)
@@ -538,7 +599,7 @@ class _Backfill:
                     if not self.plan[fname]['left']:
                         self._write(fname, verbose)
 
-    def _indexed(self, fname, result, rows_function):
+    def _indexed(self, fname, result, rows):
         """Plan the key tasks of an indexed trajectory."""
         record, state = self.files[fname], self.plan[fname]
         frames, record['index_s'] = result
@@ -551,7 +612,7 @@ class _Backfill:
         state['todo'] = todo
         state['keys'] = np.zeros((len(todo), KEY_BYTES), dtype=np.uint8)
         tasks = [((_keys_task, state['link'], todo[begin:begin + _CHUNK],
-                   rows_function), (begin, len(todo[begin:begin + _CHUNK])))
+                   rows), (begin, len(todo[begin:begin + _CHUNK])))
                  for begin in range(0, len(todo), _CHUNK)]
         state['left'] = len(tasks)
         return tasks
@@ -653,9 +714,11 @@ def backfill(runs, db=None, jobs=1, verify_npy=0, out_root=None,
         covers its ingested frames is not opened.
     extension : str, default '.xtc'
         Trajectory file extension.
-    rows_function : callable, optional
-        ``trajectory -> (n, n_descriptors)`` rows to key; default
-        ``graph_utils.atom_coordinate_descriptors_function``.
+    rows_function : callable or str, optional
+        ``trajectory -> (n, n_descriptors)`` rows to key: a module-level
+        function or its ``'module:function'`` (workers import it); default
+        :data:`ROWS_FUNCTION`, ``graph_utils``'s
+        ``atom_coordinate_descriptors_function``.
     seed : int, default 0
         Seed of the rows ``verify_npy`` draws.
     verbose : bool, default False
@@ -681,6 +744,9 @@ def backfill(runs, db=None, jobs=1, verify_npy=0, out_root=None,
         If ``db`` does not exist.
     ValueError
         If ``out_root`` is given for runs of the same name.
+    ImportError
+        If the rows function cannot be imported (e.g. without the graph
+        stack); nothing is written then.
     """
     start = time.monotonic()
     if db is not None and not os.path.isfile(db):
@@ -691,16 +757,18 @@ def backfill(runs, db=None, jobs=1, verify_npy=0, out_root=None,
             raise ValueError(f'--out-root needs runs with distinct names, '
                              f'got {names}')
     job = _Backfill(runs, out_root, only_missing, extension)
-    if job.plan and rows_function is None:
-        rows_function = _default_rows_function()     # import before forking
+    rows = ROWS_FUNCTION if rows_function is None else rows_function
     scratch = tempfile.mkdtemp(prefix='aimmd-graphkeys-')
-    pool = _pool(jobs)
     keys_start = time.monotonic()
-    try:
-        job.run(pool, scratch, rows_function, verify_npy, seed, verbose)
-    finally:
-        pool.shutdown(wait=True, cancel_futures=True)
-        shutil.rmtree(scratch, ignore_errors=True)
+    with _one_thread():
+        pool = _pool(jobs)
+        try:
+            if job.plan:
+                pool.submit(_check_task, rows).result()
+            job.run(pool, scratch, rows, verify_npy, seed, verbose)
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+            shutil.rmtree(scratch, ignore_errors=True)
     keys_wall = time.monotonic() - keys_start
 
     cached, scan = (set(), 0.0) if db is None else _db_keys(db)
@@ -1091,4 +1159,7 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    # run the module's own main, so that the workers get its functions by
+    # their importable names rather than as __main__'s
+    from aimmd.network.graph_keys_cli import main as _main
+    sys.exit(_main())
