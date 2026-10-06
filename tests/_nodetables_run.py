@@ -56,9 +56,9 @@ def descriptors_function(trajectory):
 Campaign = namedtuple('Campaign', 'folder params run featurizer')
 
 
-def toy_featurizer(folder, n_max=DEFAULT_N_MAX):
+def toy_featurizer(folder, n_max=DEFAULT_N_MAX, structure='toy.gro'):
     """The featurizer of the campaign's params file."""
-    universe = mda.Universe(str(Path(folder) / 'toy.gro'),
+    universe = mda.Universe(str(Path(folder) / structure),
                             to_guess=['types', 'bonds'])
     return NodeTableFeaturizer(universe, SYSTEM_SELECTION,
                                ENVIRONMENT_SELECTION, ATOM_TYPES,
