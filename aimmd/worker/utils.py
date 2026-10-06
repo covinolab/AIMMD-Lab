@@ -842,6 +842,38 @@ def _write_colvar(fname, header, rows):
             fh.write(' '.join(f'{v:.6f}' for v in row) + '\n')
 
 
+def ensure_source(paths, params):
+    """
+    Compute the per-frame series that value passes read, where it is missing.
+
+    Values are computed from the series of ``params.compute_values_args``:
+    cached descriptors, or graph keys with ``descriptor_cache='graphkeys'``.
+    ``Path.compute`` silently skips a file whose source series is missing,
+    so a value pass would return no values for it -- and TPS acceptance
+    would then fail on an empty array. This happens to a path registered in
+    the other ``descriptor_cache`` mode (e.g. right after switching back to
+    'npy') or whose series file was lost. Running the series' own
+    computation first fills it in; when it is complete, that only checks
+    the file the value pass loads anyway.
+
+    Parameters
+    ----------
+    paths : aimmd.Path or aimmd.PathEnsemble
+        The paths about to be evaluated.
+    params : aimmd.Params
+        Run parameters.
+
+    Returns
+    -------
+    int
+        Number of frames computed (0 without a `descriptors_function`).
+    """
+    args = params.compute_descriptors_args
+    if args is None or not len(paths):
+        return 0
+    return paths.compute(*args)
+
+
 def _series_rows(attribute, parts):
     """
     Rows of a per-frame series for a path assembled from trajectory parts.
@@ -1239,6 +1271,10 @@ def select_shooting_point(pool, params, folder,
         params.update_network(f'{folder}/..')
         bins, densities = params.load_bins_and_densities(f'{folder}/..')
 
+        # the values' source series must be there first (see ensure_source)
+        ensure_source(pool, params)
+        ensure_source(overriding_unique, params)
+
         # compute simulated values only where there are none (yet)
         n1 = pool.compute(*compute_values_args,
                           raise_if_error=True)
@@ -1277,6 +1313,7 @@ def select_shooting_point(pool, params, folder,
         populations_for_adjustment = np.zeros_like(populations)
     if shared_density_adjustment:
         try:  # catch instabilities in try/except loop
+            ensure_source(shared_shooting_points, params)
             shared_populations_for_adjustment = np.histogram(
                 shared_shooting_points.compute(
                     compute_values_args[0], '',
@@ -1538,13 +1575,23 @@ def accept_or_reject_last_path(chain, params):
     bin_weights = np.array(list(1 / densities) + [0.])
     # the last bin is for handling special cases outside of bin range
 
-    # get (internal) values
-    source = 'descriptors' if params.descriptors_function else 'reader'
+    # get (internal) values, from the series of `compute_values_args`
+    # (graph keys or descriptors), which must be there first: a leading path
+    # registered in the other descriptor_cache mode has none yet, and a pass
+    # without values would fail below (see ensure_source). Without
+    # descriptors, values_function reads the frames (historical behaviour).
+    values_function, _, source = params.compute_values_args
+    if not params.descriptors_function:
+        source = 'reader'
     batch_size = params.network_batch_size
-    current_values = current[1:-1].compute(
-        params.values_function, source=source, batch_size=batch_size)
-    leading_values = leading[1:-1].compute(
-        params.values_function, source=source, batch_size=batch_size)
+    current_internal = current[1:-1]
+    leading_internal = leading[1:-1]
+    ensure_source(current_internal, params)
+    ensure_source(leading_internal, params)
+    current_values = current_internal.compute(
+        values_function, source=source, batch_size=batch_size)
+    leading_values = leading_internal.compute(
+        values_function, source=source, batch_size=batch_size)
 
     # get bins
     current_bin_indices = np.digitize(current_values, bins) - 1

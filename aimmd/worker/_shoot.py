@@ -125,7 +125,7 @@ from abc import ABC
 from math import inf
 
 # aimmd imports
-from .utils import register_path
+from .utils import register_path, ensure_source
 from .utils import select_shooting_point
 from .utils import update_selection_pool
 from .utils import accept_or_reject_last_path
@@ -576,8 +576,10 @@ class WorkerShoot(ABC):
                         # if not training, since will never feature
                         # in the selection pool
                         si = path.shooting_index
-                        path[si:si + 1].compute(*params.compute_values_args,
-                                                return_result=True)
+                        point = path[si:si + 1]
+                        ensure_source(point, params)
+                        point.compute(*params.compute_values_args,
+                                      return_result=True)
                 
                 else:  # sweep: tag the shot with its source frame, then report
                     # tag the registered shot with the validation frame it was

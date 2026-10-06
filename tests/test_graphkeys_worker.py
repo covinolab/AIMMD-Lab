@@ -227,3 +227,116 @@ def test_shoot_registers_the_series_of_the_run(monkeypatch, tmp_path, cache,
                         next(paths) if not args else aimmd.Path(*args, **kwargs))
     worker._shoot(target_state='R', k=0, sweep=False)
     assert received == [series]
+
+
+# --------------------------------------------------------- ensure source --
+def _transition(folder, stem, n_frames=7, shift=0.0, series=()):
+    """An A -> B transition (only its end frames in A and B), with series."""
+    x = np.linspace(-1.0, 1.0, n_frames)
+    x[1:-1] = np.linspace(-0.45, 0.45, n_frames - 2)
+    positions = np.zeros((n_frames, 2, 3), dtype=np.float32)
+    positions[:, 0, 0] = x
+    positions[:, 1] = [3.0 + shift, 4.0, 5.0]
+    fname = write_trajectory(folder, stem=stem, positions=positions)
+    states = np.where(x <= -0.5, 'A', np.where(x >= 0.5, 'B', 'R'))
+    save_npy(f'{fname}.states.npy', states.astype('<U1'))
+    rows = np.asarray(Path(fname).coordinates, dtype=np.float32)
+    if 'descriptors' in series:
+        save_npy(f'{fname}.descriptors.npy', rows)
+    if 'graphkeys' in series:
+        save_npy(f'{fname}.graphkeys.npy', graph_keys(rows))
+    return fname, rows
+
+
+def _value_params(cache, toy, bins):
+    import aimmd
+    params = aimmd.Params.placeholder.copy()
+    params.__dict__.update(
+        states='ARB', chain_type='tps', selection_pool_size=1,
+        nbins=len(bins) - 1, descriptor_cache=cache,
+        descriptors_function=descriptors_function,
+        descriptor_transform=toy.transform, values_function=toy.values,
+        _default_values_function=False, network_batch_size=4096)
+    params.__dict__['update_network'] = lambda *args, **kwargs: None
+    params.__dict__['load_bins_and_densities'] = (
+        lambda *args, **kwargs: (bins.copy(), np.arange(1.0, len(bins))))
+    return params
+
+
+# the series each mode reads, and the series a path of the other mode has
+_OTHER = {'npy': ('graphkeys',), 'graphkeys': ('descriptors',)}
+_OWN = {'npy': ('descriptors',), 'graphkeys': ('graphkeys',)}
+
+
+def _tps_chain(folder, cache, leading_series):
+    folder.mkdir(parents=True, exist_ok=True)
+    leading, _ = _transition(folder, 'path000001', 7, 0.0, leading_series)
+    current, _ = _transition(folder, 'path000002', 9, 1.0, _OWN[cache])
+    chain = PathEnsemble([Path(leading, shooting_index=3),
+                          Path(current, shooting_index=4)])
+    return chain
+
+
+@pytest.mark.parametrize('cache', ['npy', 'graphkeys'])
+def test_tps_acceptance_on_a_leading_path_of_the_other_mode(
+        tmp_path, monkeypatch, capsys, cache):
+    """The R7 crash: no values for the leading path, then an IndexError."""
+    toy = ToyCache()
+    bins = np.array([-np.inf, 10.0, 12.0, 14.0, np.inf])
+    params = _value_params(cache, toy, bins)
+    monkeypatch.setattr(np.random, 'random', lambda: 0.0)   # always accept
+
+    # reference: the leading path has its series
+    chain = _tps_chain(tmp_path / 'ref', cache, _OWN[cache])
+    from aimmd.worker.utils import accept_or_reject_last_path
+    accept_or_reject_last_path(chain, params)
+    reference = [line for line in capsys.readouterr().out.splitlines()
+                 if 'acceptance probability' in line]
+
+    # the leading path was registered in the other mode
+    NPY_CACHE.clear()
+    chain = _tps_chain(tmp_path / 'switched', cache, _OTHER[cache])
+    accept_or_reject_last_path(chain, params)
+    lines = [line for line in capsys.readouterr().out.splitlines()
+             if 'acceptance probability' in line]
+    assert lines == reference and len(lines) == 1
+    assert chain[-1].weight == 1.0
+    # the leading path's internal frames have their series now
+    leading = chain[0].fname
+    rows = np.asarray(Path(leading).coordinates, dtype=np.float32)
+    internal = slice(1, len(rows) - 1)
+    NPY_CACHE.clear()
+    if cache == 'npy':
+        stored = np.load(f'{leading}.descriptors.npy')
+        assert np.array_equal(stored[internal], rows[internal])
+    else:
+        stored = np.load(f'{leading}.graphkeys.npy')
+        assert np.array_equal(stored[internal], graph_keys(rows)[internal])
+
+
+@pytest.mark.parametrize('cache', ['npy', 'graphkeys'])
+def test_pool_selection_on_a_path_of_the_other_mode(tmp_path, cache):
+    from aimmd.worker.utils import select_shooting_point
+    toy = ToyCache()
+    bins = np.array([-np.inf, 10.0, 12.0, 14.0, np.inf])
+    params = _value_params(cache, toy, bins)
+    params.__dict__['chain_type'] = 'rfps'
+    folder = tmp_path / 'chainR0'
+    folder.mkdir()
+    fname, rows = _transition(folder, 'path000001', 7, 0.0, _OTHER[cache])
+    pool = PathEnsemble(Path(fname, shooting_index=3))
+    np.random.seed(0)
+    point = select_shooting_point(pool, params, str(folder), target_state='R')
+    assert point.n_atoms == 2
+    NPY_CACHE.clear()
+    values = np.load(f'{fname}.values.npy')
+    assert np.array_equal(values, toy.values(rows))
+
+
+def test_ensure_source_is_a_no_op_without_descriptors(tmp_path):
+    import aimmd
+    from aimmd.worker.utils import ensure_source
+    fname, _ = _transition(tmp_path, 'path000001')
+    params = aimmd.Params.placeholder
+    assert ensure_source(PathEnsemble(Path(fname)), params) == 0
+    assert not os.path.exists(f'{fname}.descriptors.npy')
