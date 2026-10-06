@@ -139,6 +139,7 @@ class ParamsIO(ABC):
 
         # in case of problems: restore modules and params fields
         backup_modules = sys.modules.copy()
+        local_module_names = {}
         updated_fields = []
 
         try:
@@ -319,9 +320,15 @@ class ParamsIO(ABC):
             # restore modules, in place: the import system keeps using the
             # dict sys.modules was bound to, so rebinding the name to the
             # backup would leave the two out of step (later imports could
-            # fail half way)
+            # fail half way). Only the modules of the params folder (the
+            # params file and its local modules, under either name) are
+            # dropped; packages first imported by the failed load stay,
+            # since many cannot be executed twice in one process (e.g.
+            # torch_geometric, which registers names in torch)
+            local_names = {*local_module_names, *local_module_names.values()}
             for name in [name for name in sys.modules
-                         if name not in backup_modules]:
+                         if name not in backup_modules
+                         and name in local_names]:
                 del sys.modules[name]
             sys.modules.update(backup_modules)
 
