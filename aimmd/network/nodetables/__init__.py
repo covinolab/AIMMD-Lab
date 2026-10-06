@@ -17,6 +17,9 @@ Public API
 NodeTableFeaturizer
     Frames to node-table rows (``descriptors_function``), rows to graphs or a
     ready batch dict (``graphs``, ``batch_dict``), and the series name.
+MultiSystemNodeTableFeaturizer
+    One featurizer per system of a multi-system run, dispatched on
+    ``system_id``, with one series name for the campaign.
 NodeTableOverflowError
     A graph has more nodes than the rows can hold.
 NODE_TABLE_LAYOUT, DEFAULT_N_MAX, SERIES_PREFIX
@@ -26,5 +29,6 @@ Writing rows needs only numpy and MDAnalysis; building graphs from them needs
 the optional ``graphs`` extra (torch_geometric, torch_cluster).
 """
 
-from ._featurizer import (NodeTableFeaturizer, NodeTableOverflowError,
-                          NODE_TABLE_LAYOUT, DEFAULT_N_MAX, SERIES_PREFIX)
+from ._featurizer import (NodeTableFeaturizer, MultiSystemNodeTableFeaturizer,
+                          NodeTableOverflowError, NODE_TABLE_LAYOUT,
+                          DEFAULT_N_MAX, SERIES_PREFIX)

@@ -660,3 +660,138 @@ def _keys(graph):
     """Keys of a mapping or a torch_geometric Data object."""
     keys = graph.keys
     return keys() if callable(keys) else keys
+
+
+class MultiSystemNodeTableFeaturizer:
+    """One `NodeTableFeaturizer` per system, dispatched on ``system_id``.
+
+    For multi-system runs (``multi_system=True``), where every data function
+    receives a ``system_id`` keyword. Each system has its own featurizer (its
+    topology, selections and `n_max`, hence its own row width; the series
+    files are per trajectory, so per system). All share one `atom_types`
+    table, since they feed one network.
+
+    Parameters
+    ----------
+    featurizers : mapping
+        ``{system_id: NodeTableFeaturizer}``, keyed by ``params.system_ids``.
+        Keys are compared as strings.
+
+    Raises
+    ------
+    ValueError
+        If `featurizers` is empty or the featurizers' `atom_types` differ.
+
+    Notes
+    -----
+    `series` is ``'descriptors-gn'`` and 10 hex characters of a SHA-256 over
+    every system's fingerprint: one name for the campaign, which changes when
+    any system's featurizer changes. As for `NodeTableFeaturizer`, use the
+    methods through module-level wrappers in the params file::
+
+        def descriptors_function(trajectory, system_id):
+            return FEATURIZERS.descriptors_function(trajectory, system_id)
+
+    A multi-system fit transforms every system separately and reassembles
+    the graphs in batch order, so its ``descriptor_transform`` must return
+    graphs (`graphs`), not a batch dict; value passes run per path, hence per
+    system, and can use `batch_dict`.
+    """
+
+    _params_requires_wrapper = True
+
+    def __init__(self, featurizers):
+        self.featurizers = {str(system_id): featurizer
+                            for system_id, featurizer in dict(featurizers).items()}
+        if not self.featurizers:
+            raise ValueError('no featurizers given')
+        tables = {tuple(featurizer.atom_types)
+                  for featurizer in self.featurizers.values()}
+        if len(tables) > 1:
+            raise ValueError(
+                f'the featurizers of all systems must share one atom_types '
+                f'table (the network input), got {sorted(tables)}')
+        self._fingerprint = hashlib.sha256(json.dumps(
+            {system_id: featurizer.fingerprint
+             for system_id, featurizer in self.featurizers.items()},
+            sort_keys=True).encode()).hexdigest()
+
+    def __repr__(self):
+        return (f'{type(self).__name__}(series={self.series!r}, '
+                f'system_ids={self.system_ids})')
+
+    def __getitem__(self, system_id):
+        try:
+            return self.featurizers[str(system_id)]
+        except KeyError:
+            raise KeyError(f'no node-table featurizer for system_id '
+                           f'{system_id!r}; known: {self.system_ids}') from None
+
+    @property
+    def system_ids(self):
+        """list of str: the systems, in the order given."""
+        return list(self.featurizers)
+
+    @property
+    def atom_types(self):
+        """list of str: the shared atom-type table."""
+        return list(next(iter(self.featurizers.values())).atom_types)
+
+    def spec(self):
+        """``{system_id: spec}`` of every system (see
+        `NodeTableFeaturizer.spec`)."""
+        return {system_id: featurizer.spec()
+                for system_id, featurizer in self.featurizers.items()}
+
+    @property
+    def fingerprint(self):
+        """str: SHA-256 (hex) over every system's fingerprint."""
+        return self._fingerprint
+
+    @property
+    def series(self):
+        """str: the campaign's descriptor series name."""
+        return SERIES_PREFIX + self._fingerprint[:10]
+
+    def check_series(self, descriptors_series):
+        """Check a pinned series name; see `NodeTableFeaturizer.check_series`.
+
+        Raises
+        ------
+        ValueError
+            If `descriptors_series` is not `series`.
+        """
+        if descriptors_series != self.series:
+            raise ValueError(
+                f'descriptors_series {descriptors_series!r} does not match '
+                f'these node-table featurizers, whose series is '
+                f'{self.series!r} (series of the systems: '
+                f'{ {sid: f.series for sid, f in self.featurizers.items()} }). '
+                f'If you changed a featurizer on purpose, pin '
+                f'descriptors_series = {self.series!r}; every frame of every '
+                f'system is then featurized again. Otherwise find what '
+                f'differs, e.g. an edited selection or atom types that '
+                f'MDAnalysis guessed differently on this host.')
+        return descriptors_series
+
+    def descriptors_function(self, trajectory, system_id):
+        """`NodeTableFeaturizer.descriptors_function` of system
+        `system_id`."""
+        return self[system_id].descriptors_function(trajectory)
+
+    def rows_from_coordinates(self, coordinates, system_id):
+        """`NodeTableFeaturizer.rows_from_coordinates` of system
+        `system_id`."""
+        return self[system_id].rows_from_coordinates(coordinates)
+
+    def graphs(self, rows, system_id):
+        """`NodeTableFeaturizer.graphs` of system `system_id`."""
+        return self[system_id].graphs(rows)
+
+    def batch_dict(self, rows, system_id, device='cpu'):
+        """`NodeTableFeaturizer.batch_dict` of system `system_id`."""
+        return self[system_id].batch_dict(rows, device=device)
+
+    def row_from_graph(self, graph, system_id):
+        """`NodeTableFeaturizer.row_from_graph` of system `system_id`."""
+        return self[system_id].row_from_graph(graph)

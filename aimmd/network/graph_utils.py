@@ -37,7 +37,8 @@ except ImportError as e:
 # implemented in aimmd.network.nodetables, which imports without the graph
 # dependencies, and re-exported here next to get_graphs_pyg, whose graphs they
 # reproduce.
-from .nodetables import NodeTableFeaturizer, NodeTableOverflowError  # noqa: F401
+from .nodetables import (NodeTableFeaturizer,  # noqa: F401
+                         MultiSystemNodeTableFeaturizer, NodeTableOverflowError)
 
 #: How long a writer keeps retrying a locked graph cache before giving up.
 #: Overridable with ``AIMMD_STORE_RETRY_SECONDS``.
