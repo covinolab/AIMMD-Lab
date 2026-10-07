@@ -226,7 +226,10 @@ convert the graph) against about 25 ms per frame to featurize it.
    unchanged. Run the test suite there, and the opt-in golden test
    (``AIMMD_NODETABLES_GOLDEN_DATA=... pytest
    tests/test_nodetables_golden.py --rungraph``) on the architecture that
-   will featurize.
+   will featurize. Saved params files now hold the ``descriptors_series``
+   field, so the first load with this version saves its params under the
+   next free number (e.g. ``params2.py`` next to an older ``params1.py``);
+   an older file without the field loads with the default series.
 2. **Stop**: no job may run on the runs (check the queue).
 3. **Edit the params file**: add the graph-input block of the template with
    ``GRAPH_INPUT = 'nodetables'``, load it once and pin the series name the
@@ -243,9 +246,9 @@ convert the graph) against about 25 ms per frame to featurize it.
    the time per frame of each step.
 
 5. **Check**: ``verify --sample 32`` exits with status 0.
-6. **Regenerate** the worker params file (``params1.py``) and the job script
-   on the cluster: :meth:`aimmd.Params.load` writes this host's paths into
-   them.
+6. **Regenerate** the worker params file (``params1.py``, or the next free
+   number) and the job script on the cluster: :meth:`aimmd.Params.load`
+   writes this host's paths into them.
 7. **Resubmit and validate** over two or three rounds: no graph-cache staging
    lines, the trainer reports about no missing descriptor frames, values of
    frames that did not change agree before the first fit, and there are no
