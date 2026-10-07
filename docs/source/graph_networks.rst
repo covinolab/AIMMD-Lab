@@ -248,8 +248,13 @@ convert the graph) against about 25 ms per frame to featurize it.
    them.
 7. **Resubmit and validate** over two or three rounds: no graph-cache staging
    lines, the trainer reports about no missing descriptor frames, values of
-   frames that did not change are equal before the first fit, and there are
-   no ``n_max`` warnings or empty-row errors.
+   frames that did not change agree before the first fit, and there are no
+   ``n_max`` warnings or empty-row errors. The network inputs are bitwise
+   equal in both modes, but the network's output moves in the last bits with
+   the batches it is evaluated in (which frames, ``network_batch_size``),
+   the device and the number of threads, in either mode: compare values with
+   a tolerance (about ``1e-5``), or bitwise only after recomputing both sides
+   in the same setup.
 8. **Clean up**: delete ``*.descriptors.npy`` after the validation, and the
    graph cache (``graphs_cache.sqlite*``) once you no longer want a cheap
    rollback. Until then, keep the cache: it is the only cheap source for a
