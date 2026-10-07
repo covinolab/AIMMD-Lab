@@ -1211,10 +1211,19 @@ def _prefill_summary_lines(report):
             f'repack --n-max N, pin the new series and run prefill '
             f'--only-missing.')
     if totals['verify_mismatches']:
+        # where the differing rows can come from, by the options of the run
+        causes = []
+        if report['only_missing']:
+            causes.append('rows kept from a series file may be stale or '
+                          'corrupted: rerun prefill without --only-missing '
+                          'for those runs')
+        if report['db']:
+            causes.append('the graph cache may come from other settings: '
+                          'rerun without --db for those runs')
         lines.append(
             'ERROR: rows differ from a direct featurization; mismatching '
-            'files were not installed (with --db: is the graph cache from '
-            'other settings? Rerun without --db for those runs).')
+            'files were not installed'
+            + (f' ({"; ".join(causes)})' if causes else '') + '.')
     if totals['failed']:
         lines.append(f'ERROR: {totals["failed"]} file(s) failed; their series '
                      f'files were left as they were')

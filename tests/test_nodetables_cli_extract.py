@@ -208,7 +208,7 @@ def test_verify_catches_a_wrong_graph_in_the_cache(cached, tmp_path):
 
 
 def test_a_cache_of_other_settings_is_caught_without_verify(cached,
-                                                          tmp_path):
+                                                          tmp_path, capsys):
     """Cache keys hash coordinates only, and a graph of another environment
     selection is a valid node table. With --db, prefill therefore verifies
     a few frames per file by default: such a cache is caught (exit status
@@ -222,6 +222,9 @@ def test_a_cache_of_other_settings_is_caught_without_verify(cached,
                       campaign.run, '--db', other, '--report',
                       str(report)]) == 1
 
+    error, = [line for line in capsys.readouterr().out.splitlines()
+              if line.startswith('ERROR: rows differ')]
+    assert 'without --db' in error and '--only-missing' not in error
     result = load_report(report)
     assert result['verify'] == _tool.DEFAULT_DB_VERIFY > 0
     assert result['totals']['db_hits'] == N_FRAMES

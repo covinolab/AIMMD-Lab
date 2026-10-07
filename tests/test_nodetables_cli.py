@@ -266,7 +266,7 @@ def test_a_killed_prefill_leaves_no_partial_file_and_reruns_in_parallel(
     assert load_report(report)['jobs'] == 2
 
 
-def test_prefill_verify_detects_a_corrupted_row(campaign, tmp_path):
+def test_prefill_verify_detects_a_corrupted_row(campaign, tmp_path, capsys):
     assert _prefill(campaign) == 0
     series = campaign.featurizer.series
     trajectory = trajectories(campaign.run)[2]
@@ -275,12 +275,17 @@ def test_prefill_verify_detects_a_corrupted_row(campaign, tmp_path):
     rows.view(np.uint32)[4, 2 + 3 * 2] ^= 1         # one bit of node 2's x
     np.save(fname, rows)
     corrupted = Path(fname).read_bytes()
+    capsys.readouterr()
 
     report = tmp_path / 'verify.json'
     assert _prefill(campaign, '--only-missing', '--verify', '100',
                     report=report) == 1
 
     assert Path(fname).read_bytes() == corrupted     # reported, not changed
+    # the hint names the remedy for kept rows, not the graph cache
+    error, = [line for line in capsys.readouterr().out.splitlines()
+              if line.startswith('ERROR: rows differ')]
+    assert 'without --only-missing' in error and '--db' not in error
     result = load_report(report)
     assert not result['ok']
     item = result['by_trajectory'][trajectory]
@@ -298,6 +303,10 @@ def test_prefill_verify_detects_a_corrupted_row(campaign, tmp_path):
                       '--report', str(report)]) == 1
     item = load_report(report)['by_trajectory'][trajectory]
     assert item['status'] == 'mismatch' and item['mismatched_frames'] == [4]
+
+    # the remedy it names: a prefill that computes every row repairs it
+    assert _prefill(campaign, '--verify', '100') == 0
+    _check_complete(campaign)
 
 
 def test_prefill_reports_frames_that_overflow_n_max(tmp_path, capsys):
