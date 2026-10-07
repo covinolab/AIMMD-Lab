@@ -47,8 +47,9 @@ ATOMIC_NUMBERS = [1, 6, 7, 8, 9, 11, 15, 16, 17, 35, 53]
 SYSTEM_SELECTION = '(resname LIG) and not type H'
 ENVIRONMENT_SELECTION = 'not type H and around 8.0 (resname LIG)'
 # Graph nodes a node-table row can hold. A frame with more nodes gets an empty row and an
-# ERROR line, and training stops on it (python -m aimmd.network.nodetables repack --n-max N
-# widens the rows); frames above 80 % of N_MAX are reported as a warning.
+# ERROR line, and training and the workers' value passes (selection, TPS acceptance) stop on
+# it (python -m aimmd.network.nodetables repack --n-max N widens the rows); frames above
+# 80 % of N_MAX are reported as a warning.
 N_MAX = 768
 
 # Topology (with bonds, for unwrapping the ligand) and reference box of the graphs

@@ -104,10 +104,17 @@ silently starting a new series (and featurizing every frame again).
 headroom of what protein-ligand runs need (267 to 359 nodes over the HSP90
 compound-9 campaign). A frame with more than ``n_max`` nodes (or with an
 environment atom whose type is not in ``atom_types``) never stops the MD: its
-row stays zero and an ``ERROR: node tables`` line is printed. Training and
-value passes then stop on the zero row with an error naming
-``python -m aimmd.network.nodetables repack --n-max N``. Frames above 80 % of
-``n_max`` are reported with a warning.
+row stays zero and an ``ERROR: node tables`` line is printed. Every pass that
+needs the frame's value or uses it for training then stops on the zero row
+with an error naming ``python -m aimmd.network.nodetables repack --n-max N``:
+the trainer, and also a shooting worker whose pool selection or TPS
+acceptance reaches the frame (with TPS and a pool of one, the worker that
+produced the path, right after registering it). A restart stops at the same
+place again. This is deliberate: a value made up for the frame, or a path
+accepted or rejected without it, would bias the sampling silently. Widen the
+rows with ``repack``, pin the new series, run ``prefill --only-missing`` and
+restart. Frames above 80 % of ``n_max`` are reported with a warning; act on
+it before the first frame overflows.
 
 **fit.** With ``graphs=True``, ``fit`` passes each batch of rows through
 ``descriptor_transform``. A single-system node-table transform returns

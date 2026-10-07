@@ -481,8 +481,8 @@ class NodeTableFeaturizer:
             print(f'WARNING: node tables: {len(crowded)} frame(s) use more '
                   f'than {N_MAX_WARNING_FRACTION:.0%} of n_max={self.n_max} '
                   f'graph nodes (largest {largest}). A frame above n_max gets '
-                  f'a zero row, which stops training: consider '
-                  f'{REPACK_COMMAND!r} with a larger N.', flush=True)
+                  f'a zero row, on which training and value passes stop: '
+                  f'consider {REPACK_COMMAND!r} with a larger N.', flush=True)
 
     # ------------------------------------------------------------------
     # rows -> graphs
