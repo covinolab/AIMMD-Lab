@@ -159,7 +159,8 @@ class NodeTableFeaturizer:
 
     **Params files.** `aimmd.Params` stores functions, not objects: a bound
     method such as ``FEATURIZER.descriptors_function`` would lose its
-    featurizer, and Params refuses it. Use module-level wrapper functions::
+    featurizer, and Params refuses it (and a ``functools.partial`` of it).
+    Use module-level wrapper functions::
 
         FEATURIZER = NodeTableFeaturizer(tmp_universe, SYSTEM_SELECTION,
                                          ENVIRONMENT_SELECTION, ATOM_TYPES,

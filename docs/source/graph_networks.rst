@@ -89,8 +89,9 @@ network, and ``fit`` is called with ``graphs=True, in_memory=False``.
 
 **Module-level wrappers.** :class:`aimmd.Params` stores functions, not
 objects: a bound method such as ``FEATURIZER.descriptors_function`` would lose
-its featurizer, and ``Params`` refuses it with an error. Define module-level
-functions that call the featurizer, as above.
+its featurizer, and ``Params`` refuses it with an error. So does a
+``functools.partial`` of one, which ``params1.py`` could not import. Define
+module-level functions that call the featurizer, as above.
 
 **Pin the series name.** ``FEATURIZER.check_series(name)`` raises unless
 ``name`` is the featurizer's series, and the error names the series to pin.

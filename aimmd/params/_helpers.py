@@ -29,6 +29,7 @@ Notes
 # external
 import os
 import numpy as np
+import functools
 import inspect
 import warnings
 from abc import ABC
@@ -91,13 +92,21 @@ def _store_seed_descriptors(path, series, descriptors):
     setattr(path, series, descriptors)
 
 
-def _bound_method_message(name, method):
-    """Why the bound `method` cannot be the callable field `name`, and the
-    module-level wrapper to write instead."""
-    owner = type(method.__self__).__name__
-    function = method.__func__.__name__
+def _requires_wrapper(instance):
+    """Whether callables bound to `instance` must be refused: objects such as
+    node-table featurizers set ``_params_requires_wrapper = True``, since
+    Params would drop them (it stores functions, not objects)."""
     try:
-        parameters = list(inspect.signature(method).parameters.values())
+        return getattr(instance, '_params_requires_wrapper', False) is True
+    except Exception:
+        return False
+
+
+def _wrapper_example(name, function, callable_):
+    """The module-level wrapper `name` that calls ``INSTANCE.function`` with
+    the parameters of `callable_` (an example for the error messages)."""
+    try:
+        parameters = list(inspect.signature(callable_).parameters.values())
     except (TypeError, ValueError):
         parameters = []
     arguments = []
@@ -111,12 +120,58 @@ def _bound_method_message(name, method):
         else:
             arguments.append(parameter.name)
     signature = ', '.join(str(parameter) for parameter in parameters)
+    return (f'    def {name}({signature}):\n'
+            f'        return INSTANCE.{function}({", ".join(arguments)})\n')
+
+
+def _bound_method_message(name, method):
+    """Why the bound `method` cannot be the callable field `name`, and the
+    module-level wrapper to write instead."""
+    owner = type(method.__self__).__name__
+    function = method.__func__.__name__
     return (f'{name!r} is the bound method {owner}.{function}. Params stores '
             f'functions, not objects, and would lose the {owner} instance. '
             f'Define a module-level wrapper in the params file instead, e.g.\n'
             f'\n'
-            f'    def {name}({signature}):\n'
-            f'        return INSTANCE.{function}({", ".join(arguments)})\n'
+            f'{_wrapper_example(name, function, method)}'
+            f'\n'
+            f'where INSTANCE is your {owner}.')
+
+
+def _partial_owner(partial):
+    """``(owner, function name)`` if the functools.partial `partial` (nested
+    or not) binds an object that `_requires_wrapper`, through a bound method
+    or an argument; None otherwise."""
+    owner = None
+    function = partial
+    while isinstance(function, functools.partial):
+        bound = [*function.args, *function.keywords.values()]
+        if isinstance(function.func, Method):
+            bound.append(function.func.__self__)
+        if owner is None:
+            owner = next((item for item in bound if _requires_wrapper(item)),
+                         None)
+        function = function.func
+    if owner is None:
+        return None
+    if isinstance(function, Method):
+        function = function.__func__
+    return owner, getattr(function, '__name__', 'method')
+
+
+def _partial_message(name, partial):
+    """Why the functools.partial `partial` over an object that
+    `_requires_wrapper` cannot be the callable field `name`, and the
+    module-level wrapper to write instead."""
+    owner, function = _partial_owner(partial)
+    owner = (owner if isinstance(owner, type) else type(owner)).__name__
+    return (f'{name!r} is a functools.partial of {owner}.{function}. Params '
+            f'stores functions, not objects: it would save the partial as '
+            f"'from functools import {name}', which no worker can import, "
+            f'and lose the {owner} instance. Define a module-level wrapper in '
+            f'the params file instead, e.g.\n'
+            f'\n'
+            f'{_wrapper_example(name, function, partial)}'
             f'\n'
             f'where INSTANCE is your {owner}.')
 
@@ -216,7 +271,8 @@ class ParamsHelpers(ABC):
 
         - callable fields: unwrap bound methods, attach `__source__`. Bound
           methods of objects with ``_params_requires_wrapper`` (node-table
-          featurizers) are refused: they need module-level wrappers.
+          featurizers), and functools.partial objects binding such an object,
+          are refused: they need module-level wrappers.
         - `states`: normalized to uppercase letters and validated.
         - `topology`: attempts to build an MDAnalysis Universe to cache masses.
         - `initial_paths`: immediately coerced into a PathEnsemble.
@@ -242,12 +298,17 @@ class ParamsHelpers(ABC):
                 # a NodeTableFeaturizer) are refused, the params file must
                 # wrap them in module-level functions.
                 elif isinstance(value, Method):
-                    if getattr(value.__self__, '_params_requires_wrapper',
-                               False):
+                    if _requires_wrapper(value.__self__):
                         raise TypeError(_bound_method_message(name, value))
                     value = value.__func__
                     update_source(value, name)
-                
+
+                # So are partials binding such an object: they would be saved
+                # as an import from functools, which the workers cannot load.
+                elif (isinstance(value, functools.partial)
+                      and _partial_owner(value) is not None):
+                    raise TypeError(_partial_message(name, value))
+
                 else:
                     update_source(value, name)
 

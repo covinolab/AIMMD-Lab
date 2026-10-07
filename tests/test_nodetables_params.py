@@ -10,6 +10,7 @@ into the named series and writes a params1.py that workers load the same way.
 Needs only numpy and MDAnalysis (the values here are not computed from
 graphs).
 """
+import functools
 import os
 from pathlib import Path
 
@@ -167,6 +168,44 @@ def test_assigning_a_bound_method_is_refused(make, method):
     with pytest.raises(TypeError, match='module-level'):
         setattr(params, field, bound)
     assert getattr(params, field) is None
+
+
+@pytest.mark.parametrize('wrap', [
+    lambda f: functools.partial(f.descriptors_function),
+    lambda f: functools.partial(functools.partial(f.descriptors_function)),
+    lambda f: functools.partial(type(f).descriptors_function, f)])
+def test_a_partial_over_a_featurizer_is_refused(wrap):
+    """A functools.partial is no bound method, but Params cannot store it
+    either: the generated params1.py would read 'from functools import
+    descriptors_function', and every worker's load would fail at job
+    start."""
+    featurizer = NodeTableFeaturizer(toy_universe(), SYSTEM_SELECTION,
+                                     ENVIRONMENT_SELECTION, ATOM_TYPES, CUTOFF)
+    params = aimmd.Params.placeholder
+    with pytest.raises(TypeError, match='module-level') as info:
+        params.descriptors_function = wrap(featurizer)
+    message = str(info.value)
+    assert 'functools.partial' in message
+    assert 'NodeTableFeaturizer.descriptors_function' in message
+    # the wrapper to write instead, with the partial's remaining parameters
+    assert 'def descriptors_function(trajectory):' in message
+    assert 'INSTANCE.descriptors_function(trajectory)' in message
+    assert params.descriptors_function is None
+
+
+def test_a_partial_over_a_featurizer_in_a_params_file_is_refused(
+        tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    params_file = _params_file(
+        tmp_path, 'import functools\n' + WRAPPERS.replace(
+            'def descriptors_function(trajectory):\n'
+            '    return FEATURIZER.descriptors_function(trajectory)\n',
+            'descriptors_function = functools.partial(\n'
+            '    FEATURIZER.descriptors_function)\n'))
+    assert 'functools.partial(' in Path(params_file).read_text()
+
+    with pytest.raises(TypeError, match='functools.partial'):
+        aimmd.Params.load(params_file, save=False)
 
 
 def test_other_bound_methods_are_still_unwrapped():
