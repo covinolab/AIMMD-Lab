@@ -38,7 +38,8 @@ except ImportError as e:
 # dependencies, and re-exported here next to get_graphs_pyg, whose graphs they
 # reproduce.
 from .nodetables import (NodeTableFeaturizer,  # noqa: F401
-                         MultiSystemNodeTableFeaturizer, NodeTableOverflowError)
+                         MultiSystemNodeTableFeaturizer,
+                         NodeTableOverflowError)
 
 #: How long a writer keeps retrying a locked graph cache before giving up.
 #: Overridable with ``AIMMD_STORE_RETRY_SECONDS``.

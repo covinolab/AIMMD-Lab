@@ -950,7 +950,9 @@ def fit(params,
                 pathensemble, lsr_key_B, lsr_lagtime, 'filenames')
             lc_t_B, lc_tau_B, _, _ = extract_lsr_pairs(
                 pathensemble, lsr_key_B, lsr_lagtime, 'locs')
-            _gcf = lambda arr: np.array([get_cache_fname(f, descriptors_series) for f in arr]) if len(arr) else arr
+            _gcf = lambda arr: np.array(
+                [get_cache_fname(f, descriptors_series) for f in arr]
+            ) if len(arr) else arr
             lsr_npy_t_A, lsr_locs_t_A     = _gcf(fn_t_A),   lc_t_A
             lsr_npy_tau_A, lsr_locs_tau_A = _gcf(fn_tau_A), lc_tau_A
             lsr_npy_t_B, lsr_locs_t_B     = _gcf(fn_t_B),   lc_t_B

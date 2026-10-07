@@ -43,8 +43,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
-
 import numpy as np
 import MDAnalysis.transformations as transformations
 
@@ -175,9 +173,10 @@ class NodeTableFeaturizer:
 
     Examples
     --------
-    >>> featurizer = NodeTableFeaturizer(universe, 'resname LIG and not type H',
-    ...                                  'not type H and around 8.0 (resname LIG)',
-    ...                                  ['H', 'C', 'N', 'O'], cutoff=4.0)
+    >>> featurizer = NodeTableFeaturizer(
+    ...     universe, 'resname LIG and not type H',
+    ...     'not type H and around 8.0 (resname LIG)', ['H', 'C', 'N', 'O'],
+    ...     cutoff=4.0)
     >>> rows = featurizer.descriptors_function(universe.trajectory)
     >>> batch = featurizer.batch_dict(rows[:32], device='cuda')
     >>> output = network(batch)
@@ -200,7 +199,8 @@ class NodeTableFeaturizer:
         if not self.cutoff > 0:
             raise ValueError(f'cutoff must be positive, got {cutoff!r}')
         if self.n_max < 1 or self.n_max != n_max:
-            raise ValueError(f'n_max must be a positive integer, got {n_max!r}')
+            raise ValueError(
+                f'n_max must be a positive integer, got {n_max!r}')
         if self.max_num_neighbors < 1:
             raise ValueError(f'max_num_neighbors must be positive, got '
                              f'{max_num_neighbors!r}')
@@ -243,8 +243,8 @@ class NodeTableFeaturizer:
             self._unwrap = transformations.unwrap(self.system)
         except AttributeError as error:
             raise ValueError(
-                'the system atoms have no bonds, which unwrapping needs: build '
-                "the universe with bonds (e.g. to_guess=['bonds', ...])"
+                'the system atoms have no bonds, which unwrapping needs: '
+                "build the universe with bonds (e.g. to_guess=['bonds', ...])"
             ) from error
         self._center = transformations.center_in_box(self.system, wrap=False)
         self._wrap = transformations.wrap(universe.atoms)
@@ -503,8 +503,9 @@ class NodeTableFeaturizer:
                 f'{len(zero)} node-table row(s) are empty (n_nodes == 0; '
                 f'row(s) {zero[:_MAX_REPORTED_FRAMES].tolist()} of this '
                 f'batch). A zero row is a frame that was never featurized, or '
-                f'one whose graph does not fit the layout (descriptors_function '
-                f'then logs an ERROR line). For n_max overflows, widen the '
+                f'one whose graph does not fit the layout '
+                f'(descriptors_function then logs an ERROR line). For n_max '
+                f'overflows, widen the '
                 f'rows with {REPACK_COMMAND!r}, set n_max=N in the featurizer '
                 f'and pin the new descriptors_series; the ledger then '
                 f'featurizes the empty rows again. Otherwise compute the '
@@ -792,8 +793,9 @@ class MultiSystemNodeTableFeaturizer:
     _params_requires_wrapper = True
 
     def __init__(self, featurizers):
-        self.featurizers = {str(system_id): featurizer
-                            for system_id, featurizer in dict(featurizers).items()}
+        self.featurizers = {
+            str(system_id): featurizer
+            for system_id, featurizer in dict(featurizers).items()}
         if not self.featurizers:
             raise ValueError('no featurizers given')
         tables = {tuple(featurizer.atom_types)
@@ -816,7 +818,8 @@ class MultiSystemNodeTableFeaturizer:
             return self.featurizers[str(system_id)]
         except KeyError:
             raise KeyError(f'no node-table featurizer for system_id '
-                           f'{system_id!r}; known: {self.system_ids}') from None
+                           f'{system_id!r}; known: {self.system_ids}'
+                           ) from None
 
     @property
     def system_ids(self):
@@ -853,11 +856,12 @@ class MultiSystemNodeTableFeaturizer:
             If `descriptors_series` is not `series`.
         """
         if descriptors_series != self.series:
+            systems = {system_id: featurizer.series
+                       for system_id, featurizer in self.featurizers.items()}
             raise ValueError(
                 f'descriptors_series {descriptors_series!r} does not match '
                 f'these node-table featurizers, whose series is '
-                f'{self.series!r} (series of the systems: '
-                f'{ {sid: f.series for sid, f in self.featurizers.items()} }). '
+                f'{self.series!r} (series of the systems: {systems}). '
                 f'If you changed a featurizer on purpose, pin '
                 f'descriptors_series = {self.series!r}; every frame of every '
                 f'system is then featurized again. Otherwise find what '
@@ -868,8 +872,9 @@ class MultiSystemNodeTableFeaturizer:
     def with_n_max(self, n_max):
         """The featurizers of every system with row capacity `n_max`; see
         `NodeTableFeaturizer.with_n_max`."""
-        return type(self)({system_id: featurizer.with_n_max(n_max)
-                           for system_id, featurizer in self.featurizers.items()})
+        return type(self)({
+            system_id: featurizer.with_n_max(n_max)
+            for system_id, featurizer in self.featurizers.items()})
 
     def descriptors_function(self, trajectory, system_id):
         """`NodeTableFeaturizer.descriptors_function` of system
