@@ -219,3 +219,41 @@ def test_oversized_single_entry_is_cached_and_does_not_loop(tmp_path):
 
     assert arr is not None
     assert fname in cache._cache
+
+
+def test_update_npy_does_not_recreate_a_file_another_writer_created(
+        tmp_path, monkeypatch):
+    """Two writers that both find a file missing must not lose rows.
+
+    update_npy creates a missing file. If another process creates it, and
+    writes its rows, between this process's existence check and its
+    create, the create must not replace that file with a zero-filled one:
+    the other writer's rows would be lost. Graph-key files are created
+    this way by the trainer's ledger and the workers' value passes at the
+    same time; with the lock starvation of FileLock, one writer lost all
+    of its rows in about half of the trials of a two-process repro.
+    """
+    import aimmd.cache.npy as npy
+
+    fname = str(tmp_path / "keys.npy")
+    other = np.zeros((3, 32), dtype=np.uint8)
+    other[0] = 7
+    real_exists = npy.os.path.exists
+    raced = []
+
+    def exists(path):
+        # the other writer creates the file right after this check
+        if path == fname and not raced:
+            raced.append(path)
+            np.save(fname, other)
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(npy.os.path, "exists", exists)
+    update_npy(fname, np.full((1, 32), 9, dtype=np.uint8), [2])
+    monkeypatch.undo()
+    result = np.load(fname)
+    assert result.shape == (3, 32)
+    assert (result[0] == 7).all(), "the other writer's row was lost"
+    assert (result[2] == 9).all()
+    assert not result[1].any()
