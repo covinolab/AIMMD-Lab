@@ -55,7 +55,7 @@ from .utils import extract_indices_and_series, extract_lsr_pairs, extract_mar_se
 from ..core.utils import concatenate, now, accepts_system_id
 from ..analysis.utils import compute_bins, merge_marginal_bins
 from ..path.utils import get_cache_fname
-from ..cache.npy import read_npy_rows
+from ..cache.npy import read_npy_rows, read_npy_rows_unlocked
 from .._config import NPY_CACHE
 
 
@@ -73,9 +73,12 @@ def _load_batch_descriptors(npy_paths, locs):
     2. else, if the whole file fits in the room left in the budget (judged
        from its size on disk before reading it), it is loaded and kept, as
        ``NPY_CACHE.get`` keeps it;
-    3. else only the requested rows are read (`read_npy_rows`) and nothing
-       is kept. Files `read_npy_rows` cannot read, and rows past the end of
-       a file, go through ``NPY_CACHE.get`` as before.
+    3. else only the requested rows are read and nothing is kept: without
+       the file lock (`read_npy_rows_unlocked`; see `_file_rows` for why that
+       is safe), or under it (`read_npy_rows`) when the lock-free read cannot
+       vouch for the rows (e.g. one is all zero). Files `read_npy_rows`
+       cannot read, and rows past the end of a file, go through
+       ``NPY_CACHE.get`` as before.
 
     A run whose files fit in the budget therefore loads and keeps them as
     before. The rows, their order and their repetitions do not depend on
@@ -111,6 +114,24 @@ def _file_rows(npy_path, locs):
     if array is None:
         array = _load_if_room(npy_path)
     if array is None:
+        # The rows fit draws need no file lock. They are frames of the
+        # trainer's ensemble, whose descriptor rows the ledger of the round
+        # (`PathEnsemble.compute(*params.compute_descriptors_args)` on the
+        # same ensemble, right before `fit`) has computed, and nothing
+        # rewrites a computed row in place: `Path.compute` (overwrite=False)
+        # writes only rows its ledger reads as all zero; `register_path`
+        # writes a new path's file once (`save_npy`: a new file, atomically
+        # replaced); `update_npy` appends to the in-flight segment files,
+        # which are not in the ensemble; prefill and repack run offline.
+        # At worst two processes fill the same zero row at once, and both
+        # write the same function's values for the same frame. A row that
+        # is not complete yet reads as zeros, or lies beyond the length in
+        # the header, or comes with a header that does not match the file's
+        # size; `read_npy_rows_unlocked` then gives None and the rows are
+        # read under the lock as before, so the rows never change.
+        found = read_npy_rows_unlocked(npy_path, locs)
+        if found is not None:
+            return found[1]
         found = read_npy_rows(npy_path, locs)
         if found is not None and len(found[1]) == len(locs):
             return found[1]

@@ -12,7 +12,8 @@ This module has two responsibilities:
    - `load_npy`: read an array under the same lock.
    - `read_npy_rows`: read only selected rows of a `.npy` file, under the
      same lock (`read_npy_ledger`: or the whole file, when many rows are
-     requested).
+     requested; `read_npy_rows_unlocked`: rows known to be complete, without
+     the lock).
    - `update_npy`: update selected rows of an existing `.npy` file in place,
      also protected by a lock.
 
@@ -62,6 +63,7 @@ This module provides robust semantics for that workflow.
 """
 
 # external
+import io
 import os
 import sys
 import time
@@ -192,6 +194,95 @@ def read_npy_rows(fname, indices, max_fraction=1., timeout=10.):
     """
     result = _read_npy(fname, indices, max_fraction, timeout, whole=False)
     return None if result is None else result[:2]
+
+
+#: bytes read at once for the header of `read_npy_rows_unlocked`: a version
+#: 1.0 header (``save_npy``'s and ``update_npy``'s are 128 bytes) and the
+#: start of the data, in one read
+_HEADER_READ = 4096
+
+
+def read_npy_rows_unlocked(fname, indices):
+    """
+    Read rows of a `.npy` file that are known to be complete, without the lock.
+
+    For rows that were complete before the call and that no process writes
+    any more, such as the rows fit draws (see
+    `aimmd.network.fit._file_rows`): the per-file lock of
+    :func:`read_npy_rows` then only costs time, much of it on a network file
+    system. Any sign that the rows may not be complete gives None, and the
+    caller reads them under the lock (:func:`read_npy_rows`). The checks:
+
+    - the header is read with a single read: on a POSIX file system (GPFS,
+      XFS, ...) it is then atomic with respect to the single write in which
+      :func:`update_npy` rewrites the header;
+    - the header must parse (version 1.0, C order, a simple dtype, at least
+      one dimension) and describe the file exactly: the size of the file must
+      be the data offset plus `length` rows. :func:`update_npy` grows a file
+      before it writes the new rows and then the header, so a file that is
+      growing right now has a size its header does not account for, and a
+      truncated file is shorter than its header says;
+    - every requested row must be below the length in the header, and none
+      may be all zero: a row that was never written reads as zeros (the
+      ledger's "not computed": a zero placeholder, a file grown by
+      :func:`update_npy`, or data another node has not flushed yet).
+
+    Parameters
+    ----------
+    fname : str
+        `.npy` file to read.
+    indices : array-like of int
+        Rows to read, in any order; repetitions are allowed.
+
+    Returns
+    -------
+    tuple or None
+        ``(length, rows)`` as :func:`read_npy_rows` returns them, here with
+        every requested row; None if the file is missing or unusual (as for
+        :func:`read_npy_rows`), if its size is not what the header says, if a
+        requested row is at or beyond the length, or if one is all zero.
+    """
+    indices = np.asarray(indices).ravel()
+    if indices.size and (indices.dtype.kind not in 'iu' or indices.min() < 0):
+        return None
+    indices = indices.astype(np.int64)
+    try:
+        with open(fname, 'rb', buffering=0) as file:
+            descriptor = file.fileno()
+            head = io.BytesIO(os.pread(descriptor, _HEADER_READ, 0))
+            if np.lib.format.read_magic(head) != (1, 0):
+                return None
+            shape, fortran_order, dtype = \
+                np.lib.format.read_array_header_1_0(head)
+            offset = head.tell()
+            if (fortran_order or not shape or dtype.hasobject
+                    or dtype.fields is not None or dtype.kind not in 'biufc'):
+                return None
+            length = int(shape[0])
+            rowsize = dtype.itemsize * int(np.prod(shape[1:]))
+            if (os.fstat(descriptor).st_size != offset + length * rowsize
+                    or rowsize == 0
+                    or (indices.size and indices.max() >= length)):
+                return None
+
+            # unique rows, read in contiguous runs
+            wanted, inverse = np.unique(indices, return_inverse=True)
+            buffer = bytearray(len(wanted) * rowsize)
+            breaks = np.flatnonzero(np.diff(wanted) != 1) + 1
+            for begin, end in zip([0, *breaks], [*breaks, len(wanted)]):
+                nbytes = (end - begin) * rowsize
+                chunk = os.pread(descriptor, nbytes,
+                                 offset + int(wanted[begin]) * rowsize)
+                if len(chunk) != nbytes:
+                    return None
+                buffer[begin * rowsize:end * rowsize] = chunk
+    except Exception:
+        return None
+    rows = np.frombuffer(buffer, dtype=dtype).reshape(
+        (len(wanted),) + tuple(shape[1:]))
+    if not rows.reshape(len(wanted), -1).any(axis=1).all():
+        return None
+    return length, rows[inverse.ravel()]
 
 
 def read_npy_ledger(fname, indices, max_fraction=1., timeout=10.):

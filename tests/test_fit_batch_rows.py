@@ -8,14 +8,17 @@ whole files to use a few rows of each. So per file of a batch:
 1. a resident copy with enough rows is used, as before;
 2. a file that fits in the room left in the budget is loaded whole and kept,
    as before (a run whose files fit behaves as it always did);
-3. otherwise only the drawn rows are read (`read_npy_rows`) and nothing is
-   kept; NPY_CACHE.get remains the fallback for files read_npy_rows cannot
-   read.
+3. otherwise only the drawn rows are read and nothing is kept: without the
+   file lock (`read_npy_rows_unlocked`, the rows fit draws are complete),
+   else under it (`read_npy_rows`) when the lock-free read cannot vouch for
+   them (a zero row, a file whose size is not what its header says, ...);
+   NPY_CACHE.get remains the fallback for files read_npy_rows cannot read.
 
 The rows, their order and their duplicates are those of a whole-file load in
 every case, and a small fit gives the same losses with any budget.
 """
 import importlib
+import os
 from types import SimpleNamespace
 
 import numpy as np
@@ -67,17 +70,36 @@ def _expected(paths, arrays, npy_paths, locs):
     return np.array([by_path[path][loc] for path, loc in zip(npy_paths, locs)])
 
 
+class _Reads(list):
+    """Lock-free row reads of fit; `locked` lists the locked ones."""
+
+    def __init__(self):
+        super().__init__()
+        self.locked = []
+
+    def clear(self):
+        super().clear()
+        self.locked.clear()
+
+
 @pytest.fixture
 def reads(monkeypatch):
-    """Record every read_npy_rows call of fit as ``(fname, indices)``."""
-    calls = []
-    real = npy_module.read_npy_rows
+    """Record every row read of fit as ``(fname, indices)``: the lock-free
+    ones (`read_npy_rows_unlocked`) in the list, the locked ones
+    (`read_npy_rows`) in its `locked`."""
+    calls = _Reads()
 
-    def spy(fname, indices, *args, **kwargs):
+    def spy_unlocked(fname, indices, *args, **kwargs):
         calls.append((fname, [int(i) for i in indices]))
-        return real(fname, indices, *args, **kwargs)
+        return npy_module.read_npy_rows_unlocked(fname, indices, *args,
+                                                 **kwargs)
 
-    monkeypatch.setattr(fit_module, "read_npy_rows", spy)
+    def spy_locked(fname, indices, *args, **kwargs):
+        calls.locked.append((fname, [int(i) for i in indices]))
+        return npy_module.read_npy_rows(fname, indices, *args, **kwargs)
+
+    monkeypatch.setattr(fit_module, "read_npy_rows_unlocked", spy_unlocked)
+    monkeypatch.setattr(fit_module, "read_npy_rows", spy_locked)
     return calls
 
 
@@ -165,6 +187,7 @@ def test_files_beyond_the_budget_are_read_by_rows(tmp_path, monkeypatch,
     # only the drawn rows of the files that are not resident, in batch
     # order with their duplicates
     assert reads == [(p1, [3, 3, 1]), (p2, [8, 2]), (p3, [0])]
+    assert reads.locked == []              # all complete: no lock taken
     assert _state() == before              # nothing admitted or evicted
 
 
@@ -208,6 +231,7 @@ def test_unreadable_rows_fall_back_to_the_cache(tmp_path, monkeypatch, loads):
         calls.append(fname)
         return None
 
+    monkeypatch.setattr(fit_module, "read_npy_rows_unlocked", refuse)
     monkeypatch.setattr(fit_module, "read_npy_rows", refuse)
     loads.clear()
     npy_paths = np.array([paths[1], paths[0], paths[1]])
@@ -217,8 +241,34 @@ def test_unreadable_rows_fall_back_to_the_cache(tmp_path, monkeypatch, loads):
 
     np.testing.assert_array_equal(
         out, _expected(paths, arrays, npy_paths, locs))
-    assert calls == [paths[1], paths[0]]
+    # lock-free, then locked, then NPY_CACHE.get, per file
+    assert calls == [paths[1], paths[1], paths[0], paths[0]]
     assert loads == [paths[1], paths[0]]   # NPY_CACHE.get, as before
+
+
+def test_rows_the_lock_free_read_refuses_are_read_under_the_lock(
+        tmp_path, monkeypatch, reads, loads):
+    """A zero row (not computed) or a file whose size is not what its header
+    says (growing right now): the locked read, with the same rows."""
+    paths, arrays = _write(tmp_path, [7, 5, 6])
+    zero, grown, plain = paths
+    arrays[0][2] = 0.0
+    save_npy(zero, arrays[0])
+    with open(grown, "r+b") as file:      # one more row, not in the header
+        file.truncate(os.path.getsize(grown) + 3 * 4)
+    monkeypatch.setattr(NPY_CACHE, "max_size", 10)
+    loads.clear()
+    npy_paths = np.array([zero, grown, plain, zero, grown])
+    locs = np.array([2, 4, 5, 6, 0])
+
+    out = fit_module._load_batch_descriptors(npy_paths, locs)
+
+    np.testing.assert_array_equal(
+        out, _expected(paths, arrays, npy_paths, locs))
+    assert not out[0].any()                # the zero row, as it is on disk
+    assert reads == [(zero, [2, 6]), (grown, [4, 0]), (plain, [5])]
+    assert reads.locked == [(zero, [2, 6]), (grown, [4, 0])]
+    assert loads == [] and loads.np == [] and _state() == ([], 0)
 
 
 def test_rows_past_the_end_still_fail(tmp_path, monkeypatch):
@@ -354,9 +404,18 @@ def test_fit_with_a_tiny_budget_gives_the_same_losses(tmp_path, monkeypatch,
         return losses, weights, _state()
 
     losses, weights, state = run(budget)
-    assert reads == [] and len(state[0]) == 3
+    assert reads == [] and reads.locked == [] and len(state[0]) == 3
     tiny_losses, tiny_weights, tiny_state = run(10)
-    assert reads and tiny_state == ([], 0)
+    assert reads and reads.locked == [] and tiny_state == ([], 0)
 
     assert losses and tiny_losses == losses
     assert torch.equal(tiny_weights, weights)
+
+    # the same rows under the lock, when the lock-free read refuses them all
+    reads.clear()
+    monkeypatch.setattr(npy_module, "read_npy_rows_unlocked",
+                        lambda *args, **kwargs: None)
+    locked_losses, locked_weights, locked_state = run(10)
+    assert len(reads) == len(reads.locked) > 0 and locked_state == ([], 0)
+    assert locked_losses == losses
+    assert torch.equal(locked_weights, weights)
