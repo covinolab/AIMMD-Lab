@@ -204,6 +204,21 @@ def test_rows_of_another_layout_are_refused(corrupt, match):
         featurizer.graphs(corrupt(rows))
 
 
+@pytest.mark.parametrize('kept', [0.5, 0.99])
+def test_a_row_whose_end_was_never_written_is_refused(kept):
+    """An in-place row write cut short leaves the end of the row zero: the
+    unwritten nodes would sit at the origin with atom type 0."""
+    featurizer = _featurizer()
+    rows = featurizer.rows_from_coordinates(FRAMES[:3])
+    n_nodes = int(rows[1, 0])
+    torn = rows.copy()
+    torn[1, 2 + int(kept * 3 * n_nodes):] = 0.0
+    featurizer.graphs(rows)
+    for method in (featurizer.graphs, featurizer.batch_dict):
+        with pytest.raises(ValueError, match='never written'):
+            method(torn)
+
+
 def test_batch_dict_needs_a_row():
     featurizer = _featurizer()
     with pytest.raises(ValueError, match='at least one row'):

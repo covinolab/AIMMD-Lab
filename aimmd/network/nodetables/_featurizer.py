@@ -532,6 +532,19 @@ class NodeTableFeaturizer:
                     (types >= n_types).any()):
                 raise ValueError(f'node-table row {i} of this batch has atom '
                                  f'types outside 0..{n_types - 1}')
+            # a write cut short leaves the end of the row zero: nodes at the
+            # origin, and every node of type 0 if it stopped in the positions
+            if (((types == 0) & ~positions.any(axis=1)).any() or
+                    (n > 1 and not types.any())):
+                raise ValueError(
+                    f'the end of node-table row {i} of this batch was never '
+                    f'written: it has nodes of atom type '
+                    f'{self.atom_types[0]!r} at the origin, or only nodes of '
+                    f'that type (a row write cut short, e.g. by a crash while '
+                    f'the row was refilled). Featurize the frames of that '
+                    f'series file again, e.g. with python -m '
+                    f'aimmd.network.nodetables prefill (without '
+                    f'--only-missing)')
             unpacked.append((positions, types.astype(np.int64)))
         return unpacked
 
@@ -554,7 +567,8 @@ class NodeTableFeaturizer:
         Raises
         ------
         ValueError
-            On a zero row (``n_nodes == 0``) or a row of another layout.
+            On a zero row (``n_nodes == 0``), a row of another layout or one
+            whose end was never written.
         """
         import torch
         from torch_geometric.data import Data
@@ -599,8 +613,8 @@ class NodeTableFeaturizer:
         Raises
         ------
         ValueError
-            On a zero row (``n_nodes == 0``), a row of another layout or no
-            rows.
+            On a zero row (``n_nodes == 0``), a row of another layout, one
+            whose end was never written, or no rows.
         """
         import torch
 
