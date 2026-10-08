@@ -55,13 +55,31 @@ from .utils import extract_indices_and_series, extract_lsr_pairs, extract_mar_se
 from ..core.utils import concatenate, now, accepts_system_id
 from ..analysis.utils import compute_bins, merge_marginal_bins
 from ..path.utils import get_cache_fname
+from ..cache.npy import read_npy_rows
 from .._config import NPY_CACHE
 
 
 def _load_batch_descriptors(npy_paths, locs):
     """Load a batch of raw descriptors by indexing per-trajectory NPY cache files.
 
-    Groups frame lookups by file to avoid redundant disk reads within a batch.
+    Frames are grouped by file, and each file of the batch is read once, in
+    the order of its first frame. This never evicts anything from
+    ``NPY_CACHE``: a training batch draws a few rows from each of many files,
+    and once the files no longer fit in the cache budget, loading each of
+    them whole would evict others and every batch would reload whole files
+    for a few rows each. Per file:
+
+    1. a resident copy with all the requested rows is used;
+    2. else, if the whole file fits in the room left in the budget (judged
+       from its size on disk before reading it), it is loaded and kept, as
+       ``NPY_CACHE.get`` keeps it;
+    3. else only the requested rows are read (`read_npy_rows`) and nothing
+       is kept. Files `read_npy_rows` cannot read, and rows past the end of
+       a file, go through ``NPY_CACHE.get`` as before.
+
+    A run whose files fit in the budget therefore loads and keeps them as
+    before. The rows, their order and their repetitions do not depend on
+    the case.
 
     Parameters
     ----------
@@ -75,18 +93,58 @@ def _load_batch_descriptors(npy_paths, locs):
     numpy.ndarray
         Raw descriptor array, shape ``(batch, *frame_shape)``.
     """
+    frames = {}
+    for i, npy_path in enumerate(npy_paths):
+        frames.setdefault(npy_path, []).append(i)
     result = [None] * len(npy_paths)
-    cache = {}
-    for i, (npy_path, loc) in enumerate(zip(npy_paths, locs)):
-        if npy_path not in cache:
-            arr = NPY_CACHE.get(npy_path)
-            if arr is None:
-                raise RuntimeError(
-                    f'Could not load descriptor cache file: {npy_path!r}.' \
-                    'The descriptor caches are likely corrupted.')
-            cache[npy_path] = arr
-        result[i] = cache[npy_path][loc]
+    for npy_path, positions in frames.items():
+        rows = _file_rows(npy_path, [locs[i] for i in positions])
+        for i, row in zip(positions, rows):
+            result[i] = row
     return np.array(result)
+
+
+def _file_rows(npy_path, locs):
+    """Rows `locs` of one descriptor file, for `_load_batch_descriptors`."""
+    min_length = max(int(np.max(locs)) + 1, 0)
+    array = NPY_CACHE.peek(npy_path, min_length)
+    if array is None:
+        array = _load_if_room(npy_path)
+    if array is None:
+        found = read_npy_rows(npy_path, locs)
+        if found is not None and len(found[1]) == len(locs):
+            return found[1]
+        array = NPY_CACHE.get(npy_path, min_length)
+    if array is None:
+        raise RuntimeError(
+            f'Could not load descriptor cache file: {npy_path!r}.' \
+            'The descriptor caches are likely corrupted.')
+    return [array[loc] for loc in locs]
+
+
+def _load_if_room(npy_path):
+    """The whole array of `npy_path`, if ``NPY_CACHE`` has room for it.
+
+    The file's size on disk (data and header) stands in for what
+    ``NPY_CACHE`` charges for the array; a file larger than the room left
+    is not read, and None is returned. A file read whole is kept only if
+    its actual charge fits as well, so that nothing is ever evicted; it is
+    returned either way. The room of a resident copy too short for the
+    batch counts as free, since loading the file replaces it.
+    """
+    stale = NPY_CACHE.peek(npy_path)
+    room = NPY_CACHE.max_size - NPY_CACHE.total_size
+    if stale is not None:
+        room += NPY_CACHE._size(stale)
+    try:
+        if os.stat(npy_path).st_size >= room:
+            return None
+    except OSError:
+        return None
+    array = NPY_CACHE.open(npy_path)
+    if array is not None and NPY_CACHE._size(array) < room:
+        NPY_CACHE.put(npy_path, array)
+    return array
 
 
 def _graph_batch(transformed, device):
