@@ -333,6 +333,40 @@ def test_pool_selection_on_a_path_of_the_other_mode(tmp_path, cache):
     assert np.array_equal(values, toy.values(rows))
 
 
+@pytest.mark.parametrize('cache', ['npy', 'graphkeys'])
+def test_shared_density_never_writes_another_workers_halves(tmp_path,
+                                                            cache):
+    """The shared density reads the in-flight back halves of the other
+    workers (frame 0), but must never write their series files.
+
+    Those files belong to the worker that runs the shot: it removes them
+    when the shot ends and recreates them for the next one. A row written
+    by another worker from the old trajectory would survive into the next
+    shot's file and be taken as computed, a wrong row for its first frame.
+    Without the series, the frame is left out of the shared density, as
+    in npy runs before graph keys.
+    """
+    from aimmd.worker.utils import select_shooting_point
+    toy = ToyCache()
+    bins = np.array([-np.inf, 10.0, 12.0, 14.0, np.inf])
+    params = _value_params(cache, toy, bins)
+    params.__dict__.update(chain_type='rfps', shared_density_adjustment=True)
+    own = tmp_path / 'chainR0'
+    own.mkdir()
+    fname, _ = _transition(own, 'path000001', 7, 0.0, _OWN[cache])
+    pool = PathEnsemble(Path(fname, shooting_index=3))
+    other = tmp_path / 'chainR1'
+    other.mkdir()
+    back, _ = _transition(other, 'back', 5, 2.0)       # no series yet
+    np.random.seed(0)
+    point = select_shooting_point(pool, params, str(own),
+                                  shooting_chains=[pool],
+                                  target_state='R')
+    assert point.n_atoms == 2
+    written = sorted(p.name for p in other.glob('back.xtc.*.npy'))
+    assert written == ['back.xtc.states.npy'], written
+
+
 def test_ensure_source_is_a_no_op_without_descriptors(tmp_path):
     import aimmd
     from aimmd.worker.utils import ensure_source

@@ -908,6 +908,11 @@ def ensure_source(paths, params):
     return paths.compute(*args)
 
 
+def _has_key(keys):
+    """Which graph-key rows are computed (not all-zero)."""
+    return np.asarray(keys).any(axis=1)
+
+
 def _series_rows(attribute, parts):
     """
     Rows of a per-frame series for a path assembled from trajectory parts.
@@ -1347,11 +1352,18 @@ def select_shooting_point(pool, params, folder,
         populations_for_adjustment = np.zeros_like(populations)
     if shared_density_adjustment:
         try:  # catch instabilities in try/except loop
-            ensure_source(shared_shooting_points, params)
+            # Frames without their source series are left out, never
+            # computed: these include frame 0 of the other workers' in-flight
+            # back halves, whose series files belong to the worker running
+            # the shot (removed and recreated with every shot). A missing
+            # descriptor file is skipped by compute; a zero key row would be
+            # repaired, i.e. written, so it is masked out here.
+            conditions = ({GRAPHKEYS: _has_key}
+                          if compute_values_args[2] == GRAPHKEYS else {})
             shared_populations_for_adjustment = np.histogram(
                 shared_shooting_points.compute(
                     compute_values_args[0], '',
-                    *compute_values_args[2:]),
+                    *compute_values_args[2:], conditions=conditions),
                 bins)[0]
         except Exception as exception:
             shared_populations_for_adjustment = np.zeros_like(populations)
