@@ -310,3 +310,55 @@ def test_ledger_reads_nothing_for_frames_the_conditions_exclude(tmp_path, monkey
                         conditions={"values": worker_utils._lacks_value}) == 0
     assert calls == [[2, 5]]
     NPY_CACHE.clear()
+
+
+def _count_reads(monkeypatch, fnames):
+    """Count the reads of the files `fnames` through NPY_CACHE and the
+    ledger."""
+    import aimmd.cache.npy as npy_module
+    import aimmd.path._compute as compute_module
+
+    reads = []
+    real_load, real_ledger = npy_module.load_npy, compute_module.read_npy_ledger
+
+    def load(fname, *args, **kwargs):
+        if fname in fnames:
+            reads.append(fname)
+        return real_load(fname, *args, **kwargs)
+
+    def ledger(fname, *args, **kwargs):
+        if fname in fnames:
+            reads.append(fname)
+        return real_ledger(fname, *args, **kwargs)
+
+    monkeypatch.setattr(npy_module, "load_npy", load)
+    monkeypatch.setattr(compute_module, "read_npy_ledger", ledger)
+    return reads
+
+
+def test_pool_ensure_reads_each_values_file_once_with_the_value_pass(
+        tmp_path, monkeypatch):
+    """A selection clears NPY_CACHE, then ensures and runs the value pass.
+    The ensure loads each values file into NPY_CACHE and the value pass's
+    ledger finds it there: one read per file for both together, as the value
+    pass alone does. Only the frames lacking a value are featurized."""
+    folder = tmp_path / "run" / "chainR0"
+    full = _path(folder, "path000001", LEADING_X, 3)
+    partial = _path(folder, "path000002", CURRENT_X, 2)
+    partial_values = get_cache_fname(partial.fname, "values")
+    values = load_npy(partial_values).copy()
+    values[[1, 4]] = 0.0
+    np.save(partial_values, values)
+    full_values = get_cache_fname(full.fname, "values")
+    params = _params()
+    reads = _count_reads(monkeypatch, {full_values})
+    NPY_CACHE.clear()
+
+    pool = PathEnsemble([full, partial])
+    worker_utils.ensure_descriptors(pool, params, missing_values_only=True)
+    assert params.descriptors_function.n_frames == 2
+    assert pool.compute(*params.compute_values_args, raise_if_error=True) == 2
+    assert reads == [full_values]
+    np.testing.assert_allclose(load_npy(partial_values)[[1, 4]],
+                               10.0 * _x(partial)[[1, 4]])
+    NPY_CACHE.clear()
