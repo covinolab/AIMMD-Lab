@@ -538,7 +538,13 @@ trainer runs.
 
    ``gc`` deletes every graph that no key file under the given runs references,
    so give it **every** run that uses the cache. It refuses while a trajectory
-   lacks a complete key file. ``python -m aimmd.network.graph_keys_cli verify``
+   lacks a complete key file, for a ``--run`` that is not a run folder (no
+   ``initial*/`` folder; a multi-system run gives each system's folder), for
+   a key file it cannot read, and when more than 1 % of the referenced keys
+   have no graph (the cache of another run). ``--apply`` also refuses while
+   another process has the cache open, and then holds it exclusively until
+   it is done. It cannot tell that another run uses the cache: that is up
+   to you. ``python -m aimmd.network.graph_keys_cli verify``
    reports key files and missing graphs without writing anything.
 
 **Switching back** is the line ``descriptor_cache = 'npy'`` (or removing it).

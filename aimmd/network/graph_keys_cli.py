@@ -34,6 +34,11 @@ as JSON) and ``--extension``, and ``--help`` lists the rest.
     filesystem. It refuses while a trajectory lacks a complete key file,
     since that trajectory's graphs would count as unreferenced: run
     ``backfill --only-missing`` first. Give it every run that uses the cache.
+    It also refuses a ``--run`` that is not a run folder (no ``initial*/``
+    folder), a key file it cannot read, more than 1 % of the referenced keys
+    without a graph (the cache of another run, or key files of other rows),
+    and, with ``--apply``, a cache that another process has open; it then
+    holds the cache exclusively until it is done.
 
 Run them between jobs, while no worker or trainer uses the runs or the
 cache. ``backfill`` and ``verify`` only read the cache; ``gc --apply``
@@ -125,6 +130,9 @@ _SQL_BATCH = 500
 #: The covering-index scan of every key of a graph cache.
 _KEY_SCAN = 'SELECT key FROM graphs_cache'
 
+#: Seconds ``gc --apply`` waits for the exclusive lock of the cache.
+_LOCK_TIMEOUT = 2.0
+
 #: Thread counts of the numerical libraries, 1 in the worker processes.
 _THREAD_VARIABLES = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS',
                      'OPENBLAS_NUM_THREADS')
@@ -151,8 +159,7 @@ def trajectories(run, extension='.xtc'):
         and folders are skipped.
     """
     found = []
-    for folder, folders, files in os.walk(run):
-        folders[:] = [name for name in folders if not name.startswith('.')]
+    for folder, files in _walk(run):
         for name in files:
             if name.startswith('.') or not name.endswith(extension):
                 continue
@@ -162,12 +169,38 @@ def trajectories(run, extension='.xtc'):
     return sorted(found)
 
 
+def _walk(run):
+    """``(folder, files)`` of every folder under a run, hidden ones aside.
+
+    Linked folders are walked too (free simulations kept on another disk,
+    say), each real folder once.
+    """
+    seen = set()
+    for folder, folders, files in os.walk(run, followlinks=True):
+        real = os.path.realpath(folder)
+        if real in seen:
+            folders[:] = []
+            continue
+        seen.add(real)
+        folders[:] = [name for name in folders if not name.startswith('.')]
+        yield folder, files
+
+
+def _is_run(folder):
+    """Whether ``folder`` is a run folder: it holds an ``initial*/``."""
+    try:
+        return any(name.startswith('initial')
+                   and os.path.isdir(os.path.join(folder, name))
+                   for name in os.listdir(folder))
+    except OSError:
+        return False
+
+
 def _key_files(run):
     """Every key file under a run, whether or not its trajectory has states."""
     suffix = f'.{SERIES}.npy'
     found = []
-    for folder, folders, files in os.walk(run):
-        folders[:] = [name for name in folders if not name.startswith('.')]
+    for folder, files in _walk(run):
         found += [os.path.join(folder, name) for name in files
                   if name.endswith(suffix)
                   and not name.startswith(('.', 'temp.'))]
@@ -195,12 +228,15 @@ def _stored(fname):
     -------
     tuple
         ``(keys, why)``: an ``(n, 32)`` uint8 array and None, or None and
-        ``'no key file'`` / ``'not a key file: ...'``.
+        ``'no key file'``, ``'cannot read it: ...'`` (an I/O error: the file
+        may be fine) or ``'not a key file: ...'``.
     """
     if not os.path.exists(fname):
         return None, 'no key file'
     try:
         return pad_keys(np.load(fname, allow_pickle=False), 0, fname), None
+    except OSError as exception:
+        return None, f'cannot read it: {exception}'
     except Exception as exception:                       # noqa: BLE001
         return None, f'not a key file: {exception}'
 
@@ -268,6 +304,31 @@ def _db_bytes(db):
     if os.path.exists(f'{db}-wal'):
         size += os.path.getsize(f'{db}-wal')
     return size
+
+
+def _lock(db):
+    """A write connection that holds graph cache ``db`` exclusively.
+
+    It holds the lock until it is closed, so no other process can open the
+    cache meanwhile.
+
+    Raises
+    ------
+    sqlite3.OperationalError
+        If another process has the cache open (a WAL cache keeps a lock for
+        as long as a connection is open) or is writing it.
+    """
+    conn = _connect(db, write=True)
+    try:
+        conn.execute(f'PRAGMA busy_timeout={int(_LOCK_TIMEOUT * 1000)}')
+        conn.execute('PRAGMA locking_mode=EXCLUSIVE')
+        conn.execute('BEGIN EXCLUSIVE')
+        conn.execute('SELECT COUNT(*) FROM graphs_cache').fetchone()
+        conn.execute('COMMIT')
+    except BaseException:
+        conn.close()
+        raise
+    return conn
 
 
 def _missing(keys, cached):
@@ -471,7 +532,10 @@ def _store(target, rows, keys):
     temp = os.path.join(folder, f'temp.{os.path.basename(target)}')
     length = int(rows.max()) + 1 if len(rows) else 0
     with FileLock(lock_fname(target), timeout=60.0):
-        old, _ = _stored(target)
+        old, why = _stored(target)
+        if why is not None and why.startswith('cannot read'):
+            # it may hold keys: rewriting it would replace them all
+            raise RuntimeError(f'{target}: {why}')
         new = np.array(pad_keys(old, length, target), copy=True)
         before = new[rows].copy()
         new[rows] = keys
@@ -930,11 +994,59 @@ def gc(runs, db, apply=False, vacuum=False, extension='.xtc'):
               'missing': None, 'deleted': 0,
               'db_bytes_before': _db_bytes(db), 'db_bytes_after': None,
               'applied': False, 'vacuumed': False, 'problems': []}
+
+    def finish(ok):
+        report['ok'] = ok
+        report['wall_s'] = time.monotonic() - start
+        return report
+
+    def refuse():
+        return finish(False)
+
+    not_runs = [run for run in runs if not _is_run(run)]
+    if not_runs:
+        report['problems'].append(
+            f'not a run folder (no initial*/ folder): {", ".join(not_runs)}; '
+            f'give the run folders (of a multi-system run, each system\'s '
+            f'folder), or the graphs of the rest of the run count as '
+            f'unreferenced')
+        return refuse()
+
+    # --apply: hold the cache from before the key files are read until the
+    # graphs are deleted, so that no process stores or keys a frame meanwhile
+    conn = None
+    if apply:
+        try:
+            conn = _lock(db)
+        except sqlite3.OperationalError as exception:
+            report['problems'].append(
+                f'graph cache {db} is in use ({exception}): another process '
+                f'(a worker, the trainer, a backfill) has it open. Run gc '
+                f'between jobs')
+            return refuse()
+    try:
+        return _collect(report, runs, db, conn, apply, vacuum, extension,
+                        finish)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _collect(report, runs, db, conn, apply, vacuum, extension, finish):
+    """The body of :func:`gc`, on the cache connection of ``--apply``."""
+
+    def refuse():
+        return finish(False)
+
     found = [fname for run in runs for fname in trajectories(run, extension)]
     report['trajectories'] = len(found)
+    loaded = {}                 # key file -> its rows, read once
     for fname in found:
         try:
-            status = _status(fname)['status']
+            record = _status(fname)
+            status = record['status']
+            if record['stored'] is not None:
+                loaded[key_file(fname)] = record['stored']
         except Exception as exception:                     # noqa: BLE001
             status = f'cannot read its states file: {exception!r}'
         if status != 'ok':
@@ -948,24 +1060,40 @@ def gc(runs, db, apply=False, vacuum=False, extension='.xtc'):
             f'a complete key file, so their graphs would count as '
             f'unreferenced: run backfill --only-missing first')
     if report['problems']:
-        report['ok'] = False
-        report['wall_s'] = time.monotonic() - start
-        return report
+        return refuse()
 
-    referenced = set()
+    referenced, unreadable = set(), {}
     key_files = [f for run in runs for f in _key_files(run)]
     for fname in key_files:
-        stored, _ = _stored(fname)
-        if stored is not None:
-            referenced.update(keys_to_hex(stored[stored.any(axis=1)]))
-    report.update(refused=False, key_files=len(key_files),
-                  referenced=len(referenced))
-    conn = _connect(db, write=apply)
+        stored = loaded.get(fname)
+        if stored is None:
+            stored, why = _stored(fname)
+            if stored is None:
+                unreadable[fname] = why
+                continue
+        referenced.update(keys_to_hex(stored[stored.any(axis=1)]))
+    report.update(key_files=len(key_files), referenced=len(referenced))
+    if unreadable:
+        report['problems'].append(
+            f'{len(unreadable)} key file(s) cannot be read, so the graphs '
+            f'they reference would count as unreferenced: '
+            + '; '.join(f'{f}: {why}' for f, why in unreadable.items()))
+        return refuse()
+
+    own = conn is None
+    if own:
+        conn = _connect(db)
     try:
         cached = _scan(conn)
         unreferenced = sorted(cached - referenced)
+        missing = len(referenced - cached)
         report.update(db_rows=len(cached), unreferenced=len(unreferenced),
-                      missing=len(referenced - cached))
+                      missing=missing)
+        problem = _missing_problem(missing, len(referenced), cached, db)
+        if problem:
+            report['problems'].append(f'{problem} gc deletes nothing then.')
+            return refuse()
+        report['refused'] = False
         size = 0
         for begin in range(0, len(unreferenced), _SQL_BATCH):
             batch = unreferenced[begin:begin + _SQL_BATCH]
@@ -992,11 +1120,10 @@ def gc(runs, db, apply=False, vacuum=False, extension='.xtc'):
                 conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
                 report['vacuumed'] = True
     finally:
-        conn.close()
+        if own:
+            conn.close()
     report['db_bytes_after'] = _db_bytes(db)
-    report['ok'] = True
-    report['wall_s'] = time.monotonic() - start
-    return report
+    return finish(True)
 
 
 # ------------------------------------------------------------ command line --

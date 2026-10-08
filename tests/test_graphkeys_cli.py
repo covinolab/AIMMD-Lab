@@ -628,3 +628,151 @@ def test_gc_vacuums_only_with_apply(toy):
         cli.gc([toy['run']], toy['db'], vacuum=True)
     assert cli.main(['gc', '--run', toy['run'], '--db', toy['db'],
                      '--vacuum']) == 2
+
+
+# ------------------------------------------- gc: what it cannot vouch for --
+def test_gc_refuses_when_its_keys_are_missing_from_the_cache(wal):
+    """The cache of another run, or key files backfilled from other rows:
+    almost no referenced key has a graph, and every graph would go."""
+    toy = wal
+    _backfill(toy)
+    _drop_graphs(toy['db'], toy['keys']['freeA/traj000001.part0001'])
+    extra = _add_unreferenced(toy['db'])
+    before = _cached(toy['db'])
+    for apply in (False, True):
+        report = cli.gc([toy['run']], toy['db'], apply=apply)
+        assert report['refused'] and not report['ok']
+        assert report['missing'] == 80
+        assert any('have no graph' in p for p in report['problems'])
+    assert _cached(toy['db']) == before
+    assert set(extra) < before
+
+
+def test_gc_refuses_a_folder_that_is_not_a_run(wal):
+    """A chain folder given as --run: the graphs of every other folder of
+    the run (initialARB among them) would count as unreferenced."""
+    toy = wal
+    _backfill(toy)
+    before = _cached(toy['db'])
+    folder = os.path.join(toy['run'], 'chainR0')
+    report = cli.gc([folder], toy['db'], apply=True)
+    assert report['refused'] and not report['ok']
+    assert any('not a run folder' in p for p in report['problems'])
+    assert _cached(toy['db']) == before
+
+
+def test_gc_refuses_while_the_cache_is_open_elsewhere(wal):
+    """A worker or trainer that has the cache open stores graphs, and keys
+    frames, while gc scans: gc must not run then, and nobody may open the
+    cache while it deletes."""
+    import sqlite3
+    toy = wal
+    _backfill(toy)
+    extra = _add_unreferenced(toy['db'])
+    before = _cached(toy['db'])
+    other = sqlite3.connect(toy['db'])
+    try:
+        other.execute('SELECT COUNT(*) FROM graphs_cache').fetchone()
+        report = cli.gc([toy['run']], toy['db'], apply=True)
+        assert report['refused'] and not report['ok']
+        assert any('in use' in p for p in report['problems'])
+        assert _cached(toy['db']) == before
+    finally:
+        other.close()
+    report = cli.gc([toy['run']], toy['db'], apply=True)
+    assert report['ok'] and report['deleted'] == len(extra)
+
+
+@pytest.mark.parametrize('damage', ['truncated', 'unreadable'])
+def test_gc_refuses_on_a_key_file_it_cannot_read(wal, damage):
+    """A key file gc cannot read references graphs gc cannot see."""
+    toy = wal
+    _backfill(toy)
+    stray = toy['trajs']['chainR0/stray']
+    save_npy(_key_file(stray), toy['keys']['chainR0/stray'])
+    cache = SqliteToyCache(toy['db'])
+    cache.add(toy['rows']['chainR0/stray'])
+    cache.conn.close()
+    if damage == 'truncated':
+        with open(_key_file(stray), 'r+b') as fh:
+            fh.truncate(100)
+    else:
+        os.chmod(_key_file(stray), 0)
+        if os.access(_key_file(stray), os.R_OK):    # root reads anything
+            pytest.skip('cannot make a file unreadable')
+    before = _cached(toy['db'])
+    try:
+        report = cli.gc([toy['run']], toy['db'], apply=True)
+    finally:
+        os.chmod(_key_file(stray), 0o644)
+    assert report['refused'] and not report['ok']
+    assert any(_key_file(stray) in p for p in report['problems'])
+    assert _cached(toy['db']) == before
+
+
+def test_gc_reads_each_key_file_once(wal, monkeypatch):
+    """A complete key file that fails on a second read (a transient GPFS
+    error) must not lose its graphs: gc uses what it checked."""
+    toy = wal
+    _backfill(toy)
+    extra = _add_unreferenced(toy['db'])
+    target = _key_file(toy['trajs']['freeA/traj000001.part0001'])
+    real_load = np.load
+    reads = []
+
+    def flaky_load(fname, *args, **kwargs):
+        if os.path.abspath(str(fname)) == os.path.abspath(target):
+            reads.append(fname)
+            if len(reads) > 1:
+                raise OSError(5, 'Input/output error')
+        return real_load(fname, *args, **kwargs)
+
+    monkeypatch.setattr(cli.np, 'load', flaky_load)
+    report = cli.gc([toy['run']], toy['db'], apply=True)
+    monkeypatch.undo()
+    assert report['ok'] and report['deleted'] == len(extra)
+    assert set(keys_to_hex(toy['keys']['freeA/traj000001.part0001'])) <= \
+        _cached(toy['db'])
+
+
+def test_gc_follows_symlinked_folders(wal, tmp_path):
+    """A run folder linked in (e.g. free simulations on another disk)."""
+    toy = wal
+    _backfill(toy)
+    elsewhere = tmp_path / 'elsewhere'
+    elsewhere.mkdir()
+    shutil.move(os.path.join(toy['run'], 'freeA'), str(elsewhere / 'freeA'))
+    os.symlink(str(elsewhere / 'freeA'), os.path.join(toy['run'], 'freeA'))
+    extra = _add_unreferenced(toy['db'])
+    report = cli.gc([toy['run']], toy['db'], apply=True)
+    assert report['ok'] and report['deleted'] == len(extra)
+    assert report['trajectories'] == 6
+    assert set(keys_to_hex(toy['keys']['freeA/traj000001.part0001'])) <= \
+        _cached(toy['db'])
+
+
+def test_store_never_replaces_a_key_file_it_cannot_read(toy, monkeypatch):
+    """backfill --only-missing: a read error under the lock must not turn
+    into 'no key file', which would replace every row already stored."""
+    _backfill(toy)
+    fname = toy['trajs']['freeA/traj000001.part0001']
+    target = _key_file(fname)
+    keys = np.load(target)
+    keys[5] = 0
+    np.save(target, keys)
+    real_load = np.load
+    reads = []
+
+    def flaky_load(path, *args, **kwargs):
+        if os.path.abspath(str(path)) == os.path.abspath(target):
+            reads.append(path)
+            if len(reads) == 2:                     # _store's read
+                raise OSError(5, 'Input/output error')
+        return real_load(path, *args, **kwargs)
+
+    monkeypatch.setattr(cli.np, 'load', flaky_load)
+    report = cli.backfill([toy['run']], db=toy['db'], only_missing=True)
+    monkeypatch.undo()
+    assert not report['ok']
+    assert report['files'][fname]['error'] is not None
+    assert np.array_equal(np.load(target), keys)
