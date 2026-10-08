@@ -1270,6 +1270,48 @@ def _repack_file(featurizer, task):
                 seconds={'write': time.perf_counter() - start})
 
 
+def _source_n_max(values, featurizer):
+    """The ``n_max`` of the existing series, for ``featurizer.with_n_max``.
+
+    `values` is None, an int, or a list of ``M`` (the default of every
+    system) and, for a multi-system featurizer, ``SYSTEM_ID=M`` (one
+    system). Returns None, an int, or ``{system_id: M}``.
+    """
+    if values is None or isinstance(values, int):
+        return values
+    system_ids = getattr(featurizer, 'system_ids', None)
+    default, per_system = None, {}
+    for value in values:
+        system_id, separator, text = str(value).rpartition('=')
+        try:
+            n_max = int(text)
+        except ValueError:
+            n_max = 0
+        if n_max < 1:
+            raise UsageError(f'--from-n-max {value!r}: the n_max must be a '
+                             f'positive integer')
+        if not separator:
+            if default is not None:
+                raise UsageError('--from-n-max: more than one default M')
+            default = n_max
+        elif system_ids is None:
+            raise UsageError(f'--from-n-max {value!r}: SYSTEM_ID=M is for a '
+                             f'multi-system featurizer; give M alone')
+        elif system_id not in system_ids:
+            raise UsageError(f'--from-n-max {value!r}: no system '
+                             f'{system_id!r}; known: {system_ids}')
+        elif system_id in per_system:
+            raise UsageError(f'--from-n-max: system {system_id!r} given '
+                             f'twice')
+        else:
+            per_system[system_id] = n_max
+    if not per_system:
+        return default
+    if default is not None:
+        per_system = {**dict.fromkeys(system_ids, default), **per_system}
+    return per_system
+
+
 def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
            log=print):
     """Rewrite node-table series files for another row capacity.
@@ -1290,9 +1332,10 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
     n_max : int
         Row capacity of the new series (every system of a multi-system
         featurizer).
-    from_n_max : int, optional
+    from_n_max : int or list, optional
         Row capacity of the existing series, if the params file already holds
-        the new one.
+        the new one: an int, or a list of ``M`` (every system not named) and,
+        for a multi-system featurizer, ``SYSTEM_ID=M`` (that system).
     jobs : int, default=1
         Processes.
     overwrite : bool, default=False
@@ -1311,12 +1354,13 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
     Raises
     ------
     UsageError
-        If the source and the new series are the same, or the runs hold no
-        source series file.
+        If `from_n_max` is invalid, the source and the new series are the
+        same, or the runs hold no source series file.
     """
     started = time.perf_counter()
     featurizer = params.featurizer
     runs = _run_folders(runs)
+    from_n_max = _source_n_max(from_n_max, featurizer)
     try:
         source = (featurizer if from_n_max is None
                   else featurizer.with_n_max(from_n_max))

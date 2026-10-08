@@ -188,7 +188,9 @@ reported. It runs on CPUs only.
    series name, printed at the end). Rows of frames that did not fit stay
    zero: pin the new series and run ``prefill --only-missing`` (or let the
    trainer's ledger fill them). If the params file already holds the new
-   ``n_max``, give the old one with ``--from-n-max``.
+   ``n_max``, give the old one with ``--from-n-max M``; in a multi-system
+   run ``--from-n-max SYSTEM_ID=M`` (repeatable) gives one system's, and a
+   plain ``M`` that of the systems not named.
 ``verify``
    Reports, per trajectory, a missing series file, missing (short), zero and
    extra rows and rows of another layout; ``--sample K`` compares ``K`` filled

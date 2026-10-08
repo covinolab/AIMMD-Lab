@@ -25,6 +25,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -599,26 +600,32 @@ def _featurizer(n_max):
         n_max=n_max)
 
 
-FEATURIZERS = MultiSystemNodeTableFeaturizer({{'lig1': _featurizer(64),
-                                              'lig2': _featurizer(80)}})
+FEATURIZERS = MultiSystemNodeTableFeaturizer({{
+    'lig1': _featurizer({n_max_1}), 'lig2': _featurizer({n_max_2})}})
 descriptors_series = FEATURIZERS.series
 '''
+
+
+def _write_multi_params(params, n_max_1=64, n_max_2=80):
+    """The multi-system params file: two systems with their own n_max."""
+    Path(params).write_text(MULTI_PARAMS.format(
+        system=SYSTEM_SELECTION, environment=ENVIRONMENT_SELECTION,
+        atom_types=ATOM_TYPES, cutoff=CUTOFF, n_max_1=n_max_1,
+        n_max_2=n_max_2))
+    return MultiSystemNodeTableFeaturizer({
+        'lig1': toy_featurizer(Path(params).parent, n_max_1),
+        'lig2': toy_featurizer(Path(params).parent, n_max_2)})
 
 
 def test_prefill_and_verify_a_multi_system_run(tmp_path):
     campaign = make_campaign(tmp_path / 'campaign')
     folder = Path(campaign.folder)
     params = folder / 'multi.py'
-    params.write_text(MULTI_PARAMS.format(
-        system=SYSTEM_SELECTION, environment=ENVIRONMENT_SELECTION,
-        atom_types=ATOM_TYPES, cutoff=CUTOFF))
+    featurizers = _write_multi_params(params)
     run = folder / 'multi_run'
     layout = dict(list(LAYOUT.items())[:3])
     write_run(run / 'lig1', layout)
     write_run(run / 'lig2', layout, untracked=None)
-    featurizers = MultiSystemNodeTableFeaturizer({
-        'lig1': toy_featurizer(folder, 64),
-        'lig2': toy_featurizer(folder, 80)})
 
     assert _cli.main(['prefill', '--params', str(params), '--run',
                       str(run)]) == 0
@@ -631,6 +638,62 @@ def test_prefill_and_verify_a_multi_system_run(tmp_path):
                 featurizers[system_id], trajectory)))
     assert _cli.main(['verify', '--params', str(params), '--run', str(run),
                       '--sample', '2']) == 0
+
+
+def test_repack_a_multi_system_run_from_its_n_max_per_system(tmp_path):
+    """Each system has its own n_max. Once the params file holds the new
+    capacity, --from-n-max names the old one per system (SYSTEM_ID=M; a
+    plain M is the default of the systems not named)."""
+    campaign = make_campaign(tmp_path / 'campaign')
+    folder = Path(campaign.folder)
+    params = folder / 'multi.py'
+    old = _write_multi_params(params, 64, 80)
+    run = folder / 'multi_run'
+    layout = dict(list(LAYOUT.items())[:3])
+    write_run(run / 'lig1', layout)
+    write_run(run / 'lig2', layout, untracked=None)
+    assert _cli.main(['prefill', '--params', str(params), '--run',
+                      str(run)]) == 0
+    new = _write_multi_params(params, 96, 96)       # the new capacity
+    argv = ['repack', '--params', str(params), '--run', str(run),
+            '--n-max', '96']
+
+    # one value for every system: no such series (lig2 had 80)
+    assert _cli.main(argv + ['--from-n-max', '64']) == 2
+    report = tmp_path / 'repack.json'
+    assert _cli.main(argv + ['--from-n-max', 'lig1=64', '--from-n-max',
+                             'lig2=80', '--report', str(report)]) == 0
+
+    result = load_report(report)
+    assert (result['source_series'], result['series']) == (old.series,
+                                                            new.series)
+    for system_id in ('lig1', 'lig2'):
+        for trajectory in trajectories(run / system_id, layout):
+            rows = np.load(series_file(trajectory, old.series))
+            assert Path(series_file(trajectory, new.series)).read_bytes() \
+                == npy_bytes(repack_rows(rows, 96))
+    assert _cli.main(['verify', '--params', str(params), '--run', str(run),
+                      '--sample', '2']) == 0
+    # a default and an override name the same source series
+    report = tmp_path / 'again.json'
+    assert _cli.main(argv + ['--from-n-max', '80', '--from-n-max',
+                             'lig1=64', '--report', str(report)]) == 0
+    assert load_report(report)['source_series'] == old.series
+    # an unknown system, or SYSTEM_ID=M for a single system, is refused
+    assert _cli.main(argv + ['--from-n-max', 'lig3=64']) == 2
+    assert _cli.main(['repack', '--params', campaign.params, '--run',
+                      campaign.run, '--n-max', '96', '--from-n-max',
+                      'lig1=64']) == 2
+
+
+def test_source_n_max_refuses_repeated_or_bad_values():
+    featurizers = SimpleNamespace(system_ids=['lig1', 'lig2'])
+    assert _tool._source_n_max(['64'], featurizers) == 64
+    assert _tool._source_n_max(['lig2=80'], featurizers) == {'lig2': 80}
+    for values in (['64', '80'], ['lig1=64', 'lig1=80'], ['lig1=x'],
+                   ['0']):
+        with pytest.raises(_tool.UsageError):
+            _tool._source_n_max(values, featurizers)
 
 
 def test_find_trajectories_follows_the_states_series(campaign):

@@ -6,8 +6,8 @@
         [--run RUN ...] [--db [SYSTEM_ID=]DB ...] [-j N] [--verify K]
         [--only-missing] [--chunk-frames N] [--seed S] [--report FILE]
     python -m aimmd.network.nodetables repack --params PARAMS --run RUN
-        [--run RUN ...] --n-max N [--from-n-max M] [--overwrite] [-j N]
-        [--report FILE]
+        [--run RUN ...] --n-max N [--from-n-max [SYSTEM_ID=]M ...]
+        [--overwrite] [-j N] [--report FILE]
     python -m aimmd.network.nodetables verify --params PARAMS --run RUN
         [--run RUN ...] [--sample K] [-j N] [--seed S] [--report FILE]
 
@@ -115,9 +115,12 @@ def _parser():
         'prefill --only-missing to fill.')
     repack.add_argument('--n-max', type=_positive, required=True,
                         metavar='N', help='row capacity of the new series')
-    repack.add_argument('--from-n-max', type=_positive, metavar='M',
+    repack.add_argument('--from-n-max', action='append',
+                        metavar='[SYSTEM_ID=]M',
                         help='row capacity of the existing series, if the '
-                             'params file already holds the new one')
+                             'params file already holds the new one; '
+                             'SYSTEM_ID=M for one system of a multi-system '
+                             'run, M for the others (repeatable)')
     repack.add_argument('--overwrite', action='store_true',
                         help='replace existing files of the new series')
 

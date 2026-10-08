@@ -99,6 +99,22 @@ def test_any_system_change_changes_the_series_name(change):
         featurizers.check_series(_featurizers().series)
 
 
+def test_with_n_max_takes_one_capacity_or_one_per_system():
+    featurizers = _featurizers(n_max_1=96)
+    every = featurizers.with_n_max(200)
+    assert [every[system_id].n_max for system_id in every.system_ids] == \
+        [200, 200]
+    # a mapping changes the systems it names, the others keep theirs
+    some = featurizers.with_n_max({'ligB': 160})
+    assert some['ligA'].series == featurizers['ligA'].series
+    assert some['ligB'].series == featurizers['ligB'].with_n_max(160).series
+    assert some.series == MultiSystemNodeTableFeaturizer({
+        'ligA': featurizers['ligA'],
+        'ligB': featurizers['ligB'].with_n_max(160)}).series
+    with pytest.raises(ValueError, match="'ligC'"):
+        featurizers.with_n_max({'ligC': 64})
+
+
 def test_the_systems_must_share_the_atom_types():
     with pytest.raises(ValueError, match='atom_types'):
         _featurizers(atom_types_1=ATOM_TYPES + ['CL'])

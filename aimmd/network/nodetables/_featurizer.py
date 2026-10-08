@@ -43,6 +43,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
+
 import numpy as np
 import MDAnalysis.transformations as transformations
 
@@ -870,10 +872,31 @@ class MultiSystemNodeTableFeaturizer:
         return descriptors_series
 
     def with_n_max(self, n_max):
-        """The featurizers of every system with row capacity `n_max`; see
-        `NodeTableFeaturizer.with_n_max`."""
+        """The featurizers with other row capacities; see
+        `NodeTableFeaturizer.with_n_max`.
+
+        Parameters
+        ----------
+        n_max : int or mapping
+            Maximum number of graph nodes per row of every system, or
+            ``{system_id: n_max}`` of the systems to change (the others keep
+            theirs).
+
+        Raises
+        ------
+        ValueError
+            If `n_max` names an unknown system.
+        """
+        if not isinstance(n_max, Mapping):
+            n_max = dict.fromkeys(self.featurizers, n_max)
+        n_max = {str(system_id): value for system_id, value in n_max.items()}
+        unknown = sorted(set(n_max) - set(self.featurizers))
+        if unknown:
+            raise ValueError(f'no node-table featurizer for system_id(s) '
+                             f'{unknown}; known: {self.system_ids}')
         return type(self)({
-            system_id: featurizer.with_n_max(n_max)
+            system_id: (featurizer.with_n_max(n_max[system_id])
+                        if system_id in n_max else featurizer)
             for system_id, featurizer in self.featurizers.items()})
 
     def descriptors_function(self, trajectory, system_id):
