@@ -462,8 +462,10 @@ class WorkerTrain(ABC):
                 n = pathensemble.compute(*params.compute_descriptors_args)
                 if n:
                     print(f'... (re)computed {n} missing {label}')
-                # also recompute initial path descriptor frames, if not present
-                n = margins.compute(*params.compute_descriptors_args)
+                # also recompute the initial paths' frames, if not present:
+                # whole, not only the margins fit uses, as a seed in a
+                # selection pool is evaluated on all of its frames
+                n = self.initial_paths.compute(*params.compute_descriptors_args)
                 if n:
                     print(f"... (re)computed {n} missing "
                           f"inital path {label}")
@@ -819,10 +821,11 @@ class WorkerTrain(ABC):
                 self._cache_bias_files(pe, bias_function, system_id=system_id)
 
         # per-system margin frames (transitions only), from each subfolder's
-        # initial paths
-        margins = []
+        # initial paths (the seeds)
+        seeds, margins = [], []
         for subdir, sid in systems:
             ip = PathEnsemble(f'{subdir}/initial{states}/*')
+            seeds.append(ip)
             ip = ip.extract(states, states[::-1])
             margins.append(PathEnsemble([p[1::-1] for p in ip] +
                                         [p[-2::1] for p in ip]))
@@ -955,6 +958,11 @@ class WorkerTrain(ABC):
                     print(f"... [system {sid!r}] {label}: computing over "
                           f"{len(pathensembles[k])} paths {now()}")
                     n_desc = pathensembles[k].compute(
+                        *params.compute_descriptors_args, system_id=sid)
+                    # the seeds too (whole; see _train): fit reads their
+                    # margins, and after a switch of descriptor_cache
+                    # without a re-export they lack the series
+                    n_desc += seeds[k].compute(
                         *params.compute_descriptors_args, system_id=sid)
                     print(f"... [system {sid!r}] {label}: {n_desc} frame(s) "
                           f"computed in {time.time() - _t0:.1f}s "
@@ -1384,7 +1392,8 @@ class WorkerTrain(ABC):
                 n = pathensemble.compute(*params.compute_descriptors_args)
                 if n:
                     print(f'... (re)computed {n} missing {label}')
-                n = margins.compute(*params.compute_descriptors_args)
+                n = self.initial_paths.compute(
+                    *params.compute_descriptors_args)
                 if n:
                     print(f'... (re)computed {n} missing initial path '
                           f'{label}')
@@ -1598,7 +1607,7 @@ class WorkerTrain(ABC):
         _saved_state = _buf.getvalue()
 
         # per-system full chains/free + margins
-        sys_chains, sys_free, margins = [], [], []
+        sys_chains, sys_free, seeds, margins = [], [], [], []
         _reusable = getattr(self, '_shot_chains_by_system', None) or []
         _reusable_frees = getattr(self, '_free_trajectories_by_system', None) or []
         for _k, (subdir, sid) in enumerate(systems):
@@ -1613,6 +1622,7 @@ class WorkerTrain(ABC):
             sys_chains.append(chains)
             sys_free.append(frees)
             ip = PathEnsemble(f'{subdir}/initial{states}/*')
+            seeds.append(ip)
             ip = ip.extract(states, states[::-1])
             margins.append(PathEnsemble([p[1::-1] for p in ip] +
                                         [p[-2::1] for p in ip]))
@@ -1639,6 +1649,8 @@ class WorkerTrain(ABC):
                 pe = assemble_pathensemble(sub_chains, sub_free)
                 if params.compute_descriptors_args is not None:
                     pe.compute(*params.compute_descriptors_args, system_id=sid)
+                    seeds[k].compute(*params.compute_descriptors_args,
+                                     system_id=sid)
                     _verify_graph_keys(params, pe + margins[k], system_id=sid,
                                        prefix=f'... [system {sid!r}]')
                 cache_bias(pe, sid)

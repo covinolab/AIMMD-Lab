@@ -301,8 +301,128 @@ def test_switch_to_graph_keys_and_back(campaign, monkeypatch, capsys):
         rows, expected = np.load(f'{fname}.descriptors.npy'), _rows(fname)
         computed = rows.any(axis=1)
         assert np.array_equal(rows[computed], expected[:len(rows)][computed])
-        if '/initialARB/' in fname:      # the trainer needs its margins only
-            margins = np.isin(np.load(f'{fname}.states.npy'), ['A', 'B'])
-            assert computed[margins[:len(rows)]].all(), fname
-        else:
-            assert len(rows) == len(expected) and computed.all(), fname
+        # the seed whole, not only the margins the trainer fits on: a seed
+        # in a selection pool is evaluated on all of its frames, and zero
+        # rows in a complete-looking file would be taken for descriptors
+        assert len(rows) == len(expected) and computed.all(), fname
+
+
+MULTI_SOURCE = '''
+import numpy as np
+import torch
+from aimmd.core.graphkey import graph_keys, is_key_batch, keys_to_hex
+from aimmd.network.graph_lookup import (GraphCacheMiss, collect_graphs,
+                                        overlay_get)
+from aimmd.network import fit as _fit
+from aimmd.network.rescalable import Rescalable
+
+engine = 'toy'
+chain_type = 'rfps'
+multi_system = True
+multi_system_share_network = True
+system_ids = ['s1', 's2']
+topology = ['s1.xtc', 's2.xtc']
+initial_paths = [['s1.xtc'], ['s2.xtc']]
+descriptor_cache = 'graphkeys'
+extra_free_frames = 0
+GRAPHS = {'s1': {}, 's2': {}}
+
+
+def states_function(trajectory, system_id=None):
+    x = np.array([ts.positions[0, 0] for ts in trajectory])
+    return np.where(x < 2, 'A', np.where(x > 8, 'B', 'R')).astype('<U1')
+
+
+def descriptors_function(trajectory, system_id=None):
+    return np.array([ts.positions.ravel().copy() for ts in trajectory],
+                    dtype=np.float32).reshape(len(trajectory), -1)
+
+
+def descriptor_transform(x, system_id=None):
+    cache = GRAPHS[system_id]
+    if is_key_batch(x):
+        out, missing = [], []
+        for h, row in zip(keys_to_hex(x), x):
+            g = overlay_get(h) if row.any() else None
+            if g is None and row.any():
+                g = cache.get(h)
+            if g is None:
+                missing.append(row)
+            out.append(g)
+        if missing:
+            raise GraphCacheMiss(np.unique(np.stack(missing), axis=0))
+        return np.stack(out) if out else np.zeros((0, 1), np.float32)
+    x = np.asarray(x, dtype=np.float32)
+    hexes = keys_to_hex(graph_keys(x)) if len(x) else []
+    feats = []
+    for h, row in zip(hexes, x):
+        g = cache.get(h)
+        if g is None:
+            g = np.array([row[0] / 10.0], dtype=np.float32)
+            cache[h] = g
+        feats.append(g)
+    collect_graphs(hexes, feats)
+    return np.stack(feats) if feats else np.zeros((0, 1), np.float32)
+
+
+class Network(Rescalable):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(1, 1)
+    def forward(self, x):
+        return self.lin(x[:, :1])
+    def reset_parameters(self):
+        self.lin.reset_parameters()
+
+network = Network()
+
+
+def fit(params, pathensemble, verbose=False, worker=None):
+    return _fit(params, pathensemble, nbins=0, state_bins='all', augment='no',
+                lr=1e-3, loss_bayesian_factor=0, epochs=5, batch_size=16,
+                stop=1e9, in_memory=False, graphs=False, verbose=verbose,
+                worker=worker)
+'''
+
+
+def _multi_sweep(fname, n_atoms, n_frames=30):
+    import MDAnalysis as mda
+    universe = mda.Universe.empty(n_atoms, trajectory=True)
+    with mda.Writer(str(fname), n_atoms) as writer:
+        for x in np.linspace(0.0, 10.0, n_frames):
+            positions = np.full((n_atoms, 3), 5.0, dtype=np.float32)
+            positions[0, 0] = x
+            universe.atoms.positions = positions
+            writer.write(universe.atoms)
+
+
+def test_multi_system_trainer_switched_back_without_a_reexport(
+        tmp_path, monkeypatch):
+    """A multi-system run whose seeds were exported with graph keys only,
+    switched back to 'npy' without the launcher re-exporting them (the job
+    script is resubmitted as it is). The trainer computes the descriptors
+    of the training frames of every system, the seeds included, before
+    fit reads them."""
+    monkeypatch.chdir(tmp_path)
+    _multi_sweep(tmp_path / 's1.xtc', 1)
+    _multi_sweep(tmp_path / 's2.xtc', 2)
+    (tmp_path / 'params.py').write_text(MULTI_SOURCE)
+    NPY_CACHE.clear()
+    params = aimmd.Params.load('params.py', save=False)
+    assert params.graphkeys_mode
+    launcher = aimmd.Launcher(params, 'run1')
+    launcher._update(n=0)
+    launcher._build()
+    for sid in ('s1', 's2'):
+        assert glob.glob(f'run1/{sid}/initialARB/*.graphkeys.npy')
+        assert not glob.glob(f'run1/{sid}/initialARB/*.descriptors.npy')
+
+    NPY_CACHE.clear()
+    params.update(descriptor_cache='npy', save=False)
+    assert not params.graphkeys_mode
+    aimmd.Worker(params, 'run1', walltime=120).train(nrounds=1)
+    NPY_CACHE.clear()
+    for sid in ('s1', 's2'):
+        seed = f'run1/{sid}/initialARB/{sid}.xtc'
+        rows = np.load(f'{seed}.descriptors.npy')
+        assert np.array_equal(rows, _rows(seed)), sid
