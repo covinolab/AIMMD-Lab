@@ -138,6 +138,36 @@ def save_npy(fname, array, timeout=10.):
     raise RuntimeError(error_message)
 
 
+def _create_npy(fname, array, timeout=10.):
+    """
+    Save an array to a `.npy` file that does not exist yet (lock + replace).
+
+    As :func:`save_npy`, but the file is only written if it still does not
+    exist once the lock is held, so that a file another writer created after
+    the caller found it missing is not replaced.
+
+    Returns
+    -------
+    bool
+        True if the file was written, False if it existed.
+    """
+    folder, name = extract_folder_and_name(fname)
+    temp_fname = f'{folder}/temp.{name}'
+    lock = lock_fname(fname)
+    for _ in range(10):
+        try:
+            with FileLock(lock, timeout=timeout):
+                if os.path.exists(fname):
+                    return False
+                np.save(temp_fname, array)
+                os.replace(temp_fname, fname)
+                return True
+        except Exception as exception:
+            error_message = str(exception)
+            time.sleep(0.1)
+    raise RuntimeError(error_message)
+
+
 def load_npy(fname, timeout=10.):
     """
     Load an array from a `.npy` file safely (under a lock).
@@ -231,13 +261,14 @@ def update_npy(fname, data, indices, timeout=10.):
     
     # creation logic
     # If the file doesn't exist, materialize a zero-filled array and save it.
-    # Note: save_npy must also have retry logic to be fully safe.
+    # The check is repeated under the lock: a writer that created the file
+    # in the meantime keeps its rows, and the rows are updated in place.
     if not os.path.exists(fname):
         new_shape = (min_size,) + data_shape[1:]
         result = np.zeros(new_shape, dtype=data_dtype)
         result[indices] = data
-        save_npy(fname, result)
-        return
+        if _create_npy(fname, result, timeout):
+            return
     
     # geometric calculations
     # calculate bytes per row (excluding axis 0)
