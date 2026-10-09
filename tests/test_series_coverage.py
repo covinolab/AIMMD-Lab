@@ -22,9 +22,15 @@ series. They cover
 - a params file written for another computed series than the featurizers
   of the process register (a job script older than an edit of the params
   file) stops both checks with a mismatch error, also when its series is
-  complete.
+  complete;
+- a failed refill leaves a marker in the run folder: the later processes of
+  the same job (SLURM job, or launch) stop with the error instead of
+  refilling again, a new job tries again, and a refill that succeeds
+  removes the marker.
 """
+import json
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -413,3 +419,99 @@ def test_no_mismatch_without_a_featurizer_of_that_kind(tmp_path):
     series._POLICIES.clear()
     register_series(OTHER, refill=True, refiller=lambda *args, **kw: None)
     assert ensure_series_coverage(_params(tmp_path), run)
+
+
+# ----------------------------------------------------------------------
+# a failed refill is not repeated in the same job
+
+class _Failing:
+    """A refill callable that fails `fails` times, then fills the gap."""
+
+    def __init__(self, fails=1):
+        self.fails = fails
+        self.calls = 0
+
+    def __call__(self, coverage, **kwargs):
+        self.calls += 1
+        if self.calls <= self.fails:
+            raise RuntimeError('no space left\non the device')
+        for trajectory, _ in coverage.missing:
+            np.save(f'{trajectory}.{SERIES}.npy',
+                    np.ones((1, 6), dtype=np.float32))
+        return dict(route='the test route')
+
+
+def _marker(run):
+    with open(Path(run) / series.REFILL_FAILED) as file:
+        return json.load(file)
+
+
+def test_a_failed_refill_is_not_repeated_by_a_later_process_of_the_job(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv('SLURM_JOB_ID', '4711')
+    monkeypatch.delenv('SLURM_RESTART_COUNT', raising=False)
+    monkeypatch.delenv('SLURM_JOB_START_TIME', raising=False)
+    refiller = _Failing()
+    register_series(SERIES, refill=True, refiller=refiller)
+    run = _run_with_gap(tmp_path)
+    lines = []
+    with pytest.raises(SeriesCoverageError) as first:
+        ensure_series_coverage(_params(tmp_path), run, role='train run1',
+                               log=lines.append)
+    assert 'on the device' in str(first.value)
+    marker = _marker(run)
+    assert (marker['series'], marker['status'], marker['job']) == (
+        SERIES, 'failed', '4711')
+    assert marker['role'] == 'train run1' and marker['pid'] == os.getpid()
+    assert 'RuntimeError: no space left' in marker['error']
+    assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+
+    # a process of the same job that starts after the lock was released
+    lines = []
+    with pytest.raises(SeriesCoverageError) as later:
+        ensure_series_coverage(_params(tmp_path), run, log=lines.append)
+    assert refiller.calls == 1
+    assert lines == str(later.value).splitlines()
+    assert all(line.startswith('SERIES REFILL:') for line in lines)
+    assert (f"the refill of {SERIES!r} already failed in this job (SLURM "
+            f"job 4711: ") in lines[0]
+    assert 'RuntimeError: no space left' in lines[0]
+    assert 'does not refill again' in lines[0]
+    assert str(Path(run) / series.REFILL_FAILED) in lines[0]
+
+    # the next job tries again; its refill removes the marker
+    monkeypatch.setenv('SLURM_JOB_ID', '4712')
+    lines = []
+    assert ensure_series_coverage(_params(tmp_path), run, log=lines.append)
+    assert refiller.calls == 2
+    assert not os.path.exists(Path(run) / series.REFILL_FAILED)
+    assert series_coverage(run, SERIES).complete
+
+
+def test_without_slurm_a_marker_counts_from_the_start_of_the_launch(
+        tmp_path, monkeypatch):
+    monkeypatch.delenv('SLURM_JOB_ID', raising=False)
+    refiller = _Failing(fails=2)
+    register_series(SERIES, refill=True, refiller=refiller)
+    run = _run_with_gap(tmp_path)
+    # Launcher.run marks the start of its launch for its processes
+    monkeypatch.setenv(series.JOB_START, repr(time.time() - 60.))
+    with pytest.raises(SeriesCoverageError):
+        ensure_series_coverage(_params(tmp_path), run, log=lambda line: None)
+    assert _marker(run)['job'] is None
+    with pytest.raises(SeriesCoverageError) as later:
+        ensure_series_coverage(_params(tmp_path), run, log=lambda line: None)
+    assert 'already failed in this job' in str(later.value)
+    assert refiller.calls == 1
+    # a new launch: the marker is older than its start
+    monkeypatch.setenv(series.JOB_START, repr(time.time() + 1.))
+    with pytest.raises(SeriesCoverageError) as again:
+        ensure_series_coverage(_params(tmp_path), run, log=lambda line: None)
+    assert 'already failed' not in str(again.value)
+    assert refiller.calls == 2
+    # the launcher names the last failure in its notice
+    out = []
+    check_series_coverage(_params(tmp_path), run, log=out.append)
+    assert any(line.startswith('SERIES REFILL: the last refill of ') and
+               'failed: RuntimeError: no space left' in line
+               for line in out)

@@ -14,11 +14,14 @@ check that
 - a complete run starts as before;
 - a worker whose params file (``paramsN.py``) was written before the params
   file that builds the featurizer was edited stops with a mismatch error
-  naming both series, also when the series it names is complete.
+  naming both series, also when the series it names is complete;
+- `Launcher.run` marks the start of its launch for its processes (a failed
+  refill of an earlier launch does not stop them).
 """
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -232,3 +235,26 @@ def test_a_job_written_before_the_params_file_changed_stops(tmp_path,
     assert 'STARTED' not in result.stdout
     assert {fname: fname.read_bytes() for fname in files} == before
     assert not list(Path(campaign.run).rglob(f'*.{new.series}.npy'))
+
+
+def test_a_launch_marks_its_start_for_its_processes(tmp_path, monkeypatch,
+                                                    no_hardware):
+    # a failed refill of this launch stops its later processes; one of an
+    # earlier launch does not (aimmd.core.series.JOB_START)
+    from aimmd.execute.processes import ProcessExecutor
+    campaign = make_full_campaign(tmp_path / 'campaign')
+    _tool.prefill(_tool.ParamsFeaturizer(
+        None, 'F', toy_featurizer(campaign.folder, 64), None),
+        [campaign.run], log=lambda line: None)
+    monkeypatch.chdir(campaign.folder)
+    monkeypatch.setenv(series.JOB_START, '0')     # restored after the test
+    monkeypatch.delenv(series.JOB_START)
+    params = aimmd.Params.load('params.py')
+    seen = []
+    monkeypatch.setattr(ProcessExecutor, 'run', lambda self, *args, **kw:
+                        seen.append(os.environ.get(series.JOB_START)))
+    monkeypatch.setattr(ProcessExecutor, 'clear', lambda self, *args, **kw:
+                        None)
+    before = time.time()
+    aimmd.Launcher(params, 'run1').run(1, nframes=10, walltime=0.1)
+    assert len(seen) == 1 and before <= float(seen[0]) <= time.time()

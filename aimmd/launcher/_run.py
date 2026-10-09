@@ -51,6 +51,7 @@ Notes
 """
 
 # external
+import os
 import time
 import multiprocessing
 from abc import ABC
@@ -58,6 +59,7 @@ from math import inf
 
 # aimmd imports
 from ..worker import Worker
+from ..core.series import JOB_START as series_job_start
 from ..core.utils import now
 from .._config import require_gromacs
 
@@ -221,7 +223,10 @@ class LauncherRun(ABC):
         for args, description in zip(*self._build()):
             self._processes.add(run_task, *args, name=description)
 
-        # start processes
+        # start processes; they inherit the start of this launch, which
+        # tells a failed series refill of this launch from an older one
+        # (see aimmd.core.series)
+        os.environ[series_job_start] = repr(time.time())
         try:
             self._processes.run(timeout=self.termination_timeout)
 

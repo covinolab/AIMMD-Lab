@@ -38,7 +38,12 @@ starts, before any MD or training:
   it, under the lock file `REFILL_LOCK` in the run folder, while every other
   process of the run waits for that lock and starts once the series is
   complete. A waiter that finds the series still incomplete after the
-  refiller let go of the lock raises instead of refilling again.
+  refiller let go of the lock raises instead of refilling again, and so does
+  a process of the same job that starts later: a failed refill leaves the
+  marker `REFILL_FAILED` in the run folder (the series, the job, the
+  process, the time and the error), which only a new job (another SLURM job,
+  or a launch that started after the failure) disregards; a refill that
+  succeeds removes it.
 
 Every line the refill writes to the logs starts with ``'SERIES REFILL:'``.
 The default series ``'descriptors'`` is never checked. This module needs
@@ -73,6 +78,15 @@ REFILL_LOCK = '.series-refill.lock'
 
 #: File in the run folder naming the process that refills (for the waiters).
 REFILL_INFO = '.series-refill.json'
+
+#: File in the run folder recording the last refill that failed (or was
+#: stopped), so that the processes of the same job that start later do not
+#: refill again.
+REFILL_FAILED = '.series-refill-failed.json'
+
+#: Environment variable holding the start (epoch seconds) of a launch
+#: without SLURM: `aimmd.Launcher.run` sets it for the processes it starts.
+JOB_START = 'AIMMD_JOB_START'
 
 #: Prefix of every log line of the refill.
 LOG_PREFIX = 'SERIES REFILL:'
@@ -667,6 +681,13 @@ def check_series_coverage(params, directory, log=None):
         f'in one process, by {_route(policy, coverage, _workdir(params))}, '
         f'while the other processes of the run wait; the files of other '
         f'series stay in place.')
+    marker = _read_json(os.path.join(run, REFILL_FAILED))
+    if (isinstance(marker, dict) and marker.get('series') == series
+            and marker.get('status') == 'failed'):
+        log(f'{LOG_PREFIX} the last refill of {series!r} '
+            f'({_job_text(marker)}{_who(marker)}, at '
+            f'{_clock(marker.get("time"))}) failed: {marker.get("error")}; '
+            f'the job tries again.')
     return coverage
 
 
@@ -682,30 +703,44 @@ def _me(role):
     return f'{me}, {role}' if role else me
 
 
-def _write_info(run, info):
-    fname = os.path.join(run, REFILL_INFO)
-    temporary = os.path.join(run, f'.{REFILL_INFO}.{os.getpid()}.tmp')
+def _write_json(fname, data):
+    """Write `data` to `fname` (replacing it at once); no error if the
+    folder cannot be written."""
+    folder, name = os.path.split(fname)
+    temporary = os.path.join(folder, f'.{name}.{os.getpid()}.tmp')
     try:
         with open(temporary, 'w') as file:
-            json.dump(info, file)
+            json.dump(data, file)
         os.replace(temporary, fname)
     except OSError:
         pass
 
 
-def _read_info(run):
+def _read_json(fname):
     try:
-        with open(os.path.join(run, REFILL_INFO)) as file:
+        with open(fname) as file:
             return json.load(file)
     except (OSError, ValueError):
         return None
 
 
-def _remove_info(run):
+def _remove(fname):
     try:
-        os.remove(os.path.join(run, REFILL_INFO))
+        os.remove(fname)
     except OSError:
         pass
+
+
+def _write_info(run, info):
+    _write_json(os.path.join(run, REFILL_INFO), info)
+
+
+def _read_info(run):
+    return _read_json(os.path.join(run, REFILL_INFO))
+
+
+def _remove_info(run):
+    _remove(os.path.join(run, REFILL_INFO))
 
 
 def _who(info):
@@ -713,6 +748,83 @@ def _who(info):
         return 'another process of the run'
     who = f'{info.get("host")}, pid {info.get("pid")}'
     return f'{who}, {info["role"]}' if info.get('role') else who
+
+
+# the record of a failed refill, per job
+
+def _float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _process_start():
+    """When this process started (epoch seconds), or None."""
+    try:
+        import psutil
+        return psutil.Process().create_time()
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def _job():
+    """``(job, start)``: the SLURM job of this process (its id, and the
+    restart of a requeued job) or None, and when the job started (epoch
+    seconds, None if unknown). Without SLURM a job is a launch of
+    `aimmd.Launcher.run` (`JOB_START`), or else this process."""
+    job = os.environ.get('SLURM_JOB_ID') or None
+    if job:
+        restart = os.environ.get('SLURM_RESTART_COUNT') or '0'
+        if restart != '0':
+            job = f'{job}, restart {restart}'
+        return job, _float(os.environ.get('SLURM_JOB_START_TIME'))
+    start = _float(os.environ.get(JOB_START))
+    return None, start if start is not None else _process_start()
+
+
+def _job_text(marker):
+    job = marker.get('job')
+    return f'SLURM job {job}: ' if job else ''
+
+
+def _clock(seconds):
+    seconds = _float(seconds)
+    if seconds is None:
+        return 'an unknown time'
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(seconds))
+
+
+def _summary(text, limit=500):
+    """`text` on one line, at most `limit` characters."""
+    text = ' '.join(str(text).split())
+    return text if len(text) <= limit else text[:limit - 3] + '...'
+
+
+def _record_failure(run, series, role, started, status, error):
+    """Leave `REFILL_FAILED`: the refill of `series` by this process
+    ended with `status` ('failed' or 'stopped') and `error`."""
+    _write_json(os.path.join(run, REFILL_FAILED), dict(
+        series=series, status=status, job=_job()[0],
+        host=socket.gethostname(), pid=os.getpid(), role=role,
+        started=started, time=time.time(), error=_summary(error)))
+
+
+def _failed_in_this_job(run, series):
+    """The record of a refill of `series` that failed in the job of this
+    process (not one that was stopped, nor one of an earlier job), or
+    None."""
+    marker = _read_json(os.path.join(run, REFILL_FAILED))
+    if (not isinstance(marker, dict) or marker.get('series') != series
+            or marker.get('status') != 'failed'):
+        return None
+    job, start = _job()
+    failed = _float(marker.get('time'))
+    if marker.get('job') != job or failed is None:
+        return None
+    if start is not None and failed < start:
+        return None                 # before this job started
+    return marker
 
 
 def _log_lines(log, text):
@@ -833,6 +945,18 @@ def _refill(coverage, policy, params, role, log, jobs):
             f'(refilled by another process); starting.')
         return True
     params_file, workdir = _params_file(params), _workdir(params)
+    failed = _failed_in_this_job(run, series)
+    if failed is not None:
+        message = (f'{LOG_PREFIX} the refill of {series!r} already failed in '
+                   f'this job ({_job_text(failed)}{_who(failed)}, at '
+                   f'{_clock(failed.get("time"))}): {failed.get("error")}. '
+                   f'This process does not refill again; the next job tries '
+                   f'again (to let this job try again, delete '
+                   f'{os.path.join(run, REFILL_FAILED)}).\n'
+                   + missing_series_message(coverage, policy, params_file,
+                                            prefix=LOG_PREFIX))
+        _log_lines(log, message)
+        raise SeriesCoverageError(message)
     jobs = max(1, int(jobs or _cpus()))
     route = _route(policy, coverage, workdir)
     _write_info(run, dict(host=socket.gethostname(), pid=os.getpid(),
@@ -854,9 +978,11 @@ def _refill(coverage, policy, params, role, log, jobs):
                                  workdir=workdir, jobs=jobs, log=refill_log,
                                  progress=progress)
     except Exception as error:
+        text = f'{type(error).__name__}: {error}'
+        _record_failure(run, series, role, started, 'failed', text)
         message = (f'{LOG_PREFIX} the refill of {series!r} in this process '
                    f'({me}) failed after {time.time() - started:.1f} s: '
-                   f'{type(error).__name__}: {error}')
+                   f'{text}')
         after = series_coverage(run, series, coverage.system_ids)
         if not after.complete:
             message += '\n' + missing_series_message(
@@ -866,6 +992,9 @@ def _refill(coverage, policy, params, role, log, jobs):
     seconds = time.time() - started
     after = series_coverage(run, series, coverage.system_ids)
     if not after.complete:
+        text = (f'{_trajectories(len(after.missing))} still have no file of '
+                f'the series after the refill')
+        _record_failure(run, series, role, started, 'failed', text)
         message = (f'{LOG_PREFIX} the refill of {series!r} in this process '
                    f'({me}) ended after {seconds:.1f} s, but '
                    f'{_trajectories(len(after.missing))} still have no file '
@@ -874,6 +1003,7 @@ def _refill(coverage, policy, params, role, log, jobs):
                                             prefix=LOG_PREFIX))
         _log_lines(log, message)
         raise SeriesCoverageError(message)
+    _remove(os.path.join(run, REFILL_FAILED))
     if isinstance(result, dict) and result.get('route'):
         route = result['route']
     log(f'{LOG_PREFIX} done: {series!r} of '
@@ -922,11 +1052,14 @@ def _wait(lock, coverage, policy, params_file, log, stop):
         log(f'{LOG_PREFIX} {series!r} is complete after {_duration(waited)} '
             f'of waiting (refilled by {who}); starting.')
         return True
+    failed = _read_json(os.path.join(run, REFILL_FAILED))
+    error = (f': {failed.get("error")}' if isinstance(failed, dict)
+             and failed.get('series') == series else '')
     message = (f'{LOG_PREFIX} {who} let go of the refill of {series!r} '
                f'after {_duration(waited)}, but '
                f'{_trajectories(len(after.missing))} still have no file of '
-               f'the series: the refill failed (see its log). This process '
-               f'does not refill again.\n'
+               f'the series: the refill failed (see its log){error}. This '
+               f'process does not refill again.\n'
                + missing_series_message(after, policy, params_file,
                                         prefix=LOG_PREFIX))
     _log_lines(log, message)

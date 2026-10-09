@@ -22,7 +22,8 @@ check that
   series that exist, the initial paths and the old series stay as they are;
 - across processes, one refills while the others wait and start after it,
   with the log lines of both sides, and a failed refill stops the waiters
-  with the error instead of a second refill.
+  with the error instead of a second refill, and also the processes of the
+  same job that start after it (a new job tries again).
 """
 import os
 import shutil
@@ -368,10 +369,10 @@ def test_a_graph_cache_of_other_settings_falls_back_to_featurizing(
 # ----------------------------------------------------------------------
 # one process refills, the others wait
 
-def _processes(tmp_path, campaign, mode, n=3):
+def _processes(tmp_path, campaign, mode, n=3, job='1001', batch=''):
     """Run `n` processes of the run (tests/_series_refill.py) on the params
-    file of the workers; returns their exit statuses, logs and the refill
-    counter."""
+    file of the workers, as processes of the SLURM job `job`; returns their
+    exit statuses, logs and the refill counter (of every batch)."""
     folder = campaign.folder
     cwd = os.getcwd()
     os.chdir(folder)
@@ -379,12 +380,14 @@ def _processes(tmp_path, campaign, mode, n=3):
         params_file = str(aimmd.Params.load('params.py').path)
     finally:
         os.chdir(cwd)
-    ready = tmp_path / 'ready'
+    ready = tmp_path / f'ready{batch}'
     ready.mkdir()
     counter = tmp_path / 'refills.txt'
-    logs = [tmp_path / f'process{i}.log' for i in range(n)]
+    logs = [tmp_path / f'process{batch}{i}.log' for i in range(n)]
     env = dict(os.environ, PYTHONPATH=str(WORKTREE), CUDA_VISIBLE_DEVICES='',
-               PYTHONDONTWRITEBYTECODE='1')
+               PYTHONDONTWRITEBYTECODE='1', SLURM_JOB_ID=job)
+    env.pop('SLURM_RESTART_COUNT', None)
+    env.pop('SLURM_JOB_START_TIME', None)
     processes = [subprocess.Popen(
         [sys.executable, str(HELPER), params_file, campaign.run, str(log),
          str(counter), str(ready), str(n), mode], env=env)
@@ -454,3 +457,26 @@ def test_a_failed_refill_stops_the_waiters_without_a_second_refill(
                                toy_featurizer(campaign.folder, 64).series)
     assert len(coverage.missing) == len(coverage.trajectories) == 6
     assert not os.path.exists(Path(campaign.run) / series.REFILL_LOCK)
+    assert os.path.exists(Path(campaign.run) / series.REFILL_FAILED)
+
+    # processes of the same job that start after the failure (a late
+    # trainer, the workers of a sweep job script with a plain 'wait'): no
+    # second refill
+    codes, logs, events = _processes(tmp_path, campaign, 'fail', n=2,
+                                     batch='late')
+    assert codes == [3, 3], logs
+    assert [event[0] for event in events] == ['start']
+    for log in logs:
+        assert 'already failed in this job (SLURM job 1001: ' in log
+        assert f'pid {refiller}, test process {refiller}, at ' in log
+        assert 'the refill failed on purpose' in log
+        assert 'refills them now' not in log
+        assert all(line.startswith('SERIES REFILL:')
+                   for line in log.splitlines()[:-1])
+
+    # the next job tries again, and its refill removes the marker
+    codes, logs, events = _processes(tmp_path, campaign, 'ok', n=1,
+                                     job='1002', batch='next')
+    assert codes == [0], logs
+    assert [event[0] for event in events] == ['start', 'start', 'end']
+    assert not os.path.exists(Path(campaign.run) / series.REFILL_FAILED)
