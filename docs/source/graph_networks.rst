@@ -279,7 +279,8 @@ below (with the ``refill`` flag) applies to it.
    settings, fill the series by the route a refill would take (``python -m
    aimmd.network.nodetables repack ... --n-max N --from-n-max M`` for an
    ``n_max`` change, otherwise ``prefill ... --only-missing``, with ``--db``
-   when the rows can come from the graph cache; or the campaign's
+   when the rows can come from the graph cache and ``--featurizer NAME``
+   for a featurizer not named ``FEATURIZER``; or the campaign's
    ``prefill_nodetables.sh``), or construct the featurizer with
    ``refill=True``.
 ``refill=True``

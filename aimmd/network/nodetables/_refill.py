@@ -113,10 +113,15 @@ class NodeTableRefiller:
         the refill would take for the trajectories of `coverage` (see
         `plan`): a repack for an ``n_max`` change (then ``prefill
         --only-missing`` for the rows that did not fit), else ``prefill
-        --only-missing``, from the graph cache when it would be extracted."""
+        --only-missing``, from the graph cache when it would be extracted.
+        A featurizer that is not named ``FEATURIZER`` is named with
+        ``--featurizer`` (the tools take ``FEATURIZER`` or the only
+        featurizer of the file)."""
         source = _source(self.featurizer, params_file)
         params = source[0] if source else (params_file or 'PARAMS')
         where = f'--params {params} --run {run}'
+        if source and source[1] != 'FEATURIZER':
+            where += f' --featurizer {source[1]}'
         prefill = f'{PREFILL_COMMAND} {where} --only-missing'
         steps = self.plan(coverage, workdir) if coverage is not None else []
         repacks = [self._repack_command(where, step.source[1])

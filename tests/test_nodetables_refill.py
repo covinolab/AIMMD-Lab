@@ -12,6 +12,8 @@ check that
   registers its series with its flag and a `NodeTableRefiller` (also one
   built with ``with_n_max``), but not the copies that the tools make
   (plan, route, repack);
+- the error suggests the command of the route, which runs as it is, also
+  for a params file whose featurizer is not named FEATURIZER;
 - the refill takes the cheapest correct route: an ``n_max``-only change is
   repacked without opening a trajectory (zero rows stay zero), other
   settings are featurized again, and an unmigrated graph-cache campaign is
@@ -38,6 +40,7 @@ import concurrent.futures
 import contextlib
 import importlib.util
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -53,14 +56,15 @@ from aimmd.core import series
 from aimmd.core.series import (ensure_series_coverage, series_coverage,
                                series_policy)
 from aimmd.network.nodetables import (MultiSystemNodeTableFeaturizer,
-                                      _tool)
+                                      _cli, _tool)
 from aimmd.network.nodetables._featurizer import repack_rows
 from aimmd.network.nodetables._refill import NodeTableRefiller
 from tests._nodetables_run import (LAYOUT, bits, expected_rows, make_campaign,
                                    series_file, toy_featurizer, trajectories,
                                    write_run)
-from tests._nodetables_toy import ENVIRONMENT_SELECTION, write_toy_gro, \
-    toy_frames
+from tests._nodetables_toy import (ATOM_TYPES, CUTOFF, ENVIRONMENT_SELECTION,
+                                   SYSTEM_SELECTION, toy_frames,
+                                   write_toy_gro)
 from tests._series_refill import (make_full_campaign, remove_legacy_series,
                                   run_trajectories)
 
@@ -284,6 +288,60 @@ def test_the_error_names_the_command_of_the_route(tmp_path):
             'P.py', run, coverage, campaign.folder) == (
             f"{prefill} --db {database} (or the campaign's "
             f"prefill_nodetables.sh)")
+
+
+MULTI_PARAMS = """
+import MDAnalysis as mda
+from aimmd.network.nodetables import (MultiSystemNodeTableFeaturizer,
+                                      NodeTableFeaturizer)
+
+f1 = NodeTableFeaturizer(
+    mda.Universe('toy.gro', to_guess=['types', 'bonds']),
+    {system!r}, {environment!r}, {atom_types!r}, cutoff={cutoff!r}, n_max=96)
+f2 = NodeTableFeaturizer(
+    mda.Universe('toy.gro', to_guess=['types', 'bonds']),
+    {system!r}, {environment!r}, {atom_types!r}, cutoff={cutoff!r}, n_max=96)
+FEATURIZERS = MultiSystemNodeTableFeaturizer({{'lig1': f1, 'lig2': f2}})
+descriptors_series = FEATURIZERS.series
+"""
+
+
+def test_the_suggested_commands_name_a_featurizer_not_named_featurizer(
+        tmp_path, monkeypatch):
+    # the multi-system params file of the docs, with its featurizers at
+    # module level: the tools cannot choose one without --featurizer
+    campaign = make_campaign(tmp_path / 'campaign')
+    folder = Path(campaign.folder)
+    run = folder / 'multi_run'
+    layout = dict(list(LAYOUT.items())[:4])
+    write_run(run / 'lig1', layout)
+    write_run(run / 'lig2', layout, untracked=None)
+    _prefill(MultiSystemNodeTableFeaturizer({
+        'lig1': toy_featurizer(folder, 64),
+        'lig2': toy_featurizer(folder, 80)}), run)
+    params = folder / 'multi_params.py'
+    params.write_text(MULTI_PARAMS.format(
+        system=SYSTEM_SELECTION, environment=ENVIRONMENT_SELECTION,
+        atom_types=ATOM_TYPES, cutoff=CUTOFF))
+    monkeypatch.chdir(folder)
+    spec = importlib.util.spec_from_file_location('multi_params', params)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, 'multi_params', module)
+    spec.loader.exec_module(module)        # as Params.load imports it
+    series_name = module.FEATURIZERS.series
+    coverage = series_coverage(run, series_name, ['lig1', 'lig2'])
+
+    command = series_policy(series_name).refiller.prefill_command(
+        str(params), str(run), coverage, str(folder))
+
+    commands = [part.split(' (')[0] for part in command.split(', then ')]
+    assert [part.split()[3] for part in commands] == ['repack', 'prefill']
+    for part in commands:
+        argv = shlex.split(part)
+        assert argv[:3] == ['python', '-m', 'aimmd.network.nodetables']
+        assert argv[argv.index('--featurizer') + 1] == 'FEATURIZERS'
+        assert _cli.main(argv[3:]) == 0
+    assert series_coverage(run, series_name, ['lig1', 'lig2']).complete
 
 
 def test_a_settings_change_is_featurized_and_nothing_else_is_written(
