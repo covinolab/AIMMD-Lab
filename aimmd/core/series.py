@@ -622,7 +622,10 @@ def run_folder(params, directory):
         The params of the run.
     directory : str
         The run folder, or (multi-system run) one of its system folders
-        ``{run}/{system_id}``.
+        ``{run}/{system_id}``: a folder named like a system that holds the
+        exported initial paths (``initial*``) but no system folder, below a
+        folder that holds a folder of every system (as the launcher builds
+        them). A run folder named like a system is the run.
 
     Returns
     -------
@@ -634,9 +637,28 @@ def run_folder(params, directory):
     system_ids = None
     if getattr(params, 'multi_system', False):
         system_ids = _system_ids(getattr(params, 'system_ids', None) or [])
-        if os.path.basename(directory) in system_ids:
+        if _is_system_folder(directory, system_ids):
             directory = os.path.dirname(directory)
     return directory, system_ids
+
+
+def _is_system_folder(directory, system_ids):
+    """Whether `directory` is a system folder of a multi-system run (see
+    `run_folder`)."""
+    if os.path.basename(directory) not in system_ids:
+        return False
+    try:
+        folders = {name for name in os.listdir(directory)
+                   if os.path.isdir(os.path.join(directory, name))}
+    except OSError:
+        return False
+    if folders & set(system_ids):           # a run named like a system
+        return False
+    if not any(name.startswith(SEED_PREFIX) for name in folders):
+        return False
+    parent = os.path.dirname(directory)
+    return all(os.path.isdir(os.path.join(parent, system_id))
+               for system_id in system_ids)
 
 
 def _params_file(params):

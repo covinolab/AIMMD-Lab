@@ -10,9 +10,9 @@ reads a trajectory, only lists files and reads the length of the states
 series. They cover
 
 - the coverage: a new run and a complete one pass; zero or short rows are
-  not missing; the initial paths are left out; multi-system runs; what is
-  next to the trajectories that lack the series (another series, the legacy
-  ``*.descriptors.npy``);
+  not missing; the initial paths are left out; multi-system runs (also in a
+  run folder named like a system); what is next to the trajectories that
+  lack the series (another series, the legacy ``*.descriptors.npy``);
 - the registry of series policies (``refill`` and the refill callable): an
   unknown series is never refilled, the last registration counts;
 - the launcher's check (an error naming the other series or the legacy
@@ -201,6 +201,33 @@ def test_a_multi_system_run(tmp_path):
     assert series.run_folder(params, run) == (str(run), ['lig1', 'lig2'])
     with pytest.raises(SeriesCoverageError):
         ensure_series_coverage(params, run / 'lig1', log=lambda line: None)
+
+
+def test_a_run_folder_named_like_a_system_is_the_run(tmp_path):
+    params = _params(tmp_path, multi_system=True,
+                     system_ids=['lig1', 'lig2'])
+    ids = ['lig1', 'lig2']
+    # a multi-system run in a folder named like one of its systems
+    run = tmp_path / 'lig1'
+    _write(run / 'lig1')
+    _write(run / 'lig2')
+    os.remove(run / 'lig2' / f'chainR0/path000001.xtc.{SERIES}.npy')
+    assert series.run_folder(params, run) == (str(run), ids)
+    assert series.run_folder(params, run / 'lig2') == (str(run), ids)
+    with pytest.raises(SeriesCoverageError) as info:
+        check_series_coverage(params, run)
+    assert f'of run {str(run)!r}' in str(info.value)
+    # a run folder named like a system before the launcher built it, next
+    # to another folder named like a system
+    (tmp_path / 'campaign' / 'lig1').mkdir(parents=True)
+    _write(tmp_path / 'campaign' / 'lig2')
+    new = tmp_path / 'campaign' / 'lig1'
+    assert series.run_folder(params, new) == (str(new), ids)
+    # a system folder of an ordinary run
+    _write(tmp_path / 'run2' / 'lig1')
+    _write(tmp_path / 'run2' / 'lig2')
+    assert series.run_folder(params, tmp_path / 'run2' / 'lig1') == (
+        str(tmp_path / 'run2'), ids)
 
 
 # ----------------------------------------------------------------------
