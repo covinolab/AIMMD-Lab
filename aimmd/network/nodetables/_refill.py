@@ -555,7 +555,13 @@ def _tool_child_output():
 
 
 class _Tracker:
-    """Trajectories and frames done, over the routes, for progress lines."""
+    """Trajectories and frames done, over the routes, for progress lines.
+
+    A trajectory counts the frames of the last tool call that computed (or
+    repacked) rows of it: a call that has none (yet) for it, such as the
+    rerun in this process after the spawned processes died, which finds the
+    files they wrote complete (``'complete'``, ``'exists'``), keeps them.
+    """
 
     def __init__(self, progress):
         self.progress = progress
@@ -571,6 +577,9 @@ class _Tracker:
                      entry['rows'])
 
     def _update(self, trajectory, done, frames):
+        if not frames and trajectory in self.files:
+            was_done, frames = self.files[trajectory]
+            done = done or was_done
         self.files[trajectory] = (done, frames)
         if self.progress is not None:
             self.progress(sum(done for done, _ in self.files.values()),

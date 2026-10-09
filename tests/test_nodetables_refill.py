@@ -33,6 +33,7 @@ check that
   refill continues in the process itself;
 - only the spawned processes see no GPU: the refilling process keeps its
   environment throughout (its own featurization included) on every route;
+- the progress counts the frames refilled before the processes died;
 - across processes, one refills while the others wait and start after it,
   with the log lines of both sides, and a failed refill stops the waiters
   with the error instead of a second refill, and also the processes of the
@@ -570,6 +571,45 @@ def test_only_the_spawned_processes_of_a_refill_see_no_gpu(tmp_path,
         assert ('refilling in this process instead' in text) == (
             route == 'fallback')
         assert lines[-1].startswith('SERIES REFILL: done:'), route
+
+
+def test_the_progress_counts_what_was_refilled_before_processes_died(
+        tmp_path, monkeypatch):
+    # the processes of the refill write three trajectories, then die; the
+    # rerun in the refilling process finds those three complete
+    campaign = make_full_campaign(tmp_path / 'campaign', refill=True,
+                                  environment=OTHER_ENVIRONMENT)
+    monkeypatch.chdir(campaign.folder)
+    params = aimmd.Params.load('params.py')
+    prefill = _tool.prefill
+
+    def dying(*args, jobs, trajectories, **kwargs):
+        if jobs == 1:
+            return prefill(*args, jobs=1, trajectories=trajectories,
+                           **kwargs)
+        report = prefill(*args, jobs=1, trajectories=trajectories[:3],
+                         **kwargs)
+        report['broken_pool'] = True
+        return report
+
+    monkeypatch.setattr(_tool, 'prefill', dying)
+    monkeypatch.setattr(series, 'PROGRESS_SECONDS', 0.)
+    coverage = series_coverage('run1', params.descriptors_series)
+    lines = []
+    assert ensure_series_coverage(params, 'run1', jobs=2, log=lines.append)
+
+    assert any('refilling in this process instead' in line
+               for line in lines)
+    progress = [line for line in lines
+                if line.startswith('SERIES REFILL: progress: ')]
+    count, frames = len(coverage.missing), coverage.missing_frames
+    assert progress[-1].startswith(
+        f'SERIES REFILL: progress: {count} of {count} trajectories, '
+        f'{frames:,} of {frames:,} frames, '), progress[-1]
+    # it never goes back
+    done = [int(line.split(' of ')[1].rsplit(' ', 1)[-1].replace(',', ''))
+            for line in progress]
+    assert done == sorted(done), progress
 
 
 def _graph_cache(campaign, tmp_path, environment=ENVIRONMENT_SELECTION):
