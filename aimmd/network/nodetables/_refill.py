@@ -271,33 +271,29 @@ class NodeTableRefiller:
 
     def _repack(self, _tool, params, run, step, jobs, log, tracker):
         series, from_n_max = step.source
-        try:
-            report = _tool.repack(params, [run], self._n_max(),
-                                  from_n_max=from_n_max, jobs=jobs, log=log,
-                                  trajectories=step.trajectories,
-                                  progress=tracker.repacked)
-        except _tool.UsageError as error:
-            log(f'repacking {series} is not possible ({error}); featurizing '
-                f'its {len(step.trajectories)} trajectories instead')
-            return list(step.trajectories)
+        report = _tool.repack(params, [run], self._n_max(),
+                              from_n_max=from_n_max, jobs=jobs, log=log,
+                              trajectories=step.trajectories,
+                              progress=tracker.repacked)
         failed = [(entry['trajectory'], entry['system_id'])
                   for entry in report['files'] if entry['status'] == 'failed']
         if failed:
-            log(f'{len(failed)} trajectories could not be repacked; '
-                f'featurizing them instead')
+            log(f'{len(failed)} trajectories could not be repacked from '
+                f'{series}; featurizing them instead')
         return failed
 
     def _extract(self, _tool, params, run, step, jobs, log, tracker):
         try:
-            report = _tool.prefill(params, [run], db=[step.source], jobs=jobs,
-                                   verify=_tool.DEFAULT_DB_VERIFY,
-                                   only_missing=True, log=log,
-                                   trajectories=step.trajectories,
-                                   progress=tracker.prefilled)
+            _tool._databases([step.source], self.featurizer)
         except _tool.UsageError as error:
             log(f'the graph cache cannot be used ({error}); featurizing the '
                 f'{len(step.trajectories)} trajectories instead')
             return list(step.trajectories)
+        report = _tool.prefill(params, [run], db=[step.source], jobs=jobs,
+                               verify=_tool.DEFAULT_DB_VERIFY,
+                               only_missing=True, log=log,
+                               trajectories=step.trajectories,
+                               progress=tracker.prefilled)
         failed = [(entry['trajectory'], entry['system_id'])
                   for entry in report['files']
                   if entry['status'] not in ('written', 'complete')]
