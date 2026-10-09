@@ -55,6 +55,9 @@ GRAPH_CACHE = 'graphs_cache.sqlite'
 #: Command that fills a node-table series offline.
 PREFILL_COMMAND = 'python -m aimmd.network.nodetables prefill'
 
+#: Command that rewrites a node-table series for another n_max.
+REPACK_COMMAND = 'python -m aimmd.network.nodetables repack'
+
 # a route for some trajectories: kind is 'repack', 'extract' or 'recompute';
 # source is (series, from_n_max) for repack and the graph cache for extract
 _Step = namedtuple('_Step', 'kind trajectories source text')
@@ -102,12 +105,46 @@ class NodeTableRefiller:
         featurizers = getattr(self.featurizer, 'featurizers', None) or {}
         return tuple(featurizer.series for featurizer in featurizers.values())
 
-    def prefill_command(self, params_file, run):
-        """The command that fills the series of `run` offline."""
+    def prefill_command(self, params_file, run, coverage=None,
+                        workdir=None):
+        """The command that fills the series of `run` offline, by the route
+        the refill would take for the trajectories of `coverage` (see
+        `plan`): a repack for an ``n_max`` change (then ``prefill
+        --only-missing`` for the rows that did not fit), else ``prefill
+        --only-missing``, from the graph cache when it would be extracted."""
         source = _source(self.featurizer, params_file)
         params = source[0] if source else (params_file or 'PARAMS')
-        return (f"{PREFILL_COMMAND} --params {params} --run {run} (or the "
-                f"campaign's prefill_nodetables.sh)")
+        where = f'--params {params} --run {run}'
+        prefill = f'{PREFILL_COMMAND} {where} --only-missing'
+        steps = self.plan(coverage, workdir) if coverage is not None else []
+        repacks = [self._repack_command(where, step.source[1])
+                   for step in steps if step.kind == 'repack']
+        if repacks and all(repacks):
+            others = any(step.kind != 'repack' for step in steps)
+            return (f'{"; ".join(repacks)} (no trajectory is read), then '
+                    f'{prefill} (the rows that did not fit'
+                    + (', and the trajectories without a series of another '
+                       'n_max' if others else '') + ')')
+        for step in steps:
+            if step.kind == 'extract':
+                prefill += f' --db {step.source}'
+        return f"{prefill} (or the campaign's prefill_nodetables.sh)"
+
+    def _repack_command(self, where, from_n_max):
+        """The repack command from `from_n_max` to the current ``n_max``;
+        None if the command line cannot give it (systems whose new
+        ``n_max`` differ)."""
+        current = self._n_max()
+        if isinstance(current, dict):
+            sizes = set(current.values())
+            if len(sizes) != 1:
+                return None
+            n_max = sizes.pop()
+            old = ' '.join(f'--from-n-max {system_id}={size}'
+                           for system_id, size in sorted(from_n_max.items()))
+        else:
+            n_max, old = current, f'--from-n-max {from_n_max}'
+        return f'{REPACK_COMMAND} {where} --n-max {n_max} {old}'
 
     # ------------------------------------------------------------------
     # routes

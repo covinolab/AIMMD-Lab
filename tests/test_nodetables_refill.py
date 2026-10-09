@@ -31,6 +31,7 @@ check that
   with the error instead of a second refill, and also the processes of the
   same job that start after it (a new job tries again).
 """
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -225,6 +226,42 @@ def test_an_n_max_change_is_repacked_without_reading_trajectories(
     assert series_coverage(campaign.run, new.series).complete
 
 
+def test_the_error_names_the_command_of_the_route(tmp_path):
+    campaign = make_campaign(tmp_path / 'campaign', n_max=40)
+    run = campaign.run
+    _prefill(campaign.featurizer, run)
+    prefill = (f'python -m aimmd.network.nodetables prefill --params P.py '
+               f'--run {run} --only-missing')
+    # only n_max changed: repack
+    new = toy_featurizer(campaign.folder, 64)
+    coverage = series_coverage(run, new.series)
+    command = series_policy(new.series).refiller.prefill_command(
+        'P.py', run, coverage, campaign.folder)
+    assert command == (
+        f'python -m aimmd.network.nodetables repack --params P.py --run '
+        f'{run} --n-max 64 --from-n-max 40 (no trajectory is read), then '
+        f'{prefill} (the rows that did not fit)')
+    with pytest.raises(series.SeriesCoverageError) as info:
+        series.check_series_coverage(_params(campaign.folder, new), run)
+    params_file = str(Path(campaign.folder) / 'params.py')
+    assert (f"2. fill the series before the next job: "
+            f"{command.replace('P.py', params_file)};") in str(info.value)
+    # other settings: prefill the missing trajectories
+    other = toy_featurizer(campaign.folder, environment=OTHER_ENVIRONMENT)
+    refiller = series_policy(other.series).refiller
+    coverage = series_coverage(run, other.series)
+    assert refiller.prefill_command('P.py', run, coverage, campaign.folder) \
+        == f"{prefill} (or the campaign's prefill_nodetables.sh)"
+    # ... from the graph cache of an unmigrated campaign
+    if importlib.util.find_spec('torch_geometric') is not None:
+        database = Path(campaign.folder) / 'graphs_cache.sqlite'
+        database.write_bytes(b'')
+        assert refiller.prefill_command(
+            'P.py', run, coverage, campaign.folder) == (
+            f"{prefill} --db {database} (or the campaign's "
+            f"prefill_nodetables.sh)")
+
+
 def test_a_settings_change_is_featurized_and_nothing_else_is_written(
         tmp_path):
     campaign = make_campaign(tmp_path / 'campaign')
@@ -270,6 +307,14 @@ def test_a_multi_system_run_is_repacked_per_system(tmp_path):
     new = MultiSystemNodeTableFeaturizer({
         'lig1': toy_featurizer(folder, 96), 'lig2': toy_featurizer(folder, 96)},
         refill=True)
+    coverage = series_coverage(run, new.series, ['lig1', 'lig2'])
+    assert series_policy(new.series).refiller.prefill_command(
+        'P.py', str(run), coverage, folder) == (
+        f'python -m aimmd.network.nodetables repack --params P.py --run '
+        f'{run} --n-max 96 --from-n-max lig1=64 --from-n-max lig2=80 (no '
+        f'trajectory is read), then python -m aimmd.network.nodetables '
+        f'prefill --params P.py --run {run} --only-missing (the rows that '
+        f'did not fit)')
     lines = []
     assert ensure_series_coverage(
         _params(folder, new, ['lig1', 'lig2']), run / 'lig2', jobs=1,

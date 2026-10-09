@@ -94,10 +94,13 @@ def test_create_job_without_refill_refuses_before_writing_the_job(
             f"featurized.") in message
     assert 'not been migrated' not in message
     assert '1. restore the node-table settings' in message
+    params_file = os.path.abspath('params.py')
     assert (f'2. fill the series before the next job: python -m '
-            f'aimmd.network.nodetables prefill --params '
-            f'{os.path.abspath("params.py")} --run {run} (or the '
-            f"campaign's prefill_nodetables.sh)") in message
+            f'aimmd.network.nodetables repack --params {params_file} --run '
+            f'{run} --n-max 64 --from-n-max 56 (no trajectory is read), then '
+            f'python -m aimmd.network.nodetables prefill --params '
+            f'{params_file} --run {run} --only-missing (the rows that did '
+            f'not fit);') in message
     assert '3. construct the featurizer with refill=True' in message
 
 

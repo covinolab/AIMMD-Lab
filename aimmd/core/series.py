@@ -152,7 +152,9 @@ refiller : callable or None
     messages: ``route(coverage, workdir)`` (how it would refill), ``label``
     (what the settings are called, e.g. ``'node-table'``), ``legacy_note``
     (why only ``*.descriptors.npy`` is there) and ``prefill_command(
-    params_file, run)`` (the command that fills the series offline). Two
+    params_file, run, coverage=..., workdir=...)`` (the command that fills
+    the series of the missing trajectories offline, by the route it would
+    take). Two
     more find a params file written for other settings: ``claims(name)``
     tells whether a series name is of the kind this code computes (a params
     series of that kind that is not registered is then a mismatch), and
@@ -470,7 +472,7 @@ def _trajectories(count):
 
 
 def missing_series_message(coverage, policy=None, params_file=None,
-                           prefix='SERIES CHECK:'):
+                           prefix='SERIES CHECK:', workdir=None):
     """What is missing, what is there instead, and the remedies.
 
     Parameters
@@ -483,6 +485,9 @@ def missing_series_message(coverage, policy=None, params_file=None,
         The params file, for the prefill command.
     prefix : str
         Start of every line.
+    workdir : str, optional
+        The job's working directory (where a graph cache would be), for the
+        prefill command.
 
     Returns
     -------
@@ -522,7 +527,8 @@ def missing_series_message(coverage, policy=None, params_file=None,
                  f'intended;')
     command = None
     if hasattr(refiller, 'prefill_command'):
-        command = refiller.prefill_command(params_file, coverage.run)
+        command = refiller.prefill_command(params_file, coverage.run,
+                                           coverage=coverage, workdir=workdir)
     lines.append(f'  2. fill the series before the next job: {command};'
                  if command else
                  '  2. compute the series of these trajectories before the '
@@ -708,8 +714,8 @@ def check_series_coverage(params, directory, log=None):
         return coverage
     policy = series_policy(series)
     if not (policy.refill and policy.refiller is not None):
-        raise SeriesCoverageError(
-            missing_series_message(coverage, policy, _params_file(params)))
+        raise SeriesCoverageError(missing_series_message(
+            coverage, policy, _params_file(params), workdir=_workdir(params)))
     log(f'{LOG_PREFIX} {coverage.summary()} have no {series!r} series '
         f'file. The featurizer has refill=True: the job first refills them '
         f'in one process, by {_route(policy, coverage, _workdir(params))}, '
@@ -747,7 +753,7 @@ def _write_json(fname, data):
             json.dump(data, file)
         os.replace(temporary, fname)
     except OSError:
-        pass
+        _remove(temporary)
 
 
 def _read_json(fname):
@@ -1011,7 +1017,8 @@ def ensure_series_coverage(params, directory, role=None, log=None,
     policy = series_policy(series)
     params_file = _params_file(params)
     if not (policy.refill and policy.refiller is not None):
-        message = missing_series_message(coverage, policy, params_file)
+        message = missing_series_message(coverage, policy, params_file,
+                                         workdir=_workdir(params))
         _log_lines(log, message)
         raise SeriesCoverageError(message)
 
@@ -1019,7 +1026,8 @@ def ensure_series_coverage(params, directory, role=None, log=None,
     try:
         lock.acquire(timeout=0)
     except Timeout:
-        return _wait(lock, coverage, policy, params_file, log, stop)
+        return _wait(lock, coverage, policy, params_file, log, stop,
+                     _workdir(params))
     try:
         return _refill(coverage, policy, params, role, log, jobs, stop)
     finally:
@@ -1048,7 +1056,8 @@ def _refill(coverage, policy, params, role, log, jobs, stop):
                    f'again (to let this job try again, delete '
                    f'{os.path.join(run, REFILL_FAILED)}).\n'
                    + missing_series_message(coverage, policy, params_file,
-                                            prefix=LOG_PREFIX))
+                                            prefix=LOG_PREFIX,
+                                            workdir=workdir))
         _log_lines(log, message)
         raise SeriesCoverageError(message)
     if stop is not None and stop():
@@ -1095,7 +1104,8 @@ def _refill(coverage, policy, params, role, log, jobs, stop):
         after = series_coverage(run, series, coverage.system_ids)
         if not after.complete:
             message += '\n' + missing_series_message(
-                after, policy, params_file, prefix=LOG_PREFIX)
+                after, policy, params_file, prefix=LOG_PREFIX,
+                workdir=workdir)
         _log_lines(log, message)
         raise SeriesCoverageError(message) from error
     seconds = time.time() - started
@@ -1109,7 +1119,8 @@ def _refill(coverage, policy, params, role, log, jobs, stop):
                    f'{_trajectories(len(after.missing))} still have no file '
                    f'of the series (see the lines above).\n'
                    + missing_series_message(after, policy, params_file,
-                                            prefix=LOG_PREFIX))
+                                            prefix=LOG_PREFIX,
+                                            workdir=workdir))
         _log_lines(log, message)
         raise SeriesCoverageError(message)
     _remove(os.path.join(run, REFILL_FAILED))
@@ -1123,7 +1134,7 @@ def _refill(coverage, policy, params, role, log, jobs, stop):
     return True
 
 
-def _wait(lock, coverage, policy, params_file, log, stop):
+def _wait(lock, coverage, policy, params_file, log, stop, workdir=None):
     """Wait for the process that refills the series, then check it."""
     run, series = coverage.run, coverage.series
     # the refiller names itself right after it took the lock
@@ -1170,6 +1181,6 @@ def _wait(lock, coverage, policy, params_file, log, stop):
                f'the series: the refill failed (see its log){error}. This '
                f'process does not refill again.\n'
                + missing_series_message(after, policy, params_file,
-                                        prefix=LOG_PREFIX))
+                                        prefix=LOG_PREFIX, workdir=workdir))
     _log_lines(log, message)
     raise SeriesCoverageError(message)

@@ -295,7 +295,9 @@ def test_without_refill_the_messages_name_legacy_series_and_remedies(
         label = 'node-table'
         legacy_note = 'not migrated from the graph-cache input'
 
-        def prefill_command(self, params_file, run):
+        def prefill_command(self, params_file, run, coverage=None,
+                            workdir=None):
+            assert coverage.run == run and workdir == str(tmp_path)
             return f'prefill --params {params_file} --run {run}'
 
         def __call__(self, *args, **kwargs):
@@ -377,6 +379,17 @@ def test_a_refill_that_leaves_trajectories_missing_raises(tmp_path):
         str(info.value)
     assert all(line.startswith('SERIES REFILL:') for line in lines)
     assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+
+
+def test_a_failed_write_of_the_info_file_leaves_no_temporary(tmp_path,
+                                                             monkeypatch):
+    def replace(source, target):
+        raise OSError('read-only file system')
+
+    monkeypatch.setattr(series.os, 'replace', replace)
+    series._write_info(str(tmp_path), dict(host='host', pid=1))
+    monkeypatch.undo()
+    assert os.listdir(tmp_path) == []
 
 
 # ----------------------------------------------------------------------
