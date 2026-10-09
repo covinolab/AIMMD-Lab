@@ -304,6 +304,9 @@ below (with the ``refill`` flag) applies to it.
    A stop request (``scancel``, Control+C) ends the refill between files and
    chunks of frames: the files it completed stay, the lock is released and
    the record says ``stopped``, which does not keep a job from refilling.
+   A waiting process that is asked to stop as well ends without an error;
+   one that is not (only the refilling process was signalled) refills the
+   rest itself.
 
 The refill writes exactly the trajectories that lack the series, by the
 cheapest correct route per trajectory; files of the series that exist are

@@ -29,13 +29,15 @@ series. They cover
   removes the marker;
 - a stop request before or during a refill ends it (the refill callable is
   passed `stop`), releases the lock and leaves a 'stopped' marker, which
-  does not keep the job from refilling;
+  does not keep the job from refilling; a process waiting for that refill
+  never raises: asked to stop too, it returns, otherwise it refills itself;
 - every line a refill writes starts with 'SERIES REFILL:', also what the
   refill callable prints and every line of a multi-line error.
 """
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -633,6 +635,102 @@ def test_a_stop_request_ends_a_refill_and_does_not_block_the_job(
                                   stop=stop)
     assert series_coverage(run, SERIES).complete
     assert not os.path.exists(Path(run) / series.REFILL_FAILED)
+
+
+class _Blocking:
+    """A refill callable whose first call fills one trajectory, then waits
+    for its stop request and raises RefillStopped; later calls fill the
+    gap."""
+
+    def __init__(self):
+        self.calls = 0
+        self.started = threading.Event()
+
+    def __call__(self, coverage, *, stop, **kwargs):
+        self.calls += 1
+        for trajectory, _ in coverage.missing:
+            np.save(f'{trajectory}.{SERIES}.npy',
+                    np.ones((1, 6), dtype=np.float32))
+            if self.calls == 1:
+                self.started.set()
+                deadline = time.time() + 60.
+                while not stop() and time.time() < deadline:
+                    time.sleep(.01)
+                raise series.RefillStopped('stopped between trajectories')
+        return dict(route='the test route')
+
+
+def _stop_while_waiting(tmp_path, monkeypatch, waiter_stops):
+    """Stop a refill while another process of the run waits for its lock
+    (threads here: their locks conflict like those of two processes).
+    Returns the result (or error) of both, the waiter's lines, the refill
+    callable and the run."""
+    monkeypatch.setenv('SLURM_JOB_ID', '4711')
+    # the waiter is inside one attempt to take the lock when the refill
+    # stops, as it is most of the time with WAIT_SECONDS
+    monkeypatch.setattr(series, 'WAIT_SECONDS', 60.)
+    monkeypatch.setattr(series, '_POLL_SECONDS', .02)
+    refiller = _Blocking()
+    register_series(SERIES, refill=True, refiller=refiller)
+    run = _run_with_gap(tmp_path)
+    requested = threading.Event()
+    results, waiting = {}, []
+
+    def process(name, stop, lines):
+        try:
+            results[name] = ensure_series_coverage(
+                _params(tmp_path), run, log=lines.append, stop=stop, jobs=1)
+        except Exception as error:                      # noqa: BLE001
+            results[name] = error
+
+    refilling = threading.Thread(target=process, args=(
+        'refiller', requested.is_set, []))
+    refilling.start()
+    assert refiller.started.wait(30.)
+    waiter = threading.Thread(target=process, args=(
+        'waiter', requested.is_set if waiter_stops else lambda: False,
+        waiting))
+    waiter.start()
+    deadline = time.time() + 30.
+    while (not any('waiting for' in line for line in waiting)
+           and time.time() < deadline):
+        time.sleep(.01)
+    time.sleep(.3)
+    requested.set()             # scancel, or a signal to the refiller only
+    refilling.join(60.)
+    waiter.join(60.)
+    return results, waiting, refiller, run
+
+
+def test_a_waiter_never_raises_for_a_stopped_refill(tmp_path, monkeypatch):
+    # every process is asked to stop (scancel): the waiter takes the lock
+    # that the stopped refill releases and stops too, without an error
+    results, lines, refiller, run = _stop_while_waiting(
+        tmp_path / 'all', monkeypatch, waiter_stops=True)
+    assert results == {'refiller': False, 'waiter': False}, results
+    assert refiller.calls == 1
+    assert lines[-1].startswith(f'SERIES REFILL: stopped while waiting for '
+                                f'the refill of {SERIES!r}')
+    assert _marker(run)['status'] == 'stopped'
+    assert len(series_coverage(run, SERIES).missing) == 2
+    assert not os.path.exists(Path(run) / series.REFILL_INFO)
+
+    # only the refilling process was asked to stop: the waiter, which holds
+    # the lock now, refills the rest itself
+    results, lines, refiller, run = _stop_while_waiting(
+        tmp_path / 'one', monkeypatch, waiter_stops=False)
+    assert results == {'refiller': False, 'waiter': True}, results
+    assert refiller.calls == 2
+    assert all(line.startswith('SERIES REFILL:') for line in lines)
+    assert any(f'the refill of {SERIES!r} by ' in line
+               and 'was stopped' in line and 'this process refills' in line
+               for line in lines), lines
+    assert any('refills them now with 1 process' in line for line in lines)
+    assert lines[-1].startswith(f'SERIES REFILL: done: {SERIES!r} of 2 '
+                                f'trajectories')
+    assert series_coverage(run, SERIES).complete
+    assert not os.path.exists(Path(run) / series.REFILL_FAILED)
+    assert not os.path.exists(Path(run) / series.REFILL_INFO)
 
 
 # ----------------------------------------------------------------------

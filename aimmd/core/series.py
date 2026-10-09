@@ -43,7 +43,9 @@ starts, before any MD or training:
   marker `REFILL_FAILED` in the run folder (the series, the job, the
   process, the time and the error), which only a new job (another SLURM job,
   or a launch that started after the failure) disregards; a refill that
-  succeeds removes it.
+  succeeds removes it. A refill that was stopped (its marker says
+  'stopped') blocks nobody: a waiter asked to stop as well returns, any
+  other refills the rest itself.
 
 Every line the refill writes to the logs starts with ``'SERIES REFILL:'``:
 its own lines, every line of an error, and what is printed (to
@@ -984,7 +986,9 @@ def ensure_series_coverage(params, directory, role=None, log=None,
         which polls it between trajectories or chunks of frames. When it
         returns true the wait or the refill ends (the refill leaving the
         files it completed, its lock released and a 'stopped' record that
-        does not keep a job from refilling) and False is returned.
+        does not keep a job from refilling) and False is returned. A waiter
+        whose refiller was stopped while this process was not refills the
+        rest itself.
     jobs : int, optional
         Processes of a refill; by default the CPUs this process may run on.
 
@@ -1003,7 +1007,8 @@ def ensure_series_coverage(params, directory, role=None, log=None,
     SeriesCoverageError
         If trajectories lack the series and its policy does not refill it,
         if the refill of this process failed, or if the refill of another
-        process ended with the series still incomplete.
+        process ended with the series still incomplete without being
+        stopped.
     """
     log = log or _print
     series = _checked_series(params)
@@ -1026,8 +1031,7 @@ def ensure_series_coverage(params, directory, role=None, log=None,
     try:
         lock.acquire(timeout=0)
     except Timeout:
-        return _wait(lock, coverage, policy, params_file, log, stop,
-                     _workdir(params))
+        return _wait(lock, coverage, policy, params, role, log, jobs, stop)
     try:
         return _refill(coverage, policy, params, role, log, jobs, stop)
     finally:
@@ -1092,8 +1096,8 @@ def _refill(coverage, policy, params, role, log, jobs, stop):
         log(f'{LOG_PREFIX} the refill of {series!r} in this process ({me}) '
             f'stopped on request after {time.time() - started:.1f} s; '
             f'{_trajectories(len(after.missing))} still lack the series '
-            f'(the trajectories it completed keep their files), and the next '
-            f'job refills them.')
+            f'(the trajectories it completed keep their files): a waiting '
+            f'process that is not stopping, or the next job, refills them.')
         return False
     except Exception as error:
         text = f'{type(error).__name__}: {error}'
@@ -1134,8 +1138,9 @@ def _refill(coverage, policy, params, role, log, jobs, stop):
     return True
 
 
-def _wait(lock, coverage, policy, params_file, log, stop, workdir=None):
-    """Wait for the process that refills the series, then check it."""
+def _wait(lock, coverage, policy, params, role, log, jobs, stop):
+    """Wait for the process that refills the series, then check it (see
+    `_after_wait`)."""
     run, series = coverage.run, coverage.series
     # the refiller names itself right after it took the lock
     info, deadline = _read_info(run), time.time() + 2.
@@ -1164,23 +1169,50 @@ def _wait(lock, coverage, policy, params_file, log, stop, workdir=None):
                 log(f'{LOG_PREFIX} still waiting for {who} to refill '
                     f'{series!r} ({_duration(now - started)} so far).')
     try:
-        after = series_coverage(run, series, coverage.system_ids)
+        return _after_wait(coverage, policy, params, role, log, jobs, stop,
+                           who, time.time() - started)
     finally:
         lock.release()
-    waited = time.time() - started
+
+
+def _after_wait(coverage, policy, params, role, log, jobs, stop, who,
+                waited):
+    """The check of a waiter that holds the refill lock now: a stop request
+    returns False, a complete series True; a refill that was stopped is
+    taken over, one that failed raises."""
+    run, series = coverage.run, coverage.series
+    # a stop request that came while the lock was awaited (a scancel also
+    # stops the refiller, which lets go of the lock at once)
+    if stop is not None and stop():
+        log(f'{LOG_PREFIX} stopped while waiting for the refill of '
+            f'{series!r}.')
+        return False
+    after = series_coverage(run, series, coverage.system_ids)
     if after.complete:
         log(f'{LOG_PREFIX} {series!r} is complete after {_duration(waited)} '
             f'of waiting (refilled by {who}); starting.')
         return True
     failed = _read_json(os.path.join(run, REFILL_FAILED))
-    error = (f': {failed.get("error")}' if isinstance(failed, dict)
-             and failed.get('series') == series else '')
+    if not isinstance(failed, dict) or failed.get('series') != series:
+        failed = None
+    if failed is not None and failed.get('status') == 'stopped':
+        # a stop is no failure, and this process is not stopping
+        log(f'{LOG_PREFIX} the refill of {series!r} by {who} was stopped '
+            f'after {_duration(waited)} of waiting, and '
+            f'{_trajectories(len(after.missing))} still lack the series: '
+            f'this process refills them.')
+        try:
+            return _refill(after, policy, params, role, log, jobs, stop)
+        finally:
+            _remove_info(run)
+    error = f': {failed.get("error")}' if failed is not None else ''
     message = (f'{LOG_PREFIX} {who} let go of the refill of {series!r} '
                f'after {_duration(waited)}, but '
                f'{_trajectories(len(after.missing))} still have no file of '
                f'the series: the refill failed (see its log){error}. This '
                f'process does not refill again.\n'
-               + missing_series_message(after, policy, params_file,
-                                        prefix=LOG_PREFIX, workdir=workdir))
+               + missing_series_message(after, policy, _params_file(params),
+                                        prefix=LOG_PREFIX,
+                                        workdir=_workdir(params)))
     _log_lines(log, message)
     raise SeriesCoverageError(message)
