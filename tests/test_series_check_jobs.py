@@ -15,6 +15,8 @@ check that
 - a worker whose params file (``paramsN.py``) was written before the params
   file that builds the featurizer was edited stops with a mismatch error
   naming both series, also when the series it names is complete;
+- a params file that builds its featurizer with ``with_n_max`` creates its
+  job and starts its workers (no mismatch), its refill flag included;
 - `Launcher.run` marks the start of its launch for its processes (a failed
   refill of an earlier launch does not stop them).
 """
@@ -46,7 +48,7 @@ import aimmd
 from aimmd.core import series
 params = aimmd.Params(sys.argv[1], initial_paths=None, save=False)
 try:
-    series.ensure_series_coverage(params, 'run1', log=print)
+    series.ensure_series_coverage(params, 'run1', log=print, jobs=1)
 except series.SeriesMismatchError:
     sys.exit(3)
 print('STARTED')
@@ -238,6 +240,40 @@ def test_a_job_written_before_the_params_file_changed_stops(tmp_path,
     assert 'STARTED' not in result.stdout
     assert {fname: fname.read_bytes() for fname in files} == before
     assert not list(Path(campaign.run).rglob(f'*.{new.series}.npy'))
+
+
+def test_a_featurizer_built_with_with_n_max_creates_and_starts_its_job(
+        tmp_path, monkeypatch, capsys, no_hardware):
+    # FEATURIZER = NodeTableFeaturizer(..., n_max=56, refill=True)
+    # .with_n_max(64): the copy is the params' featurizer and registers its
+    # series and refill flag like one the constructor builds
+    campaign = make_full_campaign(tmp_path / 'campaign', n_max=56,
+                                  refill=True, with_n_max=64)
+    old = _older_n_max(campaign)
+    monkeypatch.chdir(campaign.folder)
+    params = aimmd.Params.load('params.py')
+    new = params.descriptors_series
+    capsys.readouterr()
+
+    aimmd.Launcher(params, 'run1').create_job('job.sh', n=1, nframes=10)
+
+    assert os.path.exists('job.sh')
+    notice, = [line for line in capsys.readouterr().out.splitlines()
+               if line.startswith('SERIES REFILL:')]
+    assert (f'the job first refills them in one process, by repacking the '
+            f'rows of {old.series} (n_max 56 -> 64;') in notice
+    # a worker of the job, a fresh process that loads its params file
+    result = subprocess.run(
+        [sys.executable, '-c', WORKER, str(params.path)],
+        cwd=campaign.folder, capture_output=True, text=True, timeout=600,
+        env=dict(os.environ, PYTHONPATH=str(WORKTREE),
+                 CUDA_VISIBLE_DEVICES='', PYTHONDONTWRITEBYTECODE='1'))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'STARTED' in result.stdout
+    assert 'SERIES REFILL: done:' in result.stdout
+    assert 'SERIES CHECK' not in result.stdout
+    assert series_coverage('run1', new).complete
+    assert new == toy_featurizer(campaign.folder, 64).series
 
 
 def test_a_launch_marks_its_start_for_its_processes(tmp_path, monkeypatch,

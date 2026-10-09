@@ -22,7 +22,8 @@ series. They cover
 - a params file written for another computed series than the featurizers
   of the process register (a job script older than an edit of the params
   file) stops both checks with a mismatch error, also when its series is
-  complete;
+  complete; when the featurizer of the descriptors function can be told
+  (a bound method), its series decides;
 - a failed refill leaves a marker in the run folder: the later processes of
   the same job (SLURM job, or launch) stop with the error instead of
   refilling again, a new job tries again, and a refill that succeeds
@@ -467,6 +468,33 @@ def test_no_mismatch_without_a_featurizer_of_that_kind(tmp_path):
     series._POLICIES.clear()
     register_series(OTHER, refill=True, refiller=lambda *args, **kw: None)
     assert ensure_series_coverage(_params(tmp_path), run)
+
+
+def test_the_featurizer_of_a_bound_descriptors_function_decides(tmp_path):
+    class Featurizer:
+        def __init__(self, name):
+            self.series = name
+
+        def descriptors_function(self, trajectory):
+            return None
+
+    run = _write(tmp_path / 'run1', series=(SERIES, OTHER))
+    register_series(OTHER, refill=True, refiller=_Computed())
+    params = _params(tmp_path)
+    # the registry alone takes SERIES for a stale name ...
+    with pytest.raises(SeriesMismatchError):
+        check_series_coverage(params, run)
+    # ... but the featurizer that computes the descriptors computes it
+    params.descriptors_function = Featurizer(SERIES).descriptors_function
+    assert ensure_series_coverage(params, run)
+    assert check_series_coverage(params, run).complete
+    # a featurizer of another series: the error names its series only
+    computed = 'descriptors-gn5555555555'
+    params.descriptors_function = Featurizer(computed).descriptors_function
+    with pytest.raises(SeriesMismatchError) as info:
+        check_series_coverage(params, run)
+    assert f'now computes {computed!r}.' in str(info.value)
+    assert OTHER not in str(info.value)
 
 
 # ----------------------------------------------------------------------

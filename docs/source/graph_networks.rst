@@ -228,7 +228,9 @@ When the Series Changes
 
 Every featurizer that the params file builds registers its series name and
 ``refill`` flag (:mod:`aimmd.core.series`), in every process that executes
-the params file; the copies that ``with_n_max`` makes for the tools do not.
+the params file, also one built with ``with_n_max``
+(``FEATURIZER = NodeTableFeaturizer(...).with_n_max(256)``); the copies
+that the tools make internally do not.
 Before a job does any work, the series of the run is checked twice: by the
 launcher when it creates or runs a job (``create_job``, ``run``), so that you
 hear about it on the login node before you submit, and by every worker

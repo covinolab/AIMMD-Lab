@@ -9,8 +9,9 @@ others wait (`aimmd.core.series.ensure_series_coverage`); with the default
 check that
 
 - ``refill`` does not change the series name, and every featurizer
-  registers its series with its flag and a `NodeTableRefiller`, but not the
-  copies of ``with_n_max`` (plan, route, repack);
+  registers its series with its flag and a `NodeTableRefiller` (also one
+  built with ``with_n_max``), but not the copies that the tools make
+  (plan, route, repack);
 - the refill takes the cheapest correct route: an ``n_max``-only change is
   repacked without opening a trajectory (zero rows stay zero), other
   settings are featurized again, and an unmigrated graph-cache campaign is
@@ -133,11 +134,22 @@ def test_every_featurizer_registers_its_series(tmp_path):
     assert series_policy(multi.series).refill is True
     assert series_policy(multi.series).refiller.featurizer is multi
 
+    # a featurizer that a params file builds with with_n_max, with the flag
+    # it keeps
+    wider = toy_featurizer(tmp_path, 40, refill=True).with_n_max(96)
+    assert series_policy(wider.series).refill is True
+    assert series_policy(wider.series).refiller.featurizer is wider
+    multi_wider = multi.with_n_max(128)
+    assert series_policy(multi_wider.series).refill is True
+    assert series_policy(multi_wider.series).refiller.featurizer is \
+        multi_wider
+
 
 def test_the_copies_of_the_tools_register_nothing(tmp_path):
-    # with_n_max (plan and route, also run by the launcher, and repack) must
-    # not register: the old series would take the current refill flag, and
-    # after a repack the current series would be refilled by a copy
+    # the copies that plan and route (also run by the launcher) and repack
+    # make with with_n_max must not register: the old series would take the
+    # current refill flag, and after a repack the current series would be
+    # refilled by a copy
     campaign = make_campaign(tmp_path / 'campaign', n_max=40)
     old = campaign.featurizer
     _prefill(old, campaign.run)
@@ -145,9 +157,10 @@ def test_the_copies_of_the_tools_register_nothing(tmp_path):
     multi = MultiSystemNodeTableFeaturizer({'lig1': new}, refill=True)
     registered = dict(series._POLICIES)
 
-    assert new.with_n_max(40).series == old.series
-    assert new.with_n_max(1024).series not in series._POLICIES
-    assert multi.with_n_max(1024).series not in series._POLICIES
+    assert new.with_n_max(40, _register=False).series == old.series
+    assert multi.with_n_max(1024, _register=False).series not in \
+        series._POLICIES
+    assert dict(series._POLICIES) == registered
     params = _params(campaign.folder, new)
     series.check_series_coverage(params, campaign.run, log=_quiet)
     _tool.repack(_tool.ParamsFeaturizer(None, 'F', old, None),
@@ -172,10 +185,13 @@ def test_the_copies_of_the_tools_never_hide_a_stale_params_file(tmp_path):
     coverage = series_coverage(campaign.run, new.series)
     assert 'repacking' in series_policy(new.series).refiller.route(
         coverage, campaign.folder)
+    # the params file's module-level wrapper (which hides the featurizer)
+    stale = _params(campaign.folder, old)
+    stale.descriptors_function = lambda trajectory: \
+        new.descriptors_function(trajectory)
     lines = []
     with pytest.raises(series.SeriesMismatchError) as info:
-        ensure_series_coverage(_params(campaign.folder, old), campaign.run,
-                               log=lines.append)
+        ensure_series_coverage(stale, campaign.run, log=lines.append)
     assert (f'was written for the descriptor series {old.series!r}, but its '
             f'node-table featurizer now computes {new.series!r}'
             in str(info.value))
@@ -184,7 +200,10 @@ def test_the_copies_of_the_tools_never_hide_a_stale_params_file(tmp_path):
     # multi-system: the series of the whole run is named, not the systems'
     multi = MultiSystemNodeTableFeaturizer({
         'lig1': new, 'lig2': toy_featurizer(campaign.folder, 80)})
-    stale = _params(campaign.folder, multi.with_n_max(96), ['lig1', 'lig2'])
+    stale = _params(campaign.folder, multi, ['lig1', 'lig2'])
+    stale.descriptors_series = multi.with_n_max(96, _register=False).series
+    stale.descriptors_function = lambda trajectory, system_id: \
+        multi.descriptors_function(trajectory, system_id)
     with pytest.raises(series.SeriesMismatchError) as info:
         series.check_series_coverage(stale, tmp_path / 'multi_run')
     assert f'now computes {multi.series!r}' in str(info.value)

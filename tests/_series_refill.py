@@ -34,7 +34,7 @@ topology = 'toy.gro'
 FEATURIZER = NodeTableFeaturizer(
     mda.Universe('toy.gro', to_guess=['types', 'bonds']),
     {system!r}, {environment!r}, {atom_types!r}, cutoff={cutoff!r},
-    n_max={n_max!r}, refill={refill!r})
+    n_max={n_max!r}, refill={refill!r}){copy}
 descriptors_series = FEATURIZER.series
 
 
@@ -73,17 +73,20 @@ INITIAL_FRAMES = toy_frames(12, seed=4, ligand_y=np.linspace(5.0, 15.0, 12))
 
 
 def write_full_params(folder, n_max=64, refill=False,
-                      environment=ENVIRONMENT_SELECTION):
-    """Write the params file ``params.py`` into `folder`."""
+                      environment=ENVIRONMENT_SELECTION, with_n_max=None):
+    """Write the params file ``params.py`` into `folder`; with
+    `with_n_max`, its FEATURIZER is ``NodeTableFeaturizer(...,
+    n_max=n_max).with_n_max(with_n_max)``."""
     params = Path(folder) / 'params.py'
     params.write_text(FULL_PARAMS.format(
         system=SYSTEM_SELECTION, environment=environment,
-        atom_types=ATOM_TYPES, cutoff=CUTOFF, n_max=n_max, refill=refill))
+        atom_types=ATOM_TYPES, cutoff=CUTOFF, n_max=n_max, refill=refill,
+        copy='' if with_n_max is None else f'.with_n_max({with_n_max!r})'))
     return str(params)
 
 
 def make_full_campaign(folder, n_max=64, refill=False,
-                       environment=ENVIRONMENT_SELECTION):
+                       environment=ENVIRONMENT_SELECTION, with_n_max=None):
     """toy.gro (as `make_campaign` writes it), initial.xtc, params.py and
     the run folder run1/ (with a stale ``*.descriptors.npy`` next to every
     trajectory)."""
@@ -91,7 +94,8 @@ def make_full_campaign(folder, n_max=64, refill=False,
     folder.mkdir(parents=True, exist_ok=True)
     write_toy_gro(folder / 'toy.gro', toy_frames(1, seed=10)[0])
     write_toy_xtc(folder / 'initial.xtc', INITIAL_FRAMES)
-    params = write_full_params(folder, n_max, refill, environment)
+    params = write_full_params(folder, n_max, refill, environment,
+                               with_n_max)
     write_run(folder / 'run1')
     return Campaign(str(folder), params, str(folder / 'run1'))
 

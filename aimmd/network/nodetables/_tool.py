@@ -1534,9 +1534,10 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
     runs = _run_folders(runs)
     from_n_max = _source_n_max(from_n_max, featurizer)
     try:
+        # copies of the tool: they register nothing
         source = (featurizer if from_n_max is None
-                  else featurizer.with_n_max(from_n_max))
-        target = source.with_n_max(n_max)
+                  else featurizer.with_n_max(from_n_max, _register=False))
+        target = source.with_n_max(n_max, _register=False)
     except ValueError as error:
         raise UsageError(str(error)) from error
     if target.series == source.series:

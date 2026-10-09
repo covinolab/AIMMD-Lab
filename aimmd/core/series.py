@@ -27,9 +27,12 @@ starts, before any MD or training:
 - both checks first refuse a params file written for another series than
   its featurizer now computes (`SeriesMismatchError`): the ``paramsN.py`` of
   a job holds the series name of the job's creation, while the featurizer
-  is built from the params file as it is now. A params series that is not
-  registered, while a registered refill callable claims names like it
-  (``claims``) for another series, is such a mismatch;
+  is built from the params file as it is now. When the featurizer can be
+  told (``descriptors_function`` is a bound method of an object with a
+  ``series``), its series must be the params' series. Otherwise (a
+  module-level wrapper hides it), a params series that is not registered,
+  while a registered refill callable claims names like it (``claims``) for
+  another series, is such a mismatch;
 - `check_series_coverage` (the launcher, before it writes or starts a job)
   raises `SeriesCoverageError` for a gap that may not be refilled, and
   announces the refill otherwise;
@@ -608,11 +611,30 @@ def _checked_series(params):
     return str(series)
 
 
+def _owner_series(params):
+    """The series of the object whose bound method is
+    ``params.descriptors_function`` (the featurizer that computes the
+    descriptors), or None when it cannot be told (e.g. a module-level
+    wrapper)."""
+    try:
+        owner = getattr(params.descriptors_function, '__self__', None)
+        series = getattr(owner, 'series', None)
+    except Exception:                                   # noqa: BLE001
+        return None
+    return series if isinstance(series, str) else None
+
+
 def _check_computed(params, series, log=None):
     """Raise `SeriesMismatchError` if `params` was written for another
-    series than the featurizers of this process compute (logging the lines
-    first with `log`)."""
-    computed = computed_instead(series)
+    series than its featurizer computes: the one of its bound
+    ``descriptors_function`` if it can be told, else those that the
+    featurizers of this process register (see `computed_instead`). Logs the
+    lines first with `log`."""
+    owned = _owner_series(params)
+    if owned is not None:
+        computed = [] if owned == series else [owned]
+    else:
+        computed = computed_instead(series)
     if not computed:
         return
     message = mismatch_message(series, computed, _params_file(params))

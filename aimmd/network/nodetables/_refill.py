@@ -2,11 +2,12 @@
 
 Every `NodeTableFeaturizer` (and `MultiSystemNodeTableFeaturizer`) that a
 params file builds registers a `NodeTableRefiller` for its series with
-`aimmd.core.series.register_series`, together with its ``refill`` flag (the
-copies that ``with_n_max`` makes here and in the tools do not). When
-trajectories of a run have no file of the series (the node-table settings
-changed since they were featurized, or the campaign comes from the
-graph-cache input) and the flag is set, one process of the run calls the
+`aimmd.core.series.register_series`, together with its ``refill`` flag
+(also one built with ``with_n_max``; the copies that ``with_n_max`` makes
+here and in the tools do not). When trajectories of a run have no file of
+the series (the node-table settings changed since they were featurized, or
+the campaign comes from the graph-cache input) and the flag is set, one
+process of the run calls the
 refiller before any MD or training (`aimmd.core.series.ensure_series_coverage`)
 while the other processes wait. It takes the cheapest correct route per
 trajectory:
@@ -233,7 +234,7 @@ class NodeTableRefiller:
                     from_n_max = capacities.get(None)
                 if not from_n_max:
                     continue
-                source = featurizer.with_n_max(from_n_max)
+                source = featurizer.with_n_max(from_n_max, _register=False)
             except ValueError:
                 continue
             if source.series == name:
