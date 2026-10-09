@@ -1,12 +1,13 @@
 """The graph-network params template, examples/graph_network/params.py.
 
 The template chooses the graph input with ``GRAPH_INPUT``: node tables
-(module-level wrappers around a `NodeTableFeaturizer`, a pinned series name)
-or the graph cache of the coordinate-descriptor mode. These tests fill in
-the template for the toy system (topology, selections, atom types, states,
-the toy engine, a small stand-in for painn.py) and check that
+(module-level wrappers around a `NodeTableFeaturizer`, the series name it
+computes) or the graph cache of the coordinate-descriptor mode. These tests
+fill in the template for the toy system (topology, selections, atom types,
+states, the toy engine, a small stand-in for painn.py) and check that
 
-- an unpinned or wrongly pinned series stops the load with the name to pin;
+- the series name is the featurizer's, nothing is pinned, and the
+  featurizer registers it without refill;
 - in node-table mode Params.load works, writes no graph cache, and its
   params1.py loads again; the command-line prefill takes its featurizer;
 - both graph inputs give the same values, bit for bit, for the same frames
@@ -83,7 +84,7 @@ def _set(source, name, value):
     return pattern.sub(f'{name} = {value!r}', source)
 
 
-def _fill_template(folder, graph_input='nodetables', series=None):
+def _fill_template(folder, graph_input='nodetables'):
     """The template filled in for the toy system, in `folder`."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -100,20 +101,23 @@ def _fill_template(folder, graph_input='nodetables', series=None):
     start = source.index('# --- states')
     end = source.index('# --- graph input')
     source = source[:start] + TOY_STATES + source[end:]
-    if series is None:
-        series = toy_featurizer(folder, structure='run.gro').series
-    assert "check_series('descriptors-gn0000000000')" in source
-    source = source.replace("'descriptors-gn0000000000'", repr(series))
     (folder / 'params.py').write_text(source)
     return folder / 'params.py'
 
 
-def test_the_template_names_the_series_to_pin(tmp_path):
-    params = _fill_template(tmp_path, series='descriptors-gn0000000000')
-    with pytest.raises(_tool.UsageError) as info:
-        _tool.load_featurizer(params)
-    series = toy_featurizer(tmp_path, structure='run.gro').series
-    assert f'pin descriptors_series = {series!r}' in str(info.value)
+def test_the_template_computes_its_series_and_does_not_refill(tmp_path):
+    from aimmd.core.series import series_policy
+    params = _fill_template(tmp_path)
+    source = params.read_text()
+    assert 'descriptors_series = FEATURIZER.series' in source
+    assert 'check_series' not in source
+    loaded = _tool.load_featurizer(params)
+    assert loaded.featurizer.refill is False
+    assert series_policy(loaded.series).refiller.featurizer is \
+        loaded.featurizer
+    assert series_policy(loaded.series).refill is False
+    assert loaded.series == loaded.pinned == toy_featurizer(
+        tmp_path, structure='run.gro').series
 
 
 def test_the_template_fit_passes_the_worker_on(tmp_path):

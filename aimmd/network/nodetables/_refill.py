@@ -57,7 +57,7 @@ _Step = namedtuple('_Step', 'kind trajectories source text')
 # went well), and the end-of-command verdict
 _QUIET = ('written', 'complete', 'exists', 'OK')
 # the tools' advice for the command line, which does not apply here
-_ADVICE = ('The params file needs', 'Pin the new series')
+_ADVICE = ('The params file needs',)
 
 
 class NodeTableRefiller:

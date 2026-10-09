@@ -43,8 +43,11 @@ In practice, the most important inputs are:
    Reading ``'descriptors'`` from a trajectory that only has a named series
    raises an error instead of returning zeros; analysis scripts read
    ``getattr(path, params.descriptors_series)``. Graph-network runs with node
-   tables use a fingerprinted name, ``'descriptors-gn...'``, pinned in the
-   params file (see :doc:`graph_networks`).
+   tables use a fingerprinted name, ``'descriptors-gn...'``, computed by the
+   featurizer (``descriptors_series = FEATURIZER.series``). For any named
+   series, the launcher and every worker check before a job starts that each
+   trajectory of the run has a file of it, and stop the job (or let the
+   featurizer refill the series first) otherwise (see :doc:`graph_networks`).
 
 ``values_function``
    Optional, if evaluating the network forward pass requires any special care. If not given, will default to network(descriptors).

@@ -56,9 +56,11 @@ MDAnalysis; building graphs needs the ``graphs`` extra. Both classes are also
 importable from ``aimmd.network.graph_utils``. Use their methods through
 module-level wrapper functions in the params file (``Params`` refuses bound
 methods of the featurizers). ``python -m aimmd.network.nodetables`` prefills,
-repacks and verifies the node tables of existing runs. See
-:doc:`../graph_networks` for the params template, the command-line tool and
-switching a running campaign.
+repacks and verifies the node tables of existing runs; a featurizer built with
+``refill=True`` lets a job refill the series of its run itself
+(:mod:`aimmd.core.series`). See :doc:`../graph_networks` for the params
+template, the command-line tool, changed settings and switching a running
+campaign.
 
 .. automodule:: aimmd.network.nodetables
    :members: NodeTableFeaturizer, MultiSystemNodeTableFeaturizer,

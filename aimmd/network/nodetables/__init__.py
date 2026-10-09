@@ -12,14 +12,23 @@ fingerprinted series name (``'descriptors-gn...'``), and the network input,
 bitwise equal to the graphs of `aimmd.network.graph_utils.get_graphs_pyg`, is
 rebuilt from them per batch. No graph cache or database is involved.
 
+The params file sets ``descriptors_series = FEATURIZER.series``: the name is
+computed from the settings, so a changed setting starts a new series. Before
+a job does any work, the launcher and every worker check the run folder for
+trajectories without it (`aimmd.core.series`): the job stops with an error
+naming the remedies, or, for a featurizer built with ``refill=True``, one
+process of the run refills the series first (by repacking, extracting from
+the graph cache, or featurizing) while the others wait.
+
 Public API
 ----------
 NodeTableFeaturizer
     Frames to node-table rows (``descriptors_function``), rows to graphs or a
-    ready batch dict (``graphs``, ``batch_dict``), and the series name.
+    ready batch dict (``graphs``, ``batch_dict``), the series name, and what a
+    job does when trajectories lack the series (``refill``).
 MultiSystemNodeTableFeaturizer
     One featurizer per system of a multi-system run, dispatched on
-    ``system_id``, with one series name for the campaign.
+    ``system_id``, with one series name (and ``refill``) for the campaign.
 NodeTableOverflowError
     A graph has more nodes than the rows can hold.
 NODE_TABLE_LAYOUT, DEFAULT_N_MAX, SERIES_PREFIX

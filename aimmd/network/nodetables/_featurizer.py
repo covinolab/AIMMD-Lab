@@ -34,6 +34,16 @@ wrapping every atom into that box, exactly as in `get_graphs_pyg`. A computed
 row always has ``n_nodes > 0``; an all-zero row is a frame that has not been
 featurized (or could not be, see `NodeTableFeaturizer`).
 
+The series name, ``'descriptors-gn'`` and 10 hex characters, is computed from
+everything a row holds; the params file sets ``descriptors_series =
+FEATURIZER.series``. A changed setting therefore starts a new series, which
+the trajectories of a run do not have yet. Every featurizer registers its
+series with `aimmd.core.series` when it is built, so the launcher and every
+worker find such a gap from the run folder before a job does any work: with
+``refill=False`` (the default) the job stops with an error naming the
+remedies, with ``refill=True`` one process of the run refills the series
+first (`aimmd.network.nodetables._refill`) while the others wait.
+
 This module only needs numpy and MDAnalysis to write rows. Turning rows into
 graphs (`NodeTableFeaturizer.graphs`, `NodeTableFeaturizer.batch_dict`) needs
 torch and the optional ``graphs`` extra (torch_geometric, torch_cluster).
@@ -151,8 +161,30 @@ class NodeTableFeaturizer:
     they were not written with. `cutoff` and `max_num_neighbors` are
     deliberately not part of the name: the edges are rebuilt from the rows
     every time, so changing them changes every graph without touching the
-    stored rows (and requires a new network). Pin the name in the params file
-    and check it with `check_series`.
+    stored rows (and requires a new network). The params file sets
+    ``descriptors_series = FEATURIZER.series``: the name is computed, never
+    typed. (`check_series` still checks a pinned name, but pinning is no
+    longer recommended.)
+
+    **Changed settings.** A new name is a series that no trajectory of an
+    existing run has, and AIMMD would featurize every frame again, lazily
+    (the trainer serially at the start of a round, the workers on every path
+    they touch). The featurizer registers its series and `refill` flag with
+    `aimmd.core.series` when it is built, and the launcher (`create_job`,
+    `run`) and every worker, before its task, look in the run folder for
+    trajectories that have no file of the series (the initial paths left
+    out; a file with zero or missing rows counts as there). With
+    ``refill=False`` the job stops with an error saying how many trajectories
+    and frames lack the series, what is next to them (another node-table
+    series: the settings changed; ``*.descriptors.npy``: the campaign was not
+    migrated from the graph cache) and the remedies: restore the settings,
+    prefill the series (``python -m aimmd.network.nodetables prefill``), or
+    set ``refill=True``. With ``refill=True`` the launcher announces the
+    refill, and when the job starts one process of the run refills exactly
+    the trajectories that lack the series while the others wait (log lines
+    starting with ``SERIES REFILL:``): it repacks the rows of a series that
+    differs only in `n_max` (no trajectory is read), extracts them from the
+    graph cache of an unmigrated campaign, or featurizes the frames.
 
     **Overflow.** `descriptors_function` never raises on a frame that cannot
     be stored, since it runs inside the MD stop-condition loop. A frame with
@@ -174,7 +206,7 @@ class NodeTableFeaturizer:
         FEATURIZER = NodeTableFeaturizer(tmp_universe, SYSTEM_SELECTION,
                                          ENVIRONMENT_SELECTION, ATOM_TYPES,
                                          cutoff=CUTOFF)
-        descriptors_series = FEATURIZER.check_series('descriptors-gn...')
+        descriptors_series = FEATURIZER.series
 
         def descriptors_function(trajectory):
             return FEATURIZER.descriptors_function(trajectory)
@@ -331,6 +363,11 @@ class NodeTableFeaturizer:
     def check_series(self, descriptors_series):
         """Check a pinned series name against this featurizer.
 
+        Not needed with ``descriptors_series = FEATURIZER.series``, which is
+        the recommended params file: a run whose trajectories lack the series
+        is found from the run folder before a job starts (see the class
+        notes).
+
         Parameters
         ----------
         descriptors_series : str
@@ -354,11 +391,13 @@ class NodeTableFeaturizer:
                 f'this node-table featurizer, whose series is '
                 f'{self.series!r}. The name fingerprints everything a row '
                 f'holds: {self._spec}. If you changed the featurizer on '
-                f'purpose, pin descriptors_series = {self.series!r}; every '
-                f'frame is then featurized again (prefill the new series with '
-                f'python -m aimmd.network.nodetables prefill). Otherwise find '
-                f'what differs, e.g. an edited selection or atom types that '
-                f'MDAnalysis guessed differently on this host.')
+                f'purpose, set descriptors_series = FEATURIZER.series (or '
+                f'pin descriptors_series = {self.series!r}); every frame is '
+                f'then featurized again (prefill the new series with python '
+                f'-m aimmd.network.nodetables prefill, or construct the '
+                f'featurizer with refill=True). Otherwise find what differs, '
+                f'e.g. an edited selection or atom types that MDAnalysis '
+                f'guessed differently on this host.')
         return descriptors_series
 
     def with_n_max(self, n_max):
@@ -482,9 +521,10 @@ class NodeTableFeaturizer:
                   f'frames at t = '
                   f'{_frame_names([label for label, _ in overflow])}). Their '
                   f'rows are left zero, and training and value passes stop on '
-                  f'them. Widen the rows with {REPACK_COMMAND!r} (N >= '
-                  f'{largest}), set n_max=N in the featurizer and pin the new '
-                  f'descriptors_series.', flush=True)
+                  f'them. Widen the rows: set n_max=N (N >= {largest}) in the '
+                  f'featurizer, a new series, and repack the rows into it '
+                  f'with {REPACK_COMMAND!r} (or let the next job do it, with '
+                  f'refill=True).', flush=True)
         if unknown:
             types = sorted(set().union(*(set(t) for _, t in unknown)))
             print(f'ERROR: node tables: {len(unknown)} frame(s) have graph '
@@ -522,11 +562,11 @@ class NodeTableFeaturizer:
                 f'batch). A zero row is a frame that was never featurized, or '
                 f'one whose graph does not fit the layout '
                 f'(descriptors_function then logs an ERROR line). For n_max '
-                f'overflows, widen the '
-                f'rows with {REPACK_COMMAND!r}, set n_max=N in the featurizer '
-                f'and pin the new descriptors_series; the ledger then '
-                f'featurizes the empty rows again. Otherwise compute the '
-                f'missing rows first, e.g. '
+                f'overflows, widen the rows: set n_max=N in the featurizer, '
+                f'a new series, and repack the rows into it with '
+                f'{REPACK_COMMAND!r} (or let the next job do it, with '
+                f'refill=True); the ledger then featurizes the empty rows '
+                f'again. Otherwise compute the missing rows first, e.g. '
                 f'path.compute(*params.compute_descriptors_args).')
         bad = np.flatnonzero((rows[:, 1] != NODE_TABLE_LAYOUT) |
                              (n_nodes != np.round(n_nodes)) |
@@ -813,8 +853,14 @@ class MultiSystemNodeTableFeaturizer:
     -----
     `series` is ``'descriptors-gn'`` and 10 hex characters of a SHA-256 over
     every system's fingerprint: one name for the campaign, which changes when
-    any system's featurizer changes. As for `NodeTableFeaturizer`, use the
-    methods through module-level wrappers in the params file::
+    any system's featurizer changes. It registers that name with its
+    `refill` flag, and a job checks and refills the whole run (every system
+    folder) as described for `NodeTableFeaturizer`. As for
+    `NodeTableFeaturizer`, use the methods through module-level wrappers in
+    the params file::
+
+        FEATURIZERS = MultiSystemNodeTableFeaturizer({'lig1': f1, 'lig2': f2})
+        descriptors_series = FEATURIZERS.series
 
         def descriptors_function(trajectory, system_id):
             return FEATURIZERS.descriptors_function(trajectory, system_id)
@@ -886,7 +932,8 @@ class MultiSystemNodeTableFeaturizer:
         return SERIES_PREFIX + self._fingerprint[:10]
 
     def check_series(self, descriptors_series):
-        """Check a pinned series name; see `NodeTableFeaturizer.check_series`.
+        """Check a pinned series name; see `NodeTableFeaturizer.check_series`
+        (not needed with ``descriptors_series = FEATURIZERS.series``).
 
         Raises
         ------
@@ -900,9 +947,10 @@ class MultiSystemNodeTableFeaturizer:
                 f'descriptors_series {descriptors_series!r} does not match '
                 f'these node-table featurizers, whose series is '
                 f'{self.series!r} (series of the systems: {systems}). '
-                f'If you changed a featurizer on purpose, pin '
-                f'descriptors_series = {self.series!r}; every frame of every '
-                f'system is then featurized again. Otherwise find what '
+                f'If you changed a featurizer on purpose, set '
+                f'descriptors_series = FEATURIZERS.series (or pin '
+                f'{self.series!r}); every frame of every system is then '
+                f'featurized again. Otherwise find what '
                 f'differs, e.g. an edited selection or atom types that '
                 f'MDAnalysis guessed differently on this host.')
         return descriptors_series

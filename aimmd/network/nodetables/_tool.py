@@ -32,7 +32,12 @@ series ``*.descriptors.npy``, and they open graph caches read-only and
 immutable: they never write a graph cache (run them while no job writes it).
 
 Parallel runs (``jobs > 1``) use spawned processes, each of which imports the
-params file once; the work is split into chunks of frames.
+params file once (and checks that its featurizer still has the series being
+written); the work is split into chunks of frames.
+
+A job runs `prefill` and `repack` itself, for the trajectories of its run that
+lack the series, when the featurizer has ``refill=True`` (see
+`aimmd.network.nodetables._refill`).
 """
 
 from __future__ import annotations
@@ -1218,8 +1223,8 @@ def _prefill_summary_lines(report):
             f'not fit the layout (more than n_max graph nodes, or atom types '
             f'outside atom_types; see the ERROR lines above). Training stops '
             f'on them. Widen the rows with python -m aimmd.network.nodetables '
-            f'repack --n-max N, pin the new series and run prefill '
-            f'--only-missing.')
+            f'repack --n-max N, set n_max=N in the params file (its series '
+            f'is then the new one) and run prefill --only-missing.')
     if totals['verify_mismatches']:
         # where the differing rows can come from, by the options of the run
         causes = []
@@ -1370,7 +1375,7 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
     Returns
     -------
     dict
-        The report: ``source_series``, ``series`` (the new name to pin),
+        The report: ``source_series``, ``series`` (the new name),
         ``files`` with each ``status`` (``'written'``, ``'exists'`` or
         ``'failed'``), ``totals`` and ``ok``.
 
@@ -1453,8 +1458,8 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
     log(f'repack: {totals["written"]} written, {totals["exists"]} already '
         f'there, {totals["failed"]} failed; {totals["rows"]} rows, '
         f'{totals["empty_rows"]} empty; {report["wall_seconds"]:.1f} s')
-    log(f'Pin the new series in the params file: n_max={n_max} and '
-        f'descriptors_series = {target.series!r}'
+    log(f'The params file needs n_max={n_max} for this series (with '
+        f'descriptors_series = FEATURIZER.series it is {target.series!r})'
         + ('; then fill the empty rows with prefill --only-missing'
            if totals['empty_rows'] else ''))
     log('OK' if report['ok'] else 'FAILED')

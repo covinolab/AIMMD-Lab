@@ -39,7 +39,8 @@ The featurizer comes from the params file, which must be in node-table mode
 (it defines a NodeTableFeaturizer); it is imported as a module in its folder,
 without aimmd.Params. Run the commands while no job runs on the runs. The
 tools never open *.descriptors.npy and never write a graph cache. GPUs are
-not used.
+not used. A job whose run lacks the series stops before it starts, unless
+the featurizer has refill=True: then the job refills the series itself.
 '''
 
 

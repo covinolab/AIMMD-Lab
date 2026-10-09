@@ -69,7 +69,10 @@ names and the reference box. Any change to these gives a new series, so rows
 are never read under settings they were not written with. ``cutoff`` and
 ``max_num_neighbors`` are deliberately *not* part of the name: the edges are
 rebuilt from the rows every time, so changing them changes every graph without
-touching the stored rows, and the network must be retrained.
+touching the stored rows, and the network must be retrained. The params file
+sets ``descriptors_series = FEATURIZER.series``: the name is computed, never
+typed, and a changed setting is caught from the run folder before a job
+starts (see `When the Series Changes`_).
 
 The Params File
 ---------------
@@ -93,12 +96,16 @@ its featurizer, and ``Params`` refuses it with an error. So does a
 ``functools.partial`` of one, which ``params1.py`` could not import. Define
 module-level functions that call the featurizer, as above.
 
-**Pin the series name.** ``FEATURIZER.check_series(name)`` raises unless
-``name`` is the featurizer's series, and the error names the series to pin.
-The first load of a new params file fails on purpose; pin the name it prints.
-From then on, a changed selection, ``n_max`` or topology, or atom types that
-MDAnalysis guesses differently on another host, stop the load instead of
-silently starting a new series (and featurizing every frame again).
+**The series name and refill.** ``descriptors_series = FEATURIZER.series``
+follows the settings. A changed selection, ``n_max`` or topology, or atom
+types that MDAnalysis guesses differently on another host, start a new series
+that the trajectories of an existing run do not have. The launcher and every
+worker find that out before a job does any work, and the featurizer's
+``refill`` flag (``NodeTableFeaturizer(..., refill=False)``, the default)
+decides what happens: an error that names the remedies, or a refill of the
+series by the job itself (see `When the Series Changes`_). ``refill`` is not
+part of the series name. ``FEATURIZER.check_series(name)`` still checks a
+pinned name, but pinning is no longer recommended.
 
 **n_max and frames that do not fit.** ``n_max = 768`` leaves about twice the
 headroom of what protein-ligand runs need (267 to 359 nodes over the HSP90
@@ -112,9 +119,12 @@ acceptance reaches the frame (with TPS and a pool of one, the worker that
 produced the path, right after registering it). A restart stops at the same
 place again. This is deliberate: a value made up for the frame, or a path
 accepted or rejected without it, would bias the sampling silently. Widen the
-rows with ``repack``, pin the new series, run ``prefill --only-missing`` and
-restart. Frames above 80 % of ``n_max`` are reported with a warning; act on
-it before the first frame overflows.
+rows: set the new ``n_max`` (a new series) and either repack the rows before
+the next job (``repack --n-max N --from-n-max M``, then ``prefill
+--only-missing``), or construct the featurizer with ``refill=True`` and
+restart: the job then repacks the rows itself, and the ledger fills the empty
+ones. Frames above 80 % of ``n_max`` are reported with a warning; act on it
+before the first frame overflows.
 
 **fit.** With ``graphs=True``, ``fit`` passes each batch of rows through
 ``descriptor_transform``. A single-system node-table transform returns
@@ -132,8 +142,9 @@ its ``descriptor_transform`` returns graphs, not a batch dict:
 
     FEATURIZERS = MultiSystemNodeTableFeaturizer({
         'lig1': NodeTableFeaturizer(universe1, ..., ATOM_TYPES, cutoff=CUTOFF),
-        'lig2': NodeTableFeaturizer(universe2, ..., ATOM_TYPES, cutoff=CUTOFF)})
-    descriptors_series = FEATURIZERS.check_series('descriptors-gn...')
+        'lig2': NodeTableFeaturizer(universe2, ..., ATOM_TYPES, cutoff=CUTOFF)},
+        refill=False)
+    descriptors_series = FEATURIZERS.series
 
     def descriptors_function(trajectory, system_id):
         return FEATURIZERS.descriptors_function(trajectory, system_id)
@@ -186,9 +197,10 @@ reported. It runs on CPUs only.
 ``repack``
    Rewrites every series file of the featurizer for ``--n-max N`` (a new
    series name, printed at the end). Rows of frames that did not fit stay
-   zero: pin the new series and run ``prefill --only-missing`` (or let the
-   trainer's ledger fill them). If the params file already holds the new
-   ``n_max``, give the old one with ``--from-n-max M``; in a multi-system
+   zero: set ``n_max = N`` in the params file and run ``prefill
+   --only-missing`` (or let the trainer's ledger fill them). If the params
+   file already holds the new ``n_max``, give the old one with
+   ``--from-n-max M``; in a multi-system
    run ``--from-n-max SYSTEM_ID=M`` (repeatable) gives one system's, and a
    plain ``M`` that of the systems not named.
 ``verify``
@@ -211,18 +223,98 @@ runs on the runs; a write-ahead log that is not empty is reported, because the
 graphs in it are not seen (checkpoint the cache first, or accept that those
 frames are featurized).
 
+When the Series Changes
+-----------------------
+
+Every featurizer registers its series name and ``refill`` flag when it is
+built (:mod:`aimmd.core.series`), in every process that executes the params
+file. Before a job does any work, the series of the run is checked twice:
+by the launcher when it creates or runs a job (``create_job``, ``run``), so
+that you hear about it on the login node before you submit, and by every
+worker (shoot, free and train) before any MD or training, as a backstop for a
+job resubmitted without a new job script. The check lists the trajectories
+of the run (those with a states series, in every system folder of a
+multi-system run), leaves out the initial paths in ``initial*/`` (exported and
+featurized again at every launch) and looks for trajectories that have *no*
+file ``{trajectory}.{series}.npy``; a file with zero or missing rows is the
+ledger's normal lazy filling and counts as there. A new run passes.
+
+``refill=False`` (the default)
+   The launcher writes no job and every worker stops before its task, so the
+   job ends. The error says how many of how many trajectories (and frames)
+   of which run lack the series, what is next to them (another
+   ``descriptors-gn`` series: the node-table settings changed since these
+   frames were featurized; ``*.descriptors.npy``: the campaign has not been
+   migrated from the graph-cache input) and the remedies: restore the
+   settings, prefill the series (``python -m aimmd.network.nodetables
+   prefill --params ... --run ...``, or the campaign's
+   ``prefill_nodetables.sh``), or construct the featurizer with
+   ``refill=True``.
+``refill=True``
+   The launcher prints a notice of how many trajectories and frames the job
+   will refill first, and by which route, and writes the job. When the job
+   starts, the first process of the run to take the lock file
+   ``.series-refill.lock`` in the run folder checks again and refills, with
+   as many processes as it has CPUs; every other process of the run waits
+   for the lock, then checks again and starts. If the series is still
+   incomplete after the refilling process let go of the lock (it failed),
+   the waiting processes stop with the error instead of refilling again.
+
+The refill writes exactly the trajectories that lack the series, by the
+cheapest correct route per trajectory; files of the series that exist are
+never rewritten, and the files of the old series stay where they are:
+
+1. **repack**, when next to the trajectory is a node-table series that
+   differs only in ``n_max`` (its row width gives the old ``n_max``, and
+   ``FEATURIZER.with_n_max(old).series`` must be its name): exact, and no
+   trajectory is read; zero rows stay zero for the ledger;
+2. **extract**, when the run holds the ``*.descriptors.npy`` of the
+   graph-cache input and ``graphs_cache.sqlite`` is in the job's working
+   directory (the campaign folder, where ``DB_PATH`` of the ``'sqlite'``
+   block points): rows from the cached graphs, checked against a direct
+   featurization on 4 frames per trajectory; a trajectory that fails the
+   check is featurized instead;
+3. **featurize** every frame from the trajectory, otherwise.
+
+Every line it writes starts with ``SERIES REFILL:``, in the log of the
+refilling process and of each waiting one::
+
+    SERIES REFILL: 14 of 36 trajectories (412,733 frames) of run '/.../run1'
+      have no 'descriptors-gn...' rows; this process (host, pid 4711, train
+      run1) refills them now with 16 processes by featurizing every frame of
+      the trajectories; the other AIMMD processes of this run wait until it
+      is done.
+    SERIES REFILL: progress: 9 of 14 trajectories, 280,114 of 412,733 frames,
+      7 min, about 3 min left
+    SERIES REFILL: done: 'descriptors-gn...' of 14 trajectories (412,733
+      frames) of run '/.../run1' refilled by featurizing every frame of the
+      trajectories in 655.0 s; the files of the old series were left in
+      place.
+
+    SERIES REFILL: waiting for host, pid 4711, train run1 to refill
+      'descriptors-gn...' (14 of 36 trajectories ... lack it) before starting.
+    SERIES REFILL: still waiting for host, pid 4711, train run1 to refill
+      'descriptors-gn...' (5 min so far).
+    SERIES REFILL: 'descriptors-gn...' is complete after 11 min of waiting
+      (refilled by host, pid 4711, train run1); starting.
+
+A refill inside a job uses the CPUs of one worker task; for a large campaign
+a prefill on a dedicated node (``-j 64``, the graph cache copied to
+``/dev/shm``) is faster.
+
 Switching a Running Campaign
 ----------------------------
 
 A campaign that started in ``'sqlite'`` mode switches to node tables between
-two jobs. The **prefill is mandatory**: without it, every resumed worker
-featurizes its whole in-flight half again and the trainer's ledger featurizes
-every frame of the ensemble, at the featurization cost per frame. AIMMD stays
-correct without it (missing rows are featurized before any value pass), only
-slow. The prefill is cheap only while the old graph cache exists: on a
-workstation, the 57k-atom HSP90 system took about 5 ms per frame on the
-extract route (2.5 ms to decode the frame, 2.2 ms to hash it, look it up and
-convert the graph) against about 25 ms per frame to featurize it.
+two jobs. **The node tables of the existing frames come first**: without
+them, every resumed worker would featurize its whole in-flight half again and
+the trainer's ledger every frame of the ensemble, at the featurization cost
+per frame. A job therefore refuses to start on such a run (see `When the
+Series Changes`_), unless the featurizer has ``refill=True`` and the job
+fills them first. Filling them is cheap only while the old graph cache
+exists: on a workstation, the 57k-atom HSP90 system took about 5 ms per frame
+on the extract route (2.5 ms to decode the frame, 2.2 ms to hash it, look it
+up and convert the graph) against about 25 ms per frame to featurize it.
 
 1. **Deploy** this AIMMD version where the campaign runs. The default mode is
    unchanged. Run the test suite there, and the opt-in golden test
@@ -234,9 +326,11 @@ convert the graph) against about 25 ms per frame to featurize it.
    an older file without the field loads with the default series.
 2. **Stop**: no job may run on the runs (check the queue).
 3. **Edit the params file**: add the graph-input block of the template with
-   ``GRAPH_INPUT = 'nodetables'``, load it once and pin the series name the
-   error prints.
-4. **Prefill** with the old graph cache, on one CPU node per campaign::
+   ``GRAPH_INPUT = 'nodetables'`` (``descriptors_series =
+   FEATURIZER.series``).
+4. **Prefill** with the old graph cache, on one CPU node per campaign (or
+   construct the featurizer with ``refill=True`` and let the first job
+   extract the rows in one of its processes, more slowly)::
 
        python -m aimmd.network.nodetables prefill --params params.py \
            --run run1 --db graphs_cache.sqlite -j 64 --verify 200 \

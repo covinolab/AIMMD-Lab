@@ -49,6 +49,18 @@ Core utilities
 .. automodule:: aimmd.core.utils
    :members:
 
+Descriptor series of a run
+--------------------------
+
+The check, before a job, that every trajectory of a run has the params'
+descriptor series, and the refill of a series in one process of the run.
+
+.. automodule:: aimmd.core.series
+   :members: find_trajectories, series_coverage, SeriesCoverage,
+             register_series, series_policy, SeriesPolicy,
+             check_series_coverage, ensure_series_coverage,
+             missing_series_message, run_folder, SeriesCoverageError
+
 Engines
 -------
 

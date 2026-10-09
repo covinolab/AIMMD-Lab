@@ -17,8 +17,9 @@
 #                 cached in a global sqlite database (graphs_cache.sqlite). Kept for
 #                 campaigns that started with it and for rolling back.
 #
-# Switching a running campaign from 'sqlite' to 'nodetables' needs a prefill of the node
-# tables (python -m aimmd.network.nodetables prefill); see the documentation.
+# Switching a running campaign from 'sqlite' to 'nodetables' needs the node tables of its
+# frames: a prefill (python -m aimmd.network.nodetables prefill), or refill=True below for
+# the next job to fill them; see the documentation.
 import os
 
 import numpy as np
@@ -48,8 +49,9 @@ SYSTEM_SELECTION = '(resname LIG) and not type H'
 ENVIRONMENT_SELECTION = 'not type H and around 8.0 (resname LIG)'
 # Graph nodes a node-table row can hold. A frame with more nodes gets an empty row and an
 # ERROR line, and training and the workers' value passes (selection, TPS acceptance) stop on
-# it (python -m aimmd.network.nodetables repack --n-max N widens the rows); frames above
-# 80 % of N_MAX are reported as a warning.
+# it (a larger N_MAX is a new series: python -m aimmd.network.nodetables repack --n-max N
+# widens the rows, or refill=True below lets the next job do it); frames above 80 % of
+# N_MAX are reported as a warning.
 N_MAX = 768
 
 # Topology (with bonds, for unwrapping the ligand) and reference box of the graphs
@@ -86,12 +88,16 @@ if GRAPH_INPUT == 'nodetables':
     from aimmd.network.nodetables import NodeTableFeaturizer
 
     FEATURIZER = NodeTableFeaturizer(tmp_universe, SYSTEM_SELECTION, ENVIRONMENT_SELECTION,
-                                     ATOM_TYPES, cutoff=CUTOFF, n_max=N_MAX)
-    # The series name fingerprints everything a row holds (selections, atom types, N_MAX,
-    # topology and box). Pin it: a changed selection, or atom types that MDAnalysis guesses
-    # differently on another host, then stop the load with an error instead of starting a
-    # new series. The first load fails and names the series to pin here.
-    descriptors_series = FEATURIZER.check_series('descriptors-gn0000000000')
+                                     ATOM_TYPES, cutoff=CUTOFF, n_max=N_MAX, refill=False)
+    # The series name is computed from everything a row holds (selections, atom types,
+    # N_MAX, topology and box), so a changed setting starts a new series that the frames
+    # of existing runs lack. The launcher and every worker find such frames in the run
+    # folder before the job starts. refill=False stops the job with an error naming the
+    # remedies (restore the settings, or prefill the new series with python -m
+    # aimmd.network.nodetables prefill); refill=True lets one process of the run refill
+    # the series first (repack, extract from the graph cache, or featurize) while the
+    # others wait.
+    descriptors_series = FEATURIZER.series
 
     # Module-level wrappers: aimmd.Params stores functions, not bound methods.
     def descriptors_function(trajectory):
