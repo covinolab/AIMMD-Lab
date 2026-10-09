@@ -216,7 +216,7 @@ class NodeTableRefiller:
     # refill
 
     def __call__(self, coverage, params_file=None, workdir=None, jobs=1,
-                 log=print, progress=None):
+                 log=print, progress=None, stop=None):
         """Write the series of every trajectory of ``coverage.missing``.
 
         Parameters
@@ -234,12 +234,20 @@ class NodeTableRefiller:
             Called with each line of the report.
         progress : callable, optional
             Called with the trajectories and frames done so far.
+        stop : callable, optional
+            A stop request, polled between the routes and by the tools
+            between files and chunks of frames.
 
         Returns
         -------
         dict
             ``route`` (text) and per route the trajectories it wrote
             (``repacked``, ``extracted``, ``recomputed``).
+
+        Raises
+        ------
+        aimmd.core.series.RefillStopped
+            When `stop` asked to stop; the files written so far stay.
         """
         from . import _tool
         steps = self.plan(coverage, workdir)
@@ -260,13 +268,14 @@ class NodeTableRefiller:
         fallback = []
         with _hidden_gpus(jobs > 1):
             for step in steps:
+                _tool._stop_requested(stop)
                 if step.kind == 'repack':
                     failed = self._repack(_tool, params, run, step, jobs,
-                                          write, tracker)
+                                          write, tracker, stop)
                     counts['repacked'] += len(step.trajectories) - len(failed)
                 elif step.kind == 'extract':
                     failed = self._extract(_tool, params, run, step, jobs,
-                                           write, tracker)
+                                           write, tracker, stop)
                     counts['extracted'] += (len(step.trajectories)
                                             - len(failed))
                 else:
@@ -275,8 +284,9 @@ class NodeTableRefiller:
             todo = [item for step in steps if step.kind == 'recompute'
                     for item in step.trajectories] + fallback
             if todo:
+                _tool._stop_requested(stop)
                 self._recompute(_tool, params, run, todo, jobs, write,
-                                tracker)
+                                tracker, stop)
                 counts['recomputed'] += len(todo)
         route = _describe(steps)
         if fallback:
@@ -284,12 +294,12 @@ class NodeTableRefiller:
                       f'above)')
         return dict(route=route, **counts)
 
-    def _repack(self, _tool, params, run, step, jobs, log, tracker):
+    def _repack(self, _tool, params, run, step, jobs, log, tracker, stop):
         series, from_n_max = step.source
         report = _tool.repack(params, [run], self._n_max(),
                               from_n_max=from_n_max, jobs=jobs, log=log,
                               trajectories=step.trajectories,
-                              progress=tracker.repacked)
+                              progress=tracker.repacked, stop=stop)
         failed = [(entry['trajectory'], entry['system_id'])
                   for entry in report['files'] if entry['status'] == 'failed']
         if failed:
@@ -297,7 +307,7 @@ class NodeTableRefiller:
                 f'{series}; featurizing them instead')
         return failed
 
-    def _extract(self, _tool, params, run, step, jobs, log, tracker):
+    def _extract(self, _tool, params, run, step, jobs, log, tracker, stop):
         try:
             _tool._databases([step.source], self.featurizer)
         except _tool.UsageError as error:
@@ -308,7 +318,7 @@ class NodeTableRefiller:
                                verify=_tool.DEFAULT_DB_VERIFY,
                                only_missing=True, log=log,
                                trajectories=step.trajectories,
-                               progress=tracker.prefilled)
+                               progress=tracker.prefilled, stop=stop)
         failed = [(entry['trajectory'], entry['system_id'])
                   for entry in report['files']
                   if entry['status'] not in ('written', 'complete')]
@@ -318,9 +328,10 @@ class NodeTableRefiller:
                 f'instead')
         return failed
 
-    def _recompute(self, _tool, params, run, todo, jobs, log, tracker):
+    def _recompute(self, _tool, params, run, todo, jobs, log, tracker, stop):
         _tool.prefill(params, [run], jobs=jobs, verify=0, only_missing=True,
-                      log=log, trajectories=todo, progress=tracker.prefilled)
+                      log=log, trajectories=todo, progress=tracker.prefilled,
+                      stop=stop)
 
 
 # ----------------------------------------------------------------------

@@ -117,6 +117,11 @@ class SeriesMismatchError(SeriesCoverageError):
     featurizer computes: it was written for other settings."""
 
 
+class RefillStopped(Exception):
+    """A refill ended early on a stop request: raised by a refill callable
+    when the ``stop`` it was passed returns true."""
+
+
 # ----------------------------------------------------------------------
 # what to do about a gap, per series name
 
@@ -132,11 +137,13 @@ refill : bool
     `SeriesCoverageError` (False).
 refiller : callable or None
     ``refiller(coverage, params_file=..., workdir=..., jobs=..., log=...,
-    progress=...)`` writes ``{trajectory}.{series}.npy`` for the trajectories
-    of ``coverage.missing`` (a `SeriesCoverage`) with ``jobs`` processes,
-    reports through ``log`` (one line per call) and calls ``progress(done,
-    frames)`` with the trajectories and frames done so far; it returns a dict
-    whose ``'route'`` says how it refilled. Optional attributes describe it in
+    progress=..., stop=...)`` writes ``{trajectory}.{series}.npy`` for the
+    trajectories of ``coverage.missing`` (a `SeriesCoverage`) with ``jobs``
+    processes, reports through ``log`` (one line per call) and calls
+    ``progress(done, frames)`` with the trajectories and frames done so far;
+    it polls ``stop()`` between trajectories (or chunks of frames) and raises
+    `RefillStopped` when it returns true, leaving the files it completed. It
+    returns a dict whose ``'route'`` says how it refilled. Optional attributes describe it in
     messages: ``route(coverage, workdir)`` (how it would refill), ``label``
     (what the settings are called, e.g. ``'node-table'``), ``legacy_note``
     (why only ``*.descriptors.npy`` is there) and ``prefill_command(
@@ -882,8 +889,12 @@ def ensure_series_coverage(params, directory, role=None, log=None,
     log : callable, optional
         Called with each log line (default: print).
     stop : callable, optional
-        Polled while waiting: when it returns true the wait ends and False
-        is returned (e.g. the worker received SIGTERM).
+        A stop request (e.g. the worker received SIGTERM): polled while
+        waiting and before a refill, and passed to the refill callable,
+        which polls it between trajectories or chunks of frames. When it
+        returns true the wait or the refill ends (the refill leaving the
+        files it completed, its lock released and a 'stopped' record that
+        does not keep a job from refilling) and False is returned.
     jobs : int, optional
         Processes of a refill; by default the CPUs this process may run on.
 
@@ -891,7 +902,7 @@ def ensure_series_coverage(params, directory, role=None, log=None,
     -------
     bool
         True when the series is complete (or not checked), False when
-        `stop` ended the wait.
+        `stop` ended the wait or the refill.
 
     Raises
     ------
@@ -926,13 +937,13 @@ def ensure_series_coverage(params, directory, role=None, log=None,
     except Timeout:
         return _wait(lock, coverage, policy, params_file, log, stop)
     try:
-        return _refill(coverage, policy, params, role, log, jobs)
+        return _refill(coverage, policy, params, role, log, jobs, stop)
     finally:
         _remove_info(run)
         lock.release()
 
 
-def _refill(coverage, policy, params, role, log, jobs):
+def _refill(coverage, policy, params, role, log, jobs, stop):
     """Refill the series of a run while holding its refill lock."""
     run, series = coverage.run, coverage.series
     me = _me(role)
@@ -957,6 +968,10 @@ def _refill(coverage, policy, params, role, log, jobs):
                                             prefix=LOG_PREFIX))
         _log_lines(log, message)
         raise SeriesCoverageError(message)
+    if stop is not None and stop():
+        log(f'{LOG_PREFIX} stopped before the refill of {series!r} '
+            f'({coverage.summary()} lack it).')
+        return False
     jobs = max(1, int(jobs or _cpus()))
     route = _route(policy, coverage, workdir)
     _write_info(run, dict(host=socket.gethostname(), pid=os.getpid(),
@@ -976,7 +991,17 @@ def _refill(coverage, policy, params, role, log, jobs):
     try:
         result = policy.refiller(coverage, params_file=params_file,
                                  workdir=workdir, jobs=jobs, log=refill_log,
-                                 progress=progress)
+                                 progress=progress, stop=stop)
+    except RefillStopped as error:
+        _record_failure(run, series, role, started, 'stopped',
+                        f'{type(error).__name__}: {error}')
+        after = series_coverage(run, series, coverage.system_ids)
+        log(f'{LOG_PREFIX} the refill of {series!r} in this process ({me}) '
+            f'stopped on request after {time.time() - started:.1f} s; '
+            f'{_trajectories(len(after.missing))} still lack the series '
+            f'(the trajectories it completed keep their files), and the next '
+            f'job refills them.')
+        return False
     except Exception as error:
         text = f'{type(error).__name__}: {error}'
         _record_failure(run, series, role, started, 'failed', text)

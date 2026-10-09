@@ -741,6 +741,12 @@ class _Scheduler:
                 yield tag, None if error else future.result(), error
 
 
+def _stop_requested(stop):
+    """Raise `aimmd.core.series.RefillStopped` if `stop` says so."""
+    if stop is not None and stop():
+        raise _series.RefillStopped('stopped on request')
+
+
 def _error_text(error):
     if isinstance(error, concurrent.futures.BrokenExecutor):
         return f'a worker process died: {error}'
@@ -956,7 +962,7 @@ def _merge(entry, result):
 
 def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
             chunk_frames=DEFAULT_CHUNK_FRAMES, seed=0, log=print,
-            trajectories=None, progress=None):
+            trajectories=None, progress=None, stop=None):
     """Write the node-table series of every trajectory of AIMMD runs.
 
     Parameters
@@ -992,6 +998,12 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
     progress : callable, optional
         Called with a trajectory's entry of the report whenever one of its
         tasks has finished.
+    stop : callable, optional
+        A stop request (the refill of a job), polled before every task
+        (chunk of frames) and after every result: when it returns true the
+        command ends with `aimmd.core.series.RefillStopped`; the pending
+        tasks are cancelled and their temporary files removed, the files
+        already written stay.
 
     Returns
     -------
@@ -1006,6 +1018,8 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
     UsageError
         If a run or graph cache is missing, no trajectory is found, or
         another node-table command runs on a run.
+    aimmd.core.series.RefillStopped
+        If `stop` asked to stop.
     """
     started = time.perf_counter()
     featurizer = params.featurizer
@@ -1042,6 +1056,7 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
         scheduler = _Scheduler(executor)
 
         def submit(function, index, **task):
+            _stop_requested(stop)
             entry = files[index]
             task.update(trajectory=entry['trajectory'],
                         system_id=entry['system_id'],
@@ -1053,6 +1068,7 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
             for index in range(len(files)):
                 submit(_plan_prefill, index, only_missing=only_missing)
             for (function, index), result, error in scheduler.results():
+                _stop_requested(stop)
                 entry = files[index]
                 if error is None:
                     _merge(entry, result)
@@ -1334,7 +1350,7 @@ def _source_n_max(values, featurizer):
 
 
 def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
-           log=print, trajectories=None, progress=None):
+           log=print, trajectories=None, progress=None, stop=None):
     """Rewrite node-table series files for another row capacity.
 
     Every series file of the source featurizer in the runs is rewritten into
@@ -1371,6 +1387,9 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
         every series file of the source series in the runs).
     progress : callable, optional
         Called with a file's entry of the report when it is done.
+    stop : callable, optional
+        A stop request, polled before every file and after every result
+        (see `prefill`): the files already written stay.
 
     Returns
     -------
@@ -1384,6 +1403,8 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
     UsageError
         If `from_n_max` is invalid, the source and the new series are the
         same, or the runs hold no source series file.
+    aimmd.core.series.RefillStopped
+        If `stop` asked to stop.
     """
     started = time.perf_counter()
     featurizer = params.featurizer
@@ -1425,6 +1446,7 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
     with _run_locks(runs), _executor(jobs) as executor:
         scheduler = _Scheduler(executor)
         for index, entry in enumerate(files):
+            _stop_requested(stop)
             source_system = _system(source, entry['system_id'])
             scheduler.submit(_repack_file, dict(
                 source_file=entry['source_file'],
@@ -1433,6 +1455,7 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
                 n_max=_system(target, entry['system_id']).n_max,
                 overwrite=overwrite), index)
         for index, result, error in scheduler.results():
+            _stop_requested(stop)
             entry = files[index]
             if error is not None:
                 entry.update(status='failed', error=_error_text(error))

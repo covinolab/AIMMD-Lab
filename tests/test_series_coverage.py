@@ -26,7 +26,10 @@ series. They cover
 - a failed refill leaves a marker in the run folder: the later processes of
   the same job (SLURM job, or launch) stop with the error instead of
   refilling again, a new job tries again, and a refill that succeeds
-  removes the marker.
+  removes the marker;
+- a stop request before or during a refill ends it (the refill callable is
+  passed `stop`), releases the lock and leaves a 'stopped' marker, which
+  does not keep the job from refilling.
 """
 import json
 import os
@@ -303,8 +306,8 @@ def test_with_refill_the_launcher_announces_the_refill(tmp_path, capsys):
 def test_with_refill_a_worker_refills_once_and_logs_it(tmp_path):
     calls = []
 
-    def refiller(coverage, params_file, workdir, jobs, log, progress):
-        calls.append((params_file, workdir, jobs))
+    def refiller(coverage, params_file, workdir, jobs, log, progress, stop):
+        calls.append((params_file, workdir, jobs, stop))
         for trajectory, _ in coverage.missing:
             np.save(f'{trajectory}.{SERIES}.npy',
                     np.ones((1, 6), dtype=np.float32))
@@ -317,7 +320,7 @@ def test_with_refill_a_worker_refills_once_and_logs_it(tmp_path):
     lines = []
     assert ensure_series_coverage(_params(tmp_path), run, role='shoot R0',
                                   log=lines.append, jobs=3)
-    assert calls == [(str(tmp_path / 'params1.py'), str(tmp_path), 3)]
+    assert calls == [(str(tmp_path / 'params1.py'), str(tmp_path), 3, None)]
     assert series_coverage(run, SERIES).complete
     assert all(line.startswith('SERIES REFILL:') for line in lines)
     assert 'refills them now with 3 processes by its refill callable' in \
@@ -515,3 +518,75 @@ def test_without_slurm_a_marker_counts_from_the_start_of_the_launch(
     assert any(line.startswith('SERIES REFILL: the last refill of ') and
                'failed: RuntimeError: no space left' in line
                for line in out)
+
+
+# ----------------------------------------------------------------------
+# stop requests
+
+class _Stoppable:
+    """A refill callable that fills one trajectory, then finds the stop
+    request (raises RefillStopped), unless `finish`."""
+
+    def __init__(self):
+        self.calls = []
+        self.finish = False
+
+    def __call__(self, coverage, *, stop, **kwargs):
+        self.calls.append(stop())
+        for trajectory, _ in coverage.missing:
+            np.save(f'{trajectory}.{SERIES}.npy',
+                    np.ones((1, 6), dtype=np.float32))
+            if not self.finish and stop():
+                raise series.RefillStopped('stopped between trajectories')
+        return dict(route='the test route')
+
+
+def test_a_stop_request_ends_a_refill_and_does_not_block_the_job(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv('SLURM_JOB_ID', '4711')
+    refiller = _Stoppable()
+    register_series(SERIES, refill=True, refiller=refiller)
+    run = _run_with_gap(tmp_path)
+    requested = []
+
+    def stop():
+        return bool(requested)
+
+    # asked to stop before the refill: nothing is refilled
+    requested.append('SIGTERM')
+    lines = []
+    assert ensure_series_coverage(_params(tmp_path), run, log=lines.append,
+                                  stop=stop) is False
+    assert refiller.calls == []
+    assert lines[-1].startswith(f'SERIES REFILL: stopped before the refill '
+                                f'of {SERIES!r}')
+    assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+
+    # asked to stop during the refill: the refill callable ends it
+    requested.clear()
+    lines = []
+
+    def progress_then_stop(coverage, **kwargs):
+        requested.append('SIGTERM')         # e.g. scancel, after one file
+        return refiller(coverage, **kwargs)
+
+    register_series(SERIES, refill=True, refiller=progress_then_stop)
+    assert ensure_series_coverage(_params(tmp_path), run, log=lines.append,
+                                  stop=stop) is False
+    assert refiller.calls == [True]
+    assert len(series_coverage(run, SERIES).missing) == 2
+    assert all(line.startswith('SERIES REFILL:') for line in lines)
+    assert 'stopped on request after' in lines[-1]
+    assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+    marker = _marker(run)
+    assert (marker['status'], marker['job']) == ('stopped', '4711')
+    assert 'stopped between trajectories' in marker['error']
+
+    # a stop is no reason to keep the same job from refilling
+    requested.clear()
+    refiller.finish = True
+    register_series(SERIES, refill=True, refiller=refiller)
+    assert ensure_series_coverage(_params(tmp_path), run, log=lines.append,
+                                  stop=stop)
+    assert series_coverage(run, SERIES).complete
+    assert not os.path.exists(Path(run) / series.REFILL_FAILED)

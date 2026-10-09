@@ -20,6 +20,8 @@ check that
   params file in spawned processes;
 - only the trajectories without the series are written: files of the
   series that exist, the initial paths and the old series stay as they are;
+- a stop request ends a refill between chunks of frames, without leaving
+  temporary files, and the next check refills the rest;
 - across processes, one refills while the others wait and start after it,
   with the log lines of both sides, and a failed refill stops the waiters
   with the error instead of a second refill, and also the processes of the
@@ -299,6 +301,37 @@ def test_a_parallel_refill_rebuilds_the_featurizer_from_the_params_file(
         assert np.array_equal(
             bits(np.load(series_file(trajectory, featurizer.series))),
             bits(expected_rows(featurizer, trajectory)))
+
+
+def test_a_stop_request_ends_the_refill_between_chunks(tmp_path):
+    campaign = make_campaign(tmp_path / 'campaign')
+    new = toy_featurizer(campaign.folder, environment=OTHER_ENVIRONMENT,
+                         refill=True)
+    featurize = new.descriptors_function
+    chunks = []
+
+    def counted(frames):
+        chunks.append(len(frames))
+        return featurize(frames)
+
+    new.descriptors_function = counted      # what the refill featurizes with
+    lines = []
+    assert ensure_series_coverage(
+        _params(campaign.folder, new), campaign.run, jobs=1,
+        log=lines.append, stop=lambda: len(chunks) >= 2) is False
+
+    assert len(chunks) == 2                 # of 6 trajectories
+    assert 'stopped on request after' in lines[-1]
+    assert not list(Path(campaign.run).rglob('*.tmp'))
+    assert not os.path.exists(Path(campaign.run) / series.REFILL_LOCK)
+    assert not series_coverage(campaign.run, new.series).complete
+    # the next start refills the rest
+    assert ensure_series_coverage(_params(campaign.folder, new),
+                                  campaign.run, jobs=1, log=_quiet)
+    for trajectory in run_trajectories(campaign.run):
+        assert np.array_equal(
+            bits(np.load(series_file(trajectory, new.series))),
+            bits(expected_rows(new, trajectory)))
 
 
 def _graph_cache(campaign, tmp_path, environment=ENVIRONMENT_SELECTION):
