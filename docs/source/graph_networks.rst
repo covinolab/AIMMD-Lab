@@ -226,18 +226,46 @@ frames are featurized).
 When the Series Changes
 -----------------------
 
-Every featurizer registers its series name and ``refill`` flag when it is
-built (:mod:`aimmd.core.series`), in every process that executes the params
-file. Before a job does any work, the series of the run is checked twice:
-by the launcher when it creates or runs a job (``create_job``, ``run``), so
-that you hear about it on the login node before you submit, and by every
-worker (shoot, free and train) before any MD or training, as a backstop for a
-job resubmitted without a new job script. The check lists the trajectories
-of the run (those with a states series, in every system folder of a
-multi-system run), leaves out the initial paths in ``initial*/`` (exported and
-featurized again at every launch) and looks for trajectories that have *no*
-file ``{trajectory}.{series}.npy``; a file with zero or missing rows is the
-ledger's normal lazy filling and counts as there. A new run passes.
+Every featurizer that the params file builds registers its series name and
+``refill`` flag (:mod:`aimmd.core.series`), in every process that executes
+the params file; the copies that ``with_n_max`` makes for the tools do not.
+Before a job does any work, the series of the run is checked twice: by the
+launcher when it creates or runs a job (``create_job``, ``run``), so that you
+hear about it on the login node before you submit, and by every worker
+(shoot, free and train) before any MD or training. The check lists the
+trajectories of the run (those with a states series, in every system folder
+of a multi-system run), leaves out the initial paths in ``initial*/``
+(exported and featurized again at every launch) and looks for trajectories
+that have *no* file ``{trajectory}.{series}.npy``; a file with zero or missing
+rows is the ledger's normal lazy filling and counts as there. A new run
+passes.
+
+**A job written for other settings.** The job's ``paramsN.py`` holds the
+series name of the job's creation (``descriptors_series = '...'``), while the
+featurizer is built from ``params.py`` as it is when the job starts. If
+``params.py`` was edited after the job script was written (and the job is
+resubmitted without regenerating it), or MDAnalysis guesses atom types
+differently on the compute node, the worker would check the old series and,
+if that one is complete, write rows of the new settings into its files. So
+both checks first compare the two: when the params' series is a node-table
+series that no featurizer of the process registered, while one registered
+another, nothing starts and the error names both::
+
+    SERIES CHECK: The params file this job uses, '/.../params1.py', was
+      written for the descriptor series 'descriptors-gnd4403b9a6b', but its
+      node-table featurizer now computes 'descriptors-gn65dac2d9b8'.
+    SERIES CHECK: The settings changed after the job was created: the params
+      file that builds the featurizer was edited, or MDAnalysis guessed atom
+      types differently on this host. Nothing starts: the job would write
+      rows of the new settings into the files of 'descriptors-gnd4403b9a6b'.
+    SERIES CHECK: Regenerate the job: rerun the job-script generator
+      (Launcher.create_job), which writes a new params file for
+      'descriptors-gn65dac2d9b8'; the series check then applies as usual (an
+      error, or a refill with refill=True, if trajectories lack that
+      series). Create the job on the kind of host it runs on.
+
+The new job's ``paramsN.py`` names the new series, and the coverage check
+below (with the ``refill`` flag) applies to it.
 
 ``refill=False`` (the default)
    The launcher writes no job and every worker stops before its task, so the
@@ -246,8 +274,10 @@ ledger's normal lazy filling and counts as there. A new run passes.
    ``descriptors-gn`` series: the node-table settings changed since these
    frames were featurized; ``*.descriptors.npy``: the campaign has not been
    migrated from the graph-cache input) and the remedies: restore the
-   settings, prefill the series (``python -m aimmd.network.nodetables
-   prefill --params ... --run ...``, or the campaign's
+   settings, fill the series by the route a refill would take (``python -m
+   aimmd.network.nodetables repack ... --n-max N --from-n-max M`` for an
+   ``n_max`` change, otherwise ``prefill ... --only-missing``, with ``--db``
+   when the rows can come from the graph cache; or the campaign's
    ``prefill_nodetables.sh``), or construct the featurizer with
    ``refill=True``.
 ``refill=True``
@@ -259,6 +289,21 @@ ledger's normal lazy filling and counts as there. A new run passes.
    for the lock, then checks again and starts. If the series is still
    incomplete after the refilling process let go of the lock (it failed),
    the waiting processes stop with the error instead of refilling again.
+
+   A failed refill also leaves the record ``.series-refill-failed.json`` in
+   the run folder: the series, the job (``SLURM_JOB_ID``), the process
+   (host, pid, task), the time and the error. A process of the same job
+   that starts later (a late trainer, or every worker of a sweep job script
+   that ends with a plain ``wait``) finds it and stops with the error
+   instead of refilling again (``SERIES REFILL: the refill of '...' already
+   failed in this job (SLURM job ...)``). A new job tries again: another
+   SLURM job, or one that started after the failure (without SLURM, a new
+   ``Launcher.run``); a refill that succeeds removes the record. Delete it to
+   let the same job try again.
+
+   A stop request (``scancel``, Control+C) ends the refill between files and
+   chunks of frames: the files it completed stay, the lock is released and
+   the record says ``stopped``, which does not keep a job from refilling.
 
 The refill writes exactly the trajectories that lack the series, by the
 cheapest correct route per trajectory; files of the series that exist are
@@ -272,12 +317,19 @@ never rewritten, and the files of the old series stay where they are:
    graph-cache input and ``graphs_cache.sqlite`` is in the job's working
    directory (the campaign folder, where ``DB_PATH`` of the ``'sqlite'``
    block points): rows from the cached graphs, checked against a direct
-   featurization on 4 frames per trajectory; a trajectory that fails the
-   check is featurized instead;
+   featurization on 4 of the frames whose rows came from the cache, per
+   trajectory. Once a trajectory fails the check, the cache is not used any
+   further: that trajectory and those that took rows from the cache are
+   featurized instead;
 3. **featurize** every frame from the trajectory, otherwise.
 
 Every line it writes starts with ``SERIES REFILL:``, in the log of the
-refilling process and of each waiting one::
+refilling process and of each waiting one: also what the featurizer prints
+meanwhile, every line of an error, and what the processes it spawns print
+(passed on to the log of the refilling process). Spawned processes see no
+GPU; if they cannot start (e.g. a params file that needs a GPU when it is
+imported), their error is logged and the refill goes on in the refilling
+process itself::
 
     SERIES REFILL: 14 of 36 trajectories (412,733 frames) of run '/.../run1'
       have no 'descriptors-gn...' rows; this process (host, pid 4711, train
