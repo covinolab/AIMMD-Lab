@@ -561,9 +561,13 @@ def test_a_failed_refill_stops_the_waiters_without_a_second_refill(
                                      batch='late')
     assert codes == [3, 3], logs
     assert [event[0] for event in events] == ['start']
+    # the first to take the lock finds the record; the other may wait for it
+    refused = [log for log in logs if 'already failed in this job' in log]
+    assert refused
+    assert 'already failed in this job (SLURM job 1001: ' in refused[0]
+    assert f'pid {refiller}, test process {refiller}, at ' in refused[0]
     for log in logs:
-        assert 'already failed in this job (SLURM job 1001: ' in log
-        assert f'pid {refiller}, test process {refiller}, at ' in log
+        assert 'does not refill again' in log
         assert 'the refill failed on purpose' in log
         assert 'refills them now' not in log
         assert all(line.startswith('SERIES REFILL:')

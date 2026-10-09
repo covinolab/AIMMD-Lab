@@ -1031,9 +1031,8 @@ def _refill(coverage, policy, params, role, log, jobs, stop):
     """Refill the series of a run while holding its refill lock."""
     run, series = coverage.run, coverage.series
     me = _me(role)
-    _write_info(run, dict(host=socket.gethostname(), pid=os.getpid(),
-                          role=role, series=series, started=time.time()))
-    # another process may have refilled between the check and the lock
+    # another process may have refilled between the check and the lock (the
+    # info file for the waiters comes once this process really refills)
     coverage = series_coverage(run, series, coverage.system_ids)
     if coverage.complete:
         log(f'{LOG_PREFIX} {series!r} of run {run!r} is complete '
