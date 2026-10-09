@@ -11,9 +11,14 @@ check that
   remedies, and with ``refill=True`` announces the refill and writes the job;
 - a worker raises before its task (no MD) with ``refill=False``, and with
   ``refill=True`` refills the series before its task starts;
-- a complete run starts as before.
+- a complete run starts as before;
+- a worker whose params file (``paramsN.py``) was written before the params
+  file that builds the featurizer was edited stops with a mismatch error
+  naming both series, also when the series it names is complete.
 """
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -25,8 +30,24 @@ from aimmd.core.series import SeriesCoverageError, series_coverage
 from aimmd.network.nodetables import _tool
 from tests._nodetables_run import bits, expected_rows, series_file, \
     toy_featurizer
+from tests._nodetables_toy import ENVIRONMENT_SELECTION
 from tests._series_refill import (make_full_campaign, remove_legacy_series,
                                   run_trajectories)
+
+WORKTREE = Path(__file__).resolve().parents[1]
+
+# a worker of the job: a fresh process that loads the job's params file
+WORKER = '''
+import sys
+import aimmd
+from aimmd.core import series
+params = aimmd.Params(sys.argv[1], initial_paths=None, save=False)
+try:
+    series.ensure_series_coverage(params, 'run1', log=print)
+except series.SeriesMismatchError:
+    sys.exit(3)
+print('STARTED')
+'''
 
 
 @pytest.fixture
@@ -171,3 +192,43 @@ def test_a_complete_run_starts_as_before(tmp_path, monkeypatch, capsys,
 
     assert len(tasks) == 1 and os.path.exists('job.sh')
     assert 'SERIES' not in capsys.readouterr().out
+
+
+def test_a_job_written_before_the_params_file_changed_stops(tmp_path,
+                                                            monkeypatch):
+    campaign = make_full_campaign(tmp_path / 'campaign', refill=True)
+    remove_legacy_series(campaign.run)
+    monkeypatch.chdir(campaign.folder)
+    params = aimmd.Params.load('params.py')        # writes params1.py
+    old = toy_featurizer(campaign.folder, 64)
+    assert params.descriptors_series == old.series
+    _tool.prefill(_tool.ParamsFeaturizer(None, 'F', old, None),
+                  [campaign.run], log=lambda line: None)
+    # params.py is edited after the job script was written
+    other = ENVIRONMENT_SELECTION.replace('5.0', '4.5')
+    source = Path('params.py').read_text()
+    assert source.count(ENVIRONMENT_SELECTION) == 1
+    Path('params.py').write_text(source.replace(ENVIRONMENT_SELECTION,
+                                                other))
+    new = toy_featurizer(campaign.folder, 64, environment=other)
+    files = sorted(Path(campaign.run).rglob(f'*.{old.series}.npy'))
+    before = {fname: fname.read_bytes() for fname in files}
+
+    result = subprocess.run(
+        [sys.executable, '-c', WORKER, str(params.path)],
+        cwd=campaign.folder, capture_output=True, text=True, timeout=600,
+        env=dict(os.environ, PYTHONPATH=str(WORKTREE),
+                 CUDA_VISIBLE_DEVICES='', PYTHONDONTWRITEBYTECODE='1'))
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    lines = [line for line in result.stdout.splitlines()
+             if line.startswith('SERIES')]
+    assert lines and all(line.startswith('SERIES CHECK:') for line in lines)
+    text = '\n'.join(lines)
+    assert (f"The params file this job uses, {str(params.path)!r}, was "
+            f"written for the descriptor series {old.series!r}, but its "
+            f"node-table featurizer now computes {new.series!r}") in text
+    assert 'rerun the job-script generator (Launcher.create_job)' in text
+    assert 'STARTED' not in result.stdout
+    assert {fname: fname.read_bytes() for fname in files} == before
+    assert not list(Path(campaign.run).rglob(f'*.{new.series}.npy'))

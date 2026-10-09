@@ -80,6 +80,20 @@ class NodeTableRefiller:
     def __repr__(self):
         return f'{type(self).__name__}({self.featurizer!r})'
 
+    def claims(self, series):
+        """Whether `series` is a node-table series name (``'descriptors-gn'``
+        and 10 hex digits): one this featurizer would compute with other
+        settings."""
+        from ._featurizer import SERIES_PREFIX
+        return _is_node_table_series(str(series), SERIES_PREFIX)
+
+    @property
+    def parts(self):
+        """tuple: the series of the systems of a multi-system featurizer
+        (registered by their own featurizers; not the run's series)."""
+        featurizers = getattr(self.featurizer, 'featurizers', None) or {}
+        return tuple(featurizer.series for featurizer in featurizers.values())
+
     def prefill_command(self, params_file, run):
         """The command that fills the series of `run` offline."""
         source = _source(self.featurizer, params_file)

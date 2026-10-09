@@ -18,7 +18,11 @@ series. They cover
 - the launcher's check (an error naming the other series or the legacy
   series and the remedies, or the notice of a refill), and the worker's,
   which refills in one process with a refill callable and runs the
-  callable once.
+  callable once;
+- a params file written for another computed series than the featurizers
+  of the process register (a job script older than an edit of the params
+  file) stops both checks with a mismatch error, also when its series is
+  complete.
 """
 import os
 from pathlib import Path
@@ -28,10 +32,10 @@ import numpy as np
 import pytest
 
 from aimmd.core import series
-from aimmd.core.series import (SeriesCoverageError, check_series_coverage,
-                               ensure_series_coverage, find_trajectories,
-                               register_series, series_coverage,
-                               series_policy)
+from aimmd.core.series import (SeriesCoverageError, SeriesMismatchError,
+                               check_series_coverage, ensure_series_coverage,
+                               find_trajectories, register_series,
+                               series_coverage, series_policy)
 
 SERIES = 'descriptors-gn0123456789'
 OTHER = 'descriptors-gnabcdefabcd'
@@ -334,3 +338,78 @@ def test_a_refill_that_leaves_trajectories_missing_raises(tmp_path):
         str(info.value)
     assert all(line.startswith('SERIES REFILL:') for line in lines)
     assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+
+
+# ----------------------------------------------------------------------
+# a params file written for other settings
+
+class _Computed:
+    """The refill callable of a computed series name, like the node-table
+    featurizers register: it claims the names of its kind."""
+
+    label = 'node-table'
+
+    def __init__(self, parts=()):
+        self.parts = tuple(parts)
+
+    def claims(self, name):
+        return name.startswith('descriptors-gn')
+
+    def __call__(self, *args, **kwargs):
+        raise AssertionError('a mismatch must not refill')
+
+
+def test_a_params_file_written_for_another_series_stops_the_job(tmp_path):
+    # paramsN.py holds the series of the job's creation; the featurizer
+    # that the params file builds now computes (and registers) another one.
+    # The old series is complete, so the coverage alone would pass.
+    run = _write(tmp_path / 'run1')
+    register_series(OTHER, refill=True, refiller=_Computed())
+    lines = []
+    with pytest.raises(SeriesMismatchError) as info:
+        ensure_series_coverage(_params(tmp_path), run, log=lines.append)
+
+    message = str(info.value)
+    assert isinstance(info.value, SeriesCoverageError)
+    assert lines == message.splitlines()
+    assert all(line.startswith('SERIES CHECK:') for line in lines)
+    assert (f"The params file this job uses, "
+            f"{str(tmp_path / 'params1.py')!r}, was written for the "
+            f"descriptor series {SERIES!r}, but its node-table featurizer "
+            f"now computes {OTHER!r}") in message
+    assert 'rerun the job-script generator (Launcher.create_job)' in message
+    assert f'writes a new params file for {OTHER!r}' in message
+    with pytest.raises(SeriesMismatchError) as launcher:
+        check_series_coverage(_params(tmp_path), run)
+    assert str(launcher.value) == message
+    # nothing was written into the run
+    assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+
+
+def test_the_mismatch_names_the_series_of_a_multi_system_featurizer(
+        tmp_path):
+    run = _write(tmp_path / 'run1')
+    parts = ['descriptors-gn1111111111', 'descriptors-gn2222222222']
+    for part in parts:
+        register_series(part, refiller=_Computed())
+    register_series(OTHER, refiller=_Computed(parts))
+    with pytest.raises(SeriesMismatchError) as info:
+        check_series_coverage(_params(tmp_path), run)
+    message = str(info.value)
+    assert f'now computes {OTHER!r}' in message
+    assert not any(part in message for part in parts)
+
+
+def test_no_mismatch_without_a_featurizer_of_that_kind(tmp_path):
+    run = _write(tmp_path / 'run1', series=(SERIES, 'descriptors-toy'))
+    # registered: the normal check
+    register_series(SERIES, refill=False, refiller=_Computed())
+    register_series(OTHER, refill=False, refiller=_Computed())
+    assert ensure_series_coverage(_params(tmp_path), run)
+    # a name that no registered featurizer would compute: the normal check
+    assert ensure_series_coverage(_params(tmp_path, 'descriptors-toy'), run)
+    check_series_coverage(_params(tmp_path, 'descriptors-toy'), run)
+    # a refill callable without claims (another kind of series)
+    series._POLICIES.clear()
+    register_series(OTHER, refill=True, refiller=lambda *args, **kw: None)
+    assert ensure_series_coverage(_params(tmp_path), run)

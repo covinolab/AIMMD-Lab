@@ -147,6 +147,37 @@ def test_the_copies_of_the_tools_register_nothing(tmp_path):
     assert series_policy(old.series).refill is False
 
 
+def test_the_copies_of_the_tools_never_hide_a_stale_params_file(tmp_path):
+    # a worker builds only the params' featurizer (n_max 64), while its
+    # paramsN.py still names the series of n_max 40, which the route's copy
+    # (with_n_max(40)) computes: still a mismatch
+    campaign = make_campaign(tmp_path / 'campaign', n_max=40)
+    old = campaign.featurizer
+    _prefill(old, campaign.run)
+    new = toy_featurizer(campaign.folder, 64, refill=True)
+    del series._POLICIES[old.series]
+    coverage = series_coverage(campaign.run, new.series)
+    assert 'repacking' in series_policy(new.series).refiller.route(
+        coverage, campaign.folder)
+    lines = []
+    with pytest.raises(series.SeriesMismatchError) as info:
+        ensure_series_coverage(_params(campaign.folder, old), campaign.run,
+                               log=lines.append)
+    assert (f'was written for the descriptor series {old.series!r}, but its '
+            f'node-table featurizer now computes {new.series!r}'
+            in str(info.value))
+    assert lines == str(info.value).splitlines()
+
+    # multi-system: the series of the whole run is named, not the systems'
+    multi = MultiSystemNodeTableFeaturizer({
+        'lig1': new, 'lig2': toy_featurizer(campaign.folder, 80)})
+    stale = _params(campaign.folder, multi.with_n_max(96), ['lig1', 'lig2'])
+    with pytest.raises(series.SeriesMismatchError) as info:
+        series.check_series_coverage(stale, tmp_path / 'multi_run')
+    assert f'now computes {multi.series!r}' in str(info.value)
+    assert new.series not in str(info.value)
+
+
 # ----------------------------------------------------------------------
 # routes
 

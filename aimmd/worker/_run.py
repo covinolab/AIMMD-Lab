@@ -15,8 +15,10 @@ procedure:
 - switch the current working directory to the parameters' parent directory
   (ensuring all relative paths resolve consistently),
 - print a short startup message,
-- check that the params' descriptor series covers every trajectory of the
-  run (:func:`aimmd.core.series.ensure_series_coverage`): raise, or refill it
+- check that the params' descriptor series is the one its featurizer
+  computes now (a params file written before the params file that builds
+  the featurizer was edited raises) and covers every trajectory of the run
+  (:func:`aimmd.core.series.ensure_series_coverage`): raise, or refill it
   in one process of the run while the others wait,
 - bind CPU/GPU resources for the given worker ``localid``,
 - clear global reader caches that must not leak across tasks,
@@ -175,9 +177,11 @@ class WorkerRun(ABC):
             else:
                 print(f"Starting: worker{self.localid}, {task} {now()}")
 
-            # the params' descriptor series must cover every trajectory of
-            # the run before any MD or training: raises (refill=False), or one
-            # process of the run refills it while the others wait here
+            # the params' descriptor series must be the one its featurizer
+            # computes now (else: a job written for other settings, raises)
+            # and cover every trajectory of the run before any MD or
+            # training: raises (refill=False), or one process of the run
+            # refills it while the others wait here
             if not ensure_series_coverage(
                     self.params, self._directory,
                     role=self._series_role(task, args), log=print,

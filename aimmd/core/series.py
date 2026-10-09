@@ -24,6 +24,12 @@ starts, before any MD or training:
   series registers it when it is constructed (the node-table featurizers of
   `aimmd.network.nodetables`), in every process that executes the params
   file. A series that nobody registers is never refilled;
+- both checks first refuse a params file written for another series than
+  its featurizer now computes (`SeriesMismatchError`): the ``paramsN.py`` of
+  a job holds the series name of the job's creation, while the featurizer
+  is built from the params file as it is now. A params series that is not
+  registered, while a registered refill callable claims names like it
+  (``claims``) for another series, is such a mismatch;
 - `check_series_coverage` (the launcher, before it writes or starts a job)
   raises `SeriesCoverageError` for a gap that may not be refilled, and
   announces the refill otherwise;
@@ -92,6 +98,11 @@ class SeriesCoverageError(RuntimeError):
     and the series may not be (or could not be) refilled."""
 
 
+class SeriesMismatchError(SeriesCoverageError):
+    """The params file of a job names another descriptor series than its
+    featurizer computes: it was written for other settings."""
+
+
 # ----------------------------------------------------------------------
 # what to do about a gap, per series name
 
@@ -115,7 +126,12 @@ refiller : callable or None
     messages: ``route(coverage, workdir)`` (how it would refill), ``label``
     (what the settings are called, e.g. ``'node-table'``), ``legacy_note``
     (why only ``*.descriptors.npy`` is there) and ``prefill_command(
-    params_file, run)`` (the command that fills the series offline).
+    params_file, run)`` (the command that fills the series offline). Two
+    more find a params file written for other settings: ``claims(name)``
+    tells whether a series name is of the kind this code computes (a params
+    series of that kind that is not registered is then a mismatch), and
+    ``parts`` lists registered series that are parts of this one (the
+    systems of a multi-system featurizer), which a mismatch does not name.
 """
 
 _POLICIES = {}
@@ -150,6 +166,41 @@ def series_policy(series):
     """The registered `SeriesPolicy` of `series`; a series that nobody
     registered is never refilled (``refill=False``, no refiller)."""
     return _POLICIES.get(series) or SeriesPolicy(series, False, None)
+
+
+def _claims(refiller, series):
+    claims = getattr(refiller, 'claims', None)
+    try:
+        return bool(callable(claims) and claims(series))
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
+def computed_instead(series):
+    """The series that the code of this process computes instead of
+    `series`, a series name of the params.
+
+    Parameters
+    ----------
+    series : str
+        The params' descriptor series.
+
+    Returns
+    -------
+    list of str
+        Empty when `series` is registered, or when no registered refill
+        callable claims a name like `series`. Otherwise the series whose
+        refill callables claim it (in the order of registration), without
+        the parts of others (see `SeriesPolicy`).
+    """
+    if series in _POLICIES:
+        return []
+    claiming = [policy for policy in _POLICIES.values()
+                if _claims(policy.refiller, series)]
+    parts = {part for policy in claiming
+             for part in (getattr(policy.refiller, 'parts', None) or ())}
+    names = [policy.series for policy in claiming]
+    return [name for name in names if name not in parts] or names
 
 
 # ----------------------------------------------------------------------
@@ -457,6 +508,46 @@ def missing_series_message(coverage, policy=None, params_file=None,
     return '\n'.join(f'{prefix} {line}' for line in lines)
 
 
+def mismatch_message(series, computed, params_file=None,
+                     prefix='SERIES CHECK:'):
+    """The error for a params file written for another series.
+
+    Parameters
+    ----------
+    series : str
+        The params' descriptor series (the one of the job's creation).
+    computed : list of str
+        What the featurizer computes now (`computed_instead`).
+    params_file : str, optional
+        The params file of the job (``paramsN.py``).
+    prefix : str
+        Start of every line.
+
+    Returns
+    -------
+    str
+        One line per item, each starting with `prefix`.
+    """
+    label = getattr(series_policy(computed[0]).refiller, 'label', None)
+    featurizer = f'{label} featurizer' if label else 'featurizer'
+    now = ' or '.join(map(repr, computed))
+    where = (f'The params file this job uses, {params_file!r},' if params_file
+             else 'The params file of this job')
+    lines = [f'{where} was written for the descriptor series {series!r}, but '
+             f'its {featurizer} now computes {now}.',
+             f'The settings changed after the job was created: the params '
+             f'file that builds the featurizer was edited, or MDAnalysis '
+             f'guessed atom types differently on this host. Nothing starts: '
+             f'the job would write rows of the new settings into the files '
+             f'of {series!r}.',
+             f'Regenerate the job: rerun the job-script generator '
+             f'(Launcher.create_job), which writes a new params file for '
+             f'{now}; the series check then applies as usual (an error, or a '
+             f'refill with refill=True, if trajectories lack that series). '
+             f'Create the job on the kind of host it runs on.']
+    return '\n'.join(f'{prefix} {line}' for line in lines)
+
+
 def _route(policy, coverage, workdir):
     """How the refiller of `policy` would refill, as text."""
     route = getattr(policy.refiller, 'route', None)
@@ -481,6 +572,19 @@ def _checked_series(params):
     if not getattr(params, 'descriptors_function', None):
         return None
     return str(series)
+
+
+def _check_computed(params, series, log=None):
+    """Raise `SeriesMismatchError` if `params` was written for another
+    series than the featurizers of this process compute (logging the lines
+    first with `log`)."""
+    computed = computed_instead(series)
+    if not computed:
+        return
+    message = mismatch_message(series, computed, _params_file(params))
+    if log is not None:
+        _log_lines(log, message)
+    raise SeriesMismatchError(message)
 
 
 def run_folder(params, directory):
@@ -538,6 +642,9 @@ def check_series_coverage(params, directory, log=None):
 
     Raises
     ------
+    SeriesMismatchError
+        If the params file was written for another series than its
+        featurizer now computes (see `computed_instead`).
     SeriesCoverageError
         If trajectories of the run have no file of the series and its
         policy does not refill it.
@@ -546,6 +653,7 @@ def check_series_coverage(params, directory, log=None):
     series = _checked_series(params)
     if series is None:
         return None
+    _check_computed(params, series)
     run, system_ids = run_folder(params, directory)
     coverage = series_coverage(run, series, system_ids)
     if coverage.complete:
@@ -675,6 +783,10 @@ def ensure_series_coverage(params, directory, role=None, log=None,
 
     Raises
     ------
+    SeriesMismatchError
+        If the params file was written for another series than its
+        featurizer now computes (see `computed_instead`), before anything
+        else, even when the series of the params file is complete.
     SeriesCoverageError
         If trajectories lack the series and its policy does not refill it,
         if the refill of this process failed, or if the refill of another
@@ -684,6 +796,7 @@ def ensure_series_coverage(params, directory, role=None, log=None,
     series = _checked_series(params)
     if series is None:
         return True
+    _check_computed(params, series, log)
     run, system_ids = run_folder(params, directory)
     coverage = series_coverage(run, series, system_ids)
     if coverage.complete:
