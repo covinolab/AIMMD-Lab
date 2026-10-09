@@ -19,10 +19,11 @@ check that
   settings are featurized again, and an unmigrated graph-cache campaign is
   extracted from its graph cache (``--rungraph``), checked on frames that
   came from the cache, falling back to featurizing when the cache fails the
-  check, and then for every trajectory that took rows from it, and when its
-  processes died before every trajectory was checked; multi-system runs are
-  repacked per system; parallel refills rebuild the featurizer from the
-  params file in spawned processes;
+  check, and then for every trajectory that took rows from it (no rows
+  from the cache are installed when processes died before every
+  trajectory was checked); multi-system runs are repacked per system;
+  parallel refills rebuild the featurizer from the params file in spawned
+  processes;
 - only the trajectories without the series are written: files of the
   series that exist, the initial paths and the old series stay as they are;
 - a stop request ends a refill between chunks of frames, without leaving
