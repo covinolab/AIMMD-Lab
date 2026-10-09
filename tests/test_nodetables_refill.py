@@ -9,7 +9,8 @@ others wait (`aimmd.core.series.ensure_series_coverage`); with the default
 check that
 
 - ``refill`` does not change the series name, and every featurizer
-  registers its series with its flag and a `NodeTableRefiller`;
+  registers its series with its flag and a `NodeTableRefiller`, but not the
+  copies of ``with_n_max`` (plan, route, repack);
 - the refill takes the cheapest correct route: an ``n_max``-only change is
   repacked without opening a trajectory (zero rows stay zero), other
   settings are featurized again, and an unmigrated graph-cache campaign is
@@ -118,6 +119,32 @@ def test_every_featurizer_registers_its_series(tmp_path):
         {'lig1': toy_featurizer(tmp_path, 64)}, refill=True)
     assert series_policy(multi.series).refill is True
     assert series_policy(multi.series).refiller.featurizer is multi
+
+
+def test_the_copies_of_the_tools_register_nothing(tmp_path):
+    # with_n_max (plan and route, also run by the launcher, and repack) must
+    # not register: the old series would take the current refill flag, and
+    # after a repack the current series would be refilled by a copy
+    campaign = make_campaign(tmp_path / 'campaign', n_max=40)
+    old = campaign.featurizer
+    _prefill(old, campaign.run)
+    new = toy_featurizer(campaign.folder, 64, refill=True)
+    multi = MultiSystemNodeTableFeaturizer({'lig1': new}, refill=True)
+    registered = dict(series._POLICIES)
+
+    assert new.with_n_max(40).series == old.series
+    assert new.with_n_max(1024).series not in series._POLICIES
+    assert multi.with_n_max(1024).series not in series._POLICIES
+    params = _params(campaign.folder, new)
+    series.check_series_coverage(params, campaign.run, log=_quiet)
+    _tool.repack(_tool.ParamsFeaturizer(None, 'F', old, None),
+                 [campaign.run], 48, log=_quiet)
+    assert dict(series._POLICIES) == registered
+    assert ensure_series_coverage(params, campaign.run, jobs=1, log=_quiet)
+
+    assert dict(series._POLICIES) == registered
+    assert series_policy(new.series).refiller.featurizer is new
+    assert series_policy(old.series).refill is False
 
 
 # ----------------------------------------------------------------------

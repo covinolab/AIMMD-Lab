@@ -38,7 +38,8 @@ The series name, ``'descriptors-gn'`` and 10 hex characters, is computed from
 everything a row holds; the params file sets ``descriptors_series =
 FEATURIZER.series``. A changed setting therefore starts a new series, which
 the trajectories of a run do not have yet. Every featurizer registers its
-series with `aimmd.core.series` when it is built, so the launcher and every
+series with `aimmd.core.series` when it is built (the copies that
+``with_n_max`` makes for the tools do not), so the launcher and every
 worker find such a gap from the run folder before a job does any work: with
 ``refill=False`` (the default) the job stops with an error naming the
 remedies, with ``refill=True`` one process of the run refills the series
@@ -232,7 +233,7 @@ class NodeTableFeaturizer:
 
     def __init__(self, universe, system_selection, environment_selection,
                  atom_types, cutoff, n_max=DEFAULT_N_MAX,
-                 max_num_neighbors=128, refill=False):
+                 max_num_neighbors=128, refill=False, *, _register=True):
         self.universe = universe
         self.refill = bool(refill)
         self.system_selection = str(system_selection)
@@ -303,9 +304,11 @@ class NodeTableFeaturizer:
         self._fingerprint = hashlib.sha256(
             json.dumps(self._spec, sort_keys=True).encode()).hexdigest()
 
-        # what a job does when trajectories of its run lack the series
-        register_series(self.series, refill=self.refill,
-                        refiller=NodeTableRefiller(self))
+        # what a job does when trajectories of its run lack the series; the
+        # copies the tools make (with_n_max) register nothing
+        if _register:
+            register_series(self.series, refill=self.refill,
+                            refiller=NodeTableRefiller(self))
 
     def __repr__(self):
         return (f'{type(self).__name__}(series={self.series!r}, '
@@ -417,13 +420,16 @@ class NodeTableFeaturizer:
         NodeTableFeaturizer
             A new featurizer on the same universe. Like any featurizer it
             overwrites the universe's positions when it featurizes, so use
-            the two one after the other, not concurrently.
+            the two one after the other, not concurrently. It does not
+            register its series (`aimmd.core.series.register_series`): only
+            the featurizers a params file builds do, so build the params'
+            featurizer with the constructor.
         """
         return type(self)(self.universe, self.system_selection,
                           self.environment_selection, self.atom_types,
                           self.cutoff, n_max=n_max,
                           max_num_neighbors=self.max_num_neighbors,
-                          refill=self.refill)
+                          refill=self.refill, _register=False)
 
     # ------------------------------------------------------------------
     # frames -> rows
@@ -873,7 +879,7 @@ class MultiSystemNodeTableFeaturizer:
 
     _params_requires_wrapper = True
 
-    def __init__(self, featurizers, refill=False):
+    def __init__(self, featurizers, refill=False, *, _register=True):
         self.refill = bool(refill)
         self.featurizers = {
             str(system_id): featurizer
@@ -890,8 +896,9 @@ class MultiSystemNodeTableFeaturizer:
             {system_id: featurizer.fingerprint
              for system_id, featurizer in self.featurizers.items()},
             sort_keys=True).encode()).hexdigest()
-        register_series(self.series, refill=self.refill,
-                        refiller=NodeTableRefiller(self))
+        if _register:                   # not the copies of with_n_max
+            register_series(self.series, refill=self.refill,
+                            refiller=NodeTableRefiller(self))
 
     def __repr__(self):
         return (f'{type(self).__name__}(series={self.series!r}, '
@@ -966,6 +973,12 @@ class MultiSystemNodeTableFeaturizer:
             ``{system_id: n_max}`` of the systems to change (the others keep
             theirs).
 
+        Returns
+        -------
+        MultiSystemNodeTableFeaturizer
+            New featurizers; like `NodeTableFeaturizer.with_n_max`, they do
+            not register their series.
+
         Raises
         ------
         ValueError
@@ -982,7 +995,7 @@ class MultiSystemNodeTableFeaturizer:
             system_id: (featurizer.with_n_max(n_max[system_id])
                         if system_id in n_max else featurizer)
             for system_id, featurizer in self.featurizers.items()},
-            refill=self.refill)
+            refill=self.refill, _register=False)
 
     def descriptors_function(self, trajectory, system_id):
         """`NodeTableFeaturizer.descriptors_function` of system

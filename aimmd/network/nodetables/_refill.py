@@ -1,8 +1,9 @@
 """Refill a node-table series that trajectories of a run lack.
 
-Every `NodeTableFeaturizer` (and `MultiSystemNodeTableFeaturizer`) registers
-a `NodeTableRefiller` for its series with
-`aimmd.core.series.register_series`, together with its ``refill`` flag. When
+Every `NodeTableFeaturizer` (and `MultiSystemNodeTableFeaturizer`) that a
+params file builds registers a `NodeTableRefiller` for its series with
+`aimmd.core.series.register_series`, together with its ``refill`` flag (the
+copies that ``with_n_max`` makes here and in the tools do not). When
 trajectories of a run have no file of the series (the node-table settings
 changed since they were featurized, or the campaign comes from the
 graph-cache input) and the flag is set, one process of the run calls the
