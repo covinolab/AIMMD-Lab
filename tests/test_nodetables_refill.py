@@ -16,8 +16,8 @@ check that
   settings are featurized again, and an unmigrated graph-cache campaign is
   extracted from its graph cache (``--rungraph``), checked on frames that
   came from the cache, falling back to featurizing when the cache fails the
-  check, and then for every trajectory that took rows from it; multi-system
-  runs are
+  check, and then for every trajectory that took rows from it, and when its
+  processes died before every trajectory was checked; multi-system runs are
   repacked per system; parallel refills rebuild the featurizer from the
   params file in spawned processes;
 - only the trajectories without the series are written: files of the
@@ -33,11 +33,14 @@ check that
   with the error instead of a second refill, and also the processes of the
   same job that start after it (a new job tries again).
 """
+import concurrent.futures
+import contextlib
 import importlib.util
 import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -574,6 +577,55 @@ def test_the_extract_route_checks_extracted_rows_and_distrusts_a_bad_cache(
             'that differ from a direct featurization for '
             'run1/chainR0/back.xtc') in text
     assert '2 trajectories failed the check' in text
+
+
+@pytest.mark.graph
+def test_no_rows_from_the_graph_cache_are_installed_when_processes_died(
+        tmp_path, monkeypatch):
+    # strict_db installs rows from the cache once every trajectory was
+    # checked; the trajectories of processes that died never were, so
+    # nothing from the cache is installed (the refill reruns the call in
+    # its own process, which extracts and checks them all again)
+    pytest.importorskip('torch_geometric')
+    campaign = make_campaign(tmp_path / 'campaign')  # stale *.descriptors.npy
+    database = _graph_cache(campaign, tmp_path)
+    new = toy_featurizer(campaign.folder, refill=True)
+    dead = str(Path(campaign.run) / 'chainR0' / 'back.xtc')
+
+    class Dying(_tool._Serial):
+        """Runs the tasks here, but the chunks of `dead` find the
+        processes dead."""
+
+        def submit(self, function, task):
+            if (task['trajectory'] == dead
+                    and function is _tool._prefill_chunk):
+                future = concurrent.futures.Future()
+                future.set_exception(BrokenProcessPool(
+                    'a process terminated abruptly'))
+                return future
+            return super().submit(function, task)
+
+    @contextlib.contextmanager
+    def executor(jobs, params=None):
+        yield Dying(params.featurizer)
+
+    monkeypatch.setattr(_tool, '_executor', executor)
+    report = _tool.prefill(
+        _tool.ParamsFeaturizer(None, 'F', new, None), [campaign.run],
+        db=[database], jobs=2, only_missing=True, log=_quiet,
+        trajectories=[(trajectory, None) for trajectory
+                      in run_trajectories(campaign.run)], strict_db=True)
+
+    assert report['broken_pool']
+    entries = {entry['trajectory']: entry for entry in report['files']}
+    assert 'a worker process died' in entries.pop(dead)['error']
+    for trajectory, entry in entries.items():
+        assert entry['db_hits'] and entry['verify_mismatches'] == 0
+        assert entry['status'] == 'failed', trajectory
+        assert 'not installed' in entry['error']
+    for trajectory in run_trajectories(campaign.run):
+        assert not os.path.exists(series_file(trajectory, new.series))
+    assert not list(Path(campaign.run).rglob('*.tmp'))
 
 
 # ----------------------------------------------------------------------

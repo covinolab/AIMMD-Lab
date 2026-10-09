@@ -1066,7 +1066,9 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
         trajectory was checked; after a trajectory whose rows from the cache
         mismatch, the trajectories not extracted yet are featurized and
         those with rows from the cache are not installed (status
-        ``'failed'``, for the caller to featurize).
+        ``'failed'``, for the caller to featurize), nor are they when
+        processes died (``broken_pool``: some trajectories were not
+        checked).
 
     Returns
     -------
@@ -1199,10 +1201,19 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
                 entry = files[index]
                 temp = _temporary(entry['series_file'])
                 if distrusted is not None:
-                    entry.update(status='failed', error=(
-                        f'not installed: the graph cache gave rows that '
-                        f'differ from a direct featurization for '
-                        f'{_display(distrusted)}'))
+                    reason = (f'the graph cache gave rows that differ from '
+                              f'a direct featurization for '
+                              f'{_display(distrusted)}')
+                elif broken:
+                    # the trajectories of the dead processes were not
+                    # checked: their rows from the cache may be wrong
+                    reason = ('processes died before every trajectory was '
+                              'checked against a direct featurization')
+                else:
+                    reason = None
+                if reason is not None:
+                    entry.update(status='failed',
+                                 error=f'not installed: {reason}')
                     _discard(temp)
                 else:
                     try:
