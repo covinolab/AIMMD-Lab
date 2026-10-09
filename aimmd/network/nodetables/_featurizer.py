@@ -48,6 +48,9 @@ from collections.abc import Mapping
 import numpy as np
 import MDAnalysis.transformations as transformations
 
+from ...core.series import register_series
+from ._refill import NodeTableRefiller
+
 
 #: Version of the row layout, stored in column 1 of every computed row.
 NODE_TABLE_LAYOUT = 1
@@ -124,6 +127,12 @@ class NodeTableFeaturizer:
         ``2 + 4 * n_max`` float32 columns.
     max_num_neighbors : int, default=128
         ``max_num_neighbors`` of ``radius_graph``, as in `get_graphs_pyg`.
+    refill : bool, default=False
+        What a job does when trajectories of its run have no file of this
+        featurizer's series (see the notes): False stops it before it starts,
+        with an error naming the remedies; True lets one process of the run
+        refill the series first while the others wait. Not part of the
+        series name.
 
     Raises
     ------
@@ -191,8 +200,9 @@ class NodeTableFeaturizer:
 
     def __init__(self, universe, system_selection, environment_selection,
                  atom_types, cutoff, n_max=DEFAULT_N_MAX,
-                 max_num_neighbors=128):
+                 max_num_neighbors=128, refill=False):
         self.universe = universe
+        self.refill = bool(refill)
         self.system_selection = str(system_selection)
         self.environment_selection = str(environment_selection)
         self.cutoff = float(cutoff)
@@ -260,6 +270,10 @@ class NodeTableFeaturizer:
         self._spec = self._make_spec()
         self._fingerprint = hashlib.sha256(
             json.dumps(self._spec, sort_keys=True).encode()).hexdigest()
+
+        # what a job does when trajectories of its run lack the series
+        register_series(self.series, refill=self.refill,
+                        refiller=NodeTableRefiller(self))
 
     def __repr__(self):
         return (f'{type(self).__name__}(series={self.series!r}, '
@@ -369,7 +383,8 @@ class NodeTableFeaturizer:
         return type(self)(self.universe, self.system_selection,
                           self.environment_selection, self.atom_types,
                           self.cutoff, n_max=n_max,
-                          max_num_neighbors=self.max_num_neighbors)
+                          max_num_neighbors=self.max_num_neighbors,
+                          refill=self.refill)
 
     # ------------------------------------------------------------------
     # frames -> rows
@@ -784,6 +799,10 @@ class MultiSystemNodeTableFeaturizer:
     featurizers : mapping
         ``{system_id: NodeTableFeaturizer}``, keyed by ``params.system_ids``.
         Keys are compared as strings.
+    refill : bool, default=False
+        What a job does when trajectories of its run have no file of the
+        campaign's series; see `NodeTableFeaturizer`. The ``refill`` of the
+        per-system featurizers does not matter. Not part of the series name.
 
     Raises
     ------
@@ -808,7 +827,8 @@ class MultiSystemNodeTableFeaturizer:
 
     _params_requires_wrapper = True
 
-    def __init__(self, featurizers):
+    def __init__(self, featurizers, refill=False):
+        self.refill = bool(refill)
         self.featurizers = {
             str(system_id): featurizer
             for system_id, featurizer in dict(featurizers).items()}
@@ -824,6 +844,8 @@ class MultiSystemNodeTableFeaturizer:
             {system_id: featurizer.fingerprint
              for system_id, featurizer in self.featurizers.items()},
             sort_keys=True).encode()).hexdigest()
+        register_series(self.series, refill=self.refill,
+                        refiller=NodeTableRefiller(self))
 
     def __repr__(self):
         return (f'{type(self).__name__}(series={self.series!r}, '
@@ -911,7 +933,8 @@ class MultiSystemNodeTableFeaturizer:
         return type(self)({
             system_id: (featurizer.with_n_max(n_max[system_id])
                         if system_id in n_max else featurizer)
-            for system_id, featurizer in self.featurizers.items()})
+            for system_id, featurizer in self.featurizers.items()},
+            refill=self.refill)
 
     def descriptors_function(self, trajectory, system_id):
         """`NodeTableFeaturizer.descriptors_function` of system

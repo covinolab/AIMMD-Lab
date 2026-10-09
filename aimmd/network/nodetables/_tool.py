@@ -58,9 +58,10 @@ from filelock import FileLock, Timeout
 from ._featurizer import (MultiSystemNodeTableFeaturizer, NodeTableFeaturizer,
                           repack_rows)
 from ...cache.mda import count_safe_frames
+from ...core import series as _series
 
 #: Suffix of the series that makes a trajectory part of a run.
-STATES_SUFFIX = '.states.npy'
+STATES_SUFFIX = _series.STATES_SUFFIX
 
 #: Byte offset of the rows in the series files written here (the header
 #: size `aimmd.cache.npy.update_npy` relies on).
@@ -285,28 +286,15 @@ def find_trajectories(runs, featurizer):
     list of tuple
         ``(trajectory, system_id)``, absolute paths in sorted order per run;
         ``system_id`` is None for a single-system featurizer.
+
+    See Also
+    --------
+    aimmd.core.series.find_trajectories : the rule, shared with the check
+        of a run's series before a job.
     """
     multi = isinstance(featurizer, MultiSystemNodeTableFeaturizer)
-    found = []
-    for run in runs:
-        run = os.path.abspath(run)
-        in_run = []
-        for folder, folders, files in os.walk(run):
-            folders.sort()
-            system_id = None
-            if multi:
-                system_id = Path(os.path.relpath(folder, run)).parts[:1]
-                system_id = system_id[0] if system_id else None
-                if system_id not in featurizer.system_ids:
-                    continue
-            for name in files:
-                if name.startswith('.') or not name.endswith(STATES_SUFFIX):
-                    continue
-                trajectory = os.path.join(folder, name[:-len(STATES_SUFFIX)])
-                if os.path.isfile(trajectory):
-                    in_run.append((trajectory, system_id))
-        found += sorted(in_run)
-    return found
+    return _series.find_trajectories(
+        runs, featurizer.system_ids if multi else None)
 
 
 def _series_files(runs, featurizer):
@@ -665,10 +653,11 @@ class _Serial:
 class _Parallel:
     """Runs tasks in spawned processes, each with its own featurizer."""
 
-    def __init__(self, jobs, params_file=None, name=None):
+    def __init__(self, jobs, params_file=None, name=None, series=None):
         self.pool = concurrent.futures.ProcessPoolExecutor(
             jobs, mp_context=multiprocessing.get_context('spawn'),
-            initializer=_initialize_worker, initargs=(params_file, name))
+            initializer=_initialize_worker,
+            initargs=(params_file, name, series))
 
     def submit(self, function, task):
         return self.pool.submit(_run_in_worker, function, task)
@@ -680,14 +669,21 @@ class _Parallel:
 _WORKER_FEATURIZER = None
 
 
-def _initialize_worker(params_file, name):
-    """Import the params file once per worker process."""
+def _initialize_worker(params_file, name, series=None):
+    """Import the params file once per worker process; with `series`,
+    refuse a featurizer of another series (the file changed meanwhile)."""
     global _WORKER_FEATURIZER
     for variable in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS',
                      'OPENBLAS_NUM_THREADS'):
         os.environ.setdefault(variable, '1')
     if params_file is not None:
-        _WORKER_FEATURIZER = load_featurizer(params_file, name).featurizer
+        loaded = load_featurizer(params_file, name)
+        if series is not None and loaded.series != series:
+            raise UsageError(
+                f'{params_file!r} now gives the series {loaded.series!r}, '
+                f'not {series!r}, which this command writes: the params file '
+                f'changed while the command ran')
+        _WORKER_FEATURIZER = loaded.featurizer
     if 'torch' in sys.modules:
         sys.modules['torch'].set_num_threads(1)
 
@@ -703,7 +699,8 @@ def _executor(jobs, params=None):
     if jobs == 1:
         executor = _Serial(params.featurizer if params else None)
     elif params is not None:
-        executor = _Parallel(jobs, params.params_file, params.name)
+        executor = _Parallel(jobs, params.params_file, params.name,
+                             params.series)
     else:
         executor = _Parallel(jobs)
     cancel = True
@@ -953,7 +950,8 @@ def _merge(entry, result):
 
 
 def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
-            chunk_frames=DEFAULT_CHUNK_FRAMES, seed=0, log=print):
+            chunk_frames=DEFAULT_CHUNK_FRAMES, seed=0, log=print,
+            trajectories=None, progress=None):
     """Write the node-table series of every trajectory of AIMMD runs.
 
     Parameters
@@ -983,6 +981,12 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
         Seed of the frames drawn for `verify`.
     log : callable, default=print
         Called with each line of the progress report.
+    trajectories : list of tuple, optional
+        ``(trajectory, system_id)`` of the runs to prefill (default: every
+        trajectory of the runs, `find_trajectories`).
+    progress : callable, optional
+        Called with a trajectory's entry of the report whenever one of its
+        tasks has finished.
 
     Returns
     -------
@@ -1004,7 +1008,11 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
     databases = _databases(db, featurizer)
     if verify is None:
         verify = DEFAULT_DB_VERIFY if databases else 0
-    found = find_trajectories(runs, featurizer)
+    if trajectories is None:
+        found = find_trajectories(runs, featurizer)
+    else:
+        found = sorted((os.path.abspath(trajectory), system_id)
+                       for trajectory, system_id in trajectories)
     if not found:
         raise UsageError(f'no trajectories with a states series '
                          f'(*{STATES_SUFFIX}) in {runs}')
@@ -1075,6 +1083,8 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
                                identity=entry['_identity'],
                                install=entry['_install'], verify=verify,
                                seed=seed)
+                if progress is not None:
+                    progress(entry)
         finally:
             for entry in files:
                 entry.pop('_identity', None)
@@ -1280,6 +1290,12 @@ def _source_n_max(values, featurizer):
     if values is None or isinstance(values, int):
         return values
     system_ids = getattr(featurizer, 'system_ids', None)
+    if isinstance(values, dict):
+        if system_ids is None:
+            raise UsageError(f'n_max per system {values!r} is for a '
+                             f'multi-system featurizer')
+        values = [f'{system_id}={n_max}'
+                  for system_id, n_max in values.items()]
     default, per_system = None, {}
     for value in values:
         system_id, separator, text = str(value).rpartition('=')
@@ -1313,7 +1329,7 @@ def _source_n_max(values, featurizer):
 
 
 def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
-           log=print):
+           log=print, trajectories=None, progress=None):
     """Rewrite node-table series files for another row capacity.
 
     Every series file of the source featurizer in the runs is rewritten into
@@ -1329,13 +1345,15 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
         one when `from_n_max` gives the source's ``n_max``.
     runs : list of str
         Run folders.
-    n_max : int
-        Row capacity of the new series (every system of a multi-system
-        featurizer).
-    from_n_max : int or list, optional
+    n_max : int or mapping
+        Row capacity of the new series: every system of a multi-system
+        featurizer, or ``{system_id: n_max}`` per system (the others keep
+        theirs).
+    from_n_max : int, list or mapping, optional
         Row capacity of the existing series, if the params file already holds
         the new one: an int, or a list of ``M`` (every system not named) and,
-        for a multi-system featurizer, ``SYSTEM_ID=M`` (that system).
+        for a multi-system featurizer, ``SYSTEM_ID=M`` (that system), or
+        ``{system_id: M}``.
     jobs : int, default=1
         Processes.
     overwrite : bool, default=False
@@ -1343,6 +1361,11 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
         they are (status ``'exists'``).
     log : callable, default=print
         Called with each line of the progress report.
+    trajectories : list of tuple, optional
+        ``(trajectory, system_id)`` whose series files to rewrite (default:
+        every series file of the source series in the runs).
+    progress : callable, optional
+        Called with a file's entry of the report when it is done.
 
     Returns
     -------
@@ -1373,6 +1396,10 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
             f'to repack. If the params file already holds the new n_max, give '
             f'the n_max of the existing series with --from-n-max')
     found = _series_files(runs, source)
+    if trajectories is not None:
+        wanted = {(os.path.abspath(trajectory), system_id)
+                  for trajectory, system_id in trajectories}
+        found = [item for item in found if item[1:] in wanted]
     if not found:
         raise UsageError(f'no {source.series} series files in {runs}')
     files = []
@@ -1397,7 +1424,8 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
             scheduler.submit(_repack_file, dict(
                 source_file=entry['source_file'],
                 series_file=entry['series_file'],
-                source_width=source_system.width, n_max=n_max,
+                source_width=source_system.width,
+                n_max=_system(target, entry['system_id']).n_max,
                 overwrite=overwrite), index)
         for index, result, error in scheduler.results():
             entry = files[index]
@@ -1412,6 +1440,8 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
                 + (f', {entry["empty_rows"]} empty' if entry['empty_rows']
                    else '')
                 + (f'; ERROR: {entry["error"]}' if entry['error'] else ''))
+            if progress is not None:
+                progress(entry)
 
     totals = {key: sum(entry[key] for entry in files)
               for key in ('rows', 'empty_rows')}
