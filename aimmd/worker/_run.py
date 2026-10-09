@@ -15,6 +15,9 @@ procedure:
 - switch the current working directory to the parameters' parent directory
   (ensuring all relative paths resolve consistently),
 - print a short startup message,
+- check that the params' descriptor series covers every trajectory of the
+  run (:func:`aimmd.core.series.ensure_series_coverage`): raise, or refill it
+  in one process of the run while the others wait,
 - bind CPU/GPU resources for the given worker ``localid``,
 - clear global reader caches that must not leak across tasks,
 - configure stop conditions (walltime, max steps, max frames),
@@ -74,6 +77,7 @@ from abc import ABC
 # aimmd imports
 from .._config import MDA_CACHE, NPY_CACHE, print, require_gromacs
 from ..core.utils import now, accepts_system_id
+from ..core.series import ensure_series_coverage
 
 
 def _system_id_binder(function, system_id):
@@ -171,6 +175,15 @@ class WorkerRun(ABC):
             else:
                 print(f"Starting: worker{self.localid}, {task} {now()}")
 
+            # the params' descriptor series must cover every trajectory of
+            # the run before any MD or training: raises (refill=False), or one
+            # process of the run refills it while the others wait here
+            if not ensure_series_coverage(
+                    self.params, self._directory,
+                    role=self._series_role(task, args), log=print,
+                    stop=lambda: self.termination_signal):
+                return None     # asked to stop while waiting
+
             # bind resources
             self._bind_resources()
 
@@ -212,6 +225,19 @@ class WorkerRun(ABC):
             self._directory = self.directory
             self._terminate_operations()
             self._reset_stop_condition()
+
+    def _series_role(self, task, args):
+        """What this worker is, for the log lines of a series refill (e.g.
+        ``'shoot run1/chainR0'``)."""
+        directory = os.path.normpath(self._directory)
+        if task == 'shoot' and len(args) >= 2:
+            kind = 'sweep' if len(args) > 2 and args[2] else 'chain'
+            folder = os.path.join(directory, f'{kind}{args[0]}{args[1]}')
+            return f'shoot {folder}'
+        if task == 'free' and len(args) >= 2:
+            folder = os.path.join(directory, f'free{args[0]}')
+            return f'free {folder} (worker {args[1]})'
+        return f'{task} {directory}'
 
     def _bind_system_id(self):
         """Bind this worker's system to the params data functions (multi-system).

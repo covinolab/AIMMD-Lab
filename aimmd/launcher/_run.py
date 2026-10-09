@@ -187,6 +187,9 @@ class LauncherRun(ABC):
         ------
         RuntimeError
             If any worker exits with a non-zero exit code.
+        aimmd.core.series.SeriesCoverageError
+            If trajectories of a run have no file of the params' descriptor
+            series and its featurizer does not refill it.
         Exception
             Re-raises unexpected exceptions that occur during process startup or
             monitoring.
@@ -203,6 +206,10 @@ class LauncherRun(ABC):
         # need no GROMACS.
         if any(getattr(p, 'engine', None) == 'gromacs' for p in self.params):
             require_gromacs()
+
+        # every trajectory of the runs needs the params' descriptor series:
+        # refuse the run (or announce its refill) before any worker starts
+        self._check_series()
 
         # update run settings
         self._update(n, n1, n2,
