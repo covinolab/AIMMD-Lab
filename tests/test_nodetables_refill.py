@@ -14,8 +14,10 @@ check that
 - the refill takes the cheapest correct route: an ``n_max``-only change is
   repacked without opening a trajectory (zero rows stay zero), other
   settings are featurized again, and an unmigrated graph-cache campaign is
-  extracted from its graph cache (``--rungraph``), falling back to
-  featurizing when the cache fails the check; multi-system runs are
+  extracted from its graph cache (``--rungraph``), checked on frames that
+  came from the cache, falling back to featurizing when the cache fails the
+  check, and then for every trajectory that took rows from it; multi-system
+  runs are
   repacked per system; parallel refills rebuild the featurizer from the
   params file in spawned processes;
 - only the trajectories without the series are written: files of the
@@ -504,6 +506,74 @@ def test_a_graph_cache_of_other_settings_falls_back_to_featurizing(
         assert np.array_equal(
             bits(np.load(series_file(trajectory, new.series))),
             bits(expected_rows(new, trajectory)))
+
+
+@pytest.mark.graph
+def test_the_extract_route_checks_extracted_rows_and_distrusts_a_bad_cache(
+        tmp_path, monkeypatch):
+    # back.xtc: one frame from the cache, a graph of other settings, which a
+    # check of frames drawn from all frames misses; path000001.xtc: every
+    # frame from the cache, one of other settings that its own check misses.
+    # Once the cache gave a wrong row, nothing else is taken from it.
+    pytest.importorskip('torch_geometric')
+    import sqlite3
+    from tests.test_nodetables_cli_extract import (_build_cache,
+                                                   _coordinates, _key)
+    campaign = make_campaign(tmp_path / 'campaign')  # stale *.descriptors.npy
+    new = toy_featurizer(campaign.folder, refill=True)
+    database = _graph_cache(campaign, tmp_path)
+    bad = _build_cache(campaign, tmp_path / 'bad',
+                       ENVIRONMENT_SELECTION.replace('5.0', '6.0'))
+    connection = sqlite3.connect(bad)
+    wrong = dict(connection.execute('SELECT key, data FROM graphs_cache'))
+    connection.close()
+
+    def unchecked(trajectory, n_frames):
+        """A frame that a check of frames drawn from all frames skips."""
+        drawn = _tool._sample(trajectory, np.arange(n_frames),
+                              _tool.DEFAULT_DB_VERIFY, 0)
+        return sorted(set(range(n_frames)) - set(drawn.tolist()))[0]
+
+    run = Path(campaign.run)
+    first, second = str(run / 'chainR0/back.xtc'), str(
+        run / 'chainR0/path000001.xtc')
+    connection = sqlite3.connect(database)
+    for trajectory in trajectories(campaign.run):
+        keys = [_key(row) for row in _coordinates(campaign, trajectory)]
+        if trajectory in (first, second):
+            frame = unchecked(trajectory, len(keys))
+            connection.execute('UPDATE graphs_cache SET data = ? WHERE key = ?',
+                               (wrong[keys[frame]], keys[frame]))
+            if trajectory == first:
+                keys = keys[:frame] + keys[frame + 1:]
+            else:
+                keys = []
+        connection.executemany('DELETE FROM graphs_cache WHERE key = ?',
+                               [(key,) for key in keys])
+    connection.commit()
+    connection.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    connection.close()
+    monkeypatch.chdir(campaign.folder)
+    lines = []
+    assert ensure_series_coverage(_params(campaign.folder, new),
+                                  campaign.run, jobs=1, log=lines.append)
+
+    for trajectory in run_trajectories(campaign.run):
+        assert np.array_equal(
+            bits(np.load(series_file(trajectory, new.series))),
+            bits(expected_rows(new, trajectory))), trajectory
+    text = '\n'.join(lines)
+    assert 'mismatch  run1/chainR0/back.xtc: 5 frames, 5 computed (1 from ' \
+        'the graph cache, 4 featurized), 1 verified (1 mismatched' in text
+    assert ('the graph cache gave rows that differ from a direct '
+            'featurization for run1/chainR0/back.xtc: no other trajectory '
+            'of this prefill takes rows from it') in text
+    assert ('failed    run1/chainR0/path000001.xtc: 9 frames, 9 computed (9 '
+            'from the graph cache, 0 featurized), 4 verified (0 '
+            'mismatched); ERROR: not installed: the graph cache gave rows '
+            'that differ from a direct featurization for '
+            'run1/chainR0/back.xtc') in text
+    assert '2 trajectories failed the check' in text
 
 
 # ----------------------------------------------------------------------

@@ -22,9 +22,10 @@ trajectory:
    the graph-cache input (``'sqlite'``, a campaign that was not migrated) and
    that input's graph cache, `GRAPH_CACHE`, is in the job's working
    directory (where the params file is). Rows come from the cached graphs
-   (`_tool.prefill` with ``db``), checked against a direct featurization on
-   `_tool.DEFAULT_DB_VERIFY` frames per trajectory; a trajectory that fails
-   the check is featurized.
+   (`_tool.prefill` with ``db`` and ``strict_db``), checked against a direct
+   featurization on `_tool.DEFAULT_DB_VERIFY` of the frames whose rows came
+   from the cache, per trajectory. Once a trajectory fails the check, the
+   cache is not used for the others: they and it are featurized.
 3. **recompute**: every frame is featurized from the trajectory
    (`_tool.prefill`).
 
@@ -183,8 +184,9 @@ class NodeTableRefiller:
                     'extract', remaining, database,
                     f'extracting the rows from the graph cache {database} '
                     f'(checked against a direct featurization on '
-                    f'{DEFAULT_DB_VERIFY} frames per trajectory; frames it '
-                    f'lacks are featurized)'))
+                    f'{DEFAULT_DB_VERIFY} of the frames it gives per '
+                    f'trajectory, and not used further once a check fails; '
+                    f'frames it lacks are featurized)'))
                 remaining = []
         if remaining:
             steps.append(_Step('recompute', remaining, None,
@@ -362,7 +364,7 @@ class NodeTableRefiller:
         report = execute(_tool.prefill, params, [run], db=[step.source],
                          verify=_tool.DEFAULT_DB_VERIFY, only_missing=True,
                          log=log, trajectories=step.trajectories,
-                         progress=tracker.prefilled)
+                         progress=tracker.prefilled, strict_db=True)
         failed = [(entry['trajectory'], entry['system_id'])
                   for entry in report['files']
                   if entry['status'] not in ('written', 'complete')]

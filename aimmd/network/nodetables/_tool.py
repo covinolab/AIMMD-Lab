@@ -854,6 +854,7 @@ def _prefill_chunk(featurizer, task):
                              'write'), 0.)
     counts = dict(db_hits=0, db_unusable=0, recomputed=0)
     rows = np.zeros((len(frames), featurizer.width), dtype=np.float32)
+    extracted = []
     connection = None
     if task['db']:
         from ..graph_utils import _decode, get_stable_hash
@@ -887,6 +888,7 @@ def _prefill_chunk(featurizer, task):
                             rows[index] = featurizer.row_from_graph(
                                 _decode(found[0]))
                             counts['db_hits'] += 1
+                            extracted.append(int(frames[index]))
                             found = True
                         except ValueError:
                             # another graph definition, or more than n_max
@@ -921,22 +923,29 @@ def _prefill_chunk(featurizer, task):
     _write_rows(task['temporary'], frames, rows)
     seconds['write'] = clock() - start
     return dict(counts, computed=len(frames), seconds=seconds,
-                empty_rows=int((rows[:, 0] == 0).sum()))
+                empty_rows=int((rows[:, 0] == 0).sum()),
+                extracted=np.asarray(extracted, dtype=np.int64))
 
 
 def _finalize_prefill(featurizer, task):
     """Verify sampled rows and install the temporary series file (or, with
-    nothing computed, verify the series file)."""
+    nothing computed, verify the series file). The rows are drawn from
+    ``task['candidates']`` (default: every frame); with ``task['defer']``
+    a verified temporary file is kept for the caller to install (status
+    ``'verified'``)."""
     featurizer = _system(featurizer, task['system_id'])
     target, temp = task['series_file'], task['temporary']
     seconds = {}
     clock = time.perf_counter
     result = dict(verified=0, verify_mismatches=0, mismatched_frames=[],
                   seconds=seconds)
+    keep = False
     try:
         start = clock()
-        frames = _sample(task['trajectory'], np.arange(task['frames']),
-                         task['verify'], task['seed'])
+        candidates = task.get('candidates')
+        frames = _sample(task['trajectory'],
+                         np.arange(task['frames']) if candidates is None
+                         else candidates, task['verify'], task['seed'])
         if len(frames):
             if task['install']:
                 stored = _read_rows(temp, frames, featurizer.width)
@@ -955,19 +964,30 @@ def _finalize_prefill(featurizer, task):
         if not task['install']:
             result['status'] = 'complete'
             return result
+        if task.get('defer'):
+            keep = True
+            result['status'] = 'verified'
+            return result
         start = clock()
-        _fsync(temp)
-        with _lock(target):
-            if _identity(target) != task['identity']:
-                raise RuntimeError(
-                    f'{target} changed while it was prefilled (is a job '
-                    f'running on this run?); it was left as it is')
-            os.replace(temp, target)
+        _install(temp, target, task['identity'])
         seconds['install'] = clock() - start
         result['status'] = 'written'
         return result
     finally:
-        _discard(temp)
+        if not keep:
+            _discard(temp)
+
+
+def _install(temp, target, identity):
+    """Replace the series file `target` by its complete temporary file,
+    under its lock, unless it changed since it was planned (`identity`)."""
+    _fsync(temp)
+    with _lock(target):
+        if _identity(target) != identity:
+            raise RuntimeError(
+                f'{target} changed while it was prefilled (is a job '
+                f'running on this run?); it was left as it is')
+        os.replace(temp, target)
 
 
 def _file_entry(trajectory, system_id, series):
@@ -996,7 +1016,7 @@ def _merge(entry, result):
 
 def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
             chunk_frames=DEFAULT_CHUNK_FRAMES, seed=0, log=print,
-            trajectories=None, progress=None, stop=None):
+            trajectories=None, progress=None, stop=None, strict_db=False):
     """Write the node-table series of every trajectory of AIMMD runs.
 
     Parameters
@@ -1038,6 +1058,15 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
         command ends with `aimmd.core.series.RefillStopped`; the pending
         tasks are cancelled and their temporary files removed, the files
         already written stay.
+    strict_db : bool, default=False
+        With `db` (the refill of a job): draw the `verify` frames of a
+        trajectory from those whose rows came from the graph cache (not
+        from every frame), and trust the cache only while it gives no wrong
+        row. Files with rows from the cache are installed once every
+        trajectory was checked; after a trajectory whose rows from the cache
+        mismatch, the trajectories not extracted yet are featurized and
+        those with rows from the cache are not installed (status
+        ``'failed'``, for the caller to featurize).
 
     Returns
     -------
@@ -1088,6 +1117,9 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
 
     remaining = {}
     broken = False
+    strict = bool(databases) and strict_db
+    distrusted = None           # the trajectory whose cached rows mismatched
+    deferred = []               # verified, with rows from the cache
     with _run_locks(runs), _executor(jobs, params) as executor:
         scheduler = _Scheduler(executor)
 
@@ -1107,6 +1139,9 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
                 _stop_requested(stop)
                 entry = files[index]
                 if error is None:
+                    if function is _prefill_chunk:
+                        entry.setdefault('_extracted', []).append(
+                            result.pop('extracted'))
                     _merge(entry, result)
                 else:
                     entry['status'] = 'failed'
@@ -1120,8 +1155,8 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
                     for start in range(0, len(todo), chunk_frames):
                         submit(_prefill_chunk, index,
                                frames=todo[start:start + chunk_frames],
-                               db=databases.get(entry['system_id'],
-                                                databases.get(None)))
+                               db=None if distrusted else databases.get(
+                                   entry['system_id'], databases.get(None)))
                         remaining[index] += 1
                     # no temporary file when only_missing finds nothing
                     entry['_install'] = bool(len(todo)) or not (
@@ -1129,6 +1164,17 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
                     entry['_identity'] = result['identity']
                 elif function is _prefill_chunk:
                     remaining[index] -= 1
+                if function is _finalize_prefill and strict:
+                    if (entry['status'] == 'mismatch' and entry['db_hits']
+                            and distrusted is None):
+                        distrusted = entry['trajectory']
+                        log(f'the graph cache gave rows that differ from a '
+                            f'direct featurization for '
+                            f'{_display(distrusted)}: no other trajectory of '
+                            f'this prefill takes rows from it')
+                    if entry['status'] == 'verified':
+                        deferred.append(index)
+                        continue                    # installed at the end
                 if (function is _finalize_prefill
                         or remaining.get(index) is None):  # or a failed plan
                     log(_prefill_line(entry))
@@ -1137,22 +1183,49 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
                         _discard(_temporary(entry['series_file']))
                         log(_prefill_line(entry))
                     else:
+                        extracted = entry.pop('_extracted', [])
                         submit(_finalize_prefill, index,
                                frames=entry['frames'],
                                identity=entry['_identity'],
                                install=entry['_install'], verify=verify,
-                               seed=seed)
+                               seed=seed,
+                               candidates=np.sort(np.concatenate(
+                                   extracted or [np.zeros(0, np.int64)]))
+                               if strict else None,
+                               defer=strict and bool(entry['db_hits']))
+                if progress is not None:
+                    progress(entry)
+            for index in deferred:          # strict_db: after every check
+                entry = files[index]
+                temp = _temporary(entry['series_file'])
+                if distrusted is not None:
+                    entry.update(status='failed', error=(
+                        f'not installed: the graph cache gave rows that '
+                        f'differ from a direct featurization for '
+                        f'{_display(distrusted)}'))
+                    _discard(temp)
+                else:
+                    try:
+                        _install(temp, entry['series_file'],
+                                 entry['_identity'])
+                        entry['status'] = 'written'
+                    except Exception as error:      # noqa: BLE001
+                        entry.update(status='failed',
+                                     error=_error_text(error))
+                        _discard(temp)
+                log(_prefill_line(entry))
                 if progress is not None:
                     progress(entry)
         finally:
             for entry in files:
                 entry.pop('_identity', None)
                 entry.pop('_install', None)
-            if any(entry['status'] in ('pending', 'failed')
+                entry.pop('_extracted', None)
+            if any(entry['status'] in ('pending', 'failed', 'verified')
                    for entry in files):
                 executor.shutdown(cancel=True)
                 for entry in files:
-                    if entry['status'] in ('pending', 'failed'):
+                    if entry['status'] in ('pending', 'failed', 'verified'):
                         _discard(_temporary(entry['series_file']))
 
     report['wall_seconds'] = time.perf_counter() - started
