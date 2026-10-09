@@ -33,7 +33,10 @@ immutable: they never write a graph cache (run them while no job writes it).
 
 Parallel runs (``jobs > 1``) use spawned processes, each of which imports the
 params file once (and checks that its featurizer still has the series being
-written); the work is split into chunks of frames.
+written); the work is split into chunks of frames. Their output goes where
+this process's goes, unless `CHILD_OUTPUT` names a file for it (the refill
+of a job passes it on to its log). A report says ``broken_pool`` when the
+processes could not start or died.
 
 A job runs `prefill` and `repack` itself, for the trajectories of its run that
 lack the series, when the featurizer has ``refill=True`` (see
@@ -100,6 +103,11 @@ _Frame = namedtuple('_Frame', 'time positions')
 _SeriesInfo = namedtuple('_SeriesInfo', 'n_rows width offset')
 
 _IMPORTS = itertools.count()
+
+#: Environment variable naming a file that the spawned processes write their
+#: stdout and stderr to (set by the refill of a job, which passes the lines
+#: on to its log).
+CHILD_OUTPUT = 'AIMMD_NODETABLES_CHILD_OUTPUT'
 
 
 class UsageError(ValueError):
@@ -674,21 +682,47 @@ class _Parallel:
 _WORKER_FEATURIZER = None
 
 
+def _redirect_output(fname):
+    """Send this process's stdout and stderr (file descriptors 1 and 2, so
+    also what libraries write) to the end of `fname`."""
+    descriptor = os.open(fname, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        for stream, target in ((sys.stdout, 1), (sys.stderr, 2)):
+            with contextlib.suppress(Exception):
+                stream.flush()
+            os.dup2(descriptor, target)
+    finally:
+        os.close(descriptor)
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):
+            stream.reconfigure(line_buffering=True)
+
+
 def _initialize_worker(params_file, name, series=None):
     """Import the params file once per worker process; with `series`,
     refuse a featurizer of another series (the file changed meanwhile)."""
     global _WORKER_FEATURIZER
+    output = os.environ.get(CHILD_OUTPUT)
+    if output:
+        _redirect_output(output)
     for variable in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS',
                      'OPENBLAS_NUM_THREADS'):
         os.environ.setdefault(variable, '1')
-    if params_file is not None:
-        loaded = load_featurizer(params_file, name)
-        if series is not None and loaded.series != series:
-            raise UsageError(
-                f'{params_file!r} now gives the series {loaded.series!r}, '
-                f'not {series!r}, which this command writes: the params file '
-                f'changed while the command ran')
-        _WORKER_FEATURIZER = loaded.featurizer
+    try:
+        if params_file is not None:
+            loaded = load_featurizer(params_file, name)
+            if series is not None and loaded.series != series:
+                raise UsageError(
+                    f'{params_file!r} now gives the series '
+                    f'{loaded.series!r}, not {series!r}, which this command '
+                    f'writes: the params file changed while the command ran')
+            _WORKER_FEATURIZER = loaded.featurizer
+    except BaseException as error:
+        if output:              # the one line the log needs, before the trace
+            print(f'a spawned process could not load the featurizer: '
+                  f'{type(error).__name__}: {error}', file=sys.stderr,
+                  flush=True)
+        raise
     if 'torch' in sys.modules:
         sys.modules['torch'].set_num_threads(1)
 
@@ -1011,7 +1045,8 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
         The report: settings, ``files`` (one entry per trajectory with its
         ``status``: ``'written'``, ``'complete'`` (nothing to compute),
         ``'mismatch'`` or ``'failed'``, its counts and timings), ``totals``,
-        ``seconds``, ``ms_per_frame``, ``wall_seconds`` and ``ok``.
+        ``seconds``, ``ms_per_frame``, ``wall_seconds``, ``ok`` and
+        ``broken_pool`` (the processes could not start or died).
 
     Raises
     ------
@@ -1052,6 +1087,7 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
         log(note)
 
     remaining = {}
+    broken = False
     with _run_locks(runs), _executor(jobs, params) as executor:
         scheduler = _Scheduler(executor)
 
@@ -1075,6 +1111,8 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
                 else:
                     entry['status'] = 'failed'
                     entry['error'] = entry['error'] or _error_text(error)
+                    broken |= isinstance(
+                        error, concurrent.futures.BrokenExecutor)
                 if function is _plan_prefill and error is None:
                     # one task per chunk of the frames to compute
                     todo = result['todo']
@@ -1118,6 +1156,7 @@ def prefill(params, runs, db=None, jobs=1, verify=None, only_missing=False,
                         _discard(_temporary(entry['series_file']))
 
     report['wall_seconds'] = time.perf_counter() - started
+    report['broken_pool'] = broken
     _prefill_summary(report)
     for line in _prefill_summary_lines(report):
         log(line)
@@ -1396,7 +1435,7 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
     dict
         The report: ``source_series``, ``series`` (the new name),
         ``files`` with each ``status`` (``'written'``, ``'exists'`` or
-        ``'failed'``), ``totals`` and ``ok``.
+        ``'failed'``), ``totals``, ``ok`` and ``broken_pool``.
 
     Raises
     ------
@@ -1443,6 +1482,7 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
         f'{len(files)} series files in {len(runs)} run(s), {jobs} '
         f'process(es)')
 
+    broken = False
     with _run_locks(runs), _executor(jobs) as executor:
         scheduler = _Scheduler(executor)
         for index, entry in enumerate(files):
@@ -1459,6 +1499,8 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
             entry = files[index]
             if error is not None:
                 entry.update(status='failed', error=_error_text(error))
+                broken |= isinstance(error,
+                                     concurrent.futures.BrokenExecutor)
             else:
                 entry.update(status=result['status'], rows=result['rows'],
                              empty_rows=result['empty_rows'])
@@ -1477,7 +1519,7 @@ def repack(params, runs, n_max, from_n_max=None, jobs=1, overwrite=False,
     for status in ('written', 'exists', 'failed'):
         totals[status] = sum(entry['status'] == status for entry in files)
     report.update(totals=totals, wall_seconds=time.perf_counter() - started,
-                  ok=not totals['failed'])
+                  ok=not totals['failed'], broken_pool=broken)
     log(f'repack: {totals["written"]} written, {totals["exists"]} already '
         f'there, {totals["failed"]} failed; {totals["rows"]} rows, '
         f'{totals["empty_rows"]} empty; {report["wall_seconds"]:.1f} s')

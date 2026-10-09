@@ -33,15 +33,20 @@ series that exist are never rewritten), and the files of other series stay
 where they are. With more than one process, the processes the tools spawn
 rebuild the featurizer from the params file that defines it (a module-level
 name of a module in the params folder) and check its series; GPUs are hidden
-from them.
+from them. What they print goes to a file (`_tool.CHILD_OUTPUT`) whose lines
+the refill passes on to its log. When they cannot start (e.g. a params file
+that needs a GPU when it is imported) or die, the refill logs their error
+and goes on in its own process.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import importlib.util
 import os
 import sys
+import tempfile
 from collections import namedtuple
 
 #: The graph cache of the graph-cache input, in the job's working directory.
@@ -53,6 +58,9 @@ PREFILL_COMMAND = 'python -m aimmd.network.nodetables prefill'
 # a route for some trajectories: kind is 'repack', 'extract' or 'recompute';
 # source is (series, from_n_max) for repack and the graph cache for extract
 _Step = namedtuple('_Step', 'kind trajectories source text')
+
+# lines of the spawned processes passed on to the log per tool call, at most
+_RELAYED_LINES = 200
 
 # per-file lines of the tools left out of the refill log (one per file that
 # went well), and the end-of-command verdict
@@ -266,16 +274,16 @@ class NodeTableRefiller:
         write = _quiet(log)
         counts = dict(repacked=0, extracted=0, recomputed=0)
         fallback = []
-        with _hidden_gpus(jobs > 1):
+        with _hidden_gpus(jobs > 1), _Execution(jobs, log, stop) as execute:
             for step in steps:
                 _tool._stop_requested(stop)
                 if step.kind == 'repack':
-                    failed = self._repack(_tool, params, run, step, jobs,
-                                          write, tracker, stop)
+                    failed = self._repack(_tool, params, run, step, execute,
+                                          write, tracker)
                     counts['repacked'] += len(step.trajectories) - len(failed)
                 elif step.kind == 'extract':
-                    failed = self._extract(_tool, params, run, step, jobs,
-                                           write, tracker, stop)
+                    failed = self._extract(_tool, params, run, step, execute,
+                                           write, tracker)
                     counts['extracted'] += (len(step.trajectories)
                                             - len(failed))
                 else:
@@ -285,8 +293,8 @@ class NodeTableRefiller:
                     for item in step.trajectories] + fallback
             if todo:
                 _tool._stop_requested(stop)
-                self._recompute(_tool, params, run, todo, jobs, write,
-                                tracker, stop)
+                self._recompute(_tool, params, run, todo, execute, write,
+                                tracker)
                 counts['recomputed'] += len(todo)
         route = _describe(steps)
         if fallback:
@@ -294,12 +302,12 @@ class NodeTableRefiller:
                       f'above)')
         return dict(route=route, **counts)
 
-    def _repack(self, _tool, params, run, step, jobs, log, tracker, stop):
+    def _repack(self, _tool, params, run, step, execute, log, tracker):
         series, from_n_max = step.source
-        report = _tool.repack(params, [run], self._n_max(),
-                              from_n_max=from_n_max, jobs=jobs, log=log,
-                              trajectories=step.trajectories,
-                              progress=tracker.repacked, stop=stop)
+        report = execute(_tool.repack, params, [run], self._n_max(),
+                         from_n_max=from_n_max, log=log,
+                         trajectories=step.trajectories,
+                         progress=tracker.repacked)
         failed = [(entry['trajectory'], entry['system_id'])
                   for entry in report['files'] if entry['status'] == 'failed']
         if failed:
@@ -307,18 +315,17 @@ class NodeTableRefiller:
                 f'{series}; featurizing them instead')
         return failed
 
-    def _extract(self, _tool, params, run, step, jobs, log, tracker, stop):
+    def _extract(self, _tool, params, run, step, execute, log, tracker):
         try:
             _tool._databases([step.source], self.featurizer)
         except _tool.UsageError as error:
             log(f'the graph cache cannot be used ({error}); featurizing the '
                 f'{len(step.trajectories)} trajectories instead')
             return list(step.trajectories)
-        report = _tool.prefill(params, [run], db=[step.source], jobs=jobs,
-                               verify=_tool.DEFAULT_DB_VERIFY,
-                               only_missing=True, log=log,
-                               trajectories=step.trajectories,
-                               progress=tracker.prefilled, stop=stop)
+        report = execute(_tool.prefill, params, [run], db=[step.source],
+                         verify=_tool.DEFAULT_DB_VERIFY, only_missing=True,
+                         log=log, trajectories=step.trajectories,
+                         progress=tracker.prefilled)
         failed = [(entry['trajectory'], entry['system_id'])
                   for entry in report['files']
                   if entry['status'] not in ('written', 'complete')]
@@ -328,10 +335,9 @@ class NodeTableRefiller:
                 f'instead')
         return failed
 
-    def _recompute(self, _tool, params, run, todo, jobs, log, tracker, stop):
-        _tool.prefill(params, [run], jobs=jobs, verify=0, only_missing=True,
-                      log=log, trajectories=todo, progress=tracker.prefilled,
-                      stop=stop)
+    def _recompute(self, _tool, params, run, todo, execute, log, tracker):
+        execute(_tool.prefill, params, [run], verify=0, only_missing=True,
+                log=log, trajectories=todo, progress=tracker.prefilled)
 
 
 # ----------------------------------------------------------------------
@@ -425,6 +431,99 @@ def _hidden_gpus(active=True):
             os.environ.pop('CUDA_VISIBLE_DEVICES', None)
         else:
             os.environ['CUDA_VISIBLE_DEVICES'] = old
+
+
+class _Execution:
+    """Runs the tools with `jobs` processes and the stop request.
+
+    With more than one process, what the spawned processes print goes to a
+    temporary file (`_tool.CHILD_OUTPUT`), whose new lines are passed on to
+    `log` after every tool call (each distinct line once per call). When the
+    processes could not start or died (a broken pool, e.g. a params file
+    that fails to import without a GPU), the call runs again in this
+    process, and so does every later one. Use it as a context manager.
+    """
+
+    def __init__(self, jobs, log, stop):
+        self.jobs = jobs
+        self.log = log
+        self.stop = stop
+        self.output = None
+        self.offset = 0
+        self.environment = None
+
+    def __enter__(self):
+        if self.jobs > 1:
+            handle, self.output = tempfile.mkstemp(prefix='aimmd-refill-',
+                                                   suffix='.out')
+            os.close(handle)
+            self.environment = os.environ.get(_tool_child_output())
+            os.environ[_tool_child_output()] = self.output
+        return self
+
+    def __exit__(self, *exc_info):
+        if self.output is None:
+            return
+        try:
+            self.relay(final=True)
+        finally:
+            if self.environment is None:
+                os.environ.pop(_tool_child_output(), None)
+            else:
+                os.environ[_tool_child_output()] = self.environment
+            with contextlib.suppress(OSError):
+                os.remove(self.output)
+            self.output = None
+
+    def __call__(self, tool, *args, **kwargs):
+        """``tool(*args, jobs=..., stop=..., **kwargs)``; its report."""
+        from . import _tool
+        if self.jobs == 1:
+            return tool(*args, jobs=1, stop=self.stop, **kwargs)
+        try:
+            report = tool(*args, jobs=self.jobs, stop=self.stop, **kwargs)
+            broken = bool(report.get('broken_pool'))
+        except concurrent.futures.BrokenExecutor as error:
+            report, broken = None, True
+            self.log(f'{_tool._error_text(error)}')
+        finally:
+            self.relay()
+        if not broken:
+            return report
+        _tool._stop_requested(self.stop)     # stopping is no breakdown
+        self.log(f'the {self.jobs} processes of the refill could not start '
+                 f'or died (see the lines above): refilling in this process '
+                 f'instead')
+        self.jobs = 1
+        return tool(*args, jobs=1, stop=self.stop, **kwargs)
+
+    def relay(self, final=False):
+        """Pass the new lines of the spawned processes on to the log."""
+        if self.output is None:
+            return
+        try:
+            with open(self.output, 'rb') as file:
+                file.seek(self.offset)
+                data = file.read()
+        except OSError:
+            return
+        end = len(data) if final else data.rfind(b'\n') + 1
+        self.offset += end
+        lines, seen = [], set()
+        for line in data[:end].decode(errors='replace').splitlines():
+            if line.strip() and line not in seen:
+                seen.add(line)
+                lines.append(line)
+        for line in lines[:_RELAYED_LINES]:
+            self.log(line)
+        if len(lines) > _RELAYED_LINES:
+            self.log(f'... and {len(lines) - _RELAYED_LINES} more lines of '
+                     f'the spawned processes')
+
+
+def _tool_child_output():
+    from ._tool import CHILD_OUTPUT
+    return CHILD_OUTPUT
 
 
 class _Tracker:

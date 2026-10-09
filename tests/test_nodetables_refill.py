@@ -22,6 +22,10 @@ check that
   series that exist, the initial paths and the old series stay as they are;
 - a stop request ends a refill between chunks of frames, without leaving
   temporary files, and the next check refills the rest;
+- what the spawned processes of a parallel refill print reaches the log
+  with the prefix, and processes that cannot load the params file (it
+  needs a GPU, which they do not see) leave their error in the log and the
+  refill continues in the process itself;
 - across processes, one refills while the others wait and start after it,
   with the log lines of both sides, and a failed refill stops the waiters
   with the error instead of a second refill, and also the processes of the
@@ -332,6 +336,64 @@ def test_a_stop_request_ends_the_refill_between_chunks(tmp_path):
         assert np.array_equal(
             bits(np.load(series_file(trajectory, new.series))),
             bits(expected_rows(new, trajectory)))
+
+
+def _child_params(campaign, statement):
+    """Put `statement` at the top of the params file: it runs in the
+    spawned processes of a refill only (they see no GPU)."""
+    params = Path(campaign.params)
+    params.write_text(f"import os\nif os.environ.get('CUDA_VISIBLE_DEVICES')"
+                      f" == '':\n    {statement}\n" + params.read_text())
+
+
+def test_what_the_processes_of_a_refill_print_reaches_the_log(
+        tmp_path, monkeypatch, capfd):
+    campaign = make_full_campaign(tmp_path / 'campaign', refill=True,
+                                  environment=OTHER_ENVIRONMENT)
+    _child_params(campaign, "print('a refill process imported the params "
+                            "file', flush=True)")
+    monkeypatch.chdir(campaign.folder)
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', 'GPU-none')
+    params = aimmd.Params.load('params.py')
+    capfd.readouterr()
+    lines = []
+    assert ensure_series_coverage(params, 'run1', jobs=2, log=lines.append)
+
+    assert 'refills them now with 2 processes by featurizing' in lines[0]
+    assert all(line.startswith('SERIES REFILL:') for line in lines)
+    assert ('SERIES REFILL:   a refill process imported the params file'
+            in lines)
+    out = capfd.readouterr()
+    assert 'a refill process' not in out.out + out.err
+    assert not os.environ.get(_tool.CHILD_OUTPUT)
+
+
+def test_processes_that_cannot_load_the_params_fall_back_to_this_one(
+        tmp_path, monkeypatch, capfd):
+    campaign = make_full_campaign(tmp_path / 'campaign', refill=True,
+                                  environment=OTHER_ENVIRONMENT)
+    _child_params(campaign, "raise RuntimeError('this params file needs a "
+                            "GPU')")
+    monkeypatch.chdir(campaign.folder)
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', 'GPU-none')
+    params = aimmd.Params.load('params.py')
+    capfd.readouterr()
+    lines = []
+    assert ensure_series_coverage(params, 'run1', jobs=2, log=lines.append)
+
+    assert all(line.startswith('SERIES REFILL:') for line in lines)
+    text = '\n'.join(lines)
+    assert 'RuntimeError: this params file needs a GPU' in text
+    assert 'refilling in this process instead' in text
+    assert lines[-1].startswith('SERIES REFILL: done:')
+    out = capfd.readouterr()
+    assert 'needs a GPU' not in out.out + out.err
+    featurizer = toy_featurizer(campaign.folder, 64,
+                                environment=OTHER_ENVIRONMENT)
+    for trajectory in run_trajectories(campaign.run):
+        assert np.array_equal(
+            bits(np.load(series_file(trajectory, featurizer.series))),
+            bits(expected_rows(featurizer, trajectory)))
 
 
 def _graph_cache(campaign, tmp_path, environment=ENVIRONMENT_SELECTION):

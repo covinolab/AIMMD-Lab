@@ -45,16 +45,21 @@ starts, before any MD or training:
   or a launch that started after the failure) disregards; a refill that
   succeeds removes it.
 
-Every line the refill writes to the logs starts with ``'SERIES REFILL:'``.
-The default series ``'descriptors'`` is never checked. This module needs
+Every line the refill writes to the logs starts with ``'SERIES REFILL:'``:
+its own lines, every line of an error, and what is printed (to
+``sys.stdout`` or ``sys.stderr``) while the refill callable runs. The
+default series ``'descriptors'`` is never checked. This module needs
 neither torch nor a graph library.
 """
 
 # external
+import contextlib
 import functools
+import io
 import json
 import os
 import socket
+import sys
 import time
 from collections import Counter, namedtuple
 from pathlib import Path
@@ -839,6 +844,63 @@ def _log_lines(log, text):
         log(line)
 
 
+def _prefixed(text, prefix=LOG_PREFIX):
+    """`text` with every line starting with `prefix` (the lines that do not
+    are indented below it)."""
+    return '\n'.join(line if line.startswith(prefix)
+                     else f'{prefix}   {line}'.rstrip()
+                     for line in str(text).splitlines())
+
+
+class _LineWriter(io.TextIOBase):
+    """A text stream that passes every complete line to `emit`."""
+
+    def __init__(self, emit):
+        super().__init__()
+        self._emit = emit
+        self._pending = ''
+
+    def writable(self):
+        return True
+
+    def write(self, text):
+        *lines, self._pending = (self._pending + str(text)).split('\n')
+        for line in lines:
+            self._emit(line)
+        return len(text)
+
+    def finish(self):
+        """Pass on a last line that has no end."""
+        if self._pending:
+            line, self._pending = self._pending, ''
+            self._emit(line)
+
+
+@contextlib.contextmanager
+def _prefixed_output(log):
+    """Inside, every line printed to ``sys.stdout`` or ``sys.stderr`` (by
+    the refill callable, e.g. the featurizer's ERROR and WARNING lines)
+    reaches `log` as a refill line. Yields ``emit(line)``, which passes a
+    line to `log` as it is, with the streams of before (`log` may print)."""
+    stdout, stderr = sys.stdout, sys.stderr
+
+    def emit(line):
+        inside = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = stdout, stderr
+        try:
+            log(line)
+        finally:
+            sys.stdout, sys.stderr = inside
+
+    writer = _LineWriter(lambda line: emit(_prefixed(line) or LOG_PREFIX))
+    sys.stdout = sys.stderr = writer
+    try:
+        yield emit
+    finally:
+        sys.stdout, sys.stderr = stdout, stderr
+        writer.finish()
+
+
 def _duration(seconds):
     """'45 s', '12 min' or '2.5 h'."""
     if seconds < 120:
@@ -983,15 +1045,16 @@ def _refill(coverage, policy, params, role, log, jobs, stop):
         f'process{"es" if jobs != 1 else ""} by {route}; the other AIMMD '
         f'processes of this run wait until it is done.')
     started = time.time()
-    progress = _Progress(log, coverage, started)
-
-    def refill_log(line):
-        log(f'{LOG_PREFIX}   {line}')
-
     try:
-        result = policy.refiller(coverage, params_file=params_file,
-                                 workdir=workdir, jobs=jobs, log=refill_log,
-                                 progress=progress, stop=stop)
+        with _prefixed_output(log) as emit:
+            def refill_log(text):
+                for line in str(text).splitlines() or ['']:
+                    emit(_prefixed(line) or LOG_PREFIX)
+
+            result = policy.refiller(
+                coverage, params_file=params_file, workdir=workdir,
+                jobs=jobs, log=refill_log, stop=stop,
+                progress=_Progress(emit, coverage, started))
     except RefillStopped as error:
         _record_failure(run, series, role, started, 'stopped',
                         f'{type(error).__name__}: {error}')
@@ -1005,9 +1068,9 @@ def _refill(coverage, policy, params, role, log, jobs, stop):
     except Exception as error:
         text = f'{type(error).__name__}: {error}'
         _record_failure(run, series, role, started, 'failed', text)
-        message = (f'{LOG_PREFIX} the refill of {series!r} in this process '
-                   f'({me}) failed after {time.time() - started:.1f} s: '
-                   f'{text}')
+        message = _prefixed(
+            f'{LOG_PREFIX} the refill of {series!r} in this process ({me}) '
+            f'failed after {time.time() - started:.1f} s: {text}')
         after = series_coverage(run, series, coverage.system_ids)
         if not after.complete:
             message += '\n' + missing_series_message(

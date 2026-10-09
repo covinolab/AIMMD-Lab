@@ -29,10 +29,13 @@ series. They cover
   removes the marker;
 - a stop request before or during a refill ends it (the refill callable is
   passed `stop`), releases the lock and leaves a 'stopped' marker, which
-  does not keep the job from refilling.
+  does not keep the job from refilling;
+- every line a refill writes starts with 'SERIES REFILL:', also what the
+  refill callable prints and every line of a multi-line error.
 """
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -590,3 +593,43 @@ def test_a_stop_request_ends_a_refill_and_does_not_block_the_job(
                                   stop=stop)
     assert series_coverage(run, SERIES).complete
     assert not os.path.exists(Path(run) / series.REFILL_FAILED)
+
+
+# ----------------------------------------------------------------------
+# the log lines of a refill
+
+def test_every_line_of_a_refill_starts_with_the_prefix(tmp_path, capsys):
+    def refiller(coverage, *, log, progress, **kwargs):
+        # the featurizer's own ERROR and WARNING lines, a partial line
+        print('ERROR: node tables: 2 frame(s) have more graph nodes\n'
+              'than n_max', flush=True)
+        print('WARNING: node tables: a line in', end='')
+        print(' two writes', file=sys.stderr)
+        log('a line of the refill\nwith a second line')
+        progress(1, 5)
+        raise RuntimeError('first line\nsecond line of the error')
+
+    register_series(SERIES, refill=True, refiller=refiller)
+    monkey = series.PROGRESS_SECONDS
+    series.PROGRESS_SECONDS = 0.
+    try:
+        run = _run_with_gap(tmp_path)
+        capsys.readouterr()
+        with pytest.raises(SeriesCoverageError) as info:
+            ensure_series_coverage(_params(tmp_path), run, log=print)
+    finally:
+        series.PROGRESS_SECONDS = monkey
+    out = capsys.readouterr()
+    lines = out.out.splitlines()
+    assert out.err == ''
+    assert all(line.startswith('SERIES REFILL:') for line in lines), lines
+    for line in ('ERROR: node tables: 2 frame(s) have more graph nodes',
+                 'than n_max', 'WARNING: node tables: a line in two writes',
+                 'a line of the refill', 'with a second line'):
+        assert f'SERIES REFILL:   {line}' in lines
+    assert any(line.startswith('SERIES REFILL: progress: 1 of 3')
+               for line in lines)
+    message = str(info.value).splitlines()
+    assert all(line.startswith('SERIES REFILL:') for line in message)
+    assert 'SERIES REFILL:   second line of the error' in message
+    assert 'SERIES REFILL:   second line of the error' in lines
