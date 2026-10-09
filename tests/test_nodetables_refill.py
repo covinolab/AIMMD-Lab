@@ -31,6 +31,8 @@ check that
   with the prefix, and processes that cannot load the params file (it
   needs a GPU, which they do not see) leave their error in the log and the
   refill continues in the process itself;
+- only the spawned processes see no GPU: the refilling process keeps its
+  environment throughout (its own featurization included) on every route;
 - across processes, one refills while the others wait and start after it,
   with the log lines of both sides, and a failed refill stops the waiters
   with the error instead of a second refill, and also the processes of the
@@ -521,6 +523,53 @@ def test_processes_that_cannot_load_the_params_fall_back_to_this_one(
         assert np.array_equal(
             bits(np.load(series_file(trajectory, featurizer.series))),
             bits(expected_rows(featurizer, trajectory)))
+
+
+def test_only_the_spawned_processes_of_a_refill_see_no_gpu(tmp_path,
+                                                          monkeypatch):
+    # in this process, while it refills in one process, in two and in its
+    # own after the two could not start, the GPUs stay visible (its own
+    # featurization and every log line) and the environment is unchanged
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', 'GPU-none')
+    child = {'one': None,
+             'two': "print('a refill process sees no GPU', flush=True)",
+             'fallback': "raise RuntimeError('this params file needs a "
+                         "GPU')"}
+    for route, statement in child.items():
+        campaign = make_full_campaign(tmp_path / route, refill=True,
+                                      environment=OTHER_ENVIRONMENT)
+        if statement:
+            _child_params(campaign, statement)
+        monkeypatch.chdir(campaign.folder)
+        params = aimmd.Params.load('params.py')
+        featurizer = series_policy(params.descriptors_series).refiller \
+            .featurizer
+        featurize = featurizer.descriptors_function
+        featurized, logged, lines = [], [], []
+
+        def spy(frames):
+            featurized.append(os.environ.get('CUDA_VISIBLE_DEVICES'))
+            return featurize(frames)
+
+        def log(line):
+            logged.append(os.environ.get('CUDA_VISIBLE_DEVICES'))
+            lines.append(line)
+
+        featurizer.descriptors_function = spy
+        environment = dict(os.environ)
+        assert ensure_series_coverage(params, 'run1',
+                                      jobs=1 if route == 'one' else 2,
+                                      log=log)
+
+        assert dict(os.environ) == environment, route
+        assert set(logged) == {'GPU-none'}, route
+        assert set(featurized) == ({'GPU-none'} if route != 'two'
+                                   else set()), route
+        text = '\n'.join(lines)
+        assert ('a refill process sees no GPU' in text) == (route == 'two')
+        assert ('refilling in this process instead' in text) == (
+            route == 'fallback')
+        assert lines[-1].startswith('SERIES REFILL: done:'), route
 
 
 def _graph_cache(campaign, tmp_path, environment=ENVIRONMENT_SELECTION):

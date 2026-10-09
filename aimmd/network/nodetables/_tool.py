@@ -33,9 +33,12 @@ immutable: they never write a graph cache (run them while no job writes it).
 
 Parallel runs (``jobs > 1``) use spawned processes, each of which imports the
 params file once (and checks that its featurizer still has the series being
-written); the work is split into chunks of frames. Their output goes where
-this process's goes, unless `CHILD_OUTPUT` names a file for it (the refill
-of a job passes it on to its log). A report says ``broken_pool`` when the
+written); the work is split into chunks of frames. They see no GPU (they
+start with ``CUDA_VISIBLE_DEVICES=''``, while the calling process keeps its
+environment): the params file may move its network to a GPU when it is
+imported, and the tools featurize on CPUs. Their output goes where this
+process's goes, unless `CHILD_OUTPUT` names a file for it (the refill of a
+job passes it on to its log). A report says ``broken_pool`` when the
 processes could not start or died.
 
 A job runs `prefill` and `repack` itself, for the trajectories of its run that
@@ -663,12 +666,42 @@ class _Serial:
         pass
 
 
+@contextlib.contextmanager
+def _hidden_gpus():
+    """``CUDA_VISIBLE_DEVICES=''`` inside, as it was after."""
+    old = os.environ.get('CUDA_VISIBLE_DEVICES')
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop('CUDA_VISIBLE_DEVICES', None)
+        else:
+            os.environ['CUDA_VISIBLE_DEVICES'] = old
+
+
+class _GpuFreeProcess(multiprocessing.context.SpawnProcess):
+    """A spawned process that sees no GPU: the environment it starts with
+    (taken while it starts) has ``CUDA_VISIBLE_DEVICES=''``."""
+
+    def start(self):
+        with _hidden_gpus():
+            super().start()
+
+
+class _GpuFreeSpawn(multiprocessing.context.SpawnContext):
+    """The 'spawn' start method with processes that see no GPU."""
+
+    Process = _GpuFreeProcess
+
+
 class _Parallel:
-    """Runs tasks in spawned processes, each with its own featurizer."""
+    """Runs tasks in spawned processes, each with its own featurizer; they
+    see no GPU (the pool starts them when tasks are submitted)."""
 
     def __init__(self, jobs, params_file=None, name=None, series=None):
         self.pool = concurrent.futures.ProcessPoolExecutor(
-            jobs, mp_context=multiprocessing.get_context('spawn'),
+            jobs, mp_context=_GpuFreeSpawn(),
             initializer=_initialize_worker,
             initargs=(params_file, name, series))
 

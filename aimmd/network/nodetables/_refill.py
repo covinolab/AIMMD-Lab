@@ -34,11 +34,12 @@ Only trajectories without a file of the series are written (files of the
 series that exist are never rewritten), and the files of other series stay
 where they are. With more than one process, the processes the tools spawn
 rebuild the featurizer from the params file that defines it (a module-level
-name of a module in the params folder) and check its series; GPUs are hidden
-from them. What they print goes to a file (`_tool.CHILD_OUTPUT`) whose lines
-the refill passes on to its log. When they cannot start (e.g. a params file
-that needs a GPU when it is imported) or die, the refill logs their error
-and goes on in its own process.
+name of a module in the params folder) and check its series; they see no
+GPU, while the refilling process keeps its GPUs. What they print goes to a
+file (`_tool.CHILD_OUTPUT`) whose lines the refill passes on to its log.
+When they cannot start (e.g. a params file that needs a GPU when it is
+imported) or die, the refill logs their error and goes on in its own
+process.
 """
 
 from __future__ import annotations
@@ -319,7 +320,7 @@ class NodeTableRefiller:
         write = _quiet(log)
         counts = dict(repacked=0, extracted=0, recomputed=0)
         fallback = []
-        with _hidden_gpus(jobs > 1), _Execution(jobs, log, stop) as execute:
+        with _Execution(jobs, log, stop) as execute:
             for step in steps:
                 _tool._stop_requested(stop)
                 if step.kind == 'repack':
@@ -458,24 +459,6 @@ def _quiet(log):
             return
         log(line)
     return write
-
-
-@contextlib.contextmanager
-def _hidden_gpus(active=True):
-    """Hide the GPUs from the processes a parallel refill spawns: they import
-    the params file, which may move its network to a GPU."""
-    if not active:
-        yield
-        return
-    old = os.environ.get('CUDA_VISIBLE_DEVICES')
-    os.environ['CUDA_VISIBLE_DEVICES'] = ''
-    try:
-        yield
-    finally:
-        if old is None:
-            os.environ.pop('CUDA_VISIBLE_DEVICES', None)
-        else:
-            os.environ['CUDA_VISIBLE_DEVICES'] = old
 
 
 class _Execution:
