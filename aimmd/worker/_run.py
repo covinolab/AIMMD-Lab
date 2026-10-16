@@ -281,3 +281,11 @@ class WorkerRun(ABC):
             value = getattr(params, name, None)
             if isinstance(value, (list, tuple)):
                 params.__dict__[name] = value[sidx]
+        # The source files of THIS system's initial paths, which a
+        # free_seeding_position other than 'boundary' reads back
+        # (Params.untrimmed_initial_paths). The flat list Params.load records
+        # holds every system's: the bound states_function cannot evaluate the
+        # others', and their base names may equal this system's own.
+        by_system = params.__dict__.get('_initial_path_files_by_system')
+        if by_system is not None and sidx < len(by_system):
+            params.__dict__['_initial_path_files'] = list(by_system[sidx])

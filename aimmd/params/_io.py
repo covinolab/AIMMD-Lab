@@ -266,6 +266,15 @@ class ParamsIO(ABC):
                 if 'initial_paths' in module.__dict__:
                     self.__dict__['_initial_path_files'] = \
                         resolve_path_names(module.__dict__['initial_paths'])
+                    # A multi-system file gives one entry per system; keep
+                    # the names apart per system as well, since a worker is
+                    # bound to one system and may read only its own
+                    # (WorkerRun._bind_system_id narrows the list to them).
+                    groups = module.__dict__['initial_paths']
+                    if (fields.get('multi_system', False)
+                            and isinstance(groups, (list, tuple))):
+                        self.__dict__['_initial_path_files_by_system'] = [
+                            resolve_path_names(group) for group in groups]
 
                 # after execution: swap original and local modules names
                 # avoiding conflicts
