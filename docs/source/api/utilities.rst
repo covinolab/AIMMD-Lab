@@ -43,6 +43,8 @@ Robust, lock-protected caches for trajectory readers and NumPy arrays.
 .. automodule:: aimmd.cache.mda
    :members:
 
+.. autofunction:: aimmd.cache.forget
+
 Core utilities
 --------------
 
@@ -55,4 +57,10 @@ Engines
 The pure-Python toy engine used by the tests and tutorials.
 
 .. automodule:: aimmd.engines.toy
+   :members:
+
+What a GROMACS checkpoint records (read with ``gmx dump -cp``), used to roll
+runs back to the checkpoint they resume from.
+
+.. automodule:: aimmd.engines.gromacs
    :members:

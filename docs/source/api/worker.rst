@@ -11,3 +11,13 @@ signal-driven cooperative termination, resource binding, and log redirection.
    :members:
    :inherited-members:
    :show-inheritance:
+
+Restarts
+--------
+
+Before a worker resumes ``mdrun`` from a checkpoint, it rolls the trajectory
+and its per-frame caches back to that checkpoint (see "Restarts and
+Checkpoints" in :doc:`../workflow`).
+
+.. automodule:: aimmd.worker.rollback
+   :members:
