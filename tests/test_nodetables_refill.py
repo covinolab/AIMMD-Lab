@@ -72,6 +72,23 @@ from tests._nodetables_toy import (ATOM_TYPES, CUTOFF, ENVIRONMENT_SELECTION,
 from tests._series_refill import (make_full_campaign, remove_legacy_series,
                                   run_trajectories)
 
+
+def _refill_lock_free(run):
+    """True if no process holds the run's refill lock.
+
+    Tests the lock, not its file: filelock < 4 deletes the lock file on
+    release, filelock >= 4 keeps it (only the flock is released).
+    """
+    from filelock import FileLock, Timeout
+    lock = FileLock(os.path.join(run, series.REFILL_LOCK))
+    try:
+        lock.acquire(timeout=0)
+    except Timeout:
+        return False
+    lock.release()
+    return True
+
+
 WORKTREE = Path(__file__).resolve().parents[1]
 HELPER = Path(__file__).resolve().parent / '_series_refill.py'
 OTHER_ENVIRONMENT = ENVIRONMENT_SELECTION.replace('5.0', '4.5')
@@ -458,7 +475,7 @@ def test_a_stop_request_ends_the_refill_between_chunks(tmp_path):
     assert len(chunks) == 2                 # of 6 trajectories
     assert 'stopped on request after' in lines[-1]
     assert not list(Path(campaign.run).rglob('*.tmp'))
-    assert not os.path.exists(Path(campaign.run) / series.REFILL_LOCK)
+    assert _refill_lock_free(campaign.run)
     assert not series_coverage(campaign.run, new.series).complete
     # the next start refills the rest
     assert ensure_series_coverage(_params(campaign.folder, new),
@@ -855,7 +872,7 @@ def test_one_process_refills_while_the_others_wait(tmp_path):
         assert np.array_equal(
             bits(np.load(series_file(trajectory, featurizer.series))),
             bits(expected_rows(featurizer, trajectory)))
-    assert not os.path.exists(Path(campaign.run) / series.REFILL_LOCK)
+    assert _refill_lock_free(campaign.run)
 
 
 def test_a_failed_refill_stops_the_waiters_without_a_second_refill(
@@ -885,7 +902,7 @@ def test_a_failed_refill_stops_the_waiters_without_a_second_refill(
     coverage = series_coverage(campaign.run,
                                toy_featurizer(campaign.folder, 64).series)
     assert len(coverage.missing) == len(coverage.trajectories) == 6
-    assert not os.path.exists(Path(campaign.run) / series.REFILL_LOCK)
+    assert _refill_lock_free(campaign.run)
     assert os.path.exists(Path(campaign.run) / series.REFILL_FAILED)
 
     # processes of the same job that start after the failure (a late

@@ -52,6 +52,23 @@ from aimmd.core.series import (SeriesCoverageError, SeriesMismatchError,
                                find_trajectories, register_series,
                                series_coverage, series_policy)
 
+
+def _refill_lock_free(run):
+    """True if no process holds the run's refill lock.
+
+    Tests the lock, not its file: filelock < 4 deletes the lock file on
+    release, filelock >= 4 keeps it (only the flock is released).
+    """
+    from filelock import FileLock, Timeout
+    lock = FileLock(os.path.join(run, series.REFILL_LOCK))
+    try:
+        lock.acquire(timeout=0)
+    except Timeout:
+        return False
+    lock.release()
+    return True
+
+
 SERIES = 'descriptors-gn0123456789'
 OTHER = 'descriptors-gnabcdefabcd'
 
@@ -364,7 +381,7 @@ def test_with_refill_a_worker_refills_once_and_logs_it(tmp_path):
     assert lines[-1].startswith(f'SERIES REFILL: done: {SERIES!r} of 3 '
                                 f'trajectories (21 frames)')
     assert 'refilled by the test route' in lines[-1]
-    assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+    assert _refill_lock_free(run)
     assert not os.path.exists(Path(run) / series.REFILL_INFO)
     # complete now: a second start does not refill
     assert ensure_series_coverage(_params(tmp_path), run, log=lines.append)
@@ -381,7 +398,7 @@ def test_a_refill_that_leaves_trajectories_missing_raises(tmp_path):
     assert '3 trajectories still have no file of the series' in \
         str(info.value)
     assert all(line.startswith('SERIES REFILL:') for line in lines)
-    assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+    assert _refill_lock_free(run)
 
 
 def test_a_failed_write_of_the_info_file_leaves_no_temporary(tmp_path,
@@ -438,7 +455,7 @@ def test_a_params_file_written_for_another_series_stops_the_job(tmp_path):
         check_series_coverage(_params(tmp_path), run)
     assert str(launcher.value) == message
     # nothing was written into the run
-    assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+    assert _refill_lock_free(run)
 
 
 def test_the_mismatch_names_the_series_of_a_multi_system_featurizer(
@@ -540,7 +557,7 @@ def test_a_failed_refill_is_not_repeated_by_a_later_process_of_the_job(
         SERIES, 'failed', '4711')
     assert marker['role'] == 'train run1' and marker['pid'] == os.getpid()
     assert 'RuntimeError: no space left' in marker['error']
-    assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+    assert _refill_lock_free(run)
 
     # a process of the same job that starts after the lock was released
     lines = []
@@ -633,7 +650,7 @@ def test_a_stop_request_ends_a_refill_and_does_not_block_the_job(
     assert refiller.calls == []
     assert lines[-1].startswith(f'SERIES REFILL: stopped before the refill '
                                 f'of {SERIES!r}')
-    assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+    assert _refill_lock_free(run)
 
     # asked to stop during the refill: the refill callable ends it
     requested.clear()
@@ -650,7 +667,7 @@ def test_a_stop_request_ends_a_refill_and_does_not_block_the_job(
     assert len(series_coverage(run, SERIES).missing) == 2
     assert all(line.startswith('SERIES REFILL:') for line in lines)
     assert 'stopped on request after' in lines[-1]
-    assert not os.path.exists(Path(run) / series.REFILL_LOCK)
+    assert _refill_lock_free(run)
     marker = _marker(run)
     assert (marker['status'], marker['job']) == ('stopped', '4711')
     assert 'stopped between trajectories' in marker['error']
