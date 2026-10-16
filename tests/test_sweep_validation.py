@@ -200,6 +200,11 @@ def _sweep_launcher(tmp_path, monkeypatch, stem):
     monkeypatch.setattr("aimmd.launcher._helpers.get_num_cpus", lambda: 4)
     monkeypatch.setattr("aimmd.launcher._helpers.get_num_gpus", lambda: 0)
     monkeypatch.setattr("aimmd.params._io.ParamsIO.save", lambda self, *a, **k: str(tmp_path / "params.py"))
+    # The placeholder params use the gromacs engine, so create_job requires a
+    # resolved GROMACS (aimmd._config.require_gromacs). These tests only read
+    # the job script, which needs none: stand in a path so that they also run
+    # where gmx is not on PATH.
+    monkeypatch.setattr("aimmd._config.GROMACS", "/usr/bin/gmx")
     return Launcher([params], [str(tmp_path / "run")])
 
 
