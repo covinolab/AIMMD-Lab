@@ -34,12 +34,14 @@ Each time the worker is about to resume ``mdrun`` from ``<deffnm>.cpt``,
 checkpoint:
 
 - appending: the trajectory is cut to the length the checkpoint recorded,
-  exactly as ``mdrun`` is about to cut it, and every per-frame cache of it is
-  cut to the frames that are left;
+  exactly as ``mdrun`` is about to cut it, every per-frame cache of it is cut
+  to the frames that are left, and so is the PLUMED ``<deffnm>_COLVAR`` of a
+  file-mode bias;
 - ``-noappend``: every part numbered above the checkpoint's part is moved,
   with all its files (trajectory, caches, PLUMED ``_COLVAR`` slice, log,
   energies), into a new folder ``rolled_back_<UTC time>/`` beside it, so that
-  nothing is deleted and no AIMMD glob sees them any more;
+  nothing is deleted and no AIMMD glob sees them any more; the rows of those
+  parts are moved out of the cumulative PLUMED ``COLVAR`` too;
 - the worker's in-memory Path and this process' reader and array caches
   forget what was rolled back.
 
@@ -55,6 +57,8 @@ back either.
 
 # external
 import os
+import re
+import sys
 import glob
 from bisect import bisect_left
 from dataclasses import dataclass, field
@@ -66,12 +70,16 @@ from ..cache import forget
 from ..cache.npy import truncate_npy
 from ..engines.gromacs import (CheckpointError, read_checkpoint, gmx_command,
                                checksum_matches, format_ps)
+from ..params._methods import (_part_row_ranges, _colvar_rowcount, _cut_colvar,
+                               _append_colvar)
 
 # first words of a rollback's log entry
 ROLLBACK = '!!! CHECKPOINT ROLLBACK'
 
 # sidecars named like a per-frame cache that do not have one row per frame
 NOT_PER_FRAME = ('sweep_frame',)
+
+_PART = re.compile(r'^(?P<base>.+)\.part(?P<part>\d{4})$')
 
 
 @dataclass
@@ -270,7 +278,7 @@ def _refusal(fname, record):
     return None
 
 
-def rollback_appended(trajectory, checkpoint):
+def rollback_appended(trajectory, checkpoint, bias_file=False):
     """
     Cut a trajectory that ``mdrun`` appends to, and its caches, back to a
     checkpoint.
@@ -289,6 +297,11 @@ def rollback_appended(trajectory, checkpoint):
         The trajectory, e.g. ``'run1/chainR0/back.xtc'``.
     checkpoint : aimmd.engines.gromacs.Checkpoint
         The checkpoint ``mdrun`` resumes from.
+    bias_file : bool, optional
+        Whether PLUMED writes the bias to files (``record_bias=True`` and
+        ``bias_source='file'``); the half's ``<deffnm>_COLVAR``, which holds
+        one row per frame, is then cut too, after the rows of a session whose
+        job was killed (still in the folder's ``COLVAR``) were appended to it.
 
     Returns
     -------
@@ -326,8 +339,20 @@ def rollback_appended(trajectory, checkpoint):
         old = truncate_npy(cache, n_keep)
         if old is not None and old > n_keep:
             caches.append(f'{series} ({old})')
+    colvar = None
+    if bias_file:
+        fname = f'{os.path.splitext(trajectory)[0]}_COLVAR'
+        session = os.path.join(os.path.dirname(trajectory) or '.', 'COLVAR')
+        if os.path.exists(session):
+            # the rows of a session whose job was killed before AIMMD could
+            # append them (see aimmd.params._methods.run_simulation)
+            _append_colvar(session, fname)
+        if os.path.exists(fname):
+            rows = _cut_colvar(fname, n_keep)
+            if rows > n_keep:
+                colvar = f'{os.path.basename(fname)} cut from {rows} to {n_keep} rows'
 
-    if size == offset and not caches:
+    if size == offset and not caches and colvar is None:
         return Rollback(checkpoint, (
             f'... {trajectory} ends at {resumes} ({n_keep} frames): nothing to '
             f'roll back'))
@@ -346,6 +371,8 @@ def rollback_appended(trajectory, checkpoint):
         entry.append(f'{name} ends at the checkpoint ({n_keep} frames)')
     if caches:
         entry.append(f'caches cut to {n_keep} rows: {", ".join(caches)}')
+    if colvar:
+        entry.append(colvar)
     return Rollback(checkpoint, '; '.join(entry), kept={trajectory: n_keep})
 
 
@@ -363,7 +390,73 @@ def _new_folder(parent, stem='rolled_back'):
             candidate = f'{folder}_{k}'
 
 
-def rollback_parts(deffnm, ext, checkpoint):
+def _owns_cumulative_colvar(deffnm, ext):
+    """
+    Whether the cumulative PLUMED COLVAR of the folder belongs to `deffnm`.
+
+    PLUMED appends to one ``COLVAR`` per folder for as long as a free
+    trajectory is resumed, and starts it afresh for each new trajectory, so it
+    belongs to the newest trajectory in the folder (as in
+    :func:`aimmd.pathensemble.bias_utils.derive_bias_from_cumulative_colvar`).
+    """
+    folder, base = os.path.split(deffnm)
+    present = set()
+    for fname in glob.glob(os.path.join(glob.escape(folder or '.'),
+                                        f'*.part????{ext}')):
+        match = _PART.match(os.path.basename(fname)[:-len(ext)])
+        if match:
+            present.add(match.group('base'))
+    return bool(present) and base == max(present)
+
+
+def _rollback_plumed(deffnm, ext, part, folder):
+    """
+    Move the PLUMED rows of rolled-back parts out of the folder's COLVAR files.
+
+    Called once the parts after `part` are gone from beside `deffnm`. PLUMED
+    writes one cumulative ``COLVAR`` per folder, which the free worker slices
+    into per-part ``_COLVAR`` files after each ``mdrun``
+    (:func:`aimmd.params._methods._split_cumulative_colvar`). It then keeps the
+    rows of the parts still there (as their slices or frame counts account for
+    them, see :func:`aimmd.params._methods._part_row_ranges`); the rows after
+    them go to ``<folder>/COLVAR``. PLUMED appends the resumed part's rows
+    after the kept ones, so its slice starts at the right row. Per-part
+    ``COLVAR.partNNNN`` files that some PLUMED builds write instead, and that
+    were not renamed yet, are moved for parts after `part`.
+
+    Returns
+    -------
+    str or None
+        What was done, for the log; None if nothing was changed.
+    """
+    directory, base = os.path.split(deffnm)
+    directory = directory or '.'
+    cumulative = os.path.join(directory, 'COLVAR')
+    leftovers = [fname for fname in glob.glob(os.path.join(
+                     glob.escape(directory), 'COLVAR.part[0-9][0-9][0-9][0-9]'))
+                 if int(fname[-4:]) > part]
+    if not (os.path.exists(cumulative) or leftovers):
+        return None
+    if not _owns_cumulative_colvar(deffnm, ext):
+        return 'PLUMED COLVAR left alone (it belongs to a newer trajectory)'
+    done = []
+    for fname in sorted(leftovers):
+        os.rename(fname, os.path.join(folder, os.path.basename(fname)))
+    if leftovers:
+        done.append(f'moved {len(leftovers)} COLVAR.partNNNN file'
+                    f'{"s" if len(leftovers) != 1 else ""}')
+    if os.path.exists(cumulative):
+        ranges = _part_row_ranges(directory, base, ext, sys.maxsize)
+        keep = max((stop for _, stop, _ in ranges.values()), default=0)
+        rows = _colvar_rowcount(cumulative)
+        if rows > keep:
+            _cut_colvar(cumulative, keep, dropped=os.path.join(folder, 'COLVAR'))
+            done.append(f'cumulative COLVAR cut from {rows} to {keep} rows (the '
+                        f'others moved too)')
+    return '; '.join(done) or None
+
+
+def rollback_parts(deffnm, ext, checkpoint, bias_file=False):
     """
     Move the parts of a ``-noappend`` run that come after a checkpoint aside.
 
@@ -383,6 +476,10 @@ def rollback_parts(deffnm, ext, checkpoint):
         Trajectory extension, e.g. ``'.xtc'``.
     checkpoint : aimmd.engines.gromacs.Checkpoint
         The checkpoint ``mdrun`` resumes from.
+    bias_file : bool, optional
+        Whether PLUMED writes the bias to files (``record_bias=True`` and
+        ``bias_source='file'``): the rows of the moved parts are then moved
+        out of the cumulative ``COLVAR`` as well.
 
     Returns
     -------
@@ -420,6 +517,8 @@ def rollback_parts(deffnm, ext, checkpoint):
             os.rename(fname, os.path.join(folder, os.path.basename(fname)))
             files += 1
     forget(*trajectories)
+    colvar = (_rollback_plumed(deffnm, ext, checkpoint.part, folder)
+              if bias_file else None)
 
     numbers = sorted(later)
     parts = (f'part {numbers[0]:04d}' if len(numbers) == 1 else
@@ -430,6 +529,8 @@ def rollback_parts(deffnm, ext, checkpoint):
              + (f'; {span}' if (span := _span(t_first, t_last, checkpoint))
                 else '')
              + f') to {folder}']
+    if colvar:
+        entry.append(colvar)
     return Rollback(checkpoint, '; '.join(entry),
                     kept={fname: 0 for fname in trajectories}, moved_to=folder)
 
@@ -454,8 +555,9 @@ def rollback_to_checkpoint(deffnm, trajectory=None, params=None,
         The Path the worker extends from these files; frames that were rolled
         back are removed from it, in place.
     params : aimmd.Params or None, optional
-        Gives the trajectory extension and the GROMACS command (from
-        ``gmx_grompp``, see :func:`aimmd.engines.gromacs.gmx_command`).
+        Gives the trajectory extension, the GROMACS command (from
+        ``gmx_grompp``, see :func:`aimmd.engines.gromacs.gmx_command`) and
+        whether the bias is recorded from PLUMED files.
     noappend : bool, optional
         True for ``-noappend`` runs (free simulations).
 
@@ -474,10 +576,12 @@ def rollback_to_checkpoint(deffnm, trajectory=None, params=None,
               f'back to it; if it is older than the trajectory, caches keep '
               f'rows of frames mdrun now simulates again: {exception}')
         return None
+    bias_file = (bool(getattr(params, 'record_bias', False))
+                 and getattr(params, 'bias_source', '') == 'file')
     if noappend:
-        result = rollback_parts(deffnm, ext, checkpoint)
+        result = rollback_parts(deffnm, ext, checkpoint, bias_file)
     else:
-        result = rollback_appended(f'{deffnm}{ext}', checkpoint)
+        result = rollback_appended(f'{deffnm}{ext}', checkpoint, bias_file)
     print(result.message)
     if trajectory is not None and result.kept:
         truncate_path(trajectory, result.kept)

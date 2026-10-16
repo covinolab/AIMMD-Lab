@@ -13,12 +13,12 @@ No MD runs here. ``gmx mdrun`` is replaced, inside
 ``aimmd.params._methods.execute_command``, by :class:`FakeGromacs`, which does
 to the files what GROMACS does: appending, it refuses a file shorter than the
 checkpoint's length, truncates the file to it and appends whole frames in
-bursts; with ``-noappend`` it writes part ``s + 1``. ``gmx dump -cp`` is
-replaced by a checkpoint object (``aimmd.worker.rollback.read_checkpoint`` is
-monkeypatched). Everything else is AIMMD's own code:
-``WorkerSimulate._simulate`` and its stop condition, ``Path.extend`` with the
-worker's pipeline, the compute ledger, the real ``Params.run_simulation``, and
-the rollback.
+bursts; with ``-noappend`` it writes part ``s + 1``. It also writes one PLUMED
+COLVAR row per frame. ``gmx dump -cp`` is replaced by a checkpoint object
+(``aimmd.worker.rollback.read_checkpoint`` is monkeypatched). Everything else
+is AIMMD's own code: ``WorkerSimulate._simulate`` and its stop condition,
+``Path.extend`` with the worker's pipeline, the compute ledger, the real
+``Params.run_simulation`` with its COLVAR handling, and the rollback.
 
 The toy: 12 atoms (compressed XTC frames of varying size, as in production),
 the CV is x of atom 0, A below 20, B above 40, one frame every 10 ps.
@@ -39,7 +39,8 @@ from MDAnalysis.lib.formats.libmdaxdr import XTCFile
 from aimmd import MDA_CACHE, NPY_CACHE
 from aimmd.cache.npy import save_npy, update_npy
 from aimmd.engines.gromacs import Checkpoint, CheckpointError, CheckpointOutput
-from aimmd.params._methods import ParamsMethods
+from aimmd.params._methods import (ParamsMethods, _append_colvar, _colvar_rowcount,
+                                   _cut_colvar)
 from aimmd.path import Path
 from aimmd.worker import rollback
 from aimmd.worker._simulate import WorkerSimulate
@@ -150,6 +151,11 @@ def rows(fname):
     return len(np.load(fname))
 
 
+def colvar_times(fname):
+    data = np.loadtxt(fname, comments='#', ndmin=2)
+    return data[:, 0]
+
+
 def state(xtc):
     """Size of a trajectory, rows of its caches, and the md5 of all of them."""
     caches = sorted(glob.glob(glob.escape(xtc) + '.*.npy'))
@@ -170,6 +176,7 @@ class Session:
     cut: int = 0            # appending: the checkpoint's length of the file
     part: int = None        # -noappend: the part number this session writes
     burst: int = 10         # frames written between two polls of the worker
+    colvar: bool = False    # PLUMED writes a COLVAR row per frame
 
 
 class FakeGromacs:
@@ -202,11 +209,19 @@ class FakeGromacs:
             self.seen.append(sorted(os.listdir(folder)))
             open(target, 'wb').close()      # -nobackup overwrites a part
         offsets = frame_bytes(session.source)
+        times = on_disk(session.source)['times']
+        colvar = os.path.join(folder, 'COLVAR')
         for a in range(0, len(offsets) - 1, session.burst):
             b = min(a + session.burst, len(offsets) - 1)
             with open(session.source, 'rb') as src, open(target, 'ab') as dst:
                 src.seek(offsets[a])
                 dst.write(src.read(offsets[b] - offsets[a]))
+            if session.colvar:   # PLUMED appends, after a restart too
+                new = not os.path.exists(colvar)
+                with open(colvar, 'a') as fh:
+                    if new:
+                        fh.write('#! FIELDS time opes.bias\n')
+                    fh.writelines(f'{t:.6f} {t / 1000:.6f}\n' for t in times[a:b])
             if stop_condition():
                 break
         return 0
@@ -279,7 +294,8 @@ def run(tmp_path, monkeypatch):
     def job1(n=100, params=None):
         """mdrun writes realisation 1 (n frames, all in R); the job then ends."""
         source = write_frames(sources / 'run1.xtc', [x_run1(i) for i in range(n)], 0)
-        job(Session(source), params=params)
+        colvar = bool(params and params.record_bias)
+        job(Session(source, colvar=colvar), params=params)
         new_process()
 
     def realisation2(restart, n=100):
@@ -539,6 +555,80 @@ def test_no_checkpoint_no_rollback(run, capsys, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# PLUMED bias of a half: one row per frame across sessions
+# ---------------------------------------------------------------------------
+
+def test_half_colvar_keeps_one_row_per_frame_across_restarts(run, capsys):
+    params = make_params(record_bias=True)
+    run.job1(params=params)
+    colvar = f'{run.deffnm}_COLVAR'
+    assert _colvar_rowcount(colvar) == 100
+    capsys.readouterr()
+    checkpoint = checkpoint_after(run.xtc, 30)
+    session = Session(run.realisation2(30), cut=checkpoint.output(run.xtc).offset,
+                      colvar=True)
+    result, _, _ = run.job(session, checkpoint=checkpoint, params=params)
+    out = capsys.readouterr().out
+    assert 'back_COLVAR cut from 100 to 30 rows' in out
+    assert result[0] + result[3] == 44
+    # the session's rows were appended, not put in place of the earlier ones
+    assert not os.path.exists(os.path.join(run.folder, 'COLVAR'))
+    np.testing.assert_allclose(colvar_times(colvar), on_disk(run.xtc)['times'])
+
+
+def test_half_colvar_of_a_killed_session_is_merged_then_cut(run, capsys):
+    """A job killed while mdrun ran leaves its session's rows in COLVAR."""
+    params = make_params(record_bias=True)
+    run.job1(params=params)
+    # the killed session: 20 more frames and their PLUMED rows, never moved
+    killed = write_frames(os.path.join(os.path.dirname(run.folder), 'killed.xtc'),
+                          [x_run1(i) for i in range(100, 120)], 100, seed=5)
+    offsets = frame_bytes(killed)
+    with open(killed, 'rb') as src, open(run.xtc, 'ab') as dst:
+        dst.write(src.read())
+    times = on_disk(killed)['times']
+    with open(os.path.join(run.folder, 'COLVAR'), 'w') as fh:
+        fh.write('#! FIELDS time opes.bias\n')
+        fh.writelines(f'{t:.6f} {t / 1000:.6f}\n' for t in times)
+    assert len(offsets) == 21
+    # its last checkpoint was written after frame 109
+    checkpoint = checkpoint_after(run.xtc, 110)
+    session = Session(run.realisation2(110), cut=checkpoint.output(run.xtc).offset,
+                      colvar=True)
+    capsys.readouterr()
+    run.job(session, checkpoint=checkpoint, params=params)
+    out = capsys.readouterr().out
+    assert 'back_COLVAR cut from 120 to 110 rows' in out
+    np.testing.assert_allclose(colvar_times(f'{run.deffnm}_COLVAR'),
+                               on_disk(run.xtc)['times'])
+
+
+def test_append_colvar_skips_rows_it_already_has(tmp_path):
+    target, source = tmp_path / 'back_COLVAR', tmp_path / 'COLVAR'
+    target.write_text('#! FIELDS time b\n0.0 1\n10.0 2\n20.0 3')   # no newline
+    source.write_text('#! FIELDS time b\n10.0 2\n20.0 3\n30.0 4\n40.0 5\n')
+    _append_colvar(str(source), str(target))
+    assert not source.exists()
+    assert target.read_text() == ('#! FIELDS time b\n0.0 1\n10.0 2\n20.0 3\n'
+                                  '30.0 4\n40.0 5\n')
+    source.write_text('#! FIELDS time b\n0.0 9\n')
+    other = tmp_path / 'forw_COLVAR'
+    _append_colvar(str(source), str(other))      # no target yet: moved
+    assert other.read_text() == '#! FIELDS time b\n0.0 9\n'
+
+
+def test_cut_colvar(tmp_path):
+    fname = tmp_path / 'COLVAR'
+    fname.write_text('#! FIELDS time b\n0 1\n1 2\n#! SET x\n2 3\n3 4\n')
+    dropped = tmp_path / 'dropped'
+    assert _cut_colvar(str(fname), 5) == 4          # nothing to cut
+    assert not dropped.exists()
+    assert _cut_colvar(str(fname), 2, dropped=str(dropped)) == 4
+    assert fname.read_text() == '#! FIELDS time b\n0 1\n1 2\n#! SET x\n'
+    assert dropped.read_text() == '2 3\n3 4\n'
+
+
+# ---------------------------------------------------------------------------
 # (c) free run (-noappend): later parts are moved aside
 # ---------------------------------------------------------------------------
 
@@ -562,10 +652,17 @@ def free(tmp_path, monkeypatch):
                  100, seed=13)
     parts = sorted(glob.glob(f'{deffnm}.part????.xtc'))
     Path(parts, remove_overlapping_frames=True, pipeline=PIPELINE[:-1])
+    lines = ['#! FIELDS time opes.bias\n']
     for part in parts[1:]:
-        save_npy(f'{part}.bias.npy', on_disk(part)['times'] / 1000)
-        for ext in ('_COLVAR', '.log', '.edr'):
+        times = on_disk(part)['times']
+        slice_rows = [f'{t:.6f} {t / 1000:.6f}\n' for t in times]
+        lines += slice_rows
+        with open(part.replace('.xtc', '_COLVAR'), 'w') as fh:
+            fh.writelines(['#! FIELDS time opes.bias\n'] + slice_rows)
+        save_npy(f'{part}.bias.npy', times / 1000)
+        for ext in ('.log', '.edr'):
             open(part.replace('.xtc', ext), 'w').close()
+    (folder / 'COLVAR').write_text(''.join(lines))
     open(f'{deffnm}.tpr', 'w').close()
     new_process()
 
@@ -577,7 +674,7 @@ def free(tmp_path, monkeypatch):
     monkeypatch.setattr(rollback, 'read_checkpoint', lambda fname, gmx: checkpoint)
     resumed = write_frames(sources / 'resumed.xtc',
                            [x_free(i) + 0.5 for i in range(40, 70)], 40, seed=14)
-    gromacs = FakeGromacs(Session(resumed, part=2))
+    gromacs = FakeGromacs(Session(resumed, part=2, colvar=True))
     monkeypatch.setattr('aimmd.params._methods.execute_command', gromacs)
     return SimpleNamespace(deffnm=deffnm, folder=folder, gromacs=gromacs,
                            resumed=resumed)
@@ -590,7 +687,8 @@ def test_free_run_moves_later_parts_aside_and_does_not_splice(free, capsys,
     if same_process:   # the worker's Path already holds the later parts
         path.extend(f'{free.deffnm}.part????.xtc', pipeline=PIPELINE[:-1])
         assert len(path) == 141
-    result = SimWorker(make_params())._simulate(free.deffnm, path, 'A', 'free')
+    result = SimWorker(make_params(record_bias=True))._simulate(
+        free.deffnm, path, 'A', 'free')
     out = capsys.readouterr().out
 
     moved = glob.glob(str(free.folder / 'rolled_back_*'))
@@ -602,13 +700,15 @@ def test_free_run_moves_later_parts_aside_and_does_not_splice(free, capsys,
         f'!!! CHECKPOINT ROLLBACK {free.deffnm}: mdrun resumes from traj000001.cpt '
         f'(part 1, step 200000, t = 400 ps) with part 0002; moved the 16 files '
         f'of parts 0002-0003 (90 frames; t = 500 to 1390 ps; 990.0 ps of '
-        f'simulated time past the checkpoint) to {moved}']
+        f'simulated time past the checkpoint) to {moved}; cumulative COLVAR cut '
+        f'from 140 to 50 rows (the others moved too)']
     # nothing deleted: every file of parts 2 and 3 is in the folder
     names = sorted(os.listdir(moved))
     for part in ('part0002', 'part0003'):
         for suffix in ('.xtc', '.xtc.states.npy', f'.xtc.{SERIES}.npy',
                        '.xtc.cv.npy', '.xtc.bias.npy', '_COLVAR', '.log', '.edr'):
             assert f'traj000001.{part}{suffix}' in names
+    assert _colvar_rowcount(os.path.join(moved, 'COLVAR')) == 90
     # mdrun started with parts 0 and 1 only; it wrote a new part 2
     assert 'traj000001.part0002.xtc' not in free.gromacs.seen[0]
     assert not os.path.exists(f'{free.deffnm}.part0003.xtc')
@@ -626,19 +726,48 @@ def test_free_run_moves_later_parts_aside_and_does_not_splice(free, capsys,
                    remove_overlapping_frames=True)
     np.testing.assert_allclose(rebuilt.times, expected)
     assert_caches_match(f'{free.deffnm}.part0002.xtc')
+    # PLUMED's rows of the new part follow the 50 rows of part 1, and the new
+    # slice holds exactly them
+    np.testing.assert_allclose(
+        colvar_times(str(free.folder / 'COLVAR')),
+        np.concatenate([np.arange(0, 500, DT), resumed_times]))
+    np.testing.assert_allclose(
+        colvar_times(f'{free.deffnm}.part0002_COLVAR'), resumed_times)
 
 
 def test_free_run_without_later_parts_is_quiet(free, capsys, monkeypatch):
     checkpoint = Checkpoint(f'{free.deffnm}.cpt', 3, 1, 1390.0)
     monkeypatch.setattr(rollback, 'read_checkpoint', lambda fname, gmx: checkpoint)
     before = sorted(os.listdir(free.folder))
-    result = rollback.rollback_to_checkpoint(free.deffnm, Path(), make_params(),
+    result = rollback.rollback_to_checkpoint(free.deffnm, Path(), make_params(True),
                                              noappend=True)
     assert not result.rolled_back and result.kept == {}
     assert result.message == (f'... {free.deffnm} resumes from traj000001.cpt '
                               f'(part 3, step 1, t = 1390 ps) with part 0004: '
                               f'nothing to roll back')
     assert sorted(os.listdir(free.folder)) == before
+
+
+def test_cumulative_colvar_of_a_newer_trajectory_is_left_alone(free, capsys):
+    """The cumulative COLVAR belongs to the newest trajectory of the folder."""
+    write_frames(str(free.folder / 'traj000002.part0000.xtc'), [x_free(0)], 0)
+    before = (free.folder / 'COLVAR').read_text()
+    result = rollback.rollback_to_checkpoint(free.deffnm, Path(), make_params(True),
+                                             noappend=True)
+    assert result.rolled_back
+    assert 'PLUMED COLVAR left alone' in result.message
+    assert (free.folder / 'COLVAR').read_text() == before
+
+
+def test_unrenamed_colvar_part_files_of_later_parts_are_moved(free):
+    """Some PLUMED builds write COLVAR.partNNNN; a killed mdrun leaves them."""
+    (free.folder / 'COLVAR.part0001').write_text('#! FIELDS time b\n0 0\n')
+    (free.folder / 'COLVAR.part0003').write_text('#! FIELDS time b\n0 0\n')
+    result = rollback.rollback_to_checkpoint(free.deffnm, Path(), make_params(True),
+                                             noappend=True)
+    assert 'moved 1 COLVAR.partNNNN file' in result.message
+    assert (free.folder / 'COLVAR.part0001').exists()
+    assert os.path.exists(os.path.join(result.moved_to, 'COLVAR.part0003'))
 
 
 def test_checkpoint_without_its_trajectory_keeps_the_relic_cleanup(
