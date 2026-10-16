@@ -50,13 +50,28 @@ trainers_share_gpu = True
 extra_free_frames = 0
 free_overriding_states = 'all'
 free_seeding_position = 'deepest'
+free_restart_source = 'equilibrium'      # with the bias below: trial-9-like
+
+# an in-state bias per system (reader mode, the toy stand-in for PLUMED's
+# COLVAR), so the 'equilibrium' restart pool is reweighted by exp(bias)
+record_bias = True
+bias_source = 'reader'
+bias_reactive_threshold = 0.5
 
 N_ATOMS = N_ATOMS_LITERAL
 
 
+def bias_function(trajectory, system_id=None):
+    cut_a = 2.0 if system_id == 's1' else 2.5
+    return np.array([0.7 if frame.positions[0, 0] < cut_a else 0.0
+                     for frame in trajectory], dtype=float)
+
+
 def toy_mdrun(ts):
+    # clipped, not wrapped (% 10): a deepest seed sits at the edge of A, and
+    # wrapping would join A to B there, which no physical CV does
     for _ in range(50):
-        ts.positions = (ts.positions + .05 * np.random.normal()) % 10
+        ts.positions = np.clip(ts.positions + .05 * np.random.normal(), 0, 10)
 
 
 def states_function(trajectory, system_id=None):
@@ -208,3 +223,4 @@ def test_multi_system_toy_run_seeds_every_system_from_its_own_path(in_tmp):
         assert ("First free simulation of 'A' is seeded at position 0.0 "
                 f"of the in-A run, i.e. frame {frame} of the initial "
                 "path") in log
+        assert "free_restart_source = 'equilibrium'" in log
