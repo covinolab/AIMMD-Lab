@@ -569,7 +569,10 @@ class ParamsMethods(ABC):
         backup : bool, optional
             If False, add `-nobackup` for GROMACS output control.
         cpt : float, optional
-            If non-zero, enable checkpointing (`-cpi` and `-cpt`) for GROMACS.
+            If non-zero, enable checkpointing (`-cpi` and `-cpt`) for GROMACS:
+            `mdrun` resumes from ``{deffnm}.cpt`` when it exists. Workers roll
+            the trajectory and its per-frame caches back to that checkpoint
+            before they call this method (see :mod:`aimmd.worker.rollback`).
         noappend : bool, optional
             If True, add `-noappend` for GROMACS to avoid appending to existing files.
         **kwargs
