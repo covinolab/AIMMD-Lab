@@ -44,6 +44,7 @@ from collections.abc import Iterable
 
 # aimmd imports
 from ..path import Path
+from ..cache import forget
 from ..cache.npy import load_npy
 from ..core.utils import process_state
 from ..pathensemble import PathEnsemble
@@ -76,9 +77,14 @@ class ParamsPaths(ABC):
             Reuse is conditional, unlike `shot_paths`. A shot path is immutable
             once registered; a free trajectory *grows* -- new parts appear and
             `gmx mdrun` appends to the last one in place. So a trajectory is
-            only reused when both its tuple of part filenames and the size of
-            its last part are unchanged; otherwise it is rebuilt. Trajectory
-            files are append-only, so size is a sound signal here.
+            only reused when each of its part files is unchanged: same name,
+            same file (inode) and same size. Otherwise it is rebuilt, and when
+            a part file was replaced or removed since `old` was built -- the
+            worker moves the parts after a restart checkpoint aside, and mdrun
+            writes new ones under the same names (see
+            :mod:`aimmd.worker.rollback`) -- this process' cached readers and
+            per-frame arrays of that file are dropped too, so that the new
+            file is not served the rows of the old one.
         
         Returns
         -------
@@ -105,18 +111,28 @@ class ParamsPaths(ABC):
         # Index any offered trajectories by their part signature. A miss just
         # means we rebuild, so a stale or partial `old` can only cost time.
         reusable = {}
+        old_parts = {}  # part file -> inode, as the offered trajectories saw it
         for old_traj in (old or []):
             sig = getattr(old_traj, '_aimmd_parts_sig', None)
             if sig is not None:
                 reusable.setdefault(sig, old_traj)
+                try:
+                    old_parts.update((fname, inode) for fname, inode, _ in sig)
+                except (TypeError, ValueError):
+                    pass   # not a signature of this version: nothing to drop
+        seen_parts = {}  # part file -> inode, as found now
 
         def _parts_sig(part_fnames):
-            """Identity of a free trajectory on disk: which parts, and how long
-            the last one is (the only one that can still be appended to)."""
+            """Identity of a free trajectory on disk: each part's name, file
+            (inode) and size. Only the last part grows; a part that was
+            replaced by another file of the same name has another inode."""
             try:
-                return (tuple(part_fnames), os.path.getsize(part_fnames[-1]))
+                sig = tuple((fname, (st := os.stat(fname)).st_ino, st.st_size)
+                            for fname in part_fnames)
             except OSError:
                 return None
+            seen_parts.update((fname, inode) for fname, inode, _ in sig)
+            return sig
 
         def _assemble(part_fnames, name, indicted_map, attr):
             """Reuse the previous object when nothing changed, else rebuild."""
@@ -177,6 +193,14 @@ class ParamsPaths(ABC):
                         fnames, f'traj{current}', indicted, 'exclude_from'))
                 except:
                     continue
+
+        # Part files that were replaced or removed since `old` was built: what
+        # this process still caches about them belongs to the old files.
+        replaced = [fname for fname, inode in old_parts.items()
+                    if seen_parts.get(fname, inode) != inode
+                    or not os.path.exists(fname)]
+        if replaced:
+            forget(*replaced)
 
         # all together, as a list
         return result
