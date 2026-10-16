@@ -53,6 +53,12 @@ Important constraints (by design)
 
 If these constraints are violated, `update_npy` raises a RuntimeError.
 
+Cutting rows (`truncate_npy`)
+-----------------------------
+`truncate_npy` keeps the first rows of a file and drops the others, under the
+same lock and by an atomic replace. It rolls a per-frame cache back when its
+trajectory loses frames (see :mod:`aimmd.worker.rollback`).
+
 Rationale
 ---------
 AIMMD commonly produces large arrays that are:
@@ -552,6 +558,75 @@ def update_npy(fname, data, indices, timeout=10.):
     
     # raise error
     raise RuntimeError(error_message)
+
+
+def truncate_npy(fname, nrows, timeout=10.):
+    """
+    Keep only the first `nrows` rows (axis 0) of a `.npy` file.
+
+    Used to roll a per-frame cache back when its trajectory loses frames (see
+    :mod:`aimmd.worker.rollback`). The cut is made under the file's lock and
+    written atomically: the kept rows go to a temporary file that then replaces
+    `fname`, so a reader sees either the old or the new file, never a mix.
+
+    Parameters
+    ----------
+    fname : str
+        `.npy` file to cut.
+    nrows : int
+        Number of leading rows to keep (negative counts as 0).
+    timeout : float
+        FileLock timeout.
+
+    Returns
+    -------
+    int or None
+        The number of rows the file had before the call, or None if it does
+        not exist or holds a 0-d array (which has no rows to cut). A file with
+        `nrows` rows or fewer is left untouched.
+
+    Raises
+    ------
+    RuntimeError
+        If the file cannot be cut after ten attempts (I/O errors, lock
+        timeouts); the message is the last error.
+    """
+    nrows = max(int(nrows), 0)
+    folder, name = extract_folder_and_name(fname)
+    temp_fname = f'{folder}/temp.{name}'
+    lock = f'{folder}/.{name}.lock'
+    error_message = ''
+    for _ in range(10):
+        try:
+            with FileLock(lock, timeout=timeout):
+                if not os.path.exists(fname):
+                    return None
+                shape = _npy_shape(fname)
+                if not shape:
+                    return None
+                old = int(shape[0])
+                if old > nrows:
+                    array = np.load(fname, mmap_mode='r')
+                    np.save(temp_fname, array[:nrows])
+                    del array
+                    os.replace(temp_fname, fname)
+                return old
+        except Exception as exception:
+            error_message = str(exception)
+            time.sleep(0.1)
+    raise RuntimeError(f'could not cut {fname!r} to {nrows} rows: '
+                       f'{error_message}')
+
+
+def _npy_shape(fname):
+    """Shape of the array in a `.npy` file, read from its header alone."""
+    with open(fname, 'rb') as file:
+        version = np.lib.format.read_magic(file)
+        if version == (1, 0):
+            header = np.lib.format.read_array_header_1_0(file)
+        else:
+            header = np.lib.format.read_array_header_2_0(file)
+    return header[0]
 
 
 class NpyReaderCache(AbstractCache):

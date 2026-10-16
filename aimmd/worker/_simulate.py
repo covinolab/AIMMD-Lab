@@ -9,7 +9,7 @@ This module defines :class:`WorkerSimulate`, a mixin providing the internal
 (or continue) an engine simulation while *simultaneously* consuming frames from
 a trajectory on disk.
 
-The method coordinates three concerns:
+The method coordinates four concerns:
 
 1) **Incremental trajectory ingestion**
    The provided :class:`~aimmd.path.Path` (or Path-like object) is extended from
@@ -32,6 +32,15 @@ The method coordinates three concerns:
    are cleaned), the method calls :meth:`~aimmd.params.Params.run_simulation`
    and supplies the nested ``stop_condition`` so the engine process can be
    terminated cooperatively.
+
+4) **Rollback to the restart checkpoint** (GROMACS)
+   When ``mdrun`` is about to resume from ``{deffnm}.cpt``, the trajectory, its
+   per-frame caches and the in-memory ``trajectory`` are first rolled back to
+   that checkpoint, always and however far that is: frames written after it
+   are cut (appending runs), and parts after it are moved to a
+   ``rolled_back_<UTC time>/`` folder (``-noappend`` runs). The worker log says
+   how far, in a line starting with ``!!! CHECKPOINT ROLLBACK``. See
+   :mod:`aimmd.worker.rollback`.
 
 The return value is the mutable ``check_result`` list, updated in place by
 ``trajectory.check_stop(...)``.
@@ -67,6 +76,7 @@ import time
 from abc import ABC
 
 # aimmd imports
+from .rollback import rollback_to_checkpoint
 from ..core.utils import now, remove
 
 # WorkerSimulate mixin class
@@ -122,6 +132,10 @@ class WorkerSimulate(ABC):
           cannot keep up with trajectory ingestion (``frames_left`` is truthy) or
           if global stop conditions trigger.
         - For GROMACS, simulation cannot start until ``{deffnm}.tpr`` exists.
+        - For GROMACS, before ``mdrun`` resumes from ``{deffnm}.cpt``, the
+          files, the caches and `trajectory` are rolled back to that
+          checkpoint (:func:`aimmd.worker.rollback.rollback_to_checkpoint`).
+          A trajectory found complete is not resumed and not rolled back.
         - For the toy engine, simulation cannot start until the first trajectory
           file exists (either ``{deffnm}{ext}`` or ``{deffnm}.part0000{ext}``).
         """
@@ -232,6 +246,13 @@ class WorkerSimulate(ABC):
             os.path.exists(f'{deffnm}.cpt') and
             not os.path.exists(f'{deffnm}{ext}')):
             remove(f'{deffnm}*', except_for=f'{deffnm}.tpr', verbose=True)
+
+        # mdrun resumes from the checkpoint: first roll the trajectory, its
+        # caches and the in-memory path back to it (the frames after it are
+        # about to be simulated again, under the same frame indices)
+        if engine == 'gromacs' and os.path.exists(f'{deffnm}.cpt'):
+            rollback_to_checkpoint(deffnm, trajectory, params, noappend)
+            old_nframes = min(old_nframes, len(trajectory))
 
         # simulate
         print(f"+++ starting simulating {deffnm} {now()}")

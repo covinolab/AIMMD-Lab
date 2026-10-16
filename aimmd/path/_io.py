@@ -4,14 +4,19 @@ aimmd.path._io
 
 Incremental I/O and trajectory growth utilities for :class:`aimmd.path.Path`.
 
-This module defines :class:`PathIO`, a mixin providing two mutating operations:
+This module defines :class:`PathIO`, a mixin providing the operations that
+grow, shrink and export a Path:
 
-- :meth:`PathIO.extend`  
+- :meth:`PathIO.extend`
   Incrementally grows an existing Path by
   1) optionally extending the **current last segment** (same filename),
   2) then appending frames from additional trajectory files.
 
-- :meth:`PathIO.write`  
+- :meth:`PathIO.truncate`
+  Keeps only the first frames of a Path, in place (used when the frames
+  behind them are rolled back to a GROMACS checkpoint).
+
+- :meth:`PathIO.write`
   Exports frames from a Path into a new trajectory file via MDAnalysis writers.
 
 Overview of Path storage
@@ -349,9 +354,50 @@ class PathIO(ABC):
             path = self[start:] if start else self
             for args in pipeline:
                 path.compute(*args)
-        
+
         # return
         return added_frames, frames_left
+
+    def truncate(self, nframes):
+        """
+        Keep only the first `nframes` frames of the Path, in place.
+
+        The worker calls it when frames it has already read are rolled back
+        to a GROMACS checkpoint (see :mod:`aimmd.worker.rollback`): the Path
+        it keeps extending must not hold frames that are no longer on disk.
+
+        Parameters
+        ----------
+        nframes : int
+            Number of leading frames to keep (negative counts as 0).
+
+        Returns
+        -------
+        int
+            Number of frames removed.
+
+        Notes
+        -----
+        In-memory series assigned to the Path (``states``, ``times``, ...) are
+        cut with the segments. ``weight``, ``exclude_from`` and
+        ``shooting_index`` are left as they are.
+        """
+        length = len(self)
+        nframes = min(max(int(nframes), 0), length)
+        if nframes == length:
+            return 0
+        if nframes:
+            k, loc = self._get_local_loc(nframes - 1)
+            self._fnames = self._fnames[:k + 1]
+            self._first = self._first[:k + 1]
+            self._last = self._last[:k] + [loc]
+        else:
+            self._fnames, self._first, self._last = [], [], []
+        for attribute, value in list(self.__dict__.items()):
+            if (attribute[0] != '_' and hasattr(value, '__len__')
+                    and len(value) == length):
+                self.__dict__[attribute] = value[:nframes]
+        return length - nframes
 
     def write(self, filename, key=None, atoms=None,
               t0=None, overwrite=False, return_writer=False):

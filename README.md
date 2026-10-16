@@ -126,6 +126,18 @@ and the runnable [tutorial notebooks](https://aimmd-lab.readthedocs.io/en/latest
 (a 1-D toy system and a multi-ligand run, both GROMACS-free) for complete
 examples.
 
+### Restarting a run
+
+Stopped workers are started again with the same command, and GROMACS segments
+resume from their checkpoints (`.cpt`). AIMMD always rolls each trajectory and
+its per-frame caches back to the checkpoint it resumes from, however far that
+is, and says so in the worker log in an entry starting with
+`!!! CHECKPOINT ROLLBACK` (see
+[Restarts and Checkpoints](https://aimmd-lab.readthedocs.io/en/latest/workflow.html#restarts-and-checkpoints)).
+**Never replace `.cpt` files by older copies**, e.g. by syncing a downloaded
+copy of a run folder back to the cluster: every segment would go back to those
+checkpoints and simulate the time since then again.
+
 ## Documentation
 
 Full documentation is hosted at <https://aimmd-lab.readthedocs.io>, including:
