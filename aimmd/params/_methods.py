@@ -82,6 +82,87 @@ def _colvar_rowcount(fname):
         return sum(1 for line in fh if not line.startswith('#'))
 
 
+def _replace_text(fname, lines):
+    """Write `lines` to `fname` through a temporary file (atomic replace)."""
+    folder, name = os.path.split(fname)
+    temp = os.path.join(folder, f'.{name}.tmp')
+    with open(temp, 'w') as fh:
+        fh.writelines(lines)
+    os.replace(temp, fname)
+
+
+def _cut_colvar(fname, nrows, dropped=None):
+    """Keep the first `nrows` data rows of a COLVAR-style file.
+
+    Comment lines before the cut stay; every line after the `nrows`-th data
+    row goes, into `dropped` if it is given. The file is replaced atomically,
+    and only if it has more than `nrows` rows. Used to roll a PLUMED COLVAR
+    back to a GROMACS checkpoint (see :mod:`aimmd.worker.rollback`).
+
+    Returns
+    -------
+    int
+        Number of data rows the file had.
+    """
+    kept, rest = [], []
+    rows = 0
+    with open(fname) as fh:
+        for line in fh:
+            is_row = not line.startswith('#')
+            if rest or (is_row and rows >= nrows):
+                rest.append(line)
+            else:
+                kept.append(line)
+            rows += is_row
+    if rows > nrows:
+        if dropped is not None:
+            with open(dropped, 'w') as fh:
+                fh.writelines(rest)
+        _replace_text(fname, kept)
+    return rows
+
+
+def _colvar_time(line):
+    """Time (first column) of a COLVAR data row, or None."""
+    try:
+        return float(line.split()[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def _append_colvar(source, target):
+    """Move the data rows of PLUMED file `source` to the end of `target`.
+
+    A shooting half resumed from checkpoints runs in several ``mdrun``
+    sessions, and PLUMED writes each session's rows to a new ``COLVAR``.
+    Appending them to ``{deffnm}_COLVAR`` keeps one row per frame of the
+    half's trajectory, as long as the file is cut back with the trajectory
+    whenever ``mdrun`` resumes (:mod:`aimmd.worker.rollback` does that). Rows
+    not later than the last row of `target` (a session appended before) are
+    skipped. `target` is replaced atomically; then `source` is removed.
+    """
+    if not os.path.exists(target):
+        os.rename(source, target)
+        return
+    with open(target) as fh:
+        lines = fh.readlines()
+    last = None
+    for line in reversed(lines):
+        if not line.startswith('#') and (last := _colvar_time(line)) is not None:
+            break
+    if lines and not lines[-1].endswith('\n'):
+        lines[-1] += '\n'
+    with open(source) as fh:
+        for line in fh:
+            if line.startswith('#') or not line.strip():
+                continue
+            time = _colvar_time(line)
+            if last is None or time is None or time > last:
+                lines.append(line if line.endswith('\n') else line + '\n')
+    _replace_text(target, lines)
+    os.remove(source)
+
+
 def _part_frame_count(pf):
     """Readable frame count of a trajectory part, or 0 if it cannot be opened."""
     reader = MDA_CACHE.get(pf)
@@ -569,7 +650,10 @@ class ParamsMethods(ABC):
         backup : bool, optional
             If False, add `-nobackup` for GROMACS output control.
         cpt : float, optional
-            If non-zero, enable checkpointing (`-cpi` and `-cpt`) for GROMACS.
+            If non-zero, enable checkpointing (`-cpi` and `-cpt`) for GROMACS:
+            `mdrun` resumes from ``{deffnm}.cpt`` when it exists. Workers roll
+            the trajectory and its per-frame caches back to that checkpoint
+            before they call this method (see :mod:`aimmd.worker.rollback`).
         noappend : bool, optional
             If True, add `-noappend` for GROMACS to avoid appending to existing files.
         **kwargs
@@ -618,7 +702,7 @@ class ParamsMethods(ABC):
             # Same rationale for PLUMED's per-file backups: PLUMED rotates any
             # existing output file (COLVAR, KERNELS, ...) to bck.N.<file> and
             # hard-aborts at 100 backups. Shooting dirs never hit this (their
-            # COLVAR is renamed to {deffnm}_COLVAR after each segment, below),
+            # COLVAR is moved to {deffnm}_COLVAR after each segment, below),
             # but every free{t} folder shares one COLVAR that PLUMED reopens
             # non-restart at each new trajectory, so bck.N.COLVAR would pile up
             # to 100 and crash the run. The per-part _COLVAR slices are cached
@@ -627,16 +711,20 @@ class ParamsMethods(ABC):
             for _bck in glob(os.path.join(deffnm_dir, 'bck.*')):
                 os.remove(_bck)
             result = execute_command(command, **kwargs)
-            # PLUMED bias: rename COLVAR → {deffnm}_COLVAR so that back and
+            # PLUMED bias: move COLVAR → {deffnm}_COLVAR so that back and
             # forward segments (and successive free-traj parts) never clobber
             # each other.  Only active when record_bias='file'.
             if (getattr(self, 'record_bias', False)
                     and getattr(self, 'bias_source', '') == 'file'):
                 if not noappend:
-                    # shoot mode: PLUMED writes COLVAR in the chain dir
+                    # shoot mode: PLUMED writes this session's rows to COLVAR
+                    # in the chain dir. They are appended to {deffnm}_COLVAR,
+                    # which holds the earlier sessions of the same half (cut
+                    # back to the restart checkpoint by aimmd.worker.rollback
+                    # before this session), so row i stays the row of frame i.
                     chain_colvar = os.path.join(deffnm_dir, 'COLVAR')
                     if os.path.exists(chain_colvar):
-                        os.rename(chain_colvar, f'{deffnm_abs}_COLVAR')
+                        _append_colvar(chain_colvar, f'{deffnm_abs}_COLVAR')
                 else:
                     # free mode: handle two PLUMED naming conventions.
                     # 1) Some PLUMED builds mirror GROMACS noappend numbering

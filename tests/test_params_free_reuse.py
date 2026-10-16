@@ -19,6 +19,12 @@ change: the tuple of part filenames, and the size of the last part. Trajectory
 files are append-only, so size is a sound signal (the mtime-granularity problem
 that sank the general stat guard applies to files rewritten in place, which
 these never are).
+
+A part can still be *replaced*: when mdrun resumes from a checkpoint older than
+the last parts, the worker moves those parts aside and mdrun writes new ones
+under the same names (aimmd.worker.rollback). The signature therefore also
+holds each part's inode, and this process' cached readers and rows of a part
+that was replaced or removed are dropped, so the new file is read afresh.
 """
 import os
 
@@ -115,3 +121,42 @@ def test_multiple_states_and_trajectories(tmp_path):
     assert len(second) == 3
     for p in second:
         assert any(p is q for q in first), f'{p.fname} was rebuilt'
+
+
+
+def test_a_part_replaced_after_a_rollback_is_read_afresh(tmp_path):
+    """The worker moved part 2 aside (restart from a checkpoint of part 1) and
+    mdrun wrote a new part 2: this process read the old part's labels before,
+    and must not serve them for the new one."""
+    import shutil
+    from glob import glob
+    import numpy as np
+    from aimmd.cache.npy import save_npy
+
+    def part(number, times):
+        os.makedirs(folder, exist_ok=True)
+        positions = np.zeros((len(times), 2, 3), dtype='float32')
+        positions[:, 1, 0] = 1.0
+        return write_trajectory(str(folder), stem=f'traj000001.part{number:04d}',
+                                positions=positions, times=times)
+
+    run = tmp_path / 'run1'
+    folder = run / 'freeA'
+    p1 = part(1, [0.0, 1.0, 2.0])
+    p2 = part(2, [3.0, 4.0, 5.0])
+    save_npy(f'{p1}.states.npy', np.array(list('AAA')))
+    save_npy(f'{p2}.states.npy', np.array(list('AAA')))
+    params = _params()
+    first = params.free_trajectories(str(run))
+    assert ''.join(first[0].states) == 'AAAAAA'   # now held in NPY_CACHE
+
+    aside = folder / 'rolled_back_20261016T000000Z'
+    aside.mkdir()
+    for fname in glob(f'{p2}*'):
+        shutil.move(fname, str(aside))
+    p2 = part(2, [3.0, 4.0])   # mdrun's new part 2, two frames so far
+    save_npy(f'{p2}.states.npy', np.array(list('RR')))
+
+    second = params.free_trajectories(str(run), old=first)
+    assert second[0] is not first[0]
+    assert ''.join(second[0].states) == 'AAARR'

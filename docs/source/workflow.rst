@@ -122,3 +122,59 @@ A typical run directory contains:
 - ``bins*.npy`` and ``densities*.npy`` for adaptive sampling state,
 - and the cached ``states``, ``descriptors``, and ``values`` arrays used during
   training and analysis, in the appropriate subfolders.
+
+Restarts and Checkpoints
+------------------------
+
+Workers can be stopped at any time (walltime, ``scancel``, a node failure) and
+started again with the same command: each worker picks up where the files on
+disk left off. GROMACS segments resume from their checkpoint ``<deffnm>.cpt``,
+by appending to the trajectory of a shooting half (``back.xtc``, ``forw.xtc``)
+or by writing the next ``.partNNNN`` file of a free trajectory.
+
+**AIMMD always rolls a run back to the checkpoint it resumes from.** The
+per-frame caches next to a trajectory (``<trajectory>.states.npy``, descriptor
+series, ``values``, ``bias``, ...) hold one row per frame, and AIMMD reuses a
+row for as long as the frame index exists. When the checkpoint is older than the
+last frame on disk, GROMACS simulates the frames after it again, under the same
+indices, so before ``mdrun`` resumes the worker makes the files agree with the
+checkpoint, however far back that is:
+
+- shooting halves: the trajectory is cut to the length the checkpoint recorded
+  (as ``mdrun`` is about to do itself), and every per-frame cache of it (and the
+  half's PLUMED ``<deffnm>_COLVAR``) is cut to the frames that are left;
+- free trajectories: every part after the checkpoint's part is moved, with all
+  its files (caches, PLUMED ``_COLVAR`` slice, log, energies), into a new folder
+  ``free<state>/rolled_back_<UTC time>/``, and its rows are moved out of the
+  cumulative PLUMED ``COLVAR``. Nothing is deleted, and AIMMD no longer sees
+  these parts.
+
+Each rollback is written to the worker log, in an entry that starts with
+``!!! CHECKPOINT ROLLBACK`` and says which checkpoint was used (part, step,
+time), how many frames and how much simulated time were dropped, and which
+caches were cut, for example (one line in the log)::
+
+    !!! CHECKPOINT ROLLBACK run1/chainR0/back.xtc: mdrun resumes from back.cpt
+    (part 1, step 72829100, t = 145658.2 ps); dropped the 70506 frames written
+    after it (t = 145660 to 850710 ps; 705.052 ns of simulated time past the
+    checkpoint), back.xtc cut from 85072 to 14566 frames; caches cut to 14566
+    rows: descriptors (85072), states (85072)
+
+A restart from a checkpoint at the end of the trajectory, the normal case,
+logs one short ``... nothing to roll back`` line. A job killed before
+``mdrun`` could write its last checkpoint loses the few frames since then. A
+trajectory that is already complete is not resumed, and not rolled back. If the
+checkpoint cannot be read (``gmx dump -cp`` fails), the log says so loudly and
+nothing is rolled back. The checkpoint is read with ``gmx dump -cp``, run with
+the executable of ``gmx_grompp``. See :mod:`aimmd.worker.rollback`.
+
+.. warning::
+
+   Never replace checkpoint files by older copies. The checkpoint decides how
+   far a run goes back: if ``.cpt`` files are restored from an older copy of a
+   run folder -- for example by syncing a downloaded copy back to the cluster --
+   every segment resumes from that older state. AIMMD then rolls the
+   trajectories back accordingly and simulates the lost time again, all of it,
+   without asking. When you copy a run folder back, leave out ``*.cpt`` (and the
+   GROMACS ``*.log`` and PLUMED ``COLVAR`` files), or copy the trajectories and
+   their caches from the same moment as the checkpoints.
