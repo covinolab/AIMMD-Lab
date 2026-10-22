@@ -26,6 +26,15 @@ dependencies:
 
   - gromacs
 
+    # TEMPORARY PIN (added 2026-10-22) -- remove this comment block and the
+    # `mkl<2026.2` line below once conda-forge/intel_repack-feedstock#145 is
+    # resolved (a fixed mkl 2026.2.x build, or build 881 marked broken).
+    # mkl 2026.2.0 (linux-64 build 881) ships no libmkl_gf_lp64.so.3, which the
+    # MKL variant of libblas (pulled in by pytorch) asks for on activation
+    # (MKL_INTERFACE_LAYER=LP64,GNU): every `import numpy` in the activated env
+    # then exits with code 2, silently under pytest's output capture.
+  - mkl<2026.2
+
     # Pip-only installs
   #- pip:
   #  - codecov
