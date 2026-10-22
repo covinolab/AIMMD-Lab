@@ -172,8 +172,28 @@ Each training round the trainer recomputes the committor on every reactive frame
 of the (growing) path ensemble before binning and reweighting. With several
 ligands feeding one trainer this value pass can outgrow the job walltime. The
 optional ``subsample_caps`` bounds it by running the value pass / bin generation
-/ reweighting / rate estimate on a fresh **random subsample** of the ensemble
-each round, while ``fit`` (network training) still sees the full ensemble.
+/ reweighting on a fresh **random subsample** of the ensemble each round, while
+``fit`` (network training) still sees the full ensemble.
+
+.. warning::
+
+   Subsampling is for **mechanism exploration only**. The subsample does not
+   represent the path ensemble: each category is capped on its own (every rare
+   transition is kept, but only a few of the many recrossings), while the
+   reweighting pools the categories. Rates and crossing probabilities computed
+   on it are therefore biased (in a G2 calixarene test the caps made
+   :math:`k_{AB}` 26 times too fast, growing with the data). While any cap is
+   active:
+
+   - ``record_bias`` and ``rescale_committor`` must be ``False`` (``Params``
+     raises a ``TypeError`` otherwise);
+   - the trainer prints no rate estimate;
+   - the selection bins and densities still come from the capped subsample, so
+     they steer where AIMMD shoots, but they feed no reported quantity.
+
+   For rates, set ``subsample_caps = None``, or recompute them afterwards on the
+   full ensemble (e.g. load the params with ``subsample_caps=None,
+   record_bias=True``).
 
 ``subsample_caps``
    ``None`` (default) means no subsampling — behaviour is unchanged. Otherwise a
@@ -189,12 +209,10 @@ each round, while ``fit`` (network training) still sees the full ensemble.
    - ``'in_state'`` — max FRAMES kept per state (the in-A and in-B paths are kept
      until this many frames accumulate, per state).
 
-   A missing key leaves that category uncapped. In a multi-system run this may be
-   a single dict (broadcast to all systems) or a list of dicts/``None`` (one per
-   ``system_ids`` entry). Pick caps generously (e.g. ``shot=100, free=500``):
-   selection is uniform within each category so the reweighting stays a
-   consistent rate estimate, and in-state-only paths carry zero reweight so
-   dropping them never biases the rate.
+   A missing key (or a ``None`` value) leaves that category uncapped. In a
+   multi-system run this may be a single dict (broadcast to all systems) or a
+   list of dicts/``None`` (one per ``system_ids`` entry); the restrictions above
+   apply as soon as any system has an active cap.
 
 Engine Integration
 ------------------

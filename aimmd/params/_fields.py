@@ -654,7 +654,9 @@ If True, AIMMD rescales the model output to better match the expected crossing
 probabilities near the states (heuristically ~1/p from A and ~1/(1-p) from B,
 where p is the committor), assuming sufficiently small time between frames.
 Requires that `params.network` is a subclass of `aimmd.network.Rescalable`.
-Experimental: recommended only when also running free simulations."""
+Experimental: recommended only when also running free simulations.
+Incompatible with `subsample_caps` (the crossing probabilities need the full path
+ensemble)."""
                  })
 
     # ------------------------------------------------------------------
@@ -723,7 +725,8 @@ Scheduling model:
 The bias is extracted by `bias_function` and cached as `<traj>.bias.npy` alongside
 each trajectory file. Only when `record_bias=True` are bias caches computed and
 Tiwary-Parrinello-corrected rate estimates printed during training.
-Set to False (default) for unbiased runs; existing runs are fully unaffected."""
+Set to False (default) for unbiased runs; existing runs are fully unaffected.
+Incompatible with `subsample_caps` (rates need the full path ensemble)."""
                  })
 
     bias_function: Callable = field(
@@ -836,9 +839,21 @@ only one trainer)."""
         default=None,
         metadata={'description':
 """Optional caps that bound the per-round committor *value pass* (and the bin
-generation / reweighting / rate estimate that consume it) by evaluating them on a
-randomly subsampled slice of the path ensemble instead of every reactive frame.
+generation / reweighting that consume it) by evaluating them on a randomly
+subsampled slice of the path ensemble instead of every reactive frame.
 `fit` (network training) is unaffected and still sees the full ensemble.
+
+For mechanism exploration only: the subsample does NOT represent the path
+ensemble. Each category is capped on its own while the reweighting pools them,
+so rates and crossing probabilities computed on it are biased (in a G2
+calixarene test, all three caps made k_AB 26x too fast, growing with the data).
+Hence, while any cap is active:
+- `record_bias` and `rescale_committor` must be False (Params raises otherwise),
+- the trainer prints no rate estimate,
+- the selection bins/densities still come from the capped subsample: they steer
+  where AIMMD shoots, but feed no reported quantity.
+For rates, use subsample_caps=None, or recompute them afterwards on the full
+ensemble (e.g. load the params with subsample_caps=None, record_bias=True).
 
 When None (default) NO subsampling happens and behaviour is identical to before.
 When a dict, the recognised keys are:
@@ -852,11 +867,10 @@ When a dict, the recognised keys are:
 - 'in_state' : max number of FRAMES kept per state (the in-A and in-B paths are
                kept until this many frames are reached, per state, per system).
 
-A missing key means that category is left uncapped. The subsample is drawn fresh
-each round (uniformly within each category, so reweighting stays consistent;
-in-state-only paths carry zero reweight so never bias the rate). In a multi-system
-run this may be a single dict (applied to every system) or a list of dicts/None,
-one per entry of `system_ids`. Pick caps generously (e.g. shot=100, free=500)."""
+A missing key (or a None value) means that category is left uncapped. The
+subsample is drawn fresh each round, uniformly within each category. In a
+multi-system run this may be a single dict (applied to every system) or a list of
+dicts/None, one per entry of `system_ids`."""
                  })
 
     # ------------------------------------------------------------------
