@@ -388,7 +388,13 @@ class PathEnsembleReweight(ABC):
         shooting_values[mask] = -inf
         extremes[mask] = mask_extremes
         extremes[free & to_o] = +inf
-        
+        # free transitions leave s like any free excursion, so they are at risk
+        # at every level as well. Their "shooting value" is the value of their
+        # first, in-state frame, which the value pass leaves at 0 (it computes
+        # reactive frames only): kept, it hid them from m(e) at every e < 0 and
+        # biased the rates low. (Shots reclassified as free keep theirs.)
+        shooting_values[(states[:, 3] == s) & from_s & to_o] = -inf
+
         # free excursions' shooting values and extremes (only from o)
         free_from_o = from_o & to_s & (states[:, 3] == o)
         shooting_values[free_from_o] = +inf

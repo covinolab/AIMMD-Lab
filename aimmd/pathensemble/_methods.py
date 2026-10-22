@@ -126,9 +126,15 @@ class PathEnsembleMethods(ABC):
         This bounds the cost of an expensive per-round value pass (and the bins /
         reweighting that consume it) by keeping only a capped, uniformly drawn
         subset of paths in each category, while leaving the *full* ensemble for
-        training. Selection is uniform within each category so the reweighting
-        per-category renormalisation stays consistent; in-state-only paths carry
-        zero reweight, so dropping them never biases the rate estimate.
+        training.
+
+        The result does not represent the ensemble: each category is capped on
+        its own (different inclusion probabilities, e.g. every rare transition
+        kept but few of the many recrossings), and the returned slice carries no
+        weights for that, while the reweighting pools the categories. Rates and
+        crossing probabilities computed on it are biased, so use it for
+        mechanism exploration only (``Params`` refuses ``subsample_caps``
+        together with ``record_bias`` / ``rescale_committor``).
 
         Categories use the 4-character ``Path.type`` (initial, middle, final,
         shooting state). With ``states='ARB'`` (a=A, r=R, b=B):

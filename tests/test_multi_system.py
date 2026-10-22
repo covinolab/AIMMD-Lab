@@ -361,7 +361,9 @@ def test_multi_system_subsample_caps_smoke(tmp_path):
     """A shared multi-system campaign with `subsample_caps` set runs end-to-end:
     the trainer builds a bounded per-system eval ensemble (the value pass / bins /
     reweighting run on it) while `fit` still uses the full ensemble, and the
-    shared network + per-system bins are produced."""
+    shared network + per-system bins are produced. No rate is estimated on the
+    capped subsample."""
+    import glob
     import os
     import aimmd
 
@@ -378,6 +380,28 @@ def test_multi_system_subsample_caps_smoke(tmp_path):
         assert os.path.isfile('run1/networkARB.h5')
         for sid in ('s1', 's2'):
             assert os.path.isfile(f'run1/{sid}/binsARB.npy')
+        logs = glob.glob('run1/**/train*.log', recursive=True)
+        assert logs
+        text = ''.join(open(log).read() for log in logs)
+        assert 'no rate estimate: subsample_caps is set' in text
+        assert 'k12 estimate' not in text
+    finally:
+        os.chdir(cwd)
+
+
+def test_multi_system_subsample_caps_refuse_bias(tmp_path):
+    """Caps bias the rates, so a campaign that asks for bias-reweighted rates
+    cannot also set `subsample_caps`: the params do not load."""
+    import os
+    import aimmd
+
+    folder = str(tmp_path / 'caps_bias')
+    _setup(folder, share_network=True, with_bias=True, with_caps=True)
+    cwd = os.getcwd()
+    os.chdir(folder)
+    try:
+        with pytest.raises(TypeError, match='subsample_caps'):
+            aimmd.Params.load('params.py')
     finally:
         os.chdir(cwd)
 
@@ -389,7 +413,8 @@ if __name__ == '__main__':
                test_multi_system_kinetics_convergence,
                test_multi_system_bias_shared_network,
                test_multi_system_bias_kinetics_convergence,
-               test_multi_system_subsample_caps_smoke):
+               test_multi_system_subsample_caps_smoke,
+               test_multi_system_subsample_caps_refuse_bias):
         with tempfile.TemporaryDirectory() as d:
             fn(pathlib.Path(d))
             print(f'{fn.__name__} OK')

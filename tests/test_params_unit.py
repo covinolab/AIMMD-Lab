@@ -200,6 +200,61 @@ network = Network()
             aimmd.Params.load(str(tmp_path / "bad.py"), save=False)
 
 
+def test_subsample_caps_exclude_rate_outputs(tmp_path):
+    """A capped value-pass subsample biases every rate-like output, so Params
+    refuses an active cap together with record_bias or rescale_committor,
+    accepts caps that cap nothing, and rolls back a later record_bias = True."""
+    template = '''
+import numpy as np
+import torch
+
+engine = 'toy'
+multi_system = True
+multi_system_share_network = True
+system_ids = ['G2', 'G4']
+topology = ['G2.gro', 'G4.gro']
+subsample_caps = CAPS
+EXTRA
+
+def states_function(trajectory, system_id=None):
+    return np.array(['R'] * len(trajectory), dtype='<U1')
+
+class Network(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(1, 1)
+    def forward(self, x):
+        return self.lin(x[:, :1])
+network = Network()
+'''
+
+    def load(caps, extra=''):
+        params_file = tmp_path / "params.py"
+        params_file.write_text(template.replace('CAPS', caps).replace('EXTRA', extra))
+        return aimmd.Params.load(str(params_file), save=False)
+
+    # an active cap (all systems, or one of them) excludes rates and rescaling
+    for caps in ("{'shot': 100}", "[{'free': 500}, None]"):
+        with pytest.raises(TypeError, match='subsample_caps'):
+            load(caps, 'record_bias = True')
+    with pytest.raises(TypeError, match='subsample_caps'):
+        load("{'shot': 100}", 'rescale_committor = True')
+
+    # caps that cap nothing are no caps
+    for caps in ("None", "[None, None]", "{'shot': None, 'free': None}"):
+        params = load(caps, 'record_bias = True')
+        assert params.record_bias and not params.subsample_caps_active()
+
+    # an active cap alone is fine (mechanism exploration); switching rates on
+    # later is refused and rolled back
+    params = load("[{'shot': 100}, None]")
+    assert params.subsample_caps_active()
+    assert params.subsample_caps_active('G2') and not params.subsample_caps_active('G4')
+    with pytest.raises(TypeError):
+        params.record_bias = True
+    assert params.record_bias is False
+
+
 def test_params_validation_rejects_bad_network(tmp_path):
     """Network assignment should fail if the runtime interface is incomplete."""
 

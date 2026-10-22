@@ -43,6 +43,32 @@ def test_low_level_reweight_helpers():
     assert np.all(np.isfinite(weights))
 
 
+def test_free_transitions_are_at_risk_at_every_level(tmp_path):
+    """A free transition leaves A like every free excursion, so it belongs to the
+    at-risk mass m(e) at every level. Its first frame is in the state, where the
+    value pass leaves 0, which is no shooting value: taken at face value it hid
+    the transition from m(e) at every e < 0, and each free A->A excursion with an
+    extreme below 0 weighed 1/N_AB + 1/n(>=e) instead of 1/N_AB."""
+    from aimmd.pathensemble.utils import assemble_pathensemble
+
+    # one free trajectory from A: three A->A excursions (extremes -3, -1, -4,
+    # all below 0) and one A->B transition; 0 outside R, as the value pass leaves
+    states = list('AARAARRAARAARRRBB')
+    values = [0, 0, -3, 0, 0, -2, -1, 0, 0, -4, 0, 0, -2, 0, 2, 0, 0]
+    positions = np.array([[[v / 10, 0, 0]] for v in values], dtype=np.float32)
+    path = build_path(tmp_path, stem="free", positions=positions, states=states,
+                      values=values, shooting_index=0)
+    ensemble = assemble_pathensemble([path])
+    types = ensemble.types()
+    assert np.sum(types == 'ARAA') == 3 and np.sum(types == 'ARBA') == 1
+
+    # free-only: every free excursion from A weighs 1/N_AB (N_AB = 1); before
+    # the fix the A->A excursions weighed 4/3, 3/2 and 2
+    weights = ensemble.reweight("ARB", free_threshold=1)[0]
+    assert np.allclose(weights[types == 'ARAA'], 1.0)
+    assert np.allclose(weights[types == 'ARBA'], 1.0)
+
+
 def test_pathensemble_reweight_wrapper(tmp_path):
     """The high-level wrapper should return aligned diagnostics and weights."""
 

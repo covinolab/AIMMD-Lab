@@ -572,6 +572,8 @@ class ParamsHelpers(ABC):
         ------
         TypeError
             If consistency requirements fail, for example:
+            - subsample_caps combined with a rate-like output (record_bias,
+              rescale_committor),
             - rescaling requested but network does not implement Rescalable,
             - chain type incompatible with selection pool size,
             - invalid nbins/extra_bins combination,
@@ -584,6 +586,21 @@ class ParamsHelpers(ABC):
         - reload initial paths from disk to recompute states if requested,
         - compute and attach descriptors/values to initial paths.
         """
+
+        # subsample caps exclude rate-like outputs: each category is capped on
+        # its own while the reweighting pools them, so rates and crossing
+        # probabilities computed on the capped value-pass subsample are biased
+        # (G2 test case: k_AB x26). They need the full path ensemble.
+        if self.subsample_caps_active():
+            wanted = [name for name in ('record_bias', 'rescale_committor')
+                      if getattr(self, name, False)]
+            if wanted:
+                raise TypeError(
+                    f"subsample_caps cannot be combined with "
+                    f"{' or '.join(wanted)}: rates and crossing probabilities "
+                    "computed on the capped value-pass subsample are biased, "
+                    "they need the full path ensemble. Use subsample_caps only "
+                    "for mechanism exploration, or set subsample_caps=None.")
 
         # check network
         if self.rescale_committor:

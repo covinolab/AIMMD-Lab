@@ -440,6 +440,9 @@ class WorkerTrain(ABC):
             # subsample of the ensemble. Identity (the full ensemble, same object)
             # when no caps are configured -> behaviour is unchanged. `fit` always
             # uses the full `pathensemble`. Rebuilt again after training below.
+            # The subsample does not represent the ensemble (categories are
+            # capped separately), so no rates are estimated on it; Params refuses
+            # caps together with record_bias / rescale_committor.
             caps = params.subsample_caps_of(getattr(self, '_system_id', None))
             eval_pe = pathensemble.subsample(caps, states) if caps else pathensemble
             if caps:
@@ -601,14 +604,19 @@ class WorkerTrain(ABC):
             w1, extremes1, xP1 = result1[0], result1[4], result1[5]
             w2, extremes2, xP2 = result2[0], result2[4], result2[5]
 
-            # bonus track: estimate rates
+            # bonus track: estimate rates (not on a capped subsample: it does not
+            # represent the ensemble, see Params.subsample_caps)
             lengths = eval_pe.n_frames
-            k12 = np.sum(w1 * lengths)
-            k12 = 1 / k12 if k12 else nan
-            k21 = np.sum(w2 * lengths)
-            k21 = 1 / k21 if k21 else nan
-            print(f'    k12 estimate: {k12:.3e} [1/dt]')
-            print(f'    k21 estimate: {k21:.3e} [1/dt]')
+            if params.subsample_caps_active(getattr(self, '_system_id', None)):
+                print('    no rate estimate: subsample_caps is set '
+                      '(rates need the full path ensemble)')
+            else:
+                k12 = np.sum(w1 * lengths)
+                k12 = 1 / k12 if k12 else nan
+                k21 = np.sum(w2 * lengths)
+                k21 = 1 / k21 if k21 else nan
+                print(f'    k12 estimate: {k12:.3e} [1/dt]')
+                print(f'    k21 estimate: {k21:.3e} [1/dt]')
             print(f'    {lengths.sum()} frames (excluded margins)')
 
             # Bias-reweighted rates (only when record_bias is enabled)
@@ -876,7 +884,8 @@ class WorkerTrain(ABC):
             With ``params.subsample_caps`` configured these are bounded random
             subsamples (drawn fresh each round); otherwise they are the full
             ensembles (identity -> unchanged behaviour). ``fit`` always uses the
-            full ensembles.
+            full ensembles. A capped subsample does not represent its ensemble,
+            so no rates are estimated on it (see ``Params.subsample_caps``).
             """
             out = []
             for kk, (subdir_, sid_) in enumerate(systems):
@@ -1034,12 +1043,17 @@ class WorkerTrain(ABC):
                 w1 = pe.reweight(states, **rw_p, source=source)[0]
                 w2 = pe.reweight(states[::-1], **rw_p, source=source)[0]
                 frame_lengths = pe.n_frames
-                k12 = np.sum(w1 * frame_lengths)
-                k12 = 1 / k12 if k12 else nan
-                k21 = np.sum(w2 * frame_lengths)
-                k21 = 1 / k21 if k21 else nan
-                print(f'    [system {sid!r}] k12 estimate: {k12:.3e} [1/dt]')
-                print(f'    [system {sid!r}] k21 estimate: {k21:.3e} [1/dt]')
+                if params.subsample_caps_active(sid):
+                    print(f'    [system {sid!r}] no rate estimate: '
+                          'subsample_caps is set (rates need the full path '
+                          'ensemble)')
+                else:
+                    k12 = np.sum(w1 * frame_lengths)
+                    k12 = 1 / k12 if k12 else nan
+                    k21 = np.sum(w2 * frame_lengths)
+                    k21 = 1 / k21 if k21 else nan
+                    print(f'    [system {sid!r}] k12 estimate: {k12:.3e} [1/dt]')
+                    print(f'    [system {sid!r}] k21 estimate: {k21:.3e} [1/dt]')
 
                 # Bias-reweighted rates (Tiwary-Parrinello), per system
                 if record_bias:
