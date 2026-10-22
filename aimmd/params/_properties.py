@@ -244,6 +244,15 @@ class ParamsProperties(ABC):
         ``subsample_caps``); a single dict is broadcast to all systems."""
         return self._per_system_value(self.subsample_caps, system_id)
 
+    def subsample_caps_active(self, system_id=None):
+        """True if ``subsample_caps`` caps at least one category for this system
+        (any system when ``system_id`` is None and the caps are per system).
+        A dict whose caps are all None caps nothing."""
+        caps = self.subsample_caps_of(system_id)
+        entries = caps if isinstance(caps, (list, tuple)) else [caps]
+        return any(entry and any(cap is not None for cap in entry.values())
+                   for entry in entries)
+
     @property
     def compute_states_args(self):
         """
