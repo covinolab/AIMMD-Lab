@@ -29,6 +29,11 @@ jobs:
     - name: Install AIMMD
       run: |
         pip install -e .
+    - name: Check imports
+      # outside pytest's output capture, so an import that kills the
+      # interpreter (e.g. a broken BLAS) leaves its message in the log
+      run: |
+        python -c "import numpy, scipy, torch, MDAnalysis, mdtraj, aimmd; print('imports ok')"
     - name: Test with pytest
       run: |
         pytest -v --cov=aimmd --cov-report=xml --color=yes tests/
