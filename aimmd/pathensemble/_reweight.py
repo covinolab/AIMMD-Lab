@@ -107,7 +107,12 @@ Excursions are classified as:
 value lies outside a specified interval as "free", and applying a special factor
 based on how many internal frames lie below/above the cutoff. This is a
 practical mechanism for stabilizing reweighting when shots occur in regions
-where density estimation is unreliable.
+where density estimation is unreliable. A reclassified shot stands in for a
+free excursion from `s`, so in the direction s→o only the cutoff on the side
+of `s` applies (`sp_cutoff_min` if s < o, `sp_cutoff_max` if s > o), and only
+to shots that start or end in `s`. Without these two conditions, B→B shots
+beyond `sp_cutoff_max` entered the A→B free list as transitions and inflated
+k_AB (and A→A shots below `sp_cutoff_min` inflated k_BA).
 
 Return value
 ------------
@@ -224,7 +229,10 @@ class PathEnsembleReweight(ABC):
             as free. Shots with shooting values outside the interval
             [sp_cutoff_min, sp_cutoff_max] are treated as free excursions with
             special factors based on the count of internal frames beyond the
-            cutoff.
+            cutoff. In directional mode only the cutoff on the side of `s` is
+            used (`sp_cutoff_min` if s < o, `sp_cutoff_max` if s > o), and only
+            for shots that start or end in `s`; in diagnostic mode both cutoffs
+            apply to all shots.
 
         source : str, default='values'
             Per-frame stream used by Path extractors. This is passed to Path
@@ -339,18 +347,29 @@ class PathEnsembleReweight(ABC):
         extremes = np.zeros(len(excursion_indices))  # all for now
         shooting_values = excursions.shooting(source)
                 
+        # a shot beyond the cutoff stands in for a free excursion from s, so
+        # in the direction s -> o only the cutoff on the side of s applies, and
+        # only to shots that start or end in s: made "free", a shot from the
+        # side of o joins the free list, and an o -> o shot counts there as a
+        # transition from s (extreme +inf), which inflates the rate
+        # (both conditions predate the refactor b3a6e58, which dropped them)
+        if s != o:
+            linked = from_s | to_s
+        else:  # just factors: both cutoffs, all shots
+            linked = np.ones(len(excursion_indices), dtype=bool)
+
         # shot before sp_cutoff_min -> free
-        if sp_cutoff_min is not None:
-            mask = shot & (shooting_values < sp_cutoff_min)
+        if sp_cutoff_min is not None and s <= o:
+            mask = shot & linked & (shooting_values < sp_cutoff_min)
             mask = np.flatnonzero(mask)
             f_mask = []
-            for i, k in enumerate(mask):
+            for k in mask:
                 values = excursions._paths[k].internal(source)
                 f_mask.append(1.0 / np.count_nonzero(values < sp_cutoff_min))
-                if to_o[i]:
-                    extremes[i] = +inf
+                if to_o[k]:
+                    extremes[k] = +inf
                 else:
-                    extremes[i] = extreme_function(values)
+                    extremes[k] = extreme_function(values)
             if len(mask):
                 factors[mask] = f_mask
                 factors[mask] /= np.mean(factors[mask])
@@ -358,17 +377,17 @@ class PathEnsembleReweight(ABC):
                 shot[mask] = False
         
         # shot after sp_cutoff_max -> free
-        if sp_cutoff_max is not None:
-            mask = shot & (shooting_values > sp_cutoff_max)
+        if sp_cutoff_max is not None and s >= o:
+            mask = shot & linked & (shooting_values > sp_cutoff_max)
             mask = np.flatnonzero(mask)
             f_mask = []
-            for i, k in enumerate(mask):
+            for k in mask:
                 values = excursions._paths[k].internal(source)
                 f_mask.append(1.0 / np.count_nonzero(values > sp_cutoff_max))
-                if to_o[i]:
-                    extremes[i] = +inf
+                if to_o[k]:
+                    extremes[k] = +inf
                 else:
-                    extremes[i] = extreme_function(values)
+                    extremes[k] = extreme_function(values)
             if len(mask):
                 factors[mask] = f_mask
                 factors[mask] /= np.mean(factors[mask])

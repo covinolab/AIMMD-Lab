@@ -69,6 +69,72 @@ def test_free_transitions_are_at_risk_at_every_level(tmp_path):
     assert np.allclose(weights[types == 'ARBA'], 1.0)
 
 
+def test_sp_cutoff_reclassifies_only_on_the_side_of_s(tmp_path):
+    """A shot beyond the sp_cutoff window is reweighted as a free excursion from
+    s, which only a shot on the side of s that starts or ends in s can stand in
+    for. B->B shots above sp_cutoff_max say nothing about leaving A, A->A shots
+    below sp_cutoff_min nothing about leaving B, so adding them must leave k_AB
+    and k_BA alone. Without these two conditions (refactor b3a6e58), the B->B
+    shots entered the A->B free list as transitions and raised k_AB x1.22, the
+    A->A shots raised k_BA x1.52."""
+    from aimmd.pathensemble.utils import assemble_pathensemble
+
+    def path(stem, states, values, shooting_index):
+        positions = np.array([[[v / 10, 0, 0]] for v in values], dtype=np.float32)
+        return build_path(tmp_path, stem=stem, positions=positions, states=list(states),
+                          values=values, shooting_index=shooting_index)
+
+    # free run from A: nine A->A excursions (maxima -3.5 ... 1.6) and an A->B
+    # transition; free run from B: five B->B excursions (minima 3.6 ... 1.4)
+    # and a B->A transition; 0 outside R, as the value pass leaves
+    states, values = '', []
+    for top in (-3.5, -2.6, -2.2, -1.8, -1.2, -0.6, 0.2, 0.9, 1.6):
+        states += 'AARR'
+        values += [0, 0, top - 0.4, top]
+    free_a = path('freeA', states + 'AA' + 'R' * 7 + 'BB',
+                  values + [0, 0, -2, -1, 0, 1, 2, 2.8, 3.3, 0, 0], 0)
+    states, values = '', []
+    for bottom in (3.6, 3.2, 2.7, 2.1, 1.4):
+        states += 'BBRR'
+        values += [0, 0, bottom + 0.4, bottom]
+    free_b = path('freeB', states + 'BB' + 'R' * 7 + 'AA',
+                  values + [0, 0, 3, 2, 1, 0, -1, -2, -3.2, 0, 0], 0)
+
+    # shots inside the window [-3, 3], B->B shots above it, A->A shots below it
+    inside = [path('T1', 'ARRRRRB', [0, -1.2, -0.4, 0.5, 1.3, 2.4, 0], 3),
+              path('T2', 'BRRRRA', [0, 2.2, 1.1, -0.3, -1.5, 0], 3),
+              path('N1', 'ARRRA', [0, -1.6, -1.0, -1.9, 0], 2),
+              path('N2', 'ARRRRA', [0, -0.5, 0.8, 0.1, -1.1, 0], 2),
+              path('M1', 'BRRRB', [0, 2.0, 1.5, 2.3, 0], 2)]
+    above = [path('F1', 'BRRRB', [0, 3.6, 3.4, 3.9, 0], 2),
+             path('F2', 'BRRRB', [0, 3.9, 3.7, 4.2, 0], 2),
+             path('F3', 'BRRRB', [0, 4.4, 4.1, 3.8, 0], 2)]
+    below = [path('D1', 'ARRRA', [0, -3.4, -3.6, -3.3, 0], 2),
+             path('D2', 'ARRRA', [0, -3.7, -3.9, -3.5, 0], 2)]
+    kw = dict(free_threshold=5, sp_cutoff_min=-3., sp_cutoff_max=3.)
+
+    def rates(shots):
+        ensemble = assemble_pathensemble(free_a, free_b, PathEnsemble(*shots))
+        return [1 / np.sum(ensemble.reweight(st, **kw)[0] * ensemble.n_frames)
+                for st in ('ARB', 'BRA')]
+
+    # (the shots outside still shift the factor uniformization a little)
+    k_ab, k_ba = rates(inside)
+    assert np.isclose(rates(inside + above)[0], k_ab, rtol=0.02)
+    assert np.isclose(rates(inside + below)[1], k_ba, rtol=0.02)
+
+    # on the side of s the cutoff still acts: for A->B, the A->A shots below
+    # the window enter as free excursions (shooting value -inf)
+    ensemble = assemble_pathensemble(free_a, free_b, PathEnsemble(*inside, *below))
+    result = ensemble.reweight('ARB', **kw)
+    indices, shooting_values = result[1], result[3]
+    deep = np.flatnonzero((ensemble.types() == 'ARAR') &
+                          (np.asarray(ensemble.shooting('values')) < -3))
+    reclassified = np.isin(indices, deep)
+    assert len(deep) == 2 and reclassified.sum() == 2
+    assert np.all(np.isneginf(shooting_values[reclassified]))
+
+
 def test_pathensemble_reweight_wrapper(tmp_path):
     """The high-level wrapper should return aligned diagnostics and weights."""
 
