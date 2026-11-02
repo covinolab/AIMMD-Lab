@@ -1562,6 +1562,10 @@ def accept_or_reject_last_path(chain, params):
       ``acc = bias(current) / bias(leading)``
 
     where the "bias" is derived from the bin weights used at selection time.
+    The chosen shooting point x is the current path's shooting point. It was
+    selected from the leading path, where it has the same bin weight w(x), so
+    ``acc = sum_leading(w) / sum_current(w)``. The frame the leading path was
+    itself shot from (``leading.shooting_index``) does not enter.
 
     Parameters
     ----------
@@ -1643,19 +1647,24 @@ def accept_or_reject_last_path(chain, params):
     current_bin_indices = np.digitize(current_values, bins) - 1
     leading_bin_indices = np.digitize(leading_values, bins) - 1
 
-    # selection biases
+    # selection biases (bin weights of the internal frames) and their sums
     current_selection_biases = bin_weights[current_bin_indices]
     leading_selection_biases = bin_weights[leading_bin_indices]
-    current_selection_biases /= (current_selection_biases.sum() or 1.0)
-    leading_selection_biases /= (leading_selection_biases.sum() or 1.0)
+    current_norm = current_selection_biases.sum() or 1.0
+    leading_norm = leading_selection_biases.sum() or 1.0
     
-    # of shooting point
-    current_shooting_point_bias = (current_selection_biases[
-        current.shooting_index - 1] or 1.0)
-    leading_shooting_point_bias = (leading_selection_biases[
-        leading.shooting_index - 1] or 1.0)
+    # of shooting point x: frame `current.shooting_index` of the current path,
+    # selected from the leading path, where it is the same frame with the same
+    # weight w(x). (`leading.shooting_index` is the frame the leading path was
+    # itself shot from; it does not enter.)
+    shooting_point_weight = current_selection_biases[
+        current.shooting_index - 1]
+    current_shooting_point_bias = (
+        (shooting_point_weight / current_norm) or 1.0)
+    leading_shooting_point_bias = (
+        (shooting_point_weight / leading_norm) or 1.0)
     
-    # compute acceptance probability
+    # compute acceptance probability (= leading_norm / current_norm)
     acceptance = current_shooting_point_bias / leading_shooting_point_bias
     print(f'=== acceptance probability: {acceptance:.3f}')
     
