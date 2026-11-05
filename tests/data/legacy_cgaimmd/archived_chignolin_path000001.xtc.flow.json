@@ -1,0 +1,247 @@
+{
+ "acceptance": {
+  "enforced": false,
+  "n_trained_shots": 2,
+  "rule": "bootstrap_any_R",
+  "tolerance": 1.0,
+  "window": [
+   -4.9563469886779785,
+   6.834022045135498
+  ],
+  "window_after_trained_shots": 1000
+ },
+ "aimmd": {
+  "git_commit": null,
+  "git_dirty": null,
+  "version": "0.1.0"
+ },
+ "candidates": {
+  "rejected": {
+   "state_A": 1
+  },
+  "tried": 2
+ },
+ "chain": "chainR0",
+ "cost_seconds": {
+  "final_check": 0.0689181120833382,
+  "generate": 27.711413286975585,
+  "minimize": 4.20054644998163,
+  "prepare": 17.521741620032117,
+  "raw_lambda": 0.059722425998188555,
+  "total": 180.67274293501396,
+  "validity": 43.94600867503323
+ },
+ "created": "2026-10-28T01:04:35+00:00",
+ "device": {
+  "generation": "cuda:0",
+  "values": "cuda:0"
+ },
+ "generator": {
+  "chunk": 64,
+  "method": "network.generate",
+  "ode_sampler": "midpoint",
+  "ode_steps": 16
+ },
+ "lambda_final": -4.183636665344238,
+ "lambda_law": {
+  "name": "uniform",
+  "window": [
+   -4.9563469886779785,
+   6.834022045135498
+  ],
+  "window_source": "bins"
+ },
+ "lambda_raw": -3.280477285385132,
+ "lambda_registered": -4.183625221252441,
+ "lambda_target": -1.7801675967263608,
+ "minimize": {
+  "function": "params_chignolin_faimmd_equilibrium_free.flow_minimize_function",
+  "ok": true,
+  "reason": "",
+  "record": {
+   "commands": {
+    "em_mdp": "em_flow.mdp",
+    "grompp": "gmx grompp -maxwarn 5",
+    "mdrun": "gmx mdrun -ntmpi 1 -ntomp 12 -pin off",
+    "topology": "topol.top"
+   },
+   "converged": false,
+   "directory": "run/chainR0/flow_scratch/em_0000",
+   "epot_after": -100631.23,
+   "epot_before": -80195.0,
+   "fmax": 400.33051,
+   "heavy_rms_displacement_A": 0.07861313388312464,
+   "max_displacement_A": 0.16804256484425942,
+   "seconds": 1.4987499713897705,
+   "settings": {
+    "em_mdp": "em_flow.mdp",
+    "emtol": 100.0,
+    "function": "aimmd.flow.minimize.GromacsMinimizer",
+    "grompp": "gmx grompp",
+    "max_displacement": null,
+    "maxwarn": 5,
+    "mdrun": "gmx mdrun -ntmpi 1 -ntomp 12 -pin off",
+    "nsteps": 1000,
+    "restrain": "flow_heavy",
+    "restraint_k": 10000.0,
+    "timeout": 600.0,
+    "topology": null
+   },
+   "steps": 1001
+  },
+  "seconds": 1.501580337062478
+ },
+ "network": {
+  "file": "run/networkARB.h5",
+  "metadata_matched": true,
+  "n_trained_shots": 2,
+  "round": 62,
+  "sha256": "19ce948cb9cab3ae70870b2cf0720afc322dcd948bbc43dbb4dd42c9cc2bc89c"
+ },
+ "note": null,
+ "path": "path000001.xtc",
+ "path_name": "path000001",
+ "pool": {
+  "candidate": 4,
+  "candidates_per_target": 2,
+  "n_targets": 16,
+  "passed_stage1": 32,
+  "pool_left_after_pop": 31,
+  "refill": 2,
+  "refill_network_sha256": "3c770bd77c959434a0c604f54f5f493a1c5ea85304a06e4755dcc64ca55631a4",
+  "refill_size": 32,
+  "reset_count": 2,
+  "stale_refill_pop": true
+ },
+ "prepare": {
+  "function": "params_chignolin_faimmd_equilibrium_free.flow_prepare_function",
+  "ok": true,
+  "placement": null,
+  "reason": "",
+  "record": {
+   "build": {
+    "deleted_by_consistency": 0,
+    "deleted_by_trim": 111,
+    "ion_min_solute_distance_A": 15.023,
+    "ion_seed": 1981744631,
+    "solvate_scale": 0.57,
+    "waters_added": 2220
+   },
+   "commands": {
+    "gmx": "gmx",
+    "grompp": "gmx grompp -maxwarn 5",
+    "grompp_genion": "gmx grompp -maxwarn 5",
+    "mdrun": "gmx mdrun -ntmpi 1 -ntomp 12 -pin off",
+    "mdrun_em": "gmx mdrun -ntmpi 1 -ntomp 12 -pin off",
+    "topology": "topol.top"
+   },
+   "directory": "run/chainR0/flow_scratch/solvate_0000",
+   "displacement": {
+    "heavy_max_A": 0.32924364586269095,
+    "heavy_rms_A": 0.1495130582794466,
+    "max_A": 0.6563926339810049
+   },
+   "em": {
+    "converged": true,
+    "epot": -103283.77,
+    "epot_start": -22756.2,
+    "fmax": 96.989738,
+    "steps": 6110
+   },
+   "nvt": [
+    {
+     "dt": 0.0005,
+     "gen_seed": 1981744632,
+     "gen_temp": 340.0,
+     "ld_seed": 1981744632,
+     "mdp": "relax_flow.mdp",
+     "nsteps": 40000,
+     "ps": 20.0,
+     "seconds": 4.125368356704712,
+     "start": "em.trr"
+    }
+   ],
+   "seconds": {
+    "em": 3.8200597763061523,
+    "ions": 0.30817437171936035,
+    "nvt0": 4.125368356704712,
+    "solvate": 0.15832042694091797,
+    "total": 8.479019165039062
+   },
+   "settings": {
+    "box_margin": 0.5,
+    "descriptors": {
+     "n_solute": 166,
+     "n_waters": 0,
+     "structure": "run.gro"
+    },
+    "em_mdp": "em_flow.mdp",
+    "em_nsteps": 50000,
+    "flat_bottom_k": 10000.0,
+    "function": "aimmd.flow.solvate.GromacsSolvator",
+    "grompp": "gmx grompp",
+    "ion_exclusion": null,
+    "ion_min_solute_distance": 5.0,
+    "ion_rmin_nm": 0.6,
+    "max_displacement": null,
+    "maxwarn": 5,
+    "mdrun": "gmx mdrun -ntmpi 1 -ntomp 12 -pin off",
+    "moved_atom_tolerance": 0.01,
+    "nvt_stages": [
+     {
+      "gen_vel": true,
+      "mdp": "relax_flow.mdp",
+      "overrides": {},
+      "ps": 20.0
+     }
+    ],
+    "restrain": "flow_heavy",
+    "restraint_k": 10000.0,
+    "selection_consistency": true,
+    "solvate_scales": [
+     0.57,
+     0.55,
+     0.53,
+     0.51,
+     0.49
+    ],
+    "timeout": 3600.0,
+    "topology": "topol.top",
+    "trim_min_distance": 6.0,
+    "water_box": "spc216.gro",
+    "water_exclusion": null
+   }
+  },
+  "seconds": 8.485899479012005
+ },
+ "recovered_after_restart": false,
+ "registered": "2026-10-28T01:04:48+00:00",
+ "registration": {
+  "complete": true,
+  "n_frames": 38,
+  "path_type": "ARAR",
+  "shooting_index": 7
+ },
+ "schema": "aimmd.flow.shot/1",
+ "seed": {
+  "base": 1,
+  "candidate_index": 4,
+  "prep": 3787152765688590134,
+  "refill": 2674805785382437883,
+  "refill_index": 1,
+  "refill_path": "path000001"
+ },
+ "source": "flow",
+ "stage1_rejected": {},
+ "stale_record": null,
+ "state_final": "R",
+ "validity": {
+  "function": "params_chignolin_faimmd_equilibrium_free.flow_validity_function",
+  "info": {
+   "heavy_rms_displacement_A": 0.10256526493287701,
+   "polish_ok": true,
+   "raw_ok": true,
+   "raw_reason": ""
+  }
+ }
+}
