@@ -22,7 +22,9 @@ Public names, by module:
   model, stereocenters, the reference pose, the token pools; a saved system
   loads without bioemu2 when not checked), ``MDAtoms``;
 - :mod:`~aimmd.cgaimmd.bioemu2.build`: ``build_system``, ``read_md_atoms``
-  (also ``python -m aimmd.cgaimmd.bioemu2 build-system``).
+  (also ``python -m aimmd.cgaimmd.bioemu2 build-system``);
+- :mod:`~aimmd.cgaimmd.bioemu2.features`: ``BioEmu2Features`` (the frozen
+  BioEmu2 features of the committor head), ``SIGMA_REF``.
 """
 
 import importlib as _importlib
@@ -32,6 +34,8 @@ _LAZY_NAMES = {
     'MDAtoms': 'system',
     'build_system': 'build',
     'read_md_atoms': 'build',
+    'BioEmu2Features': 'features',
+    'SIGMA_REF': 'features',
 }
 
 __all__ = sorted(_LAZY_NAMES)

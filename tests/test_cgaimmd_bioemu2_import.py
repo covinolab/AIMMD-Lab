@@ -58,6 +58,10 @@ def test_without_bioemu2_the_first_real_use_says_how_to_install_it():
         from aimmd.cgaimmd.bioemu2 import BioEmu2System, MDAtoms, read_md_atoms
         import aimmd.cgaimmd.bioemu2.__main__
         errors = {{}}
+        try:
+            adaptor.BioEmu2Features
+        except ImportError as exc:
+            errors['BioEmu2Features'] = [str(exc), exc.name, type(exc.__cause__).__name__]
         for name, call in (('build_system', lambda: adaptor.build_system('s.yaml', 'md.gro', 'md.top', 'out')),
                            ('BioEmu2System.build', lambda: BioEmu2System.build({{'entities': []}}, None))):
             try:
@@ -68,8 +72,9 @@ def test_without_bioemu2_the_first_real_use_says_how_to_install_it():
         result['loaded'] = sorted(n for n in sys.modules if n.split('.')[0] in BLOCKED)
         print(json.dumps(result))
     ''')
-    assert out['all'] == ['BioEmu2System', 'MDAtoms', 'build_system', 'read_md_atoms']
-    assert set(out['errors']) == {'build_system', 'BioEmu2System.build'}
+    assert out['all'] == ['BioEmu2Features', 'BioEmu2System', 'MDAtoms', 'SIGMA_REF', 'build_system',
+                          'read_md_atoms']
+    assert set(out['errors']) == {'BioEmu2Features', 'build_system', 'BioEmu2System.build'}
     for message, name, cause in out['errors'].values():
         assert message.startswith(HINT) and name == 'bioemu2' and cause == 'ModuleNotFoundError'
     assert out['loaded'] == []
