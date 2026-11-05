@@ -126,6 +126,7 @@ from math import inf
 
 # aimmd imports
 from .utils import register_path
+from .utils import evict_segment_caches
 from .utils import select_shooting_point
 from .utils import update_selection_pool
 from .utils import accept_or_reject_last_path
@@ -520,6 +521,9 @@ class WorkerShoot(ABC):
                           f'new shooting point '
                           f'(retry_with_state_definition_glitches=True).')
                     remove(f'{folder}/*back*', f'{folder}/*forw*')
+                    # the retry re-creates back/forw under the same names:
+                    # drop the deleted files' readers and state arrays too
+                    evict_segment_caches(folder)
                     back_simulation_completed = False
                     forw_simulation_completed = False
                     back = Path()

@@ -89,6 +89,7 @@ from pathlib import Path as PosixPath
 # aimmd imports
 from ..path import Path
 from .._config import NPY_CACHE, MDA_CACHE, print
+from ..cache import forget
 from ..cache.npy import save_npy, load_npy
 from ..core.utils import now, process_state, remove
 from ..path.utils import get_cache_fname, read_sweep_frame, write_sweep_frame
@@ -1134,6 +1135,61 @@ def compute_shooting_point_value(path, params):
     ensure_descriptors(shooting_point, params, missing_values_only=True)
     return shooting_point.compute(*params.compute_values_args,
                                   return_result=True)
+
+
+def evict_segment_caches(folder):
+    """
+    Forget everything this process cached about a folder's segment files.
+
+    Parameters
+    ----------
+    folder : str
+        Chain (or sweep) folder whose ``back``/``forw`` segment files were
+        just deleted with ``remove(f'{folder}/*back*', f'{folder}/*forw*')``.
+
+    Returns
+    -------
+    int
+        Number of evicted cache entries.
+
+    Notes
+    -----
+    A shoot worker re-creates ``back``/``forw`` under the same names for every
+    shot. :func:`register_path` evicts a completed shot's segment entries
+    itself; every other deletion of the segments must call this function, or
+    the next shot in that folder is judged on the deleted files:
+
+    - :data:`MDA_CACHE` keeps its reader on the deleted file, and replaces it
+      only when a caller asks for more frames than it holds;
+    - :data:`NPY_CACHE` keeps the deleted segments' ``states`` and
+      descriptor arrays (for the segments they are held in memory, not on
+      disk), and :meth:`aimmd.path.Path.extend` extends them rather than
+      recomputing them.
+
+    The entries are chosen from what the two caches hold, not from what is
+    left on disk: every resident key whose file lives in `folder` and whose
+    name contains ``back`` or ``forw`` (the ``remove`` patterns above;
+    a hidden file's entry goes as well, which is harmless). They are dropped
+    with :func:`aimmd.cache.forget`, which evicts without opening anything
+    and also removes the MDAnalysis offsets files of the deleted
+    trajectories.
+    """
+    from .. import _config
+
+    folder = os.path.abspath(folder)
+    keys = []
+    for cache in (getattr(_config, 'NPY_CACHE', None),
+                  getattr(_config, 'MDA_CACHE', None)):
+        if cache is None:
+            continue
+        for key in list(cache._cache):
+            fname = os.path.abspath(os.fspath(key))
+            name = os.path.basename(fname)
+            if (os.path.dirname(fname) == folder
+                    and ('back' in name or 'forw' in name)):
+                keys.append(fname)
+    forget(*keys)
+    return len(keys)
 
 
 def select_shooting_point(pool, params, folder,

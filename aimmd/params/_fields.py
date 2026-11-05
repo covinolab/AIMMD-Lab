@@ -341,7 +341,8 @@ due to slightly different PBC handling in GROMACS vs MDAnalysis, producing
 a RuntimeError like "... 0 in state A, should be in R; consider deleting
 the trajectory file to allow AIMMD to recreate it". When this flag is True,
 AIMMD logs a warning, deletes back* and forw* in the offending chain
-directory, and reselects a new shooting point on the next iteration.
+directory together with the worker's cached readers and arrays for them, and
+reselects a new shooting point on the next iteration.
 When False (default), the error is re-raised and the worker exits as
 before. Only the specific "should be in" error is caught; all other errors
 propagate unchanged."""
