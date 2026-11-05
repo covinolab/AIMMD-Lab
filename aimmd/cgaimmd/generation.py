@@ -47,9 +47,10 @@ None, in which case the network's ``default_generator()`` decides.
 
 The registry is per process. A generator registered in a module that the
 params file imports (or in the params file itself) is registered in every
-worker that loads the params file. The built-in methods are registered
-lazily: their name is known from the start and their module is imported on
-first use.
+worker that loads the params file; loading the params file again registers
+the new definition of the same class without complaint. The built-in methods
+are registered lazily: their name is known from the start and their module is
+imported on first use.
 
 Standard library only at import time.
 """
@@ -58,13 +59,14 @@ import importlib
 import json
 import re
 import threading
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 GENERATOR_MEMBERS = ('check', 'generate', 'settings')
 """Callable members of every generator (besides the string attribute ``method``)."""
 
 
+@runtime_checkable
 class Generator(Protocol):
     """The interface of a generation method (structural: nothing to inherit from).
 
@@ -89,6 +91,9 @@ class Generator(Protocol):
       written to every sidecar together with ``method``, and
       ``make_generator({'method': method, **settings()})`` builds an equal
       generator.
+
+    ``isinstance(obj, Generator)`` only tests that the members exist;
+    :func:`is_generator` also tests their types and refuses classes.
     """
 
     method: str
@@ -144,10 +149,18 @@ def register_generator(method, factory, *, replace=False):
     ------
     ValueError
         For an invalid name, or a name already registered with another
-        factory (unless `replace`). Registering the same factory again does
-        nothing.
+        factory (unless `replace`).
     TypeError
         If `factory` is not callable.
+
+    Notes
+    -----
+    Registering the same factory again does nothing, and a new definition of
+    the registered factory (same name, defined in the same file) replaces it
+    without `replace`: ``Params.load`` executes the params file and the
+    modules next to it again on every load, and ``importlib.reload`` does the
+    same for a module, so their ``register_generator`` calls run again with a
+    class that is new but means the same.
     """
     if not (isinstance(method, str) and _METHOD_NAME.fullmatch(method)):
         raise ValueError(f'a generation method name must be a str of letters, digits, '
@@ -157,11 +170,53 @@ def register_generator(method, factory, *, replace=False):
                         f'got {type(factory).__name__}')
     with _LOCK:
         known = _FACTORIES.get(method)
-        if known is not None and known is not factory and not replace:
+        if known is not None and not replace and not _same_definition(known, factory):
             raise ValueError(f'generation method {method!r} is already registered '
                              f'({_describe(known)}); pass replace=True to replace it')
         _FACTORIES[method] = factory
     return factory
+
+
+def _register_builtin(method, factory):
+    """Register a built-in method when its module is imported.
+
+    Unlike :func:`register_generator`, it never raises and never replaces a
+    factory of another definition: a user who replaced the built-in method
+    before its module was first imported keeps the replacement, and the
+    module still imports. A new definition of the built-in factory itself
+    (``importlib.reload``) replaces the old one.
+    """
+    with _LOCK:
+        known = _FACTORIES.get(method)
+        if known is None or _same_definition(known, factory):
+            _FACTORIES[method] = factory
+
+
+def _definition(factory):
+    """What defines `factory`: (its module, without a folder; its qualified name).
+
+    ``Params.load`` renames the params file and its local modules after
+    executing them (``params`` becomes ``/run/folder/params``), so the same
+    class has another ``__module__`` on the next load; the folder is dropped
+    as ``Params.save`` drops it.
+    """
+    module = getattr(factory, '__module__', None)
+    if isinstance(module, str):
+        module = re.split(r'[\\/]', module)[-1]
+    return module, getattr(factory, '__qualname__', None)
+
+
+def _same_definition(known, factory):
+    """Whether `factory` is `known` or a new definition of it (see :func:`register_generator`).
+
+    A factory defined inside a function (``<locals>`` in its name) is only
+    the same as itself.
+    """
+    if known is factory:
+        return True
+    module, name = _definition(factory)
+    return (module is not None and isinstance(name, str) and '<locals>' not in name
+            and (module, name) == _definition(known))
 
 
 def unregister_generator(method):
@@ -194,12 +249,31 @@ def is_known_generator(method):
 
 
 def is_generator(value):
-    """Whether `value` has the members of :class:`Generator` (a str ``method``, callable rest)."""
+    """Whether `value` has the members of :class:`Generator` (a str ``method``, callable rest).
+
+    A class is not a generator, even when it defines the members: its
+    instances are.
+    """
+    if isinstance(value, type):
+        return False
     try:
         return (isinstance(getattr(value, 'method', None), str)
                 and all(callable(getattr(value, name, None)) for name in GENERATOR_MEMBERS))
     except Exception:                                       # noqa: BLE001
         return False
+
+
+def _is_generator_class(value):
+    """Whether `value` is a class whose instances would be generators (a likely slip)."""
+    return (isinstance(value, type) and isinstance(getattr(value, 'method', None), str)
+            and all(callable(getattr(value, name, None)) for name in GENERATOR_MEMBERS))
+
+
+def _class_given(value):
+    """The TypeError for a generator class given where an instance belongs."""
+    return TypeError(f'{value.__name__} is a generator class; give an instance, e.g. '
+                     f'{value.__name__}(), or its method name {value.method!r} once it is '
+                     f'registered')
 
 
 def _describe(factory):
@@ -223,11 +297,18 @@ def _factory(method):
     try:
         imported = importlib.import_module(module)
     except ImportError as exc:
-        need = (f"the {extra!r} extra (pip install 'aimmd-lab[{extra}]')" if extra
-                else 'a complete AIMMD-Lab installation')
+        missing = getattr(exc, 'name', None) or ''
+        if missing.split('.')[0] == 'aimmd':
+            # aimmd's own module is missing or broken: no extra would help
+            need = (f'the module {missing} is not part of this AIMMD-Lab installation'
+                    + (f" (the method also needs the {extra!r} extra)" if extra else ''))
+        elif extra:
+            need = f"it needs the {extra!r} extra (pip install 'aimmd-lab[{extra}]')"
+        else:
+            need = 'it needs a complete AIMMD-Lab installation'
         raise ImportError(f'generation method {method!r} is provided by the module {module}, '
-                          f'which could not be imported ({type(exc).__name__}: {exc}); it '
-                          f'needs {need}') from exc
+                          f'which could not be imported ({type(exc).__name__}: {exc}); '
+                          f'{need}') from exc
     factory = getattr(imported, name, None)
     if factory is None:
         raise RuntimeError(f'the module {module} has no {name}, the factory of the generation '
@@ -242,12 +323,18 @@ def _build(method, settings):
     try:
         generator = factory(**settings)
     except (TypeError, ValueError) as exc:
-        raise type(exc)(f'generation method {method!r} with settings {settings!r}: '
-                        f'{exc}') from exc
+        kind = TypeError if isinstance(exc, TypeError) else ValueError
+        raise kind(f'generation method {method!r} with settings {settings!r}: '
+                   f'{exc}') from exc
     if not is_generator(generator):
         raise TypeError(f'the factory of generation method {method!r} ({_describe(factory)}) '
                         f'returned {type(generator).__name__}, which lacks the generator '
                         f'members (method, check, generate, settings)')
+    # sidecars record generator.method, and make_generator rebuilds from it
+    if generator.method != method:
+        raise TypeError(f'the factory of generation method {method!r} ({_describe(factory)}) '
+                        f'built a generator whose method is {generator.method!r}; a factory '
+                        f'must build generators of the method it is registered under')
     return generator
 
 
@@ -301,12 +388,15 @@ def make_generator(spec, network=None):
     Raises
     ------
     TypeError
-        For a spec of another type, or when the network has to decide and has
-        no ``default_generator()`` (the message names
-        ``params.cgaimmd_generator``); also for settings the method rejects
-        (its own ``TypeError`` or ``ValueError``, with the method named).
+        For a spec of another type (a generator class instead of an
+        instance, too), or when the network has to decide and has no
+        ``default_generator()`` (the message names
+        ``params.cgaimmd_generator``); for a factory that builds generators
+        of another method than its registered name; also for settings the
+        method rejects as ``TypeError`` (with the method named).
     ValueError
-        For an unknown method name.
+        For an unknown method name, or settings the method rejects as
+        ``ValueError`` (with the method named).
     ImportError
         When the module of a built-in method cannot be imported (e.g.
         ``'bioemu2_edm'`` without the bioemu2 extra); the message names the
@@ -314,6 +404,8 @@ def make_generator(spec, network=None):
     """
     if is_generator(spec):
         return spec
+    if _is_generator_class(spec):
+        raise _class_given(spec)
     if spec is None:
         return make_generator(_default_spec(network))
     if isinstance(spec, str):
@@ -324,6 +416,13 @@ def make_generator(spec, network=None):
         if method is None:
             default = _default_spec(network)
             if is_generator(default):
+                if not is_known_generator(default.method):
+                    raise TypeError(
+                        f'{type(network).__name__}.default_generator() returned a generator '
+                        f'of the unregistered method {default.method!r}, so the settings '
+                        f'{settings!r} cannot be applied to it; register the method '
+                        f'(aimmd.cgaimmd.generation.register_generator) or give the whole '
+                        f"spec {{'method': ..., **settings}}")
                 base = {'method': default.method, **default.settings()}
             elif isinstance(default, str):
                 base = {'method': default}
@@ -417,6 +516,8 @@ def canonical_generator_spec(value):
     """
     if value is None or is_generator(value):
         return value
+    if _is_generator_class(value):
+        raise _class_given(value)
     if isinstance(value, str):
         if not is_known_generator(value):
             raise TypeError(f'unknown generation method {value!r}; known methods are '

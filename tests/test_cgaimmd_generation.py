@@ -8,6 +8,9 @@ dict, a generator object or the network's ``default_generator()``.
 """
 
 import json
+import subprocess
+import sys
+import textwrap
 
 import pytest
 import torch
@@ -15,9 +18,10 @@ import torch
 from aimmd.cgaimmd import generation
 from aimmd.cgaimmd.flow_matching.sampler import ODEGenerator
 from aimmd.cgaimmd.flow_matching.toy import TinyFlowNetwork
-from aimmd.cgaimmd.generation import (available_generators, canonical_generator_spec,
-                                      check_generator, is_generator, make_generator,
-                                      register_generator, unregister_generator)
+from aimmd.cgaimmd.generation import (Generator, available_generators,
+                                      canonical_generator_spec, check_generator, is_generator,
+                                      make_generator, register_generator,
+                                      unregister_generator)
 
 
 class ShiftedPrior:
@@ -107,9 +111,11 @@ def test_registry_rules(shifted):
     assert register_generator('test_shifted_prior', ShiftedPrior) is ShiftedPrior   # no-op
     with pytest.raises(ValueError, match='already registered'):
         register_generator('test_shifted_prior', lambda **settings: ShiftedPrior(**settings))
-    other = register_generator('test_shifted_prior', ODEGenerator, replace=True)
-    assert other is ODEGenerator
-    assert isinstance(make_generator('test_shifted_prior'), ODEGenerator)
+    class Replacement(ShiftedPrior):
+        pass
+
+    assert register_generator('test_shifted_prior', Replacement, replace=True) is Replacement
+    assert type(make_generator('test_shifted_prior')) is Replacement
     for name in ('', '1st', 'has space', None, 3, 'a/b'):
         with pytest.raises(ValueError, match='generation method name'):
             register_generator(name, ShiftedPrior)
@@ -184,8 +190,21 @@ def test_bioemu2_edm_is_known_and_says_what_is_missing():
         make_generator('bioemu2_edm')
     message = str(info.value)
     assert "generation method 'bioemu2_edm'" in message
-    assert 'aimmd.cgaimmd.bioemu2' in message
-    assert "needs the 'bioemu2' extra (pip install 'aimmd-lab[bioemu2]')" in message
+    # aimmd's own adaptor module is what is missing: no pip extra brings it
+    assert ('the module aimmd.cgaimmd.bioemu2 is not part of this AIMMD-Lab installation '
+            "(the method also needs the 'bioemu2' extra)") in message
+    assert 'pip install' not in message
+
+
+def test_a_missing_extra_is_named_with_its_pip_command(monkeypatch):
+    """A built-in method whose third-party package is missing: the message names the extra."""
+    monkeypatch.setitem(generation._LAZY, 'test_lazy_extra',
+                        ('no_such_package_for_aimmd.sampling', 'Sampler', 'someextra'))
+    with pytest.raises(ImportError) as info:
+        make_generator('test_lazy_extra')
+    message = str(info.value)
+    assert 'no_such_package_for_aimmd.sampling' in message
+    assert "it needs the 'someextra' extra (pip install 'aimmd-lab[someextra]')" in message
 
 
 def test_check_generator_reports_instead_of_raising():
@@ -237,3 +256,146 @@ def test_canonical_generator_spec():
                          (3.0, 'must be a method name')):
         with pytest.raises(TypeError, match=message):
             canonical_generator_spec(bad)
+
+
+# ---------------------------------------------------------------------------
+# the registry across reloads, factories and their methods, classes
+# ---------------------------------------------------------------------------
+
+DEFINITION = textwrap.dedent('''
+    class Reloaded:
+        method = 'test_reloaded'
+        def check(self, network):
+            return []
+        def generate(self, network, lam, *, generator=None):
+            raise NotImplementedError
+        def settings(self):
+            return {}
+    ''')
+
+
+def _define(module_name, source=DEFINITION):
+    """Execute `source` as the module `module_name` and return its class Reloaded."""
+    namespace = {'__name__': module_name}
+    exec(source, namespace)
+    return namespace['Reloaded']
+
+
+def test_a_new_definition_of_the_registered_factory_replaces_it():
+    """Params.load executes the params file again (and renames it); reload does the same."""
+    first = _define('helper_module')
+    # the second load: the module of the first was renamed to its path by Params.load
+    first.__module__ = '/run/folder/helper_module'
+    second = _define('helper_module')
+    try:
+        assert register_generator('test_reloaded', first) is first
+        assert register_generator('test_reloaded', second) is second       # no replace=True
+        assert type(make_generator('test_reloaded')) is second
+        # another definition under the same name is still an error
+        other = _define('other_module')
+        with pytest.raises(ValueError, match="'test_reloaded' is already registered"):
+            register_generator('test_reloaded', other)
+
+        # a class defined in a function is only the same as itself
+        def local():
+            class Reloaded(first):
+                pass
+            return Reloaded
+        register_generator('test_reloaded', local(), replace=True)
+        with pytest.raises(ValueError, match='already registered'):
+            register_generator('test_reloaded', local())
+    finally:
+        unregister_generator('test_reloaded')
+
+
+def test_a_factory_builds_generators_of_its_own_method():
+    """Sidecars record generator.method; make_generator must be able to rebuild from it."""
+    class Misnamed(ShiftedPrior):
+        method = 'test_other_name'
+
+    register_generator('test_registered_name', Misnamed)
+    try:
+        with pytest.raises(TypeError, match=r"generation method 'test_registered_name' .*"
+                                            r"Misnamed\) built a generator whose method is "
+                                            r"'test_other_name'"):
+            make_generator({'method': 'test_registered_name'})
+        with pytest.raises(TypeError, match="whose method is 'test_other_name'"):
+            canonical_generator_spec('test_registered_name')
+    finally:
+        unregister_generator('test_registered_name')
+
+
+def test_factory_errors_keep_their_kind():
+    """Exception subclasses with other constructors become plain TypeError / ValueError."""
+    def broken(**settings):
+        raise json.JSONDecodeError('broken settings', 'doc', 0)
+
+    register_generator('test_broken_factory', broken)
+    try:
+        with pytest.raises(ValueError, match="'test_broken_factory' with settings .*broken "
+                                             "settings") as info:
+            make_generator('test_broken_factory')
+        assert type(info.value) is ValueError
+        assert isinstance(info.value.__cause__, json.JSONDecodeError)
+    finally:
+        unregister_generator('test_broken_factory')
+
+
+def test_a_generator_class_is_not_a_generator():
+    """``cgaimmd_generator = ODEGenerator`` (the instance forgotten) is a clear error."""
+    assert not is_generator(ODEGenerator)
+    assert is_generator(ODEGenerator())
+    for call in (make_generator, canonical_generator_spec):
+        with pytest.raises(TypeError, match=r"ODEGenerator is a generator class; give an "
+                                            r"instance, e.g. ODEGenerator\(\), or its method "
+                                            r"name 'ode'"):
+            call(ODEGenerator)
+    assert not hasattr(ODEGenerator, '__source__')
+    # isinstance works on the protocol (members only); is_generator also checks types
+    assert isinstance(ODEGenerator(), Generator)
+    assert isinstance(ShiftedPrior(), Generator)
+    assert not isinstance(CommittorOnly(), Generator)
+
+
+def test_settings_for_an_unregistered_default_object():
+    class Unregistered(ShiftedPrior):
+        method = 'test_unregistered_method'
+
+    network = _with_default(Unregistered())
+    assert make_generator(None, network).method == 'test_unregistered_method'
+    with pytest.raises(TypeError, match="default_generator\\(\\) returned a generator of the "
+                                        "unregistered method 'test_unregistered_method'"):
+        make_generator({'chunk': 8}, network)
+
+
+def test_ode_registration_keeps_a_replacement_and_survives_reload():
+    """In a fresh process: 'ode' replaced before the sampler is imported, then the module reloaded."""
+    script = textwrap.dedent('''
+        import importlib, sys
+        from aimmd.cgaimmd import generation
+        assert 'aimmd.cgaimmd.flow_matching.sampler' not in sys.modules
+        class MyOde:
+            method = 'ode'
+            def __init__(self, **settings):
+                self.given = settings
+            def check(self, network):
+                return []
+            def generate(self, network, lam, *, generator=None):
+                raise NotImplementedError
+            def settings(self):
+                return dict(self.given)
+        generation.register_generator('ode', MyOde, replace=True)
+        import aimmd.cgaimmd.flow_matching.sampler as sampler    # imports; keeps MyOde
+        assert type(generation.make_generator('ode')) is MyOde
+        generation.unregister_generator('ode')
+        first = sampler.ODEGenerator
+        assert type(generation.make_generator('ode')) is first
+        importlib.reload(sampler)                                # registers the new class
+        assert sampler.ODEGenerator is not first
+        assert type(generation.make_generator('ode')) is sampler.ODEGenerator
+        print('ok')
+        ''')
+    done = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True,
+                          timeout=300)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip().endswith('ok')

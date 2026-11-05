@@ -38,7 +38,7 @@ from numbers import Integral
 import torch
 
 from .. import protocol
-from ..generation import register_generator
+from ..generation import _register_builtin
 
 
 SAMPLERS = ('euler', 'midpoint', 'rk4')
@@ -316,4 +316,5 @@ class ODEGenerator:
         return {'sampler': self.sampler, 'n_steps': self.n_steps, 'chunk': self.chunk}
 
 
-register_generator('ode', ODEGenerator)
+# a user's replacement of 'ode' registered before this import is kept
+_register_builtin('ode', ODEGenerator)

@@ -764,10 +764,11 @@ def test_generator_bioemu2_without_the_extra(tmp_path):
     assert params.cgaimmd_generator == 'bioemu2_edm'
     if importlib.util.find_spec('aimmd.cgaimmd.bioemu2') is None:
         # on assignment the ImportError is wrapped like every failed check
-        with pytest.raises(TypeError, match="needs the 'bioemu2' extra"):
+        with pytest.raises(TypeError, match="aimmd.cgaimmd.bioemu2 is not part of this "
+                                            "AIMMD-Lab installation.*'bioemu2' extra"):
             params.chain_type = 'cgaimmd'
         assert params.chain_type == 'rfps'
-        with pytest.raises(ImportError, match="needs the 'bioemu2' extra"):
+        with pytest.raises(ImportError, match="'bioemu2' extra"):
             load(tmp_path / 'load', "cgaimmd_generator = 'bioemu2_edm'")
 
 
