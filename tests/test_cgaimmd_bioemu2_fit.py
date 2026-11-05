@@ -3,6 +3,9 @@
 - the goldens: one whole round of the old ``sequential_round`` (chignolin code)
   and ``holo_sequential_round`` (trypsin code) on the same synthetic data are
   reproduced (head losses, final head and adapters, label bins, label probe);
+- what the goldens' small round does not reach: the head's early stop on
+  held-out shooting points (patience, the best EMA head kept), its EMA rate,
+  and the adapters' divergence guard (roll back, half the learning rate);
 - ``sequential_fit`` end to end on a toy run folder whose descriptor caches
   hold peptide coordinates: head and adapters train, every round starts from
   reset (its result does not depend on the weights it started from), the seed
@@ -96,6 +99,133 @@ def test_goldens_of_the_old_rounds(which, request, golden):
         for sigma, values in probe.items():
             for key in ('own', 'shuffled', 'none'):
                 assert info['label_probe'][sigma][key] == pytest.approx(values[key], rel=1e-5)
+    network.engine().close()
+
+
+# --------------------------------------------------------------------------- early stopping, EMA, divergence guard
+
+def _golden_dataset(golden, which='peptide'):
+    return types.SimpleNamespace(**{key: golden[f'{which}.dataset.{key}']
+                                    for key in ('sp_rows', 'sp_r_first', 'sp_r_last', 'fr_rows', 'fr_state')})
+
+
+def _head_state(module):
+    return {key: value.detach().clone() for key, value in module.named_parameters()}
+
+
+def test_the_head_stops_on_held_out_patience_and_keeps_the_best_ema_head(tiny_peptide_system):
+    """30 shooting points, 15 held out whose outcomes contradict the training points'.
+
+    Training moves the head toward the last state, so the held-out loss is best
+    at the first evaluation and only grows: the head stops after ``head_patience``
+    evaluations without a new best, and ends as the EMA head of that first
+    evaluation (the same head as a round that stops there).
+    """
+    from aimmd.cgaimmd.bioemu2.fit import sequential_round
+    network = _network(tiny_peptide_system)
+    n, seed, every, patience = 30, 5, 2, 2
+    held = np.sort(np.random.default_rng(seed).permutation(n)[:15])     # the round's split (round 0: seed)
+    toward_first = np.isin(np.arange(n), held)
+    rng = np.random.default_rng(1)
+    template = tiny_peptide_system.template
+    rows = (template[None] + 0.01 * rng.normal(size=(n,) + template.shape)).reshape(n, -1).astype(np.float32)
+    data = SimpleNamespace(sp_rows=rows, sp_r_first=np.where(toward_first, 2, 0),
+                           sp_r_last=np.where(toward_first, 0, 2), fr_rows=np.zeros((0, rows.shape[1]), np.float32),
+                           fr_state=np.zeros(0, int))
+    settings = dict(seed=seed, head_holdout=0.5, head_eval_every=every, batch_sp=8, noisy_copies=1, lr_head=1.0,
+                    ema=0.9, min_shots_for_generator=1000, feature_batch=32)
+    _, info = sequential_round(network, data, 0, head_patience=patience, head_max_steps=50, **settings)
+    head = info['head']
+    assert head['n_held'] == 15
+    steps, nll = zip(*head['trace'])
+    assert head['best_step'] == every and head['best_heldout_nll'] == nll[0]
+    assert list(steps) == [every * (k + 1) for k in range(patience + 1)] and min(nll[1:]) > nll[0]
+    assert head['steps'] == every * (patience + 1) < 50
+    stopped = _head_state(network.head_ema)
+    assert _equal_states(stopped, _head_state(network.head))
+    _, info = sequential_round(network, data, 0, head_patience=1000, head_max_steps=every, **settings)
+    assert info['head']['steps'] == every
+    assert _equal_states(stopped, _head_state(network.head_ema))
+    network.engine().close()
+
+
+def test_the_ema_rate_of_the_head(tiny_peptide_system, golden):
+    """After one step the EMA head is ``0.999 h0 + 0.001 h1`` (h0: the fresh head, h1: after the step)."""
+    from aimmd.cgaimmd.bioemu2.fit import sequential_round
+    network = _network(tiny_peptide_system)
+    data = _golden_dataset(golden)
+    settings = dict(seed=3, lr_head=100.0, noisy_copies=1, min_shots_for_generator=1000)  # a step of ~1
+    heads = {}
+    for name, extra in (('fresh', dict(head_steps_without_holdout=0)),
+                        ('one step', dict(head_steps_without_holdout=1, ema=0.0)),
+                        ('default', dict(head_steps_without_holdout=1))):
+        _, info = sequential_round(network, data, 0, **settings, **extra)
+        assert info['head']['n_held'] == 0
+        heads[name] = _head_state(network.head_ema)
+    for key, h0 in heads['fresh'].items():
+        h1 = heads['one step'][key]
+        assert (h1 - h0).abs().max() > 0.1, key
+        np.testing.assert_allclose(heads['default'][key].numpy(), (0.999 * h0 + 0.001 * h1).numpy(), rtol=0,
+                                   atol=1e-6, err_msg=key)
+    network.engine().close()
+
+
+def test_the_divergence_guard_rolls_back_and_halves_the_learning_rate(tiny_peptide_system, golden, monkeypatch):
+    """Adapter losses forced to 1, 1, 2.5, 1.9, 1, 1, 1, 2.1, 1 (one step per window).
+
+    The guard judges a window once three windows went before it (2.5 passes);
+    1.9 is below twice the median of the windows before it, 2.1 above: step 8
+    rolls the adapters back to their state after step 7, and step 9 runs at
+    half the learning rate.
+    """
+    from aimmd.cgaimmd.bioemu2 import _api
+    from aimmd.cgaimmd.bioemu2.adapters import ConditionedDenoiser
+    from aimmd.cgaimmd.bioemu2.fit import sequential_round
+    network = _network(tiny_peptide_system)
+    sigma_data = float(network.engine().denoiser.model.edm_schedule.sigma_data)
+    forced = [1.0, 1.0, 2.5, 1.9, 1.0, 1.0, 1.0, 2.1, 1.0]
+    calls = {'n': 0, 'sigma': None, 'adapters': [], 'lr': []}
+    real_denoise, real_step = ConditionedDenoiser.denoise, torch.optim.AdamW.step
+
+    def denoise(self, x, sigma, lam=None, uncond=None):
+        calls['sigma'] = sigma
+        return real_denoise(self, x, sigma, lam, uncond)
+
+    def align(target, prediction, mask_a, mask_b):
+        """The denoised atoms minus an offset that makes the step's EDM loss the forced value."""
+        sigma = calls['sigma']
+        calls['adapters'].append(_state(network.single_adapter))   # the adapters this step starts from
+        level = forced[calls['n']]
+        calls['n'] += 1
+        weight = (sigma ** 2 + sigma_data ** 2) / (sigma * sigma_data) ** 2
+        offset = torch.sqrt(level / (3.0 * weight))[:, None, None]
+        return prediction.detach() - offset, None, None
+
+    def step(self, *args, **kwargs):
+        if self.param_groups[0]['params'][0] is next(network.single_adapter.parameters()):
+            calls['lr'].append(self.param_groups[0]['lr'])
+        return real_step(self, *args, **kwargs)
+
+    monkeypatch.setattr(ConditionedDenoiser, 'denoise', denoise)
+    monkeypatch.setattr(_api, 'weighted_rigid_align', align)
+    monkeypatch.setattr(torch.optim.AdamW, 'step', step)
+    settings = dict(seed=2, noisy_copies=1, min_shots_for_generator=2, head_steps_without_holdout=2,
+                    batch_den=4, micro_batch=4, guard_window=1, adapter_lr_schedule='constant', lr_adapter=1e-3,
+                    label_probe=False)
+    _, info = sequential_round(network, _golden_dataset(golden), 0, adapter_steps=len(forced), **settings)
+    assert calls['n'] == len(forced)
+    np.testing.assert_allclose([info['adapter_final_loss']], [np.mean(forced)], rtol=1e-5)
+    assert len(info['adapter_rollbacks']) == 1
+    rollback = info['adapter_rollbacks'][0]
+    assert rollback['step'] == 8 and rollback['median_before'] == pytest.approx(1.0, rel=1e-5)
+    assert rollback['window_loss'] == pytest.approx(2.1, rel=1e-5) and rollback['lr_scale'] == 0.5
+    assert calls['lr'] == pytest.approx([1e-3 * (k + 1) / 100 for k in range(8)] + [0.5 * 1e-3 * 9 / 100])
+    after_rollback = calls['adapters'][8]
+    # the state after step 7: a round of 7 steps with the same draws and losses
+    calls.update(n=0, adapters=[], lr=[])
+    sequential_round(network, _golden_dataset(golden), 0, adapter_steps=7, **settings)
+    assert _equal_states(after_rollback, _state(network.single_adapter))
+    assert not _equal_states(after_rollback, calls['adapters'][6])            # step 7 changed the adapters
     network.engine().close()
 
 
