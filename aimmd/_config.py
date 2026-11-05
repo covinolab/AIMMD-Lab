@@ -34,10 +34,20 @@ Attributes
 _initialized : bool
     Sentinel flag to prevent repeated initialization. It is set to ``True``
     at the end of :func:`aimmd._init.initialize`.
+WORKER_TASK : str or None
+    The task of the running worker (``'shoot'``, ``'free'``, ``'train'`` or
+    ``'kinetics_convergence'``) while ``Worker.run`` executes it, else None.
+    Code that may only claim per-task resources (such as a GPU) inside a
+    worker task, and not while a params file is loaded, reads it at call
+    time. Read it as ``aimmd._config.WORKER_TASK``: ``aimmd.WORKER_TASK`` is
+    the copy made by ``from ._config import *`` at import and stays None.
 """
 
 # Will become True once initialization is completed.
 _initialized = False
+
+# Task of the running worker, set by Worker.run (None outside a worker task).
+WORKER_TASK = None
 
 
 # Canonical message shown when no GROMACS executable can be resolved. Kept here
