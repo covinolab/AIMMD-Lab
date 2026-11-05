@@ -21,7 +21,10 @@ old names are **read** for one release and never written:
   ``aimmd.flow`` and ``aimmd.network.{flow_fit,joint_painn}`` only resolve
   names through these tables;
 - code that reads files with old names (sidecars, markers, restraint modes)
-  translates them through :func:`translate` with the tables below.
+  translates them through :func:`translate` with the tables below;
+- the PaiNN network accepts its dropped prior keywords with the value None
+  (:data:`DROPPED_KEYWORDS`) and refuses the prior entries of old checkpoints
+  with the reason (:data:`DROPPED_STATE_KEYS`).
 
 A name of the tables whose new module is not part of this installation (yet)
 raises an ``ImportError`` that names the new module, and a name that was
@@ -201,6 +204,29 @@ DROPPED_NAMES = {
 }
 """(old module, old name) without a replacement -> why."""
 
+_GAUSSIAN_ONLY = ('the PaiNN network always uses the Gaussian prior '
+                  '(aimmd.cgaimmd.flow_matching.prior)')
+
+DROPPED_KEYWORDS = {
+    ('JointPaiNN', 'prior'):
+        f'the priors of the flow branch other than the Gaussian are not part of C-GAIMMD; '
+        f'{_GAUSSIAN_ONLY}',
+    ('JointPaiNN', 'harmonic_prior'):
+        f'the harmonic prior is not part of C-GAIMMD; {_GAUSSIAN_ONLY}',
+}
+"""(class, old keyword) -> why it was dropped.
+
+The keyword is still accepted with the value None, which meant the Gaussian
+prior (one warning); any other value raises (:func:`dropped_keywords`).
+"""
+
+DROPPED_STATE_KEYS = {
+    'prior.': 'a prior of the flow branch (mixture or harmonic), which is not part of C-GAIMMD: '
+              f'{_GAUSSIAN_ONLY}; its committor head is usable, but its velocity was trained '
+              'from that prior, so its generator needs training again',
+}
+"""Checkpoint key prefix -> what the entries were and why a network does not load them."""
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # Warnings
@@ -274,6 +300,59 @@ def translate(table, value, what):
         return value
     warn_renamed(f'{what} {value!r}', f'{what} {new!r}', key=(what, value), stacklevel=4)
     return new
+
+
+def dropped_keywords(owner, keywords):
+    """Check the keywords a constructor did not recognise against :data:`DROPPED_KEYWORDS`.
+
+    Parameters
+    ----------
+    owner : str
+        The class name (e.g. ``'JointPaiNN'``).
+    keywords : dict
+        The unrecognised keyword arguments.
+
+    Raises
+    ------
+    TypeError
+        For a keyword that is not a dropped one (Python's own message), or a
+        dropped keyword with a value other than None (with the reason).
+
+    Notes
+    -----
+    A dropped keyword set to None gives one ``DeprecationWarning`` per
+    process and is ignored: None meant what the class now always does.
+    """
+    for name, value in keywords.items():
+        reason = DROPPED_KEYWORDS.get((owner, name))
+        if reason is None:
+            raise TypeError(f"{owner}.__init__() got an unexpected keyword argument '{name}'")
+        if value is not None:
+            raise TypeError(f'{owner}({name}=...) is not supported: {reason}')
+        warn_renamed(f'{owner}({name}=None)', f'{owner}() without {name!r} ({reason})',
+                     key=('keyword', owner, name), stacklevel=4)
+
+
+def dropped_state_keys(state_dict):
+    """The entries of a checkpoint that a C-GAIMMD network does not load, by reason.
+
+    Parameters
+    ----------
+    state_dict : mapping
+        A checkpoint's state dict.
+
+    Returns
+    -------
+    dict
+        ``{reason: [keys]}`` for the prefixes of :data:`DROPPED_STATE_KEYS`
+        found in `state_dict`; empty if there are none.
+    """
+    found = {}
+    for prefix, reason in DROPPED_STATE_KEYS.items():
+        keys = [key for key in state_dict if key.startswith(prefix)]
+        if keys:
+            found[reason] = keys
+    return found
 
 
 def chain_type(value):
