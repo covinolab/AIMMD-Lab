@@ -207,18 +207,30 @@ DROPPED_NAMES = {
 _GAUSSIAN_ONLY = ('the PaiNN network always uses the Gaussian prior '
                   '(aimmd.cgaimmd.flow_matching.prior)')
 
+_MIXTURE_PRIOR = ('the mixture prior is not part of C-GAIMMD; pretraining keeps the '
+                  "network's own prior (the Gaussian)")
+
 DROPPED_KEYWORDS = {
     ('JointPaiNN', 'prior'):
         f'the priors of the flow branch other than the Gaussian are not part of C-GAIMMD; '
         f'{_GAUSSIAN_ONLY}',
     ('JointPaiNN', 'harmonic_prior'):
         f'the harmonic prior is not part of C-GAIMMD; {_GAUSSIAN_ONLY}',
+    **{('pretrain_end_states', name): _MIXTURE_PRIOR
+       for name in ('prior', 'prior_sigma', 'prior_bank', 'prior_bank_max', 'prior_pi_null',
+                    'prior_pi_temperature')},
 }
-"""(class, old keyword) -> why it was dropped.
+"""(class or function, old keyword) -> why it was dropped.
 
-The keyword is still accepted with the value None, which meant the Gaussian
-prior (one warning); any other value raises (:func:`dropped_keywords`).
+The keyword is still accepted with the value None, or with a value of
+:data:`DROPPED_KEYWORD_VALUES`, which meant what the code now always does
+(one warning); any other value raises (:func:`dropped_keywords`).
 """
+
+DROPPED_KEYWORD_VALUES = {
+    ('pretrain_end_states', 'prior'): ('gaussian',),
+}
+"""(class or function, old keyword) -> values besides None that are accepted with a warning."""
 
 DROPPED_STATE_KEYS = {
     'prior.': 'a prior of the flow branch (mixture or harmonic), which is not part of C-GAIMMD: '
@@ -308,7 +320,8 @@ def dropped_keywords(owner, keywords):
     Parameters
     ----------
     owner : str
-        The class name (e.g. ``'JointPaiNN'``).
+        The class name (e.g. ``'JointPaiNN'``) or the function name (e.g.
+        ``'pretrain_end_states'``).
     keywords : dict
         The unrecognised keyword arguments.
 
@@ -316,20 +329,24 @@ def dropped_keywords(owner, keywords):
     ------
     TypeError
         For a keyword that is not a dropped one (Python's own message), or a
-        dropped keyword with a value other than None (with the reason).
+        dropped keyword with a value other than None and the values of
+        :data:`DROPPED_KEYWORD_VALUES` (with the reason).
 
     Notes
     -----
-    A dropped keyword set to None gives one ``DeprecationWarning`` per
-    process and is ignored: None meant what the class now always does.
+    A dropped keyword set to None (or to a value of
+    :data:`DROPPED_KEYWORD_VALUES`) gives one ``DeprecationWarning`` per
+    process and is ignored: it meant what the code now always does.
     """
     for name, value in keywords.items():
         reason = DROPPED_KEYWORDS.get((owner, name))
         if reason is None:
-            raise TypeError(f"{owner}.__init__() got an unexpected keyword argument '{name}'")
-        if value is not None:
+            where = f'{owner}.__init__()' if owner[:1].isupper() else f'{owner}()'
+            raise TypeError(f"{where} got an unexpected keyword argument '{name}'")
+        harmless = DROPPED_KEYWORD_VALUES.get((owner, name), ())
+        if value is not None and not (isinstance(value, str) and value in harmless):
             raise TypeError(f'{owner}({name}=...) is not supported: {reason}')
-        warn_renamed(f'{owner}({name}=None)', f'{owner}() without {name!r} ({reason})',
+        warn_renamed(f'{owner}({name}={value!r})', f'{owner}() without {name!r} ({reason})',
                      key=('keyword', owner, name), stacklevel=4)
 
 
