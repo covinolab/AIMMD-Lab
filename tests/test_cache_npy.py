@@ -228,10 +228,11 @@ def test_update_npy_does_not_recreate_a_file_another_writer_created(
     update_npy creates a missing file. If another process creates it, and
     writes its rows, between this process's existence check and its
     create, the create must not replace that file with a zero-filled one:
-    the other writer's rows would be lost. Graph-key files are created
-    this way by the trainer's ledger and the workers' value passes at the
-    same time; with the lock starvation of FileLock, one writer lost all
-    of its rows in about half of the trials of a two-process repro.
+    the other writer's rows would be lost. The per-frame cache files of a
+    trajectory (descriptor series, values) are created this way by the
+    trainer and the workers at the same time (``compute_batch``); with the
+    lock starvation of FileLock, one writer lost all of its rows in about
+    half of the trials of a two-process repro.
     """
     import aimmd.cache.npy as npy
 
