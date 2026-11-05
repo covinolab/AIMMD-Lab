@@ -1,10 +1,14 @@
 """Import-time rules, docs stubs and process state of ``aimmd.cgaimmd``.
 
 - ``import aimmd`` and ``import aimmd.cgaimmd`` must stay light: no PyG, no
-  mlcolvar, no networkx, nothing of the bioemu2 stack, no CUDA context; core
-  AIMMD already imports scipy.optimize (``aimmd/analysis/utils.py``) and, when
-  it is installed, rdkit (through MDAnalysis, ``aimmd/_init.py``), and
-  C-GAIMMD code must not add any of them.
+  mlcolvar, no networkx, nothing of the bioemu2 stack (bioemu2 and what it
+  brings: hydra, omegaconf, openmm, cuequivariance, biotite, ...), no CUDA
+  context; core AIMMD already imports scipy.optimize
+  (``aimmd/analysis/utils.py``) and, when they are installed, rdkit and
+  biopython (MDAnalysis imports them, ``aimmd/_init.py``), and C-GAIMMD code
+  must not add any of them.
+- Only the subpackage ``aimmd.cgaimmd.bioemu2`` may import the bioemu2 stack
+  at all, also inside functions (DESIGN section 5.1); checked on the source.
 - Every ``aimmd.cgaimmd`` module and the compatibility modules of the old names
   must import under the Read-the-Docs stubs of ``docs/source``.
 - ``aimmd.cgaimmd._once`` is the only process-global memory of C-GAIMMD code
@@ -33,12 +37,19 @@ import aimmd
 
 
 ROOT = Path(aimmd.__file__).resolve().parents[1]
-BIOEMU2_STACK = ('bioemu2', 'openmm', 'biotite', 'huggingface_hub', 'cuequivariance_torch',
-                 'hydra')
+# bioemu2 and the packages it brings that core AIMMD does not import
+BIOEMU2_STACK = ('bioemu2', 'openmm', 'biotite', 'huggingface_hub', 'cuequivariance',
+                 'cuequivariance_torch', 'hydra', 'omegaconf', 'einops', 'pdbecif', 'pydantic',
+                 'numba')
 HEAVY = ('networkx', 'torch_geometric', 'torch_cluster', 'mlcolvar', 'scipy.optimize',
-         'rdkit') + BIOEMU2_STACK
-# where core AIMMD imports the heavy modules it already imports (rdkit only when installed)
-PRE_EXISTING = {'scipy.optimize': 'aimmd/analysis/utils.py', 'rdkit': 'aimmd/_init.py'}
+         'rdkit', 'Bio') + BIOEMU2_STACK
+# where core AIMMD imports the heavy modules it already imports (rdkit and biopython, which
+# bioemu2 also needs, only when they are installed: MDAnalysis imports them)
+PRE_EXISTING = {'scipy.optimize': 'aimmd/analysis/utils.py', 'rdkit': 'aimmd/_init.py',
+                'Bio': 'aimmd/_init.py'}
+# what only aimmd.cgaimmd.bioemu2 may import, anywhere in its modules (DESIGN section 5.1)
+BIOEMU2_ONLY = ('bioemu2', 'openmm', 'biotite', 'huggingface_hub', 'cuequivariance',
+                'cuequivariance_torch', 'hydra', 'omegaconf', 'einops', 'pdbecif', 'rdkit')
 # the compatibility modules of the old names
 OLD_NAME_MODULES = ('aimmd.flow', 'aimmd.network.flow_fit', 'aimmd.network.joint_painn')
 
@@ -64,9 +75,16 @@ def _run(code):
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-@pytest.mark.parametrize('statement', ['import aimmd', 'import aimmd.cgaimmd',
-                                       'from aimmd.cgaimmd import make_generator, protocol, '
-                                       'values, ProtocolValuesFunction, CandidateContext'])
+@pytest.mark.parametrize('statement', [
+    'import aimmd', 'import aimmd.cgaimmd',
+    'from aimmd.cgaimmd import make_generator, protocol, values, ProtocolValuesFunction, '
+    'CandidateContext',
+    'from aimmd.cgaimmd import dataset, extract_dataset, TrainingDataset',
+    'from aimmd.cgaimmd.generation import available_generators, make_generator; '
+    'from aimmd.cgaimmd.flow_matching.toy import TinyFlowNetwork; available_generators(); '
+    'make_generator(None, TinyFlowNetwork())',
+    'import aimmd.network.flow_fit as flow_fit; flow_fit.extract_flow_dataset',
+])
 def test_import_rules(statement):
     """No PyG, networkx, mlcolvar or bioemu2 stack, no CUDA context; the rest only from core."""
     out = _run(f'''
@@ -134,6 +152,25 @@ def test_cgaimmd_modules_add_no_heavy_imports():
                            'heavy': [n for n in sys.modules if heavy(n)]}}))
     ''')
     assert out == {'cuda': False, 'heavy': []}
+
+
+def test_only_the_bioemu2_subpackage_imports_the_bioemu2_stack():
+    """No module outside aimmd/cgaimmd/bioemu2/ imports the bioemu2 stack, not even lazily."""
+    adaptor = ROOT / 'aimmd' / 'cgaimmd' / 'bioemu2'
+    found = []
+    for fname in sorted((ROOT / 'aimmd').rglob('*.py')):
+        if adaptor in fname.parents:
+            continue
+        for node in ast.walk(ast.parse(fname.read_text(), filename=str(fname))):
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and not node.level:
+                modules = [node.module]
+            else:
+                continue
+            found += [f'{fname.relative_to(ROOT)}:{node.lineno} imports {module}'
+                      for module in modules if module.split('.')[0] in BIOEMU2_ONLY]
+    assert found == []
 
 
 def test_package_all_is_computed():
