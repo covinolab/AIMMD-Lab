@@ -49,6 +49,7 @@ generator-adherence campaign (``adherence_lib.parse_guidance_schedule``,
 import math
 from numbers import Real
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -241,6 +242,15 @@ class ConditionedDenoiser:
 # classifier-free guidance
 # ---------------------------------------------------------------------------
 
+def _decimal(value):
+    """`value` as the shortest decimal that reads back as the same float, never with an exponent.
+
+    The schedule text separates ``lo`` and ``hi`` by ``'-'``, so ``'1e-05'``
+    would not read back; ``inf`` stays ``'inf'``.
+    """
+    return np.format_float_positional(float(value), trim='-')
+
+
 def _number(text, what, spec):
     try:
         value = float(text)
@@ -267,7 +277,7 @@ def parse_guidance_schedule(spec):
         return ()
     if not isinstance(spec, str):                         # ((lo, hi, weight, null), ...)
         try:
-            spec = ','.join(f'{float(lo)!r}-{float(hi)!r}:{float(w)!r}:{null}' for lo, hi, w, null in spec)
+            spec = ','.join(f'{_decimal(lo)}-{_decimal(hi)}:{_decimal(w)}:{null}' for lo, hi, w, null in spec)
         except (TypeError, ValueError):
             raise ValueError(f'a guidance schedule is a string or a sequence of (lo, hi, weight, null), '
                              f'got {spec!r}') from None
@@ -328,10 +338,10 @@ class GuidanceSchedule:
         return self.scale == 1.0 and all(w == 1.0 for _, _, w, _ in self.windows)
 
     def spec(self):
-        """The windows as a canonical string (None without windows)."""
+        """The windows as a canonical string that reads back exactly (None without windows)."""
         if not self.windows:
             return None
-        return ','.join(f'{lo:g}-{hi:g}:{w:g}:{null}' for lo, hi, w, null in self.windows)
+        return ','.join(f'{_decimal(lo)}-{_decimal(hi)}:{_decimal(w)}:{null}' for lo, hi, w, null in self.windows)
 
     def __repr__(self):
         return f'GuidanceSchedule(scale={self.scale:g}, windows={self.spec()!r})'

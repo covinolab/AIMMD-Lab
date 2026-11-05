@@ -94,6 +94,29 @@ def test_the_guidance_schedule():
         GuidanceSchedule(float('inf'))
 
 
+EXACT_SCHEDULE = '0.1234567-8.7654321:1.23456789:learned,0.00001-0.1:2:bioemu2'
+
+
+def test_the_guidance_schedule_text_reads_back_exactly():
+    """The text of a schedule is the schedule, to the last digit (also below 1e-4, without an exponent)."""
+    schedule = GuidanceSchedule(1.0, EXACT_SCHEDULE)
+    assert schedule.spec() == EXACT_SCHEDULE
+    assert GuidanceSchedule(1.0, schedule.spec()).windows == schedule.windows == (
+        (0.1234567, 8.7654321, 1.23456789, 'learned'), (1e-5, 0.1, 2.0, 'bioemu2'))
+    assert parse_guidance_schedule(schedule.windows) == schedule.windows
+
+
+@pytest.mark.bioemu2
+def test_the_generator_settings_record_the_schedule_used():
+    """What settings() and the sidecars record is the schedule that was used; close schedules differ."""
+    from aimmd.cgaimmd.bioemu2.sampling import BioEmu2Generator
+    from aimmd.cgaimmd.generation import make_generator
+    generator = BioEmu2Generator(cfg_schedule=EXACT_SCHEDULE)
+    assert generator.settings()['cfg_schedule'] == EXACT_SCHEDULE
+    assert make_generator({'method': 'bioemu2_edm', **generator.settings()}) == generator
+    assert generator != BioEmu2Generator(cfg_schedule=EXACT_SCHEDULE.replace('0.1234567', '0.1234568'))
+
+
 # --------------------------------------------------------------------------- on the tiny model
 
 
