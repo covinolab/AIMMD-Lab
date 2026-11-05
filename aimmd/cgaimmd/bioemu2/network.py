@@ -33,7 +33,11 @@ the ImportError that says how to install bioemu2.
 
 :func:`load_archived_network` reads the networks of the archived production
 campaigns (``BioEmu2FlowNetwork`` and ``HoloFlowNetwork`` of the old project
-code) into a :class:`BioEmu2Network` through :data:`ARCHIVED_KEY_MAP`.
+code) into a :class:`BioEmu2Network` through :data:`ARCHIVED_KEY_MAP`, and
+reads their architecture from the weights. A :class:`BioEmu2Network` of the
+same architecture also loads their state dicts directly (AIMMD's
+``Params.update_network`` on an archived run folder): the old name of the
+single adapter is read for one release, with one ``DeprecationWarning``.
 
 Ported from ``bioemu2_committor/aimmd_flow.py`` (``BioEmu2FlowNetwork``) and
 ``aimmd_flow_holo.py`` (``HoloFlowNetwork``), merged; the probability-flow
@@ -282,6 +286,21 @@ class BioEmu2Network(nn.Module):
             sigma = torch.full((len(features),), self.sigma_ref, device=self.device)
             out.append(self.head_ema(features, sigma))
         return torch.cat(out).reshape(-1, 1) if out else torch.zeros(0, 1, device=self.device)
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
+                              error_msgs):
+        # the archived networks called the single adapter 'adapter' (ARCHIVED_KEY_MAP): read for one release, so
+        # that AIMMD's own loading (Params.update_network) reads their run folders; never written
+        old, new = f'{prefix}adapter.', f'{prefix}single_adapter.'
+        renamed = [key for key in state_dict if key.startswith(old)]
+        if renamed and not any(key.startswith(new) for key in state_dict):
+            from .._legacy import warn_renamed
+            warn_renamed("the parameter prefix 'adapter.' of an archived BioEmu2 network", "'single_adapter.'",
+                         key=('BioEmu2 network parameter', 'adapter'), stacklevel=5)
+            for key in renamed:
+                state_dict[new + key[len(old):]] = state_dict.pop(key)
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
+                                      error_msgs)
 
     def reset_parameters(self, seed=None):
         """A fresh head (its scaler kept), the EMA head equal to it, and identity adapters.

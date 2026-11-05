@@ -3,8 +3,9 @@
 It follows the committor-only C-GAIMMD network protocol, is built from a system
 folder without loading BioEmu2, saves only its head and adapters, never copies
 BioEmu2, and reproduces the values of the old networks; the networks of the
-archived campaigns load through the key map (tested on synthetic checkpoints
-with the old parameter names, assembled from the goldens).
+archived campaigns load through the key map and through AIMMD's own network
+loading (tested on synthetic checkpoints with the old parameter names,
+assembled from the goldens).
 """
 
 import copy
@@ -183,6 +184,38 @@ def test_archived_networks_load_through_the_key_map(which, readout, request, gol
     for key, value in golden_state(golden, f'{which}.denoiser.state.single_adapter').items():
         assert torch.equal(network.single_adapter.state_dict()[key], value)
     network.engine().close()
+
+
+def test_archived_run_folders_load_through_aimmds_network_loading(tiny_peptide_system, golden, tmp_path, recwarn):
+    """``Params.update_network`` reads a run folder's archived ``networkARB.h5`` (old name ``adapter``).
+
+    The old parameter names are read for one release, with one DeprecationWarning per process (DESIGN Q2).
+    """
+    import aimmd
+    from aimmd.cgaimmd.bioemu2.network import archived_state_dict
+    params = aimmd.Params.load(str(_params_folder(tmp_path, tiny_peptide_system)), save=False)
+    old = _old_checkpoint(golden, 'peptide')
+    run = tmp_path / 'run'
+    run.mkdir()
+    torch.save(old, run / 'networkARB.h5')
+    recwarn.clear()
+    params.update_network(str(run), timeout=0.0)
+    renamed = [w for w in recwarn if issubclass(w.category, DeprecationWarning) and 'single_adapter' in str(w.message)]
+    assert len(renamed) == 1 and "prefix 'adapter.' of an archived BioEmu2 network" in str(renamed[0].message)
+    for key, value in archived_state_dict(old).items():
+        assert torch.equal(params.network.state_dict()[key], value), key
+    x = golden['peptide.x_md']
+    with torch.no_grad():
+        values = params.network(torch.as_tensor(x).reshape(len(x), -1))
+    np.testing.assert_allclose(values.numpy(), golden['peptide.network.values'], rtol=1e-5, atol=1e-5)
+    recwarn.clear()
+    params.network.load_state_dict(old)                               # once per process
+    assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
+    # both names at once is not an archived network: the strict load refuses it
+    both = {**params.network.state_dict(), 'adapter.out.bias': old['adapter.out.bias']}
+    with pytest.raises(RuntimeError, match="Unexpected key.*adapter.out.bias"):
+        params.network.load_state_dict(both)
+    params.network.engine().close()
 
 
 def test_what_the_archived_loader_refuses(tiny_peptide_system, tiny_protein_ligand_system, golden):
