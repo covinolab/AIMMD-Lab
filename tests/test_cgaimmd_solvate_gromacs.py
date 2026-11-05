@@ -24,7 +24,8 @@ from aimmd.cgaimmd.preparation.gromacs import (_gro_records, _gromacs_seed, _rea
                                                read_gro, read_trr_last_frame, write_gro)
 from aimmd.cgaimmd.preparation.solvate import (ExclusionSphere, GromacsSolvator,  # noqa: E402
                                                NVTStage)
-from tests._cgaimmd_helpers import cgaimmd_params_namespace, make_candidate_context  # noqa: E402
+from tests._cgaimmd_helpers import (cgaimmd_params_namespace, make_candidate_context,  # noqa: E402
+                                    mdrun_thread_options)
 
 pytestmark = pytest.mark.gromacs
 
@@ -44,7 +45,7 @@ def _setup(tmp_path, gmx):
     params = cgaimmd_params_namespace(
         engine='gromacs', topology=str(WATER / 'conf.gro'), gmx_mdp=str(WATER / 'nvt.mdp'),
         gmx_grompp=f'{gmx} grompp -maxwarn 5 -p {WATER / "topol.top"}',
-        gmx_mdrun=f'{gmx} mdrun -ntmpi 1 -ntomp 2 -nb cpu -pin off',
+        gmx_mdrun=f'{gmx} mdrun {mdrun_thread_options(gmx, 2)} -nb cpu -pin off',
         network=TinyFlowNetwork(n_atoms=descriptors.n_atoms), _universe=universe,
         path=PosixPath(tmp_path))
     selected = descriptors.select(universe.atoms.positions, universe.dimensions)

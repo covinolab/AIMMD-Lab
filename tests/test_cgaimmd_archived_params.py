@@ -26,6 +26,7 @@ parts live.
 
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import warnings
@@ -39,6 +40,7 @@ pytest.importorskip('networkx')
 mda = pytest.importorskip('MDAnalysis')
 
 from aimmd.cgaimmd import _legacy                                            # noqa: E402
+from tests._cgaimmd_helpers import gromacs_has_thread_mpi                    # noqa: E402
 
 pytestmark = pytest.mark.gromacs          # read_masses of the water needs GROMACS' share folder
 
@@ -88,8 +90,16 @@ def values_function_for(network, batchsize=256):
 
 @pytest.fixture
 def archived(tmp_path, monkeypatch, gmx_executable):
-    """The archived params module, imported from a folder of stand-ins, and the old-name warnings."""
+    """The archived params module, imported from a folder of stand-ins, and the old-name warnings.
+
+    The file calls GROMACS by the bare name ``gmx``; a ``gmx`` link to the tests' GROMACS
+    goes first on PATH, so that it runs where GROMACS is installed as ``gmx_mpi`` only.
+    """
     run = tmp_path / 'run'
+    gmx_bin = tmp_path / 'gmx_bin'
+    gmx_bin.mkdir()
+    (gmx_bin / 'gmx').symlink_to(gmx_executable)
+    monkeypatch.setenv('PATH', f'{gmx_bin}{os.pathsep}{os.environ.get("PATH", "")}')
     system = tmp_path / 'system'
     (run / 'bioemu2_committor').mkdir(parents=True)
     system.mkdir()
@@ -175,6 +185,8 @@ def _samples():
 def test_archived_hook_equals_polished_validity_with_gromacs(archived, tmp_path):
     """The hand-written hook (real restrained EM) and PolishedValidity of its objects agree."""
     from aimmd.cgaimmd.preparation.validity import PolishedValidity
+    if not gromacs_has_thread_mpi(shutil.which('gmx')):
+        pytest.skip('the archived params run mdrun -ntmpi 1, which an MPI build of GROMACS refuses')
     module = archived.module
     samples = _samples()
 

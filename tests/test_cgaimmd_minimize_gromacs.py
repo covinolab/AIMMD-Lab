@@ -23,7 +23,8 @@ from aimmd.cgaimmd.preparation.gromacs import _read_mdp, mdp_text, read_gro  # n
 from aimmd.cgaimmd.preparation.minimize import GromacsMinimizer              # noqa: E402
 from aimmd.cgaimmd.preparation.topology import read_masses                   # noqa: E402
 from aimmd.cgaimmd.types import PreparedFrame                                # noqa: E402
-from tests._cgaimmd_helpers import cgaimmd_params_namespace, make_candidate_context  # noqa: E402
+from tests._cgaimmd_helpers import (cgaimmd_params_namespace, make_candidate_context,  # noqa: E402
+                                    mdrun_thread_options)
 
 pytestmark = pytest.mark.gromacs
 
@@ -35,7 +36,7 @@ def _params(tmp_path, gmx):
     return cgaimmd_params_namespace(
         engine='gromacs', topology=str(NANMA / 'conf.gro'), gmx_mdp=str(NANMA / 'run.mdp'),
         gmx_grompp=f'{gmx} grompp -maxwarn 5 -p {NANMA / "topol.top"}',
-        gmx_mdrun=f'{gmx} mdrun -ntmpi 1 -ntomp 1 -nb cpu -pin off',
+        gmx_mdrun=f'{gmx} mdrun {mdrun_thread_options(gmx, 1)} -nb cpu -pin off',
         network=TinyFlowNetwork(n_atoms=22), _universe=universe, path=PosixPath(tmp_path))
 
 
@@ -184,7 +185,9 @@ def test_must_stop_kills_mdrun(tmp_path, gmx_executable):
     result = slow(_candidate(), context)
     elapsed = time.monotonic() - start
     assert not result.ok and result.reason.startswith('minimize_failed: ')
-    assert 'gmx mdrun stopped by must_stop' in result.reason, result.reason
+    # the reason names the executable as the command does (gmx, gmx_mpi)
+    assert f'{os.path.basename(gmx_executable)} mdrun stopped by must_stop' in result.reason, (
+        result.reason)
     assert 'log' in seen and 1.0 < elapsed < 30.0, elapsed
 
 

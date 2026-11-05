@@ -11,13 +11,17 @@ stream's code to build its fixtures:
   for C-GAIMMD (no validation), as ``tests/test_worker_runtime_unit.py`` does
   for RFPS;
 - :func:`build_cgaimmd_run_dir`: a run folder with shooting chains, free
-  trajectories and their caches.
+  trajectories and their caches;
+- :func:`gromacs_has_thread_mpi` and :func:`mdrun_thread_options`: mdrun
+  thread options that work with a thread-MPI ``gmx`` and an MPI ``gmx_mpi``.
 """
 
 import datetime
+import functools
 import hashlib
 import io
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -98,6 +102,34 @@ def write_fake_network_file(directory, network, states='ARB', round=1, n_trained
         atomic_write_json(directory / f'network{states}.json', record)
     atomic_write_bytes(directory / f'network{states}.h5', data)
     return sha
+
+
+# ---------------------------------------------------------------------------
+# GROMACS builds
+# ---------------------------------------------------------------------------
+
+@functools.lru_cache(maxsize=None)
+def gromacs_has_thread_mpi(gmx):
+    """Whether the GROMACS executable `gmx` is a thread-MPI build (``gmx --version``).
+
+    An MPI build (``gmx_mpi`` on JUPITER and Goethe) refuses ``mdrun -ntmpi``.
+    When the version cannot be read, a thread-MPI build is assumed.
+    """
+    try:
+        out = subprocess.run([str(gmx), '--version'], capture_output=True, text=True,
+                             timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return True
+    for line in out.splitlines():
+        if line.strip().lower().startswith('mpi library:'):
+            return line.split(':', 1)[1].strip().lower() == 'thread_mpi'
+    return True
+
+
+def mdrun_thread_options(gmx, ntomp=1):
+    """``'-ntmpi 1 -ntomp N'`` for a thread-MPI build of `gmx`, ``'-ntomp N'`` for an MPI build."""
+    ntomp = f'-ntomp {int(ntomp)}'
+    return f'-ntmpi 1 {ntomp}' if gromacs_has_thread_mpi(gmx) else ntomp
 
 
 # ---------------------------------------------------------------------------
