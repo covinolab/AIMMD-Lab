@@ -59,14 +59,16 @@ mode (``graphs=True``).
 
 The flow-matching labels of the reactive frames are the committor of the
 round's EMA, computed at the start of the round and again every
-``relabel_every`` steps. With the default ``relabel_every=0`` they are the
-start network's for the whole round; with the end-state pretraining as the
-start that is the committor of a network that has seen no shooting point, so
-online runs set ``relabel_every`` (the post-training recipes of the PaiNN
-evidence relabelled every 1,000 steps).
+``relabel_every`` steps (default 1,000 of ``steps_per_round`` 4,000, the
+recipe of the PaiNN evidence). Relabelling within the round is what lets the
+generator's conditioning learn from the shooting points: at the start of a
+round the EMA is the start network, and with the end-state pretraining as the
+start that is the committor of a network that has seen no shooting point.
+With ``relabel_every=0`` (or not below ``steps_per_round``) the labels stay
+the start network's for the whole round, and the fit warns once.
 
 Options, off by default: ``basin_draw='density'`` (in-state frames drawn by
-their density weight), ``relabel_every``, ``holdout_every`` with
+their density weight), ``holdout_every`` with
 ``early_stopping_patience`` (early stopping on the held-out chains' shooting
 likelihood), ``split_backward`` (two backward passes per step, for a small
 GPU) and ``graphs`` (graph mode).
@@ -106,7 +108,7 @@ __all__ = ['flow_matching_fit', 'FlowTrainer', 'LossNormalizer', 'committor_nll'
 
 FLOW_FIT_DEFAULTS = {
     'graphs': False,
-    'steps_per_round': 1000,
+    'steps_per_round': 4000,
     'max_round_seconds': None,
     'lr': 3e-4,
     'weight_decay': 1e-5,
@@ -134,7 +136,7 @@ FLOW_FIT_DEFAULTS = {
     'fm_max_sample_loss': 1e3,
     'relabel_max_frames': 100000,
     'relabel_chunk': 128,
-    'relabel_every': 0,
+    'relabel_every': 1000,
     'holdout_fraction': 0.1,
     'holdout_seed': 12345,
     'holdout_chains': None,
@@ -164,6 +166,11 @@ so ``total_steps`` larger than ``steps_per_round`` is refused (the cosine
 would never reach 0; the flow branch's templates set it to "rounds x steps
 per round" for warm-started rounds).
 ``trainer_seed`` None takes the run's seed (:func:`aimmd.cgaimmd.fitting.fit_seed`).
+``steps_per_round`` 4,000 and ``relabel_every`` 1,000 are the online recipe
+of the PaiNN evidence (4,000 steps gave the best held-out committor on
+chignolin; every PaiNN recipe relabelled every 1,000 steps); with every round
+trained from the start, relabelling within the round is what brings the
+shooting points into the generator's labels.
 """
 
 BASIN_DRAWS = ('uniform', 'density')
@@ -1422,7 +1429,7 @@ def _warn_labels_from_start(context):
               f'steps_per_round={s["steps_per_round"]}: the flow-matching labels of the reactive '
               f'frames are the committor of the start network ({context["start_kind"]}) for the '
               f'whole round, because every round starts again from it; set relabel_every below '
-              f'steps_per_round (the PaiNN post-trainings relabelled every 1000 steps)',
+              f'steps_per_round (default 1000, the PaiNN recipes)',
               flush=True)
 
 

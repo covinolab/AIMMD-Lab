@@ -1564,8 +1564,40 @@ def test_log_every_writes_progress_records(tmp_path):
 # relabelling within a round (relabel_every)
 # --------------------------------------------------------------------------------------------
 
-def test_relabel_every_default_is_one_relabel_per_round(tmp_path, capsys):
-    """relabel_every=0 (default) relabels once, at the start of the round, and warns once per process."""
+def test_default_keywords_relabel_within_the_round(tmp_path, monkeypatch, capsys):
+    """The defaults (4,000 steps, relabel every 1,000) bring the round's own EMA into the labels.
+
+    Every round trains again from the start (the end-state pretraining, which
+    has seen no shooting point), so without relabelling within the round the
+    generator's conditioning would never learn from the shooting points. The
+    optimizer step is replaced by a counter: only the schedule is tested here
+    (relabelling itself: the test below).
+    """
+    assert ff.FLOW_FIT_DEFAULTS['steps_per_round'] == 4000
+    assert ff.FLOW_FIT_DEFAULTS['relabel_every'] == 1000
+    s = _setup(tmp_path)
+    calls = []
+    original = ff._relabel
+
+    def spy(context, data):
+        calls.append(context['trainer'].step_count)
+        return original(context, data)
+
+    def counting_step(self):
+        self.step_count += 1
+        return 0.0, {}
+    monkeypatch.setattr(ff, '_relabel', spy)
+    monkeypatch.setattr(ff.FlowTrainer, 'step', counting_step)
+    _, info = ff.flow_matching_fit(s.params, s.pe, worker=s.worker, idle_sleep_s=0.0)
+    assert calls == [0, 1000, 2000, 3000]
+    assert info['record']['steps'] == 4000 and info['record']['relabels_in_round'] == 3
+    assert info['network_metadata']['settings']['relabel_every'] == 1000
+    assert 'start network' not in capsys.readouterr().out          # no warning
+
+
+@pytest.mark.parametrize('relabel_every', [0, 6, 7])
+def test_labels_from_the_start_for_the_whole_round_warn(tmp_path, capsys, relabel_every):
+    """relabel_every=0, or not below steps_per_round, relabels once (at the start) and warns once per process."""
     s = _setup(tmp_path)
     calls = []
     original = ff._relabel
@@ -1575,15 +1607,16 @@ def test_relabel_every_default_is_one_relabel_per_round(tmp_path, capsys):
         return original(context, data)
     ff._relabel = spy
     try:
-        _, info = _fit(s, steps_per_round=6)
+        _, info = _fit(s, steps_per_round=6, relabel_every=relabel_every)
         out = capsys.readouterr().out
-        _fit(s, steps_per_round=6)
+        _fit(s, steps_per_round=6, relabel_every=relabel_every)
     finally:
         ff._relabel = original
     assert calls == [0, 0]
     assert info['record']['relabels_in_round'] == 0
     assert 'relabel_in_round' not in info['record']['seconds']
     assert 'labels of the reactive frames are the committor of the start network' in out
+    assert f'relabel_every={relabel_every} with steps_per_round=6' in out
     assert 'start network' not in capsys.readouterr().out          # once per process
 
 
