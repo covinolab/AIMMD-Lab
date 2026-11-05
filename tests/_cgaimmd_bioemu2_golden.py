@@ -28,14 +28,26 @@ What was recorded, per system (key prefixes ``peptide.`` and ``ligand.``):
   the classifier-free-guidance hook;
 - ``guided_sampler.sample`` driven as the old networks drive it (chunks of
   ``gen_batch`` labels, seed + chunk start, the network's denoise hook), with
-  :data:`SAMPLER_STEPS` steps instead of 200, at guidance weight 1 and 2;
+  :data:`SAMPLER_STEPS` steps instead of 200, at guidance weight 1 and 2; and
+  for the peptide with a learned-null adapter and the noise-level guidance
+  schedule :data:`GUIDANCE_SCHEDULE` of the generator-adherence campaign
+  (``adherence_lib.guidance_hook``, as its ``generate_heavy`` drives it);
 - the values (``forward``) of the old networks (``aimmd_flow.BioEmu2FlowNetwork``,
   ``aimmd_flow_holo.HoloFlowNetwork``) with a seeded head;
 - one whole training round of the old fits
   (``aimmd_flow_fit.sequential_round``, ``aimmd_flow_holo_fit.holo_sequential_round``)
   on a synthetic dataset, with :data:`ROUND_SETTINGS`: the head losses of every
   step, the denoising losses of the three adapter steps, the label probe, and
-  the final head and adapter weights.
+  the final head and adapter weights. The peptide round uses one noisy copy
+  per shooting point (:data:`ROUND_SETTINGS_PEPTIDE`): the old chignolin round
+  drew the noise of its noisy copies in another order than the holo round
+  (all copies of a shooting point together, instead of copy by copy); with one
+  copy the two orders agree, so both rounds pin the one recipe of the port.
+
+Every array is copied when it is recorded (a CPU tensor's ``.numpy()`` shares
+its memory, and the round trains the network's head and adapters in place:
+the first recording of 5 Nov 2026 stored the trained weights under the keys
+of the seeded ones).
 
 The old code hard-codes the production widths (768 / 384 / 256, 166 atoms,
 ...). Where it does, the recorder sets the module constants to the tiny
@@ -94,6 +106,8 @@ SAMPLER_LAMBDAS = (-12.0, 0.0, 3.0)
 SAMPLER_SEED = 11
 SAMPLER_STEPS = 5
 GEN_BATCH = 2
+GUIDANCE_SCHEDULE = '8-inf:3:learned,2-8:3:bioemu2'
+"""The noise-level guidance schedule of the recorded peptide sample (a learned null and plain BioEmu2)."""
 HEAD_SEED = 101
 """``torch.manual_seed`` before the old network (and its head) is built."""
 HEAD_HIDDEN = (16,)
@@ -101,7 +115,7 @@ ROUND_SETTINGS = dict(batch_sp=4, batch_anchor=4, batch_den=4, micro_batch=2, n_
                       noisy_copies=2, head_steps_without_holdout=5, adapter_steps=3, p_uncond=0.2, seed=0,
                       verbose=True, adapter_log_every=1)
 """Settings of the recorded training round (shared by both systems; 3 adapter steps)."""
-ROUND_SETTINGS_PEPTIDE = dict(min_shots_for_generator=2)
+ROUND_SETTINGS_PEPTIDE = dict(min_shots_for_generator=2, noisy_copies=1)
 ROUND_SETTINGS_LIGAND = dict(min_shots_for_generator=0, min_frames_for_generator=0, ligand_weight=5.0,
                              feature_batch=4, probe=True, pool_weighting='uniform')
 DATASET_OUTCOMES = ((1, 1), (2, 0), (0, 2), (1, 1))
@@ -116,7 +130,8 @@ OLD_FILES = ('bioemu2_committor/finetune.py', 'bioemu2_committor/guided_sampler.
              'bioemu2_committor/extractor.py', 'bioemu2_committor/holo.py', 'bioemu2_committor/joint.py',
              'bioemu2_committor/head.py', 'bioemu2_committor/aimmd_flow.py',
              'bioemu2_committor/aimmd_flow_holo.py', 'bioemu2_committor/aimmd_flow_fit.py',
-             'bioemu2_committor/aimmd_flow_holo_fit.py', 'trypsin/system/trypsin_atom_map.json')
+             'bioemu2_committor/aimmd_flow_holo_fit.py', 'trypsin/system/trypsin_atom_map.json',
+             'campaigns/2026-10-30_generator-adherence/adherence_lib.py')
 
 
 def write_tiny_checkpoint(folder):
@@ -246,16 +261,16 @@ def _seed_adapter(module, seed):
 
 def _state(out, prefix, module):
     for name, value in module.state_dict().items():
-        out[f'{prefix}.{name}'] = value.detach().cpu().numpy()
+        out[f'{prefix}.{name}'] = value.detach().cpu().numpy().copy()
 
 
 def _trunk(out, prefix, trunk):
     for name in ('s_inputs', 'single', 'pair', 'relative_position_encoding', 'distogram'):
-        out[f'{prefix}.{name}'] = getattr(trunk, name).detach().cpu().float().numpy()
+        out[f'{prefix}.{name}'] = getattr(trunk, name).detach().cpu().float().numpy().copy()
 
 
 def _np(t):
-    return t.detach().cpu().numpy()
+    return t.detach().cpu().numpy().copy()
 
 
 def _round_log(text):
@@ -428,10 +443,30 @@ def record(be_root, chignolin_dir, out_path):
             coords.append(np.asarray(c, np.float32)[:, :extractor.N_HEAVY])
         out[f'peptide.sample.cfg{weight:g}'] = np.concatenate(coords)
     net.cfg_weight = 1.0
+    # sampling with a learned null and a noise-level guidance schedule (the generator-adherence campaign)
+    sys.path.insert(0, str(be_root / 'campaigns' / '2026-10-30_generator-adherence'))
+    import adherence_lib
+    torch.manual_seed(HEAD_SEED)
+    net_null = aimmd_flow.BioEmu2FlowNetwork(shared=True, hidden=HEAD_HIDDEN, cfg_weight=1.0, gen_batch=GEN_BATCH,
+                                             value_batch=2)
+    _seed_adapter(net_null.adapter, ADAPTER_SEED + 4)
+    _state(out, 'peptide.sample_schedule.single_adapter', net_null.adapter)
+    eng_null = net_null.engine()
+    eng_null['cond'].cache_contexts = True
+    schedule = adherence_lib.parse_guidance_schedule(GUIDANCE_SCHEDULE)
+    coords = []
+    for s in range(0, len(lam_all), GEN_BATCH):
+        lam_k = lam_all[s:s + GEN_BATCH]
+        c, _ = guided_sampler.sample(eng_null['ex'].model, eng_null['ex'].system, eng_null['ex'].trunk, n=len(lam_k),
+                                     batch_size=len(lam_k), seed=SAMPLER_SEED + s, num_steps=SAMPLER_STEPS,
+                                     denoise=adherence_lib.guidance_hook(net_null, lam_k, 1.0, schedule=schedule))
+        coords.append(np.asarray(c, np.float32)[:, :extractor.N_HEAVY])
+        eng_null['cond']._ctx_cache = {}
+    out['peptide.sample_schedule.coords'] = np.concatenate(coords)
     # one training round
     log = io.StringIO()
     with contextlib.redirect_stdout(log):
-        losses, info = aimmd_flow_fit.sequential_round(net, ds, 0, **ROUND_SETTINGS, **ROUND_SETTINGS_PEPTIDE)
+        losses, info = aimmd_flow_fit.sequential_round(net, ds, 0, **{**ROUND_SETTINGS, **ROUND_SETTINGS_PEPTIDE})
     head_log, steps, _, _ = _round_log(log.getvalue())
     assert len(steps) == ROUND_SETTINGS['adapter_steps'], steps
     out['peptide.round.head_losses'] = np.array([[rec.get('L_sp', np.nan), rec.get('L_anchor', np.nan)]
