@@ -490,9 +490,9 @@ class ParamsHelpers(ABC):
             elif name == 'chain_type':
                 value = value.lower()
                 if value.startswith('tp'):
-                    values = 'tps'
+                    value = 'tps'
                 elif value.startswith('rf'):
-                    values = 'rfps'
+                    value = 'rfps'
                 else:
                     raise TypeError(f'{name!r} must be either "tps" or '
                                     f'"rfps", got {value!r}')
@@ -676,7 +676,9 @@ class ParamsHelpers(ABC):
         # assumes one topology / one universe / one states_function).
         if getattr(self, 'multi_system', False):
             self._process_and_check_multi_system(fields)
+            self._check_masses_from_topology(fields)
             return
+        self._check_masses_from_topology(fields)
 
         # initial paths-related checks
         initial_paths = getattr(self, 'initial_paths', None)
@@ -755,6 +757,35 @@ class ParamsHelpers(ABC):
 
             # reassign path
             self.initial_paths[i] = path
+
+    def _check_masses_from_topology(self, fields=[]):
+        """
+        With ``masses_from_topology``, read the topology masses now.
+
+        Raises TypeError (at load or assignment rather than at the first shot)
+        when the GROMACS topology grompp uses is missing, unreadable or has
+        another atom count than ``topology``. Runs when all fields are
+        processed or one it depends on was assigned; a no-op for the default
+        ``masses_from_topology = False``.
+        """
+        if not getattr(self, 'masses_from_topology', False):
+            return
+        if fields and not {'masses_from_topology', 'topology', 'gmx_grompp',
+                           'engine', 'multi_system', 'system_ids'} & set(fields):
+            return
+        if getattr(self, 'multi_system', False):
+            for system_id in self.system_ids:
+                universe = self.universe_of(system_id)
+                if universe is not None:
+                    self._topology_masses(
+                        len(universe.atoms),
+                        self._per_system_value(self.gmx_grompp, system_id),
+                        strict=True)
+            return
+        if self._universe is None:
+            raise TypeError(f'masses_from_topology = True needs a structure file '
+                            f'topology that MDAnalysis can read, got {self.topology!r}')
+        self._topology_masses(len(self._universe.atoms), self.gmx_grompp, strict=True)
 
     def _process_and_check_multi_system(self, fields=[]):
         """

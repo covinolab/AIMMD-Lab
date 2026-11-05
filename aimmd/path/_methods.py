@@ -426,7 +426,7 @@ class PathMethods(ABC):
             result.__dict__[attribute] = value.copy()
         return result
     
-    def find_shooting_index(self):
+    def find_shooting_index(self, nearest=False):
         """
         Return the frame index corresponding to the shooting point.
     
@@ -446,7 +446,12 @@ class PathMethods(ABC):
         The method assumes that the trajectory times are approximately equally
         spaced around the shooting point and that the shooting frame corresponds to
         time zero.
-    
+
+        Parameters
+        ----------
+        nearest : bool, default=False
+            If True, round ``-t0 / dt`` to the nearest frame, else truncate it.
+
         Returns
         -------
         int
@@ -456,6 +461,13 @@ class PathMethods(ABC):
         -----
         The computation uses times rounded to 6 decimal places to suppress tiny
         floating-point noise from trajectory readers.
+
+        ``-t0 / dt`` is only nearly integral when the frame spacing is not exact
+        in binary: with 0.05 ps frames, ``t0 = 0.2`` and
+        ``dt = -0.05000000000000002`` give ``3.9999999999999982``, which
+        truncates to 3, one frame before the frame at time 0. ``nearest=True``
+        gives 4. ``Params.round_shooting_index`` selects the mode for
+        the shot paths a run loads from disk.
     
         For paths with fewer than two frames, the only sensible answer is ``0``.
         """
@@ -513,11 +525,14 @@ class PathMethods(ABC):
         #   t(index) = t0 + index * dt = 0
         #   index = -t0 / dt
         #
-        # Because dt is negative here, the result is positive. Must cast to int.
+        # Because dt is negative here, the result is positive. Must cast to int
+        # (truncating by default, see `nearest`).
         #
         # Finally, clamp the value to len(self) - 1 so that small numerical or
         # formatting inconsistencies cannot produce an out-of-bounds index.
-        return min(int(-t0 / dt), len(self) - 1)
+        index = -t0 / dt
+        index = int(round(index)) if nearest else int(index)
+        return min(index, len(self) - 1)
     
     def shooting_result(self, states='ARB'):
         """Return a 2-element outcome count derived from the 3-letter path type.

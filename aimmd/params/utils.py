@@ -24,6 +24,9 @@ create_default_values_function(network, descriptor_transform=None)
 check_descriptors_series(value)
     Validate the name of the descriptors cache series.
 
+gromacs_topology_file, gromacs_include_dir, read_topology_masses, masses_disagreement
+    The masses of the GROMACS topology grompp uses (``masses_from_topology``).
+
 Notes
 -----
 These helpers are intentionally lightweight and do not depend on higher-level
@@ -33,6 +36,9 @@ AIMMD components.
 # external
 import os
 import re
+import shlex
+import shutil
+import warnings
 import numpy as np
 import torch
 from glob import glob
@@ -516,3 +522,166 @@ def check_descriptors_series(value):
             f"descriptors_series must be 'descriptors' or 'descriptors-' "
             f"followed by letters, digits, '_', '.' or '-', got {value!r}")
     return value
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Masses of the GROMACS topology (params.masses_from_topology)
+# ════════════════════════════════════════════════════════════════════════════
+
+def gromacs_topology_file(gmx_grompp, parent='.'):
+    """The topology file grompp reads for a ``gmx_grompp`` command.
+
+    Parameters
+    ----------
+    gmx_grompp : str
+        ``params.gmx_grompp``.
+    parent : str or os.PathLike, optional
+        The folder grompp runs in (``params.parent``); relative names are joined to it.
+
+    Returns
+    -------
+    str
+        The file after ``-p`` (the last one if repeated), else ``'topol.top'`` (grompp's default).
+    """
+    try:
+        tokens = shlex.split(str(gmx_grompp))
+    except ValueError:
+        tokens = str(gmx_grompp).split()
+    name = 'topol.top'
+    for i, token in enumerate(tokens[:-1]):
+        if token == '-p':
+            name = tokens[i + 1]
+    return os.path.join(os.fspath(parent), name)
+
+
+def _share_top_of(executable):
+    """``<prefix>/share/gromacs/top`` of a GROMACS executable ``<prefix>/bin/gmx``, else None."""
+    if not executable:
+        return None
+    found = shutil.which(executable)
+    if found is None:
+        return None
+    prefix = os.path.dirname(os.path.dirname(os.path.realpath(found)))
+    return os.path.join(prefix, 'share', 'gromacs', 'top')
+
+
+def gromacs_include_dir(gmx_grompp=None):
+    """GROMACS' force-field directory, where ``#include "<ff>.ff/..."`` lines are found.
+
+    Parameters
+    ----------
+    gmx_grompp : str, optional
+        ``params.gmx_grompp``; its first word is the GROMACS executable.
+
+    Returns
+    -------
+    str or None
+        The first existing directory among the candidates (see the notes); None if none exists.
+
+    Notes
+    -----
+    Candidates, in order: the entries of ``GMXLIB``, ``$GMXDATA/top`` (set by
+    GROMACS' ``GMXRC``), ``<prefix>/share/gromacs/top`` of the executable of
+    `gmx_grompp` and of the executable AIMMD resolved at import
+    (``aimmd._config.GROMACS``).
+    """
+    candidates = []
+    for variable, suffix in (('GMXLIB', ''), ('GMXDATA', 'top')):
+        for entry in os.environ.get(variable, '').split(os.pathsep):
+            if entry:
+                candidates.append(os.path.join(entry, suffix) if suffix else entry)
+    executables = []
+    if gmx_grompp:
+        try:
+            words = shlex.split(str(gmx_grompp))
+        except ValueError:
+            words = str(gmx_grompp).split()
+        if words:
+            executables.append(words[0])
+    from .. import _config
+    executables.append(getattr(_config, 'GROMACS', None))
+    candidates.extend(_share_top_of(executable) for executable in executables)
+    for candidate in candidates:
+        if candidate and os.path.isdir(candidate):
+            return os.path.normpath(candidate)
+    return None
+
+
+def read_topology_masses(top, *, include_dir=None):
+    """The per-atom masses of the system of a GROMACS topology.
+
+    Parameters
+    ----------
+    top : str or os.PathLike
+        A ``.top`` file.
+    include_dir : str, optional
+        Where force-field includes are looked up (:func:`gromacs_include_dir`); None: MDAnalysis' default.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(N,)`` float64 masses in amu, in system order (``[ molecules ]`` expanded).
+
+    Raises
+    ------
+    ValueError
+        If the file cannot be parsed, or a mass is missing, not finite or not positive.
+
+    Notes
+    -----
+    Read with MDAnalysis' GROMACS ``ITPParser`` (``infer_system=True``): the
+    mass column of ``[ atoms ]``, else the mass of the atom type. Local
+    includes are resolved next to the including file, force-field includes
+    in `include_dir`.
+    """
+    from MDAnalysis.topology.ITPParser import ITPParser
+    kwargs = {'infer_system': True}
+    if include_dir:
+        kwargs['include_dir'] = str(include_dir)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            with ITPParser(os.fspath(top)) as parser:
+                topology = parser.parse(**kwargs)
+        masses = np.asarray(topology.masses.values, dtype=float)
+    except Exception as exception:                          # noqa: BLE001
+        raise ValueError(f'could not read the masses of {os.fspath(top)!r}: '
+                         f'{type(exception).__name__}: {exception}') from exception
+    if not len(masses) or not np.all(np.isfinite(masses)) or np.any(masses <= 0):
+        raise ValueError(f'{os.fspath(top)!r} gives {len(masses)} masses, not all of them '
+                         f'finite and positive')
+    return masses
+
+
+def masses_disagreement(names, guessed, topology, *, rtol=0.01, atol=0.01, n_examples=5):
+    """Describe where guessed and topology masses differ, or return None.
+
+    Parameters
+    ----------
+    names : sequence of str
+        Atom names, for the message.
+    guessed, topology : array-like
+        ``(N,)`` masses in amu.
+    rtol, atol : float, optional
+        Tolerances of ``numpy.isclose`` (force fields round masses differently).
+    n_examples : int, optional
+        How many distinct ``name: guessed vs topology`` pairs the message lists.
+
+    Returns
+    -------
+    str or None
+        ``'<k> atoms (CL: 35.45 vs 12.011, ...)'``; None when they agree.
+    """
+    guessed = np.asarray(guessed, dtype=float)
+    topology = np.asarray(topology, dtype=float)
+    differ = ~np.isclose(guessed, topology, rtol=rtol, atol=atol)
+    if not differ.any():
+        return None
+    examples = []
+    for i in np.flatnonzero(differ):
+        example = f'{names[i]}: {guessed[i]:g} vs {topology[i]:g}'
+        if example not in examples:
+            examples.append(example)
+        if len(examples) == n_examples:
+            break
+    return f'{int(differ.sum())} atoms ({", ".join(examples)})'

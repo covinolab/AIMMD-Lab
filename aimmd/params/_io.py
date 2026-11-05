@@ -136,6 +136,10 @@ class ParamsIO(ABC):
         cwd = PosixPath().resolve()
         os.chdir(folder)
         sys.path.insert(0, f'{folder}')
+        # the sys.path entry this function added last; `finally` removes it
+        # by value (the params file may have put entries of its own in front
+        # of it, and those stay)
+        own_entry = f'{folder}'
 
         # in case of problems: restore modules and params fields
         backup_modules = sys.modules.copy()
@@ -228,6 +232,7 @@ class ParamsIO(ABC):
 
                 # add current directory to sys.path
                 sys.path.insert(0, '')
+                own_entry = ''
 
                 # treat filename as a (local) module
                 module_name = path.stem
@@ -348,7 +353,10 @@ class ParamsIO(ABC):
 
         finally:  # back to the original folder & path
             os.chdir(cwd)
-            sys.path.pop(0)
+            # not `sys.path.pop(0)`: that removed the params file's own entry
+            # whenever the file inserted one, and left ours behind
+            if own_entry in sys.path:
+                sys.path.remove(own_entry)
 
     def update(self, *args, **kwargs):
         """

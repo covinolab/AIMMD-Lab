@@ -70,7 +70,8 @@ from abc import ABC
 from math import inf, nan
 
 # aimmd imports
-from .utils import rescale_bins, get_initial_frames_for_training
+from .utils import (rescale_bins, get_initial_frames_for_training,
+                    reweight_parameters_with_bins)
 from .._config import NPY_CACHE, MDA_CACHE, print
 from ..cache.npy import save_npy
 from ..core.utils import now, replace_in_cache, accepts_system_id
@@ -324,7 +325,7 @@ class WorkerTrain(ABC):
         bias_reactive_threshold = params.bias_reactive_threshold
 
         # get frames in first and last state for training
-        margins = get_initial_frames_for_training(self.initial_paths)
+        margins = get_initial_frames_for_training(self.initial_paths, states)
         
         # update kwargs to fit function
         kwargs['worker'] = self
@@ -579,22 +580,10 @@ class WorkerTrain(ABC):
             # reweight pathensemble
             print(f'\nReweighting the full path ensemble {now()}')
 
-            # will update reweighting parameters
-            rw_p = reweight_parameters.copy()
-
-            # find sp_cutoff_min and sp_cutoff_max (nbins<=0 -> no adaptive bins;
-            # compute_bins returns [] and reweight then uses its own defaults)
-            if len(bins):
-                sp_cutoff_min = bins[+0]
-                sp_cutoff_max = bins[-1]
-                if sp_cutoff_min == -inf and bins[+1] < +inf:
-                    sp_cutoff_min = bins[+1]
-                if sp_cutoff_max == +inf and bins[-2] > -inf:
-                    sp_cutoff_max = bins[-2]
-                if 'sp_cutoff_min' not in rw_p:
-                    rw_p['sp_cutoff_min'] = sp_cutoff_min
-                if 'sp_cutoff_max' not in rw_p:
-                    rw_p['sp_cutoff_max'] = sp_cutoff_max
+            # will update reweighting parameters: find sp_cutoff_min and
+            # sp_cutoff_max (nbins<=0 -> no adaptive bins; compute_bins returns
+            # [] and reweight then uses its own defaults)
+            rw_p = reweight_parameters_with_bins(reweight_parameters, bins)
 
             # reweight
             result1 = eval_pe.reweight(
@@ -1029,17 +1018,9 @@ class WorkerTrain(ABC):
                                     find_extremes_with='free', source=source,
                                     states=states,
                                     terminal_bin_extension=terminal_bin_extension)
-                rw_p = reweight_parameters.copy()
                 # nbins<=0 -> compute_bins returns [] (no adaptive bins); skip the
                 # shooting-point cutoff setup (reweight then uses its defaults).
-                if len(bins):
-                    sp_cutoff_min, sp_cutoff_max = bins[0], bins[-1]
-                    if sp_cutoff_min == -inf and bins[1] < +inf:
-                        sp_cutoff_min = bins[1]
-                    if sp_cutoff_max == +inf and bins[-2] > -inf:
-                        sp_cutoff_max = bins[-2]
-                    rw_p.setdefault('sp_cutoff_min', sp_cutoff_min)
-                    rw_p.setdefault('sp_cutoff_max', sp_cutoff_max)
+                rw_p = reweight_parameters_with_bins(reweight_parameters, bins)
                 w1 = pe.reweight(states, **rw_p, source=source)[0]
                 w2 = pe.reweight(states[::-1], **rw_p, source=source)[0]
                 frame_lengths = pe.n_frames
@@ -1310,7 +1291,7 @@ class WorkerTrain(ABC):
             directory, old=getattr(self, '_free_trajectories', []))
 
         # ── build margins from initial paths (same as _train) ─────────────
-        margins = get_initial_frames_for_training(self.initial_paths)
+        margins = get_initial_frames_for_training(self.initial_paths, states)
 
         # ── pre-compute sizes for fraction arithmetic ──────────────────────
         chain_lengths = [len(c) for c in self._shot_chains]

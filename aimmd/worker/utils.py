@@ -89,6 +89,7 @@ from pathlib import Path as PosixPath
 # aimmd imports
 from ..path import Path
 from .._config import NPY_CACHE, MDA_CACHE, print
+from ..cache import forget
 from ..cache.npy import save_npy, load_npy
 from ..core.utils import now, process_state, remove
 from ..path.utils import get_cache_fname, read_sweep_frame, write_sweep_frame
@@ -379,9 +380,11 @@ def get_initial_frames_for_free_simulations(
                     _match_untrimmed(untrimmed_paths, path, states),
                     target_state, states, position, rng))
 
-        # check
-        states = initial_frames[-1].states
-        if states[0] != reactive_state and states[1] != target_state:
+        # check (a local name of its own: `states` is params.states, which
+        # the untrimmed-path lookup of the next initial path still needs)
+        couple_states = initial_frames[-1].states
+        if (couple_states[0] != reactive_state
+                and couple_states[1] != target_state):
             raise RuntimeError(f'{path.fname} must allow to extract a'
                             f'"{reactive_state}{target_state}" segment')
     return initial_frames
@@ -1136,6 +1139,188 @@ def compute_shooting_point_value(path, params):
                                   return_result=True)
 
 
+def evict_segment_caches(folder):
+    """
+    Forget everything this process cached about a folder's segment files.
+
+    Parameters
+    ----------
+    folder : str
+        Chain (or sweep) folder whose ``back``/``forw`` segment files were
+        just deleted with ``remove(f'{folder}/*back*', f'{folder}/*forw*')``.
+
+    Returns
+    -------
+    int
+        Number of evicted cache entries.
+
+    Notes
+    -----
+    A shoot worker re-creates ``back``/``forw`` under the same names for every
+    shot. :func:`register_path` evicts a completed shot's segment entries
+    itself; every other deletion of the segments must call this function, or
+    the next shot in that folder is judged on the deleted files:
+
+    - :data:`MDA_CACHE` keeps its reader on the deleted file, and replaces it
+      only when a caller asks for more frames than it holds;
+    - :data:`NPY_CACHE` keeps the deleted segments' ``states`` and
+      descriptor arrays (for the segments they are held in memory, not on
+      disk), and :meth:`aimmd.path.Path.extend` extends them rather than
+      recomputing them.
+
+    The entries are chosen from what the two caches hold, not from what is
+    left on disk: every resident key whose file lives in `folder` and whose
+    name contains ``back`` or ``forw`` (the ``remove`` patterns above;
+    a hidden file's entry goes as well, which is harmless). They are dropped
+    with :func:`aimmd.cache.forget`, which evicts without opening anything
+    and also removes the MDAnalysis offsets files of the deleted
+    trajectories.
+    """
+    from .. import _config
+
+    folder = os.path.abspath(folder)
+    keys = []
+    for cache in (getattr(_config, 'NPY_CACHE', None),
+                  getattr(_config, 'MDA_CACHE', None)):
+        if cache is None:
+            continue
+        for key in list(cache._cache):
+            fname = os.path.abspath(os.fspath(key))
+            name = os.path.basename(fname)
+            if (os.path.dirname(fname) == folder
+                    and ('back' in name or 'forw' in name)):
+                keys.append(fname)
+    forget(*keys)
+    return len(keys)
+
+
+def reweight_parameters_with_bins(reweight_parameters, bins):
+    """
+    The trainer's reweighting parameters with the shooting-point cutoffs of `bins`.
+
+    ``PathEnsemble.reweight`` treats a shot whose shooting value lies outside
+    ``[sp_cutoff_min, sp_cutoff_max]`` as a free excursion. The trainer sets
+    these cutoffs from its current adaptive bins: the first finite inner edge
+    at each end (``bins[0]``, or ``bins[1]`` when ``bins[0]`` is ``-inf`` and
+    ``bins[1]`` is finite; mirrored at the top). User values in
+    `reweight_parameters` win.
+
+    Parameters
+    ----------
+    reweight_parameters : dict
+        ``params.reweight_parameters``; not modified.
+    bins : array-like or None
+        Adaptive bin edges. None or empty (``nbins <= 0``, or no bins yet):
+        no cutoffs are added and ``reweight`` uses its own defaults.
+
+    Returns
+    -------
+    dict
+        A new dict, ``reweight_parameters`` plus the missing ``sp_cutoff_min``
+        and ``sp_cutoff_max`` (numpy scalars taken from `bins`, as before).
+
+    Notes
+    -----
+    Factored out of the single- and multi-system trainer
+    (``aimmd.worker._train``) without change, so that code which reweights
+    a run outside the trainer (a generator's own fit, for example) can apply
+    exactly the trainer's rule instead of copying it.
+    """
+    rw_p = reweight_parameters.copy()
+    if bins is not None and len(bins):
+        sp_cutoff_min = bins[+0]
+        sp_cutoff_max = bins[-1]
+        if sp_cutoff_min == -inf and bins[+1] < +inf:
+            sp_cutoff_min = bins[+1]
+        if sp_cutoff_max == +inf and bins[-2] > -inf:
+            sp_cutoff_max = bins[-2]
+        if 'sp_cutoff_min' not in rw_p:
+            rw_p['sp_cutoff_min'] = sp_cutoff_min
+        if 'sp_cutoff_max' not in rw_p:
+            rw_p['sp_cutoff_max'] = sp_cutoff_max
+    return rw_p
+
+
+def apply_lorentzian(densities, bins, lorentzian):
+    """
+    Bias bin densities toward the center of value space with a Lorentzian.
+
+    Parameters
+    ----------
+    densities : numpy.ndarray
+        Normalized densities of the bins (not modified).
+    bins : numpy.ndarray
+        Bin edges (``len(densities) + 1``).
+    lorentzian : float
+        ``params.lorentzian``, the width in value space; ``inf`` disables it.
+
+    Returns
+    -------
+    numpy.ndarray
+        A new array with the dtype of `densities`: ``densities *
+        (centers**2 + lorentzian**2)``, normalized, where ``centers =
+        aimmd.analysis.utils.bin_centers(bins)``; for ``lorentzian = inf`` an
+        unchanged copy. Shooting points are then drawn with probability
+        proportional to ``1 / density``, i.e. more often near value 0.
+
+    Notes
+    -----
+    Factored out of :func:`select_shooting_point` without change (the same
+    in-place operations on a copy), so that other selection laws can apply
+    exactly RFPS's adjustment instead of copying it.
+    """
+    densities = np.array(densities, copy=True)
+    if lorentzian < inf:
+        centers = bin_centers(bins)
+        densities *= centers ** 2 + lorentzian ** 2
+        densities /= densities.sum()
+    return densities
+
+
+def apply_density_adjustment(densities, populations_for_adjustment,
+                             shared_populations_for_adjustment, merged_bin_counts,
+                             density_adjustment):
+    """
+    Correct bin densities by the shooting points already selected in each bin.
+
+    Parameters
+    ----------
+    densities : numpy.ndarray
+        Bin densities (not modified).
+    populations_for_adjustment : numpy.ndarray
+        Histogram of the chain's last ``density_adjustment`` shooting values
+        (all of them for ``inf``) over the bins.
+    shared_populations_for_adjustment : numpy.ndarray
+        Histogram of the shooting values of every chain the worker manages
+        (``params.shared_density_adjustment``), else zeros.
+    merged_bin_counts : numpy.ndarray
+        How many original bins each bin stands for (ones without merging).
+    density_adjustment : Number
+        ``params.density_adjustment`` as used (``max(value, 0)``); 0 disables
+        the correction.
+
+    Returns
+    -------
+    numpy.ndarray
+        A new array with the dtype of `densities`: ``densities *
+        (populations + merged counts) * (shared populations + merged
+        counts)``, normalized; for ``density_adjustment = 0`` an unchanged
+        (and not normalized) copy.
+
+    Notes
+    -----
+    Factored out of :func:`select_shooting_point` without change;
+    :func:`select_shooting_point` still normalizes the densities itself when
+    the adjustment is off, so RFPS selection is bitwise unchanged.
+    """
+    densities = np.array(densities, copy=True)
+    if density_adjustment:
+        densities *= populations_for_adjustment + merged_bin_counts
+        densities *= shared_populations_for_adjustment + merged_bin_counts
+        densities /= densities.sum()
+    return densities
+
+
 def select_shooting_point(pool, params, folder,
                           chain=None,
                           free_trajectories=[],
@@ -1380,9 +1565,7 @@ def select_shooting_point(pool, params, folder,
     densities /= densities.sum()
     print(f'*** densities    {densities}')
     if lorentzian < inf:
-        centers = bin_centers(bins)
-        densities *= centers ** 2 + lorentzian ** 2
-        densities /= densities.sum()
+        densities = apply_lorentzian(densities, bins, lorentzian)
         print(f'    (after applying the Loretzian) {densities}')
     
     # merge empty bins, update histograms and densities
@@ -1417,9 +1600,12 @@ def select_shooting_point(pool, params, folder,
     
     # density adjustment (populations)
     if density_adjustment:
-        densities *= populations_for_adjustment + merged_bin_counts
-        densities *= shared_populations_for_adjustment + merged_bin_counts
-    densities /= densities.sum()
+        densities = apply_density_adjustment(
+            densities, populations_for_adjustment,
+            shared_populations_for_adjustment, merged_bin_counts,
+            density_adjustment)
+    else:
+        densities /= densities.sum()
     print(f'    (adjusted)   {densities}')
 
     # report also overriding

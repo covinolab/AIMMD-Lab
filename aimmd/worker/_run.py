@@ -77,6 +77,7 @@ import traceback
 from abc import ABC
 
 # aimmd imports
+from .. import _config
 from .._config import MDA_CACHE, NPY_CACHE, print, require_gromacs
 from ..core.utils import now, accepts_system_id
 from ..core.series import ensure_series_coverage
@@ -151,6 +152,9 @@ class WorkerRun(ABC):
           :data:`~aimmd._config.NPY_CACHE`.
         - Resets per-task counters (:attr:`_t0`, :attr:`_total_steps`,
           :attr:`_total_frames`).
+        - Publishes `task` in ``aimmd._config.WORKER_TASK`` while it runs
+          (None afterwards, also after an exception), for code that may only
+          claim per-task resources, such as devices, inside a worker task.
         - Ensures cleanup in a ``finally`` block even on errors.
         """
         # initialize
@@ -164,6 +168,12 @@ class WorkerRun(ABC):
             require_gromacs()
 
         try:
+            # Publish the task for code that resolves devices only inside a
+            # worker task (see aimmd._config.WORKER_TASK). Set here, not next
+            # to `self.task` above, so that the finally block below always
+            # resets it.
+            _config.WORKER_TASK = task
+
             # Always run from the parameters' directory.
             cwd = os.getcwd()
             self._directory = os.path.relpath(
@@ -225,6 +235,7 @@ class WorkerRun(ABC):
             raise exception
 
         finally:
+            _config.WORKER_TASK = None
             os.chdir(cwd)  # back to main folder
             self._directory = self.directory
             self._terminate_operations()

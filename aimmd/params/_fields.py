@@ -277,7 +277,9 @@ Paths are validated to contain transitions according to `states_function` and
 """Path-sampling chain type.
 Supported values:
 - 'tps'  : transition path sampling,
-- 'rfps' : rejection-free path sampling."""
+- 'rfps' : rejection-free path sampling.
+The value is case-insensitive, and any value starting with 'tp' or 'rf' is
+stored as 'tps' or 'rfps'."""
                  })
 
     selection_pool_size: int = field(
@@ -302,6 +304,24 @@ selection, where transitions have 100% acceptance rate in the pool, and
 non-transitions are always rejected.""" 
                  })
     
+    round_shooting_index: bool = field(
+        default=False,
+        metadata={'description':
+"""How the shooting frame of a shot path loaded from disk is found.
+A registered two-way path starts with its backward segment, so its shooting
+frame (time 0) is reconstructed from the first two time stamps as
+``-t0 / dt``. False (default, the previous behaviour): the ratio is truncated.
+True: it is rounded to the nearest frame. The two differ whenever the frame
+spacing is not exact in binary: with 0.05 ps frames, ``-t0 / dt`` evaluates to
+e.g. 3.9999999999999982, and truncation puts the shooting index one frame
+before the frame at time 0, while the shoot worker that registered the path
+used the frame at time 0. The index enters shooting-point selection,
+reweighting and training. Spacings that are exact in binary (e.g. integer
+picoseconds) are unaffected.
+Changing it in an existing run changes the shooting index of every affected
+path the next time it is loaded."""
+                 })
+
     always_select_inside_the_bins: bool = field(
         default=False,
         metadata={'description':
@@ -339,7 +359,8 @@ due to slightly different PBC handling in GROMACS vs MDAnalysis, producing
 a RuntimeError like "... 0 in state A, should be in R; consider deleting
 the trajectory file to allow AIMMD to recreate it". When this flag is True,
 AIMMD logs a warning, deletes back* and forw* in the offending chain
-directory, and reselects a new shooting point on the next iteration.
+directory together with the worker's cached readers and arrays for them, and
+reselects a new shooting point on the next iteration.
 When False (default), the error is re-raised and the worker exits as
 before. Only the specific "should be in" error is caught; all other errors
 propagate unchanged."""
@@ -623,7 +644,27 @@ behaviour until a meaningful in-basin sample exists."""
 """Velocity generation temperature (Kelvin).
 If > 0: generate new velocities at this temperature.
 If < 0: reuse velocities from the parent trajectory (requires
-`trajectory_extension == '.trr'` so velocities are available)."""
+`trajectory_extension == '.trr'` so velocities are available). A free
+simulation continues with the frame's velocities; a two-way shot starts its
+backward segment with them and its forward segment with them reversed. A
+frame without velocities starts with zero velocities (with a warning)."""
+                 })
+
+    masses_from_topology: bool = field(
+        default=False,
+        metadata={'description':
+"""Where the masses of the generated velocities (gen_temperature > 0) come from.
+False (default, the previous behaviour): MDAnalysis guesses them from the atom
+names of `topology`. The guess can be wrong: CHARMM carbons whose names start
+with 'CL' are read as chlorine (35.45 instead of 12.011 amu), so their
+velocities are drawn at a third of the intended temperature.
+True: they are read from the GROMACS topology that grompp uses (the `-p` file
+of `gmx_grompp`, else 'topol.top' next to the params file; force-field
+includes are looked up in GROMACS' share directory: GMXLIB, GMXDATA, or the
+installation of the grompp executable). That file must then be readable and
+have as many atoms as `topology`, which is checked when the params are loaded.
+Whenever both sets of masses are available and differ, a warning naming the
+atoms is printed once."""
                  })
 
     # ------------------------------------------------------------------
