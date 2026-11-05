@@ -2,6 +2,12 @@ name: pytest
 
 on: [push, pull_request]
 
+# A newer push to the same branch or pull request cancels the run still going
+# for the older commit; runs on main are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 defaults:
   run:
     # conda setup requires this special shell
@@ -10,12 +16,21 @@ defaults:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
+    # GitHub's default limit is 360 min, and two runs have hung that long.
+    # pytest takes about 13 min here; every test also has a 900 s limit
+    # (pytest-timeout, pyproject.toml).
+    timeout-minutes: 60
     strategy:
       max-parallel: 5
+    env:
+      # CPU-only runner: no CUDA probing, and a fixed thread count so that
+      # float32 reductions do not depend on the runner's core count
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: 2
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: conda-incubator/setup-miniconda@v2
+    - uses: actions/checkout@v4
+    - uses: conda-incubator/setup-miniconda@v3
       with:
         python-version: 3.13
         environment-file: devtools/conda-envs/test_env.yaml
