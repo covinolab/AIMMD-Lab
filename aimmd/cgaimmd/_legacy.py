@@ -19,9 +19,11 @@ old names are **read** for one release and never written:
 - code that reads files with old names (sidecars, markers, restraint modes)
   translates them through :func:`translate` with the tables below.
 
-An old name whose new module is not part of this installation (yet) raises an
-``ImportError`` that names the new module. Names that were dropped raise an
-``ImportError`` with the reason.
+A name of the tables whose new module is not part of this installation (yet)
+raises an ``ImportError`` that names the new module, and a name that was
+dropped raises an ``ImportError`` with the reason. Any other name a
+compatibility module cannot resolve raises ``AttributeError``, so that
+``hasattr`` and other introspection keep working on them.
 
 Standard library only.
 """
@@ -169,6 +171,9 @@ DROPPED_MODULES = {
 """Old modules without a replacement -> why."""
 
 DROPPED_NAMES = {
+    ('aimmd.flow.harmonic', 'HarmonicPrior'):
+        'the harmonic prior is not part of C-GAIMMD; use the Gaussian prior '
+        '(aimmd.cgaimmd.flow_matching.prior) with topology features',
     ('aimmd.flow.prior', 'MixturePrior'):
         'the mixture prior is not part of C-GAIMMD; use the Gaussian prior',
     ('aimmd.flow.validate', 'cfaimmd_architecture'):
@@ -312,13 +317,23 @@ def params_field(name, value):
 # ════════════════════════════════════════════════════════════════════════════
 
 def _resolve(old_module, name):
-    """The object an old module's `name` stands for (one warning per old name)."""
+    """The object an old module's `name` stands for (one warning per old name).
+
+    Only the names listed in :data:`NAMES` and :data:`DROPPED_NAMES` raise
+    ``ImportError`` when they cannot be resolved; for any other name the error
+    is an ``AttributeError`` (``hasattr`` asks compatibility modules for
+    arbitrary names, e.g. code that walks ``sys.modules``).
+    """
     if name.startswith('__') and name.endswith('__'):
         raise AttributeError(f'module {old_module!r} has no attribute {name!r}')
-    reason = DROPPED_NAMES.get((old_module, name)) or DROPPED_MODULES.get(old_module)
+    reason = DROPPED_NAMES.get((old_module, name))
     if reason is not None:
         raise ImportError(f'{old_module}.{name} has no replacement: {reason}')
-    known = name in NAMES.get(old_module, {})
+    reason = DROPPED_MODULES.get(old_module)
+    if reason is not None:
+        raise AttributeError(f'module {old_module!r} has no attribute {name!r} ({old_module} '
+                             f'has no replacement: {reason})')
+    listed = name in NAMES.get(old_module, {})
     new_module, new_name = NAMES.get(old_module, {}).get(name, (MODULES[old_module], name))
     try:
         module = importlib.import_module(new_module)
@@ -327,11 +342,12 @@ def _resolve(old_module, name):
                                             or new_module.startswith(exc.name + '.'))
         if not missing:
             raise
-        if not known and name.startswith('_'):
-            raise AttributeError(f'module {old_module!r} has no attribute {name!r}') from None
-        raise ImportError(f'{old_module}.{name} is now {new_module}.{new_name}, but '
-                          f'{new_module} is not available in this installation '
-                          f'({exc})') from exc
+        message = (f'{old_module}.{name} would be {new_module}.{new_name}, but {new_module} '
+                   f'is not available in this installation ({exc})')
+        if not listed:
+            raise AttributeError(f'module {old_module!r} has no attribute {name!r}; '
+                                 f'{message}') from None
+        raise ImportError(message) from exc
     try:
         value = getattr(module, new_name)
     except AttributeError:

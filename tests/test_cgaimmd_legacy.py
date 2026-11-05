@@ -271,7 +271,8 @@ def test_every_old_name_resolves_or_says_why():
                     warnings.simplefilter('ignore', DeprecationWarning)
                     value = getattr(module, name)
             except ImportError as exc:
-                assert new_module in str(exc) and 'not available' in str(exc)
+                assert f'would be {new_module}.{new_name}' in str(exc)
+                assert 'not available' in str(exc)
                 assert importlib.util.find_spec(new_module.rsplit('.', 1)[0]) is None or \
                     importlib.util.find_spec(new_module) is None
             else:
@@ -281,8 +282,8 @@ def test_every_old_name_resolves_or_says_why():
 def test_names_whose_new_module_is_missing():
     """Modules of later streams: the error names the new module (the shim is robust to that)."""
     if importlib.util.find_spec('aimmd.cgaimmd.dataset') is None:
-        with pytest.raises(ImportError, match='aimmd.network.flow_fit._resolve_exclusions is '
-                                              'now aimmd.cgaimmd.dataset.resolve_exclusions'):
+        with pytest.raises(ImportError, match='aimmd.network.flow_fit._resolve_exclusions would '
+                                              'be aimmd.cgaimmd.dataset.resolve_exclusions'):
             from aimmd.network.flow_fit import _resolve_exclusions             # noqa: F401
     if importlib.util.find_spec('aimmd.cgaimmd.preparation') is None:
         with pytest.raises(ImportError, match='aimmd.cgaimmd.preparation.descriptors.'
@@ -291,16 +292,31 @@ def test_names_whose_new_module_is_missing():
         import aimmd.flow.validate as validate
         with pytest.raises(ImportError, match='preparation.minimize.polish'):
             validate._polish
-    # unknown private and dunder names are plain AttributeErrors (introspection keeps working)
+    # names the tables do not list are plain AttributeErrors (introspection keeps working)
     import aimmd.network.flow_fit as flow_fit
     assert not hasattr(flow_fit, '_no_such_private_name')
     assert not hasattr(flow_fit, '__wrapped__')
+
+
+def test_introspection_of_every_compatibility_module(recwarn):
+    """Code that walks sys.modules and asks every aimmd module for a name must not break.
+
+    (tests/test_mda_reader_cache.py does ``hasattr(module, 'MDA_CACHE')`` for
+    every ``aimmd.*`` module.)
+    """
+    for old in _legacy.MODULES:
+        module = importlib.import_module(old)
+        for name in ('NO_SUCH_PUBLIC_NAME', '_no_such_private_name', '__wrapped__'):
+            assert not hasattr(module, name), (old, name)
+    assert deprecations(recwarn) == []
 
 
 def test_dropped_names_say_why():
     import aimmd.flow.harmonic as harmonic
     with pytest.raises(ImportError, match='harmonic prior is not part of C-GAIMMD'):
         harmonic.HarmonicPrior
+    with pytest.raises(AttributeError, match='harmonic prior is not part of C-GAIMMD'):
+        harmonic.anything_else
     with pytest.raises(ImportError, match='mixture prior is not part of C-GAIMMD'):
         from aimmd.flow.prior import MixturePrior                               # noqa: F401
     with pytest.raises(ImportError, match='generation goes through aimmd.cgaimmd.generation'):
