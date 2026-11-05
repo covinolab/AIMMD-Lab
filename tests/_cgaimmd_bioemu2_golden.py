@@ -338,7 +338,7 @@ def record(be_root, chignolin_dir, out_path):
     be_root, chignolin_dir = Path(be_root).resolve(), Path(chignolin_dir).resolve()
     sys.path.insert(0, str(be_root))
     import bioemu2
-    from bioemu2 import MSA, System, TrunkEmbeddings
+    from bioemu2 import MSA, System
     from bioemu2.structure.preparation import prepare_sampling_inputs
 
     from bioemu2_committor import (aimmd_flow, aimmd_flow_fit, aimmd_flow_holo, aimmd_flow_holo_fit, extractor,
