@@ -6,6 +6,7 @@
 - what the goldens' small round does not reach: the head's early stop on
   held-out shooting points (patience, the best EMA head kept), its EMA rate,
   and the adapters' divergence guard (roll back, half the learning rate);
+  the round seed ``seed + 1000 r`` and BioEmu2's data scale read from the model;
 - ``sequential_fit`` end to end on a toy run folder whose descriptor caches
   hold peptide coordinates: head and adapters train, every round starts from
   reset (its result does not depend on the weights it started from), the seed
@@ -226,6 +227,36 @@ def test_the_divergence_guard_rolls_back_and_halves_the_learning_rate(tiny_pepti
     sequential_round(network, _golden_dataset(golden), 0, adapter_steps=7, **settings)
     assert _equal_states(after_rollback, _state(network.single_adapter))
     assert not _equal_states(after_rollback, calls['adapters'][6])            # step 7 changed the adapters
+    network.engine().close()
+
+
+def test_round_r_uses_the_seed_plus_1000_r(tiny_peptide_system, golden):
+    """Round 1 with seed 0 is round 0 with seed 1000: data, draws, head and adapters."""
+    from aimmd.cgaimmd.bioemu2.fit import sequential_round
+    network = _network(tiny_peptide_system)
+    settings = dict(noisy_copies=1, min_shots_for_generator=2, head_steps_without_holdout=3, adapter_steps=2,
+                    batch_den=4, micro_batch=4, label_probe=False)
+    results = []
+    for round_index, seed in ((1, 0), (0, 1000), (0, 0)):
+        losses, info = sequential_round(network, _golden_dataset(golden), round_index, seed=seed, **settings)
+        results.append((losses, info['round_seed'], info['adapter_final_loss'], _state(network)))
+    (losses1, seed1, loss1, state1), (losses0, seed0, loss0, state0), (_, _, _, state_seed0) = results
+    assert seed1 == seed0 == 1000 and losses1 == losses0 and loss1 == loss0
+    assert _equal_states(state1, state0) and not _equal_states(state1, state_seed0, prefixes={'head'})
+    network.engine().close()
+
+
+def test_the_edm_data_scale_comes_from_the_model(tiny_peptide_system, golden, monkeypatch):
+    from aimmd.cgaimmd.bioemu2.fit import sequential_round
+    network = _network(tiny_peptide_system)
+    settings = dict(seed=1, noisy_copies=1, min_shots_for_generator=2, head_steps_without_holdout=1,
+                    adapter_steps=2, batch_den=4, micro_batch=4, label_probe=False)
+    _, info = sequential_round(network, _golden_dataset(golden), 0, **settings)
+    schedule = network.engine().denoiser.model.edm_schedule
+    assert info['sigma_data'] == schedule.sigma_data == 16.0
+    monkeypatch.setattr(schedule, 'sigma_data', 8.0)
+    _, other = sequential_round(network, _golden_dataset(golden), 0, **settings)
+    assert other['sigma_data'] == 8.0 and other['adapter_final_loss'] != info['adapter_final_loss']
     network.engine().close()
 
 

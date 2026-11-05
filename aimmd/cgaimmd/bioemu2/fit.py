@@ -35,13 +35,14 @@ One round (:func:`sequential_round`):
 4. **Generator** (once ``min_shots_for_generator`` shooting points and
    ``min_frames_for_generator`` frames exist): fresh adapters (zero output
    layers: plain BioEmu2), ``adapter_steps`` steps of BioEmu2's EDM denoising
-   loss on the pool, each frame at its label ``clip(head, +-10)`` from the
-   frozen head of step 3, the frames drawn so that the 10 label bins on
-   ``[-10, 10]`` are equally likely (uniform within a bin), label dropout
-   ``p_uncond``. The per-atom loss weights the ligand atoms ``ligand_weight``
-   times. AdamW, warm-up and cosine decay, gradient clip 1, a divergence guard
-   (roll back to the last good window, halve the learning rate), and on CUDA
-   running out of memory the micro-batch is halved.
+   loss (with the model's data scale ``edm_schedule.sigma_data``) on the pool,
+   each frame at its label ``clip(head, +-10)`` from the frozen head of step
+   3, the frames drawn so that the 10 label bins on ``[-10, 10]`` are equally
+   likely (uniform within a bin), label dropout ``p_uncond``. The per-atom
+   loss weights the ligand atoms ``ligand_weight`` times. AdamW, warm-up and
+   cosine decay, gradient clip 1, a divergence guard (roll back to the last
+   good window, halve the learning rate), and on CUDA running out of memory
+   the micro-batch is halved.
 5. **Label probe** (logged, decides nothing): the trained adapters' loss on
    fixed pool frames with their own labels, shuffled labels and none.
 
@@ -74,8 +75,10 @@ Seeds. Round ``r`` uses ``seed + 1000 r`` (data and draws), ``+ 1`` (head) and
 ``+ 2``, ``+ 3`` (adapters). :func:`sequential_fit` takes ``seed`` from its
 argument, else from ``params.cgaimmd_parameters['generation_seed']``, else
 from a hash of the run folder, so replicates in different folders differ and
-a restarted run reproduces its seeds. The seed and every setting go into the
-round's metadata.
+a run restarted in the same folder reproduces its seeds. A run that is moved
+(local disk, archive, cluster) gets other seeds after the move unless
+``generation_seed`` is set. The seed and every setting go into the round's
+metadata.
 
 Ported from ``bioemu2_committor/aimmd_flow_fit.py`` (``sequential_round``,
 ``bioemu2_fit_sequential``, ``fresh_head``, ``fresh_adapter``,
@@ -100,10 +103,8 @@ from ..dataset import DEFAULT_SERIES, extract_dataset, time_averaged_labels
 from .head import LAMBDA_CLIP, SIGMA_RANGE, in_state_nll, shooting_point_nll
 
 __all__ = ['sequential_fit', 'sequential_round', 'previous_round', 'fit_seed', 'trajectory_frame_intervals',
-           'clear_dataset_cache', 'SIGMA_DATA', 'N_LABEL_BINS']
+           'clear_dataset_cache', 'N_LABEL_BINS']
 
-SIGMA_DATA = 16.0
-"""BioEmu2's data scale (Ångström) in the EDM loss weight and the training noise levels."""
 N_LABEL_BINS = 10
 """Label bins on ``[-LAMBDA_CLIP, LAMBDA_CLIP]`` of the generator's balanced draws."""
 
@@ -204,8 +205,15 @@ def fit_seed(params, run_directory, seed=None):
         `seed` (``'argument'``) if given; else
         ``params.cgaimmd_parameters['generation_seed']`` (``'generation_seed'``)
         if set; else a 62-bit hash of the absolute run folder (``'run folder'``),
-        so that replicates in different folders differ and a restarted run
-        reproduces its seeds; 0 (``'default'``) without a run folder.
+        so that replicates in different folders differ and a run restarted in
+        the same folder reproduces its seeds; 0 (``'default'``) without a run
+        folder.
+
+    Notes
+    -----
+    The hash is of the folder's path: a run moved between machines or disks
+    (``/tmp``, an archive, a cluster) gets other seeds after the move. Set
+    ``generation_seed`` for a run that will move.
     """
     if seed is not None:
         return int(seed), 'argument'
@@ -365,6 +373,7 @@ def sequential_round(network, data, round_index=0, *, seed=0, verbose=False, bat
     engine = network.engine()
     features_of, denoiser = engine.features, engine.denoiser
     n_real, n_pad = network.system.n_bioemu2_atoms, denoiser.n_pad
+    sigma_data = float(denoiser.model.edm_schedule.sigma_data)      # BioEmu2's data scale (Ångström)
     t0 = time.time()
     rng = np.random.default_rng(round_seed)
     gen = torch.Generator(device=device)
@@ -550,7 +559,7 @@ def sequential_round(network, data, round_index=0, *, seed=0, verbose=False, bat
                 aligned, _, _ = _api.weighted_rigid_align(target.float(), dp.float(), mask, mask)
             se = ((d - aligned[:, :n_real]) ** 2).sum(-1)
             mse = (se * atom_weight).mean(-1)
-            return ((sigma ** 2 + SIGMA_DATA ** 2) / (sigma * SIGMA_DATA) ** 2 * mse).mean()
+            return ((sigma ** 2 + sigma_data ** 2) / (sigma * sigma_data) ** 2 * mse).mean()
 
         parameters = [p for adapter in adapters for p in adapter.parameters()]
         optimizer_a = torch.optim.AdamW(parameters, lr=lr_adapter, weight_decay=0.0)
@@ -565,7 +574,7 @@ def sequential_round(network, data, round_index=0, *, seed=0, verbose=False, bat
             for group in optimizer_a.param_groups:
                 group['lr'] = lr_adapter * lr_scale * f
             index = torch.multinomial(probs, batch_den, replacement=True, generator=gen)
-            sigma = SIGMA_DATA * torch.exp(-1.2 + 1.5 * torch.randn(batch_den, generator=gen, device=device))
+            sigma = sigma_data * torch.exp(-1.2 + 1.5 * torch.randn(batch_den, generator=gen, device=device))
             uncond = torch.rand(batch_den, generator=gen, device=device) < p_uncond
             while True:
                 try:
@@ -621,6 +630,7 @@ def sequential_round(network, data, round_index=0, *, seed=0, verbose=False, bat
                 head=dict(n_held=int(len(held)), steps=int(head_steps), best_step=int(best[2]),
                           best_heldout_nll=best[0] if best[1] is not None else None, trace=trace),
                 generator_trained=bool(use_generator), adapter_steps=int(adapter_steps if use_generator else 0),
+                sigma_data=sigma_data,
                 p_uncond=float(p_uncond), learned_null=bool(network.learned_null), ligand_weight=float(ligand_weight),
                 bin_min=bin_min, label_note=(
                     f'p_uncond={p_uncond:g} without a learned null: the unlabelled rows give no gradient'
