@@ -276,10 +276,19 @@ Paths are validated to contain transitions according to `states_function` and
         metadata={'description':
 """Path-sampling chain type.
 Supported values:
-- 'tps'  : transition path sampling,
-- 'rfps' : rejection-free path sampling.
-The value is case-insensitive, and any value starting with 'tp' or 'rf' is
-stored as 'tps' or 'rfps'."""
+- 'tps'     : transition path sampling,
+- 'rfps'    : rejection-free path sampling,
+- 'cgaimmd' : committor-conditioned Generative AIMMD (C-GAIMMD): every
+              reactive-region shooting point is generated at a drawn target
+              committor (see `cgaimmd_generator`), checked and prepared (see
+              `cgaimmd_parameters` and the cgaimmd_* hooks), then shot and
+              book-kept exactly like an RFPS shot. Requires a network
+              implementing aimmd.cgaimmd.protocol and a descriptors_function
+              returning the flat Angstrom coordinates of the network's atoms;
+              no initial transition is needed.
+The value is case-insensitive; any value starting with 'tp', 'rf' or 'cg' is
+stored as 'tps', 'rfps' or 'cgaimmd'. The old name 'flow' (any value starting
+with 'fl') is read as 'cgaimmd' with a DeprecationWarning."""
                  })
 
     selection_pool_size: int = field(
@@ -364,6 +373,99 @@ reselects a new shooting point on the next iteration.
 When False (default), the error is re-raised and the worker exits as
 before. Only the specific "should be in" error is caught; all other errors
 propagate unchanged."""
+                 })
+
+    # ------------------------------------------------------------------
+    # C-GAIMMD (chain_type='cgaimmd')
+    # ------------------------------------------------------------------
+
+    cgaimmd_parameters: dict = field(
+        default=None,
+        metadata={'description':
+"""Settings of the C-GAIMMD shooting loop (chain_type='cgaimmd') and of the
+C-GAIMMD devices, as one dict; missing keys take their defaults
+(Params.cgaimmd_settings), unknown keys are an error, and only the keys given
+are saved. None means all defaults.
+Keys, with their defaults:
+lambda_law ('uniform' (default) or 'bins'),
+lambda_window ('bins' (default): the trainer's sp cutoffs, the whole
+conditioning range until bins exist; or a (lo, hi) pair),
+lambda_clip (None (default): the network's; a float > 0),
+acceptance ('target' (default) or 'window'), lambda_tolerance (1.0),
+window_after_trained_shots (1000; highly system dependent: set it),
+raw_lambda_tolerance (None), n_targets (64), candidates_per_target (2),
+placement ('box_center' (default) or 'none'),
+final_check_round ('auto' (default), None or decimals),
+generation_device / values_device / training_device ('auto' (default),
+'cpu', 'cuda' or 'cuda:N'), max_refills (20), wait_seconds (60.0),
+generation_oom_halvings (5), generation_seed (None: derived from the run
+directory; replicas with an explicit seed need distinct values),
+keep_scratch (False). training_device and lambda_clip are also read by the
+generator fits under any chain_type. Shots whose shooting value falls outside
+the trainer's sp cutoffs are reweighted as free excursions, as in RFPS; the
+default lambda_window='bins' draws the targets inside them. How candidates
+are generated is set by `cgaimmd_generator`. The old field name
+'flow_parameters' is read with a DeprecationWarning (its ODE keys
+'ode_sampler', 'ode_steps' and 'generate_chunk' go to `cgaimmd_generator`)."""
+                 })
+
+    cgaimmd_generator: object = field(
+        default=None,
+        metadata={'description':
+"""How C-GAIMMD generates candidate shooting points (aimmd.cgaimmd.generation):
+a method name, e.g. 'ode' (the flow-matching ODE of a PaiNN or toy network) or
+'bioemu2_edm' (BioEmu2's diffusion sampler, with the bioemu2 extra); a settings
+dict {'method': name, **settings}, e.g. {'method': 'ode', 'sampler':
+'midpoint', 'n_steps': 16, 'chunk': 128}; a dict without 'method', which
+overrides settings of the network's default method; or a generator object,
+which is saved as its settings dict when its method is registered, else as an
+import from the params file (so its class must be defined there). None
+(default): the network's default_generator() decides, and a network without
+one is an error under chain_type='cgaimmd'. More methods are added with
+aimmd.cgaimmd.generation.register_generator, in the params file or a module it
+imports; a name or settings dict is the safest value, since the workers load
+the params from the saved file. Params read through the old names (chain_type
+'flow', flow_parameters) whose network has no default_generator() get the
+method their old worker used: 'bioemu2_edm' for a network with its own
+generate(), else 'ode'."""
+                 })
+
+    cgaimmd_validity_function: Callable = field(
+        default=None,
+        metadata={'description':
+"""Optional function (positions, context) -> aimmd.cgaimmd.types.ValidityResult,
+applied to every raw generated sample (n, M, 3) in Angstrom: relabel to the
+network's atom order and reject invalid structures (bond graph, chirality,
+clashes). None (default) checks finiteness only. Must be a function defined
+in the params file (wrap tooling objects). Old name: flow_validity_function."""
+                 })
+
+    cgaimmd_prepare_function: Callable = field(
+        default=None,
+        metadata={'description':
+"""Optional function (positions, context) -> aimmd.cgaimmd.types.PreparedFrame
+that turns one valid generated configuration of the network's M atoms into a
+full system of params.topology (e.g. re-solvation with GROMACS). None
+(default) places the generated atoms in the box of params.topology
+(cgaimmd_parameters['placement']); then the network's atoms must be the whole
+system. Old name: flow_prepare_function."""
+                 })
+
+    cgaimmd_minimize_function: Callable = field(
+        default=None,
+        metadata={'description':
+"""Optional function (frame, context) -> aimmd.cgaimmd.types.PreparedFrame
+applied after preparation, e.g. restrained GROMACS energy minimization. None
+(default): no minimization. Old name: flow_minimize_function."""
+                 })
+
+    cgaimmd_lambda_sampler: Callable = field(
+        default=None,
+        metadata={'description':
+"""Optional function (n, context) -> (n,) array of target committor logits for
+C-GAIMMD, overriding cgaimmd_parameters['lambda_law']. Values must be finite
+and inside the lambda window; use context.rng for randomness. None
+(default): lambda_law. Old name: flow_lambda_sampler."""
                  })
 
     nbins: int = field(
@@ -661,10 +763,11 @@ velocities are drawn at a third of the intended temperature.
 True: they are read from the GROMACS topology that grompp uses (the `-p` file
 of `gmx_grompp`, else 'topol.top' next to the params file; force-field
 includes are looked up in GROMACS' share directory: GMXLIB, GMXDATA, or the
-installation of the grompp executable). That file must then be readable and
-have as many atoms as `topology`, which is checked when the params are loaded.
-Whenever both sets of masses are available and differ, a warning naming the
-atoms is printed once."""
+installation of the grompp executable). That file must then be readable, have
+as many atoms as `topology` and no massless atoms (virtual sites), which is
+checked when the params are loaded. Only for engine='gromacs': other engines
+keep the guessed masses. Whenever both sets of masses are available and
+differ, a warning naming the atoms is printed once."""
                  })
 
     # ------------------------------------------------------------------
@@ -749,6 +852,19 @@ you can analyze them or if memory spikes while loading and analyzing trajectorie
 """Save network parameters every N shooting iterations.
 If 10, the model is saved after every 10 accepted/attempted shooting moves
 (depending on the higher-level training loop)."""
+                 })
+
+    initial_network: str = field(
+        default=None,
+        metadata={'description':
+"""Optional path to a state dict (tensors only) that is written as
+network<states>.h5 before the first training round (by the trainer, and by
+the Launcher before it starts any worker) when that file does not exist, or
+does not load into params.network (the old file is then kept as
+network<states>.replaced<k>.h5). Typically a pretrained end-state network.
+Works with every chain_type; not with multi_system. The file must exist; a
+relative path is relative to the params file, and it is written that way on
+save. None (default): nothing is written."""
                  })
 
     # ------------------------------------------------------------------

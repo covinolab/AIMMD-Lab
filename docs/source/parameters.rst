@@ -254,11 +254,13 @@ For ``engine='toy'``, the main inputs are:
    ``Params.masses``. By default these are guessed by MDAnalysis from the atom
    *names* of ``topology``, which can be wrong: CHARMM carbons named ``CL...``
    are read as chlorine, so their velocities come out at about a third of the
-   intended temperature. With ``True`` the masses are read from the GROMACS
-   topology grompp uses (the ``-p`` file of ``gmx_grompp``, else ``topol.top``
-   next to the params file), which is checked when the params are loaded.
-   Whenever both sets of masses are available and differ, a warning names the
-   atoms, so a run with misleading atom names shows it in its logs.
+   intended temperature. With ``True`` and ``engine='gromacs'`` the masses are
+   read from the GROMACS topology grompp uses (the ``-p`` file of
+   ``gmx_grompp``, else ``topol.top`` next to the params file), which is
+   checked when the params are loaded; a topology with massless atoms (virtual
+   sites) is refused. Other engines keep the guessed masses. Whenever both sets
+   of masses are available and differ, a warning names the atoms, so a run with
+   misleading atom names shows it in its logs.
 
 Persistence and Reproducibility
 -------------------------------

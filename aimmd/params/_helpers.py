@@ -28,13 +28,16 @@ Notes
 
 # external
 import os
+import sys
+import json
 import numpy as np
 import functools
 import inspect
 import warnings
 from abc import ABC
 from math import inf
-from types import MethodType as Method
+from re import split as _split
+from types import MethodType as Method, FunctionType as Function
 from typing import List, Callable
 from numbers import Integral
 from pathlib import Path as PosixPath
@@ -44,7 +47,9 @@ from collections.abc import Iterable
 # aimmd imports
 from .utils import (update_source, create_default_values_function,
                     canonical_restart_source, canonical_seeding_position,
-                    legacy_transitions_replacement, check_descriptors_series)
+                    legacy_transitions_replacement, check_descriptors_series,
+                    canonical_cgaimmd_parameters, CGAIMMD_PARAMETER_DEFAULTS,
+                    SEEDING_POSITION_ALIASES, SEEDING_POSITION_RANDOM)
 from ..core.utils import accepts_system_id
 from ..path import Path
 from ..pathensemble import PathEnsemble
@@ -52,6 +57,90 @@ from ..network.rescalable import Rescalable as RescalableNetwork
 
 
 _SUBSAMPLE_CAP_KEYS = ('shot', 'free', 'in_state')
+
+CGAIMMD_HOOK_FIELDS = ('cgaimmd_validity_function', 'cgaimmd_prepare_function',
+                       'cgaimmd_minimize_function', 'cgaimmd_lambda_sampler')
+"""The function-valued fields of C-GAIMMD, each None or a plain function."""
+
+_CGAIMMD_RULE_FIELDS = frozenset({
+    'chain_type', 'network', 'cgaimmd_parameters', 'cgaimmd_generator', 'initial_paths',
+    'descriptors_function', 'descriptors_series', 'descriptor_transform', 'gen_temperature',
+    'rescale_committor', 'multi_system', 'initial_network', 'cgaimmd_prepare_function',
+    'topology', 'round_shooting_index', 'states', 'states_function',
+    'free_seeding_position'})
+"""The fields the rules of ``chain_type='cgaimmd'`` read.
+
+Assigning one of them under ``chain_type='cgaimmd'`` runs the rules again
+(``states``, ``states_function`` and ``free_seeding_position`` for the
+initial-path rules).
+"""
+
+_ABSENT = object()
+"""Marks a field that had no value before an assignment (restored as absent)."""
+
+_LEGACY_FIELDS = frozenset({'flow_parameters', 'flow_validity_function',
+                            'flow_prepare_function', 'flow_minimize_function',
+                            'flow_lambda_sampler'})
+"""Old names of C-GAIMMD fields, read with a warning for one release
+(``aimmd.cgaimmd._legacy.PARAMS_FIELDS``, kept here so that ordinary params
+import no C-GAIMMD code)."""
+
+
+def _may_be_cgaimmd_network(network):
+    """Cheap pre-test of ``is_cgaimmd_network`` that imports no C-GAIMMD code.
+
+    A network without a callable ``default_generator`` is not a C-GAIMMD
+    network in the sense of ``is_cgaimmd_network``, so RFPS and TPS params
+    with ordinary networks never import ``aimmd.cgaimmd``.
+    """
+    try:
+        return callable(getattr(network, 'default_generator', None))
+    except Exception:                                           # noqa: BLE001
+        return False
+
+
+def _is_cgaimmd_network(network):
+    """``aimmd.cgaimmd.protocol.is_cgaimmd_network``, imported only when it can be True."""
+    if not _may_be_cgaimmd_network(network):
+        return False
+    from ..cgaimmd.protocol import is_cgaimmd_network
+    return is_cgaimmd_network(network)
+
+
+def _generator_source(value, name):
+    """Give a generator object of `cgaimmd_generator` the ``__source__`` that saves it.
+
+    The workers load the params from the saved file, so the object must be
+    rebuilt from what is written there:
+
+    - a generator of a registered (or built-in) method is saved as its
+      settings dict ``{'method': ..., **settings()}``, from which
+      ``make_generator`` builds an equal one (the generator contract);
+    - any other generator is saved as ``from <module> import <name>``, which
+      works only when the module of its class (the params file, or a module
+      next to it) binds `name` to this very object;
+    - anything else is refused here, not in every worker.
+    """
+    from ..cgaimmd.generation import is_known_generator
+    if is_known_generator(value.method):
+        spec = {'method': value.method, **value.settings()}
+        try:
+            json.dumps(spec)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f'{name}: settings() of {type(value).__name__} must be '
+                            f'JSON-serializable to be saved, got {spec!r} ({exc})') from exc
+        value.__source__ = f'{name} = {spec!r}\n'
+        return
+    module = sys.modules.get(type(value).__module__)
+    if getattr(module, name, None) is not value:
+        raise TypeError(
+            f'{name}: a {type(value).__name__} object of the unregistered method '
+            f'{value.method!r} cannot be saved for the workers. Register the method '
+            f'(aimmd.cgaimmd.generation.register_generator, in the params file or a '
+            f'module it imports) and give its name or settings dict, or define the '
+            f"class in the params file and assign '{name} = {type(value).__name__}(...)' "
+            f'there')
+    update_source(value, name)
 
 
 def _check_caps_dict(value):
@@ -277,6 +366,32 @@ class ParamsHelpers(ABC):
         - `topology`: attempts to build an MDAnalysis Universe to cache masses.
         - `initial_paths`: immediately coerced into a PathEnsemble.
         """
+        # old names of C-GAIMMD fields: assigned to the new fields (one
+        # DeprecationWarning each, see aimmd.cgaimmd._legacy), together: if
+        # one of them is refused, none is assigned
+        if name in _LEGACY_FIELDS:
+            from ..cgaimmd import _legacy
+            new_values = _legacy.params_field(name, value)
+            backups = {new_name: self.__dict__.get(new_name, _ABSENT)
+                       for new_name in (*new_values, '_read_old_names')}
+            try:
+                for new_name, new_value in new_values.items():
+                    self._setattr(new_name, new_value, process_and_check=False)
+                self.__dict__['_read_old_names'] = True
+                if process_and_check:
+                    self._process_and_check(list(new_values))
+            except Exception as exception:
+                for new_name, backup in backups.items():
+                    if backup is _ABSENT:
+                        self.__dict__.pop(new_name, None)
+                    else:
+                        self.__dict__[new_name] = backup
+                if isinstance(exception, NotImplementedError):
+                    raise
+                raise TypeError(f'can\'t update {name!r} with {value!r}: '
+                                f'{exception}') from exception
+            return
+
         # assign fields
         if name in self.__dataclass_fields__:
             expected_type = self.__dataclass_fields__[name].type
@@ -286,8 +401,18 @@ class ParamsHelpers(ABC):
                 # These callables may be None (meaning “use defaults”).
                 if value is None and name in (
                     'descriptors_function', 'descriptor_transform',
-                    'values_function', 'toy_mdrun', 'bias_function'):
+                    'values_function', 'toy_mdrun',
+                    'bias_function') + CGAIMMD_HOOK_FIELDS:
                     pass
+
+                # C-GAIMMD hooks: plain functions only. Params.save embeds or
+                # imports a function correctly, but writes a broken import
+                # line for a callable object of an importable class.
+                elif name in CGAIMMD_HOOK_FIELDS and not isinstance(
+                        value, Function):
+                    raise TypeError(
+                        f"{name!r} must be a function defined in the params "
+                        f"file (wrap a callable object in 'def {name}(...)')")
 
                 elif not callable(value):
                     raise TypeError(f"'values_function' must be callable, "
@@ -435,6 +560,21 @@ class ParamsHelpers(ABC):
                     else:
                         value = _check_caps_dict(value)
 
+            # C-GAIMMD settings: validated and normalized; only the keys the
+            # user gave are stored (Params.cgaimmd_settings adds defaults)
+            elif name == 'cgaimmd_parameters':
+                value = canonical_cgaimmd_parameters(value)
+
+            # C-GAIMMD generation method: a name, a settings dict, a generator
+            # object or None (aimmd.cgaimmd.generation)
+            elif name == 'cgaimmd_generator':
+                if value is not None:
+                    from ..cgaimmd.generation import (canonical_generator_spec,
+                                                      is_generator)
+                    value = canonical_generator_spec(value)
+                    if is_generator(value):
+                        _generator_source(value, name)
+
             # initial paths (converted in real-time)
             elif name == 'initial_paths':
                 # Multi-system runs pass one *group* of initial paths per
@@ -493,9 +633,25 @@ class ParamsHelpers(ABC):
                     value = 'tps'
                 elif value.startswith('rf'):
                     value = 'rfps'
+                elif value.startswith('cg'):
+                    value = 'cgaimmd'
+                elif value.startswith('fl'):
+                    # the old name, read for one release
+                    from ..cgaimmd import _legacy
+                    value = _legacy.chain_type(value)
+                    self.__dict__['_read_old_names'] = True
                 else:
-                    raise TypeError(f'{name!r} must be either "tps" or '
-                                    f'"rfps", got {value!r}')
+                    raise TypeError(f"{name!r} must be 'tps', 'rfps' or "
+                                    f"'cgaimmd', got {value!r}")
+
+            # pretrained initial network: a path (relative to the params file)
+            elif name == 'initial_network':
+                if value is not None:
+                    if not isinstance(value, (str, os.PathLike)):
+                        raise TypeError(
+                            f"'initial_network' must be a path (str) or "
+                            f"None, got {type(value).__name__}: {value!r}")
+                    value = os.fspath(value)
 
             # list of strings
             elif expected_type is List[str]:
@@ -549,6 +705,10 @@ class ParamsHelpers(ABC):
             except Exception as exception:  # go back in case of error
                 if not isinstance(backup, str) or backup != 'absent':
                     self.__dict__[name] = backup
+                # an unsupported combination keeps its type, so that it is the
+                # same on assignment and on load (e.g. cgaimmd + multi_system)
+                if isinstance(exception, NotImplementedError):
+                    raise
                 raise TypeError(
                     f'can\'t update {name!r} with {value!r}: '
                     f'{exception}') from exception
@@ -613,6 +773,16 @@ class ParamsHelpers(ABC):
             raise TypeError(f"when chain_type is 'tps', "
                             f"selection pool size must be 1")
 
+        # C-GAIMMD: the rules of every chain type (initial_network, hooks,
+        # C-GAIMMD networks), then those of chain_type='cgaimmd' that need
+        # no initial paths
+        self._check_cgaimmd_fields(fields)
+        cgaimmd_checks = self._cgaimmd_rules_apply(fields)
+        if cgaimmd_checks:
+            if self.__dict__.get('_read_old_names', False):
+                self._complete_old_generator()
+            self._check_cgaimmd(fields)
+
         # check nbins
         if 'nbins' in fields or 'terminal_bin_extension' in fields:
             if self.nbins > 0:
@@ -654,14 +824,16 @@ class ParamsHelpers(ABC):
                   f"free_overriding_bins = {self.free_overriding_bins!r}, "
                   f"nbins = {self.nbins}: {exception}")
         
-        # redefine values function
+        # redefine values function (the protocol values function for a
+        # C-GAIMMD network or chain type, see _make_default_values_function)
         default_values_function = self._default_values_function
         if (self.values_function is None or
-           ('network' in fields or 'descriptor_transform' in fields) and
+           ('network' in fields or 'descriptor_transform' in fields or
+            self._default_values_function_is_stale(fields)) and
             default_values_function):
             default_values_function = True
-            self.__dict__['values_function'] = create_default_values_function(
-                self.network, self.descriptor_transform)
+            self.__dict__['values_function'] = \
+                self._make_default_values_function()
             check_values = True
 
         # no need: there is no default values function
@@ -733,7 +905,13 @@ class ParamsHelpers(ABC):
                         path = split_path
                         transition_found = True
                         break
-                if not transition_found:
+                if not transition_found and self.chain_type == 'cgaimmd':
+                    # end-state frames are valid C-GAIMMD initial paths: they
+                    # seed the free simulations
+                    print(f'C-GAIMMD: initial path {path.fname!r} has no '
+                          f'{self.states!r} transition; it seeds free '
+                          f'simulations only')
+                elif not transition_found:
                     types = ", ".join([t[:3] for t in split_paths.types()])
                     print(f'Warning: the initial trajectory {path.fname!r} '
                         f'has no {self.states!r} transitions '
@@ -747,6 +925,11 @@ class ParamsHelpers(ABC):
                     path, self.descriptors_series,
                     path.compute(self.descriptors_function))
 
+            if cgaimmd_checks:
+                # before the values check below, whose protocol values
+                # function would raise its own (less specific) width error
+                self._check_cgaimmd_descriptor_width(path, i)
+
             if check_values:
                 # Ensure values_function returns exactly one value per frame.
                 if self.descriptors_function is not None:
@@ -758,6 +941,10 @@ class ParamsHelpers(ABC):
             # reassign path
             self.initial_paths[i] = path
 
+        # C-GAIMMD: the rules that need the initial paths
+        if cgaimmd_checks:
+            self._check_cgaimmd_initial_paths()
+
     def _check_masses_from_topology(self, fields=[]):
         """
         With ``masses_from_topology``, read the topology masses now.
@@ -766,9 +953,13 @@ class ParamsHelpers(ABC):
         when the GROMACS topology grompp uses is missing, unreadable or has
         another atom count than ``topology``. Runs when all fields are
         processed or one it depends on was assigned; a no-op for the default
-        ``masses_from_topology = False``.
+        ``masses_from_topology = False`` and for engines other than GROMACS,
+        which keep the guessed masses (so that the default of the field can
+        be flipped without touching toy-engine runs, spec K.2).
         """
         if not getattr(self, 'masses_from_topology', False):
+            return
+        if getattr(self, 'engine', 'gromacs') != 'gromacs':
             return
         if fields and not {'masses_from_topology', 'topology', 'gmx_grompp',
                            'engine', 'multi_system', 'system_ids'} & set(fields):
@@ -786,6 +977,296 @@ class ParamsHelpers(ABC):
             raise TypeError(f'masses_from_topology = True needs a structure file '
                             f'topology that MDAnalysis can read, got {self.topology!r}')
         self._topology_masses(len(self._universe.atoms), self.gmx_grompp, strict=True)
+
+    # ------------------------------------------------------------------
+    # C-GAIMMD (chain_type='cgaimmd')
+    # ------------------------------------------------------------------
+
+    def _cgaimmd_rules_apply(self, fields=[]):
+        """Whether the ``chain_type='cgaimmd'`` rules run for this check.
+
+        They run under ``chain_type='cgaimmd'`` when all fields are processed
+        or one they read was assigned (``_CGAIMMD_RULE_FIELDS``).
+        """
+        return (getattr(self, 'chain_type', None) == 'cgaimmd'
+                and (not fields or bool(_CGAIMMD_RULE_FIELDS & set(fields))))
+
+    def _check_network_class_local(self):
+        """The class of a C-GAIMMD network must not be an aimmd class.
+
+        ``Params.save`` writes ``from <module of the class> import network``,
+        which re-imports the network only when that module is the params file
+        itself; the Launcher regenerates the params file for its workers, so
+        this holds under every chain type.
+        """
+        module = type(self.network).__module__
+        if module == 'aimmd' or module.startswith('aimmd.'):
+            # the module name as update_source writes it (a local module
+            # loaded from a path is reduced to its basename)
+            written = _split(r'[\\/]', module)[-1]
+            raise TypeError(
+                f"define the network's class in the params file, e.g. "
+                f"'class Network({type(self.network).__name__}): pass': "
+                f"Params.save writes 'from {written} import network'")
+
+    def _check_cgaimmd_fields(self, fields=[]):
+        """The C-GAIMMD rules of every chain type.
+
+        ``initial_network`` with ``multi_system`` is not supported and its
+        file must exist (relative to the params file); C-GAIMMD hooks under
+        another chain type are warned about; a C-GAIMMD network's class must
+        be local whatever the chain type.
+        """
+        fields = set(fields)
+        every = not fields
+        initial_network = getattr(self, 'initial_network', None)
+        if initial_network is not None and (
+                every or fields & {'initial_network', 'multi_system'}):
+            if getattr(self, 'multi_system', False):
+                raise NotImplementedError(
+                    'initial_network is not supported with multi_system')
+            fname = self._initial_network_fname()
+            if not os.path.isfile(fname):
+                raise TypeError(
+                    f'initial_network {initial_network!r} does not exist '
+                    f'(looked for {fname!r}; a relative path is relative to '
+                    f'the folder of the params file)')
+        chain_type = getattr(self, 'chain_type', 'rfps')
+        if chain_type != 'cgaimmd' and (
+                every or fields & {'chain_type', *CGAIMMD_HOOK_FIELDS}):
+            if any(getattr(self, hook, None) is not None
+                   for hook in CGAIMMD_HOOK_FIELDS):
+                print(f'Warning: cgaimmd_* hooks are set but chain_type is '
+                      f'{chain_type!r}; they are ignored')
+        if (chain_type != 'cgaimmd' and (every or 'network' in fields)
+                and _is_cgaimmd_network(self.network)):
+            self._check_network_class_local()
+
+    def _complete_old_generator(self):
+        """``cgaimmd_generator`` of params read through old names: the old worker's method.
+
+        A network of the old code has no ``default_generator()``; the old
+        worker used the network's own ``generate`` if it had one, else the ODE
+        (``aimmd.cgaimmd._legacy.generator_spec``). The completed spec is
+        stored, so that it is what ``Params.save`` writes.
+        """
+        from ..cgaimmd import _legacy
+        spec = self.cgaimmd_generator
+        new = _legacy.generator_spec(spec, self.network)
+        if new is not spec:
+            from ..cgaimmd.generation import canonical_generator_spec
+            self.__dict__['cgaimmd_generator'] = canonical_generator_spec(new)
+
+    def _check_cgaimmd(self, fields=[]):
+        """The rules of ``chain_type='cgaimmd'`` that need no initial paths.
+
+        1. the network implements the C-GAIMMD network protocol;
+        2. the generator (``cgaimmd_generator``, else the network's default)
+           can be built and can use the network. For params read through old
+           names (a run of the old code) this is a warning: they load for
+           analysis, and a shooting worker checks its generator at start-up;
+        3. a single system;
+        4. a ``descriptors_function`` (the flat Angstrom coordinates);
+        5. no ``rescale_committor``;
+        6. ``gen_temperature > 0``;
+        7. a conditioning range ``lambda_clip``;
+        8. no ``placement='none'`` with a prepare function;
+        9. the network's class is local;
+        10. warnings: no ``initial_network``, ``round_shooting_index=False``,
+            ``window_after_trained_shots`` at its default.
+        """
+        from ..cgaimmd.protocol import check_network_protocol, lambda_clip_of
+        from ..cgaimmd.generation import make_generator, check_generator
+        from ..cgaimmd._once import once
+        network = self.network
+        check_network_protocol(network)                                  # 1
+        old_run = self.__dict__.get('_read_old_names', False)             # 2
+        try:
+            generator = make_generator(self.cgaimmd_generator, network)
+            problems = check_generator(generator, network)
+        except Exception as exception:
+            if not old_run:
+                raise
+            problems = [f'{type(exception).__name__}: {exception}']
+        if problems:
+            message = (f"chain_type='cgaimmd': the generator cannot use "
+                       f"{type(network).__name__}:\n  - " + '\n  - '.join(problems))
+            if not old_run:
+                raise TypeError(message)
+            if once(f'params: old run generator {message}'):
+                print(f'Warning: {message}\nThese params were read through old '
+                      f'names (a run of the old code): they load for analysis, '
+                      f'but no shooting worker can generate with them.')
+        if getattr(self, 'multi_system', False):                          # 3
+            raise NotImplementedError(
+                "chain_type='cgaimmd' supports single systems only")
+        if self.descriptors_function is None:                             # 4
+            raise TypeError(
+                "chain_type='cgaimmd' needs a descriptors_function returning "
+                "the flat Angstrom coordinates of the network's atoms, e.g. "
+                "GeneratorDescriptors (aimmd.cgaimmd.preparation.descriptors)")
+        if self.rescale_committor:                                        # 5
+            raise TypeError(
+                "rescale_committor is not supported with chain_type="
+                "'cgaimmd': it rescales the network's output in place and "
+                "breaks the state of the generator fit")
+        if not self.gen_temperature > 0:                                  # 6
+            raise TypeError('generated shooting points carry no velocities; '
+                            'set gen_temperature > 0')
+        settings = self.cgaimmd_settings
+        lambda_clip_of(network, settings)                                 # 7
+        if (settings['placement'] == 'none'                               # 8
+                and self.cgaimmd_prepare_function is not None):
+            raise TypeError(
+                "cgaimmd_parameters['placement'] = 'none' cannot be combined "
+                "with cgaimmd_prepare_function: the placement is used only "
+                "without a prepare function (drop one of the two)")
+        self._check_network_class_local()                                 # 9
+        if getattr(self, 'initial_network', None) is None and once(      # 10
+                'params: cgaimmd without initial_network'):
+            print("Warning: chain_type='cgaimmd' without initial_network: "
+                  "the generator starts from params.network's constructed "
+                  "weights")
+        if not self.round_shooting_index and once(
+                'params: cgaimmd with round_shooting_index=False'):
+            print("WARNING: chain_type='cgaimmd' with round_shooting_index="
+                  "False: reloaded shots may take the frame before t = 0 as "
+                  "their shooting point (set round_shooting_index = True)")
+        # a once-key of its own: the worker start-up prints the same line
+        # into its worker log, after this one went to the launcher's output
+        # before Worker.run redirected it
+        user_keys = self.cgaimmd_parameters or {}
+        if ('window_after_trained_shots' not in user_keys
+                and once('params: window_after_trained_shots default')):
+            default = CGAIMMD_PARAMETER_DEFAULTS['window_after_trained_shots']
+            print(f'WARNING: window_after_trained_shots is at its default '
+                  f'{default}; this is highly system dependent (it was 8000 '
+                  f'for the NANMA test system), set it explicitly')
+
+    def _check_cgaimmd_descriptor_width(self, path, i=0):
+        """Rule 11: descriptors of width ``3 * n_atoms_of(network)``.
+
+        The descriptors are those of the run's ``descriptors_series`` that the
+        initial-path check stored on `path`, else computed for its first
+        frame.
+        """
+        from ..cgaimmd.protocol import n_atoms_of
+        series = getattr(self, 'descriptors_series', 'descriptors')
+        descriptors = path.__dict__.get(series)
+        if descriptors is None:
+            descriptors = path[:1].compute(self.descriptors_function)
+        descriptors = np.asarray(descriptors)
+        width = (int(np.prod(descriptors.shape[1:])) if descriptors.ndim > 1
+                 else descriptors.size)
+        n_atoms = n_atoms_of(self.network)
+        if width != 3 * n_atoms:
+            raise TypeError(
+                f"chain_type='cgaimmd': the descriptors_function returns "
+                f"descriptors of width {width} but the network generates "
+                f"{n_atoms} atoms and needs 3 x {n_atoms} = {3 * n_atoms} (the "
+                f"flat Angstrom coordinates of the network's atoms, x0, y0, "
+                f"z0, x1, ...; series {series!r} of the {i}-th initial path "
+                f"{path.fname!r})")
+
+    def _check_cgaimmd_initial_paths(self):
+        """Rules 12-14 of ``chain_type='cgaimmd'`` (the initial paths).
+
+        12. at least one initial frame in each end state (they seed the free
+            simulations);
+        13. without a transition in the initial paths, the free simulations
+            are seeded at the state boundary;
+        14. without a prepare function, the network's atoms are the system.
+        """
+        from ..cgaimmd.protocol import n_atoms_of
+        from ..worker.utils import transition_block
+        states = self.states
+        initial_paths = self.initial_paths
+        labels = []
+        for path in initial_paths:
+            path_states = (path.states if 'states' in path.__dict__
+                           else path.compute(self.states_function))
+            labels.append(np.asarray(path_states).astype(str).ravel())
+        labels = np.concatenate(labels) if labels else np.zeros(0, str)
+        missing = [state for state in (states[0], states[2])
+                   if not np.any(labels == state)]
+        if missing:                                                       # 12
+            raise TypeError(
+                f"chain_type='cgaimmd' needs initial paths with at least one "
+                f"frame in {states[0]!r} and one in {states[2]!r} (they seed "
+                f"the free simulations); none in {', '.join(map(repr, missing))}")
+        if all(transition_block(path, states) is None                    # 13
+               for path in initial_paths):
+            boundary = SEEDING_POSITION_ALIASES['boundary']
+            for state in (states[0], states[2]):
+                position = self.free_seeding_position_for(state)
+                if (position == SEEDING_POSITION_RANDOM
+                        or isinstance(position, str)
+                        or float(position) != boundary):
+                    raise TypeError(
+                        f'free_seeding_position {position!r} for state '
+                        f'{state!r} needs an initial path with a {states!r} '
+                        f'transition (the other positions place the seed '
+                        f'inside its transition block); the initial paths '
+                        f'hold end-state frames only, so use the default '
+                        f"'boundary'")
+        if self.cgaimmd_prepare_function is None:                         # 14
+            n_atoms = n_atoms_of(self.network)
+            if self._universe is not None:
+                n_system = len(self._universe.atoms)
+            else:
+                first = initial_paths[0]
+                try:
+                    n_system = first.reader.n_atoms
+                except Exception:                              # noqa: BLE001
+                    n_system = first.reader.trajectory.n_atoms
+            if n_atoms != n_system:
+                raise TypeError(
+                    f'the network generates {n_atoms} atoms but the system '
+                    f'has {n_system}: set cgaimmd_prepare_function, which '
+                    f'turns the generated atoms into the full system')
+
+    def _uses_protocol_values_function(self):
+        """Whether the default values function is the protocol values function.
+
+        It is under ``chain_type='cgaimmd'`` (whose rules require a protocol
+        network), and under every chain type for a C-GAIMMD network
+        (``aimmd.cgaimmd.protocol.is_cgaimmd_network``), so that
+        post-training one on an RFPS or TPS run needs no values function.
+        """
+        return (getattr(self, 'chain_type', None) == 'cgaimmd'
+                or _is_cgaimmd_network(self.network))
+
+    def _make_default_values_function(self):
+        """The default values function of ``self.network``.
+
+        ``aimmd.cgaimmd.values.protocol_values_function`` when
+        ``_uses_protocol_values_function``; AIMMD's
+        ``create_default_values_function`` for every other network
+        (unchanged).
+        """
+        if self._uses_protocol_values_function():
+            from ..cgaimmd.values import protocol_values_function
+            return protocol_values_function(self.network, self.descriptor_transform,
+                                            params=self)
+        return create_default_values_function(self.network,
+                                              self.descriptor_transform)
+
+    def _default_values_function_is_stale(self, fields=[]):
+        """Whether the default values function must be built again.
+
+        A protocol values function reads its device settings from the params
+        it was built for, so a copy (``Params.copy``) gets its own; and an
+        assignment of ``chain_type`` can switch between the protocol values
+        function and AIMMD's.
+        """
+        module = sys.modules.get('aimmd.cgaimmd.values')
+        function = self.__dict__.get('values_function')
+        is_protocol = (module is not None
+                       and isinstance(function, module.ProtocolValuesFunction))
+        if is_protocol and function.params is not self:
+            return True
+        return ('chain_type' in fields
+                and is_protocol != self._uses_protocol_values_function())
 
     def _process_and_check_multi_system(self, fields=[]):
         """

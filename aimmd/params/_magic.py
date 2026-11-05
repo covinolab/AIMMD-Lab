@@ -199,6 +199,12 @@ class ParamsMagic(ABC):
                 else:
                     lines.append(f'{name} = {os.path.relpath(value, go_to)!r}')
 
+            # initial_network is relative to the params file (resolved against
+            # `parent`, not the cwd, so a save from any folder writes it right)
+            elif name == 'initial_network' and value:
+                fname = self._initial_network_fname()
+                lines.append(f'{name} = {os.path.relpath(fname, go_to)!r}')
+
             # initial paths: write as list of filenames (if reload is enabled).
             # In multi-system mode this is a list of groups (one per system),
             # serialized as a list of lists of filenames.

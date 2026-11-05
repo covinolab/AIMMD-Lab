@@ -55,10 +55,14 @@ graphs = [
     "torch-cluster",
     "lz4",
 ]
+cgaimmd = [
+    "networkx",
+]
 tests = [
     "pytest",
     "pytest-cov",
     "pytest-timeout",
+    "networkx",
 ]
 docs = [
     "sphinx",

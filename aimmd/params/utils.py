@@ -27,6 +27,16 @@ check_descriptors_series(value)
 gromacs_topology_file, gromacs_include_dir, read_topology_masses, masses_disagreement
     The masses of the GROMACS topology grompp uses (``masses_from_topology``).
 
+CGAIMMD_PARAMETER_DEFAULTS, canonical_cgaimmd_parameters(value)
+    Defaults and validation of ``params.cgaimmd_parameters`` (the shooting
+    loop and device settings of C-GAIMMD); ``Params.cgaimmd_settings`` merges
+    the two. ``DEFAULT_LAMBDA_WINDOW`` is the default target window.
+
+is_device_spec(value)
+    Whether a value is a device setting of ``cgaimmd_parameters``
+    (``'auto'``, ``'cpu'``, ``'cuda'``, ``'cuda:N'``); shared with
+    ``aimmd.cgaimmd.devices.resolve_device``.
+
 Notes
 -----
 These helpers are intentionally lightweight and do not depend on higher-level
@@ -36,6 +46,7 @@ AIMMD components.
 # external
 import os
 import re
+import math
 import shlex
 import shutil
 import warnings
@@ -45,6 +56,7 @@ from glob import glob
 from re import split
 from types import FunctionType as Function
 from inspect import getsource
+from numbers import Integral, Real
 
 # aimmd imports
 from ..core.utils import accepts_system_id
@@ -685,3 +697,233 @@ def masses_disagreement(names, guessed, topology, *, rtol=0.01, atol=0.01, n_exa
         if len(examples) == n_examples:
             break
     return f'{int(differ.sum())} atoms ({", ".join(examples)})'
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# C-GAIMMD settings (params.cgaimmd_parameters)
+# ════════════════════════════════════════════════════════════════════════════
+
+DEFAULT_LAMBDA_WINDOW = 'bins'
+"""The default of ``cgaimmd_parameters['lambda_window']``.
+
+``'bins'``: the targets are drawn inside the trainer's shooting-value cutoffs
+(the inner finite bin edges; the whole conditioning range ``[-L, L]`` until
+bins exist), so that no generated shot lands where the reweighting counts it
+as a free excursion. Kept in this one place so that the decision can be
+flipped; a flip also rewrites the ``lambda_window`` sentence of the
+``cgaimmd_parameters`` description (``aimmd/params/_fields.py``), which names
+the default.
+"""
+
+CGAIMMD_PARAMETER_DEFAULTS = {
+    'lambda_law': 'uniform',
+    'lambda_window': DEFAULT_LAMBDA_WINDOW,
+    'lambda_clip': None,
+    'acceptance': 'target',
+    'lambda_tolerance': 1.0,
+    'window_after_trained_shots': 1000,
+    'raw_lambda_tolerance': None,
+    'n_targets': 64,
+    'candidates_per_target': 2,
+    'placement': 'box_center',
+    'final_check_round': 'auto',
+    'generation_device': 'auto',
+    'values_device': 'auto',
+    'training_device': 'auto',
+    'max_refills': 20,
+    'wait_seconds': 60.0,
+    'generation_oom_halvings': 5,
+    'generation_seed': None,
+    'keep_scratch': False,
+}
+"""Defaults of every ``params.cgaimmd_parameters`` key.
+
+A plain dict (it deep-copies, pickles and serializes like any settings
+dict) that no code modifies: ``Params.cgaimmd_settings`` returns a new
+``{**CGAIMMD_PARAMETER_DEFAULTS, **cgaimmd_parameters}``, and code that keeps
+or changes settings copies it first (``dict(CGAIMMD_PARAMETER_DEFAULTS)``).
+The stored ``cgaimmd_parameters`` holds only the keys the user gave. See the
+``cgaimmd_parameters`` field description for the meaning of each key. How
+candidates are generated is not set here but by ``params.cgaimmd_generator``
+(:mod:`aimmd.cgaimmd.generation`).
+"""
+
+_DEVICE_SPEC = re.compile(r'(auto|cpu|cuda(:[0-9]+)?)')
+
+
+def is_device_spec(value):
+    """Whether `value` is a device setting of ``cgaimmd_parameters``.
+
+    Parameters
+    ----------
+    value : object
+        A candidate for ``generation_device``, ``values_device`` or ``training_device``.
+
+    Returns
+    -------
+    bool
+        True for exactly ``'auto'``, ``'cpu'``, ``'cuda'`` and ``'cuda:N'`` (``N >= 0``); False otherwise.
+
+    Notes
+    -----
+    Only the syntax is checked (no CUDA query, no normalization of case or
+    spaces). :func:`aimmd.cgaimmd.devices.resolve_device` turns an accepted
+    string into a ``torch.device`` at use, inside a worker task.
+    """
+    return isinstance(value, str) and _DEVICE_SPEC.fullmatch(value) is not None
+
+
+def _setting_int(key, value, minimum):
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise TypeError(f'cgaimmd_parameters[{key!r}] must be an int >= '
+                        f'{minimum}, got {value!r}')
+    if value < minimum:
+        raise TypeError(f'cgaimmd_parameters[{key!r}] must be >= {minimum}, '
+                        f'got {value!r}')
+    return int(value)
+
+
+def _setting_float(key, value, *, positive=False, nonnegative=False):
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f'cgaimmd_parameters[{key!r}] must be a number, '
+                        f'got {value!r}')
+    value = float(value)
+    if not math.isfinite(value):
+        raise TypeError(f'cgaimmd_parameters[{key!r}] must be finite, '
+                        f'got {value!r}')
+    if positive and not value > 0:
+        raise TypeError(f'cgaimmd_parameters[{key!r}] must be > 0, '
+                        f'got {value!r}')
+    if nonnegative and not value >= 0:
+        raise TypeError(f'cgaimmd_parameters[{key!r}] must be >= 0, '
+                        f'got {value!r}')
+    return value
+
+
+def _setting_choice(key, value, choices):
+    if not (isinstance(value, str) and value in choices):
+        raise TypeError(f'cgaimmd_parameters[{key!r}] must be one of '
+                        f'{", ".join(repr(c) for c in choices)}, '
+                        f'got {value!r}')
+    return value
+
+
+def _setting_optional(check):
+    def wrapped(key, value):
+        return None if value is None else check(key, value)
+    return wrapped
+
+
+def _setting_window(key, value):
+    if isinstance(value, str):
+        if value != 'bins':
+            raise TypeError(f"cgaimmd_parameters[{key!r}] must be a (lo, hi) "
+                            f"pair or 'bins', got {value!r}")
+        return value
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise TypeError(f"cgaimmd_parameters[{key!r}] must be a (lo, hi) pair "
+                        f"of finite floats or 'bins', got {value!r}")
+    lo, hi = (_setting_float(key, v) for v in value)
+    if not lo < hi:
+        raise TypeError(f'cgaimmd_parameters[{key!r}] needs lo < hi, '
+                        f'got {value!r}')
+    return (lo, hi)
+
+
+def _setting_device(key, value):
+    if not is_device_spec(value):
+        raise TypeError(f"cgaimmd_parameters[{key!r}] must be 'auto', 'cpu', "
+                        f"'cuda' or 'cuda:N', got {value!r}")
+    return value
+
+
+def _setting_rounding(key, value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value != 'auto':
+            raise TypeError(f"cgaimmd_parameters[{key!r}] must be 'auto', None "
+                            f"or an int >= 0 (decimals), got {value!r}")
+        return value
+    return _setting_int(key, value, 0)
+
+
+def _setting_bool(key, value):
+    if not isinstance(value, (bool, np.bool_)):
+        raise TypeError(f'cgaimmd_parameters[{key!r}] must be True or False, '
+                        f'got {value!r}')
+    return bool(value)
+
+
+_CGAIMMD_PARAMETER_CHECKS = {
+    'lambda_law': lambda k, v: _setting_choice(k, v, ('uniform', 'bins')),
+    'lambda_window': _setting_window,
+    'lambda_clip': _setting_optional(
+        lambda k, v: _setting_float(k, v, positive=True)),
+    'acceptance': lambda k, v: _setting_choice(k, v, ('target', 'window')),
+    'lambda_tolerance': lambda k, v: _setting_float(k, v, positive=True),
+    'window_after_trained_shots': lambda k, v: _setting_int(k, v, 0),
+    'raw_lambda_tolerance': _setting_optional(
+        lambda k, v: _setting_float(k, v, positive=True)),
+    'n_targets': lambda k, v: _setting_int(k, v, 1),
+    'candidates_per_target': lambda k, v: _setting_int(k, v, 1),
+    'placement': lambda k, v: _setting_choice(k, v, ('box_center', 'none')),
+    'final_check_round': _setting_rounding,
+    'generation_device': _setting_device,
+    'values_device': _setting_device,
+    'training_device': _setting_device,
+    'max_refills': lambda k, v: _setting_int(k, v, 1),
+    'wait_seconds': lambda k, v: _setting_float(k, v, nonnegative=True),
+    'generation_oom_halvings': lambda k, v: _setting_int(k, v, 0),
+    'generation_seed': _setting_optional(lambda k, v: _setting_int(k, v, 0)),
+    'keep_scratch': _setting_bool,
+}
+
+
+def canonical_cgaimmd_parameters(value):
+    """Validate a ``params.cgaimmd_parameters`` value and normalize it.
+
+    Parameters
+    ----------
+    value : dict or None
+        The user's settings. Every key must be one of
+        :data:`CGAIMMD_PARAMETER_DEFAULTS`.
+
+    Returns
+    -------
+    dict or None
+        ``None`` for ``None``; otherwise a new dict with **only the keys that
+        were given**, in the given order, with lists turned into tuples and
+        numbers into plain ``int``/``float`` (so the value round-trips through
+        :meth:`aimmd.Params.save` without numpy reprs). Defaults are not
+        filled in here; see ``Params.cgaimmd_settings``.
+
+    Raises
+    ------
+    TypeError
+        If `value` is not a dict, or for an unknown key, a wrong type or an
+        out-of-range value; the message names the key. The ODE settings of
+        the old ``flow_parameters`` (``ode_sampler``, ``ode_steps``,
+        ``generate_chunk``) are unknown keys here: they belong to
+        ``cgaimmd_generator``, and only the old field name is translated.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise TypeError(f"'cgaimmd_parameters' must be a dict or None, got "
+                        f"{type(value).__name__}: {value!r}")
+    out = {}
+    for key, item in value.items():
+        check = _CGAIMMD_PARAMETER_CHECKS.get(key)
+        if check is None:
+            hint = ''
+            if key in ('ode_sampler', 'ode_steps', 'generate_chunk'):
+                hint = (" (how candidates are generated is set by "
+                        "cgaimmd_generator, e.g. cgaimmd_generator = "
+                        "{'method': 'ode', 'sampler': 'midpoint', "
+                        "'n_steps': 16, 'chunk': 128})")
+            raise TypeError(
+                f'unknown cgaimmd_parameters key {key!r}; allowed keys are '
+                f'{list(CGAIMMD_PARAMETER_DEFAULTS)}{hint}')
+        out[key] = check(key, item)
+    return out

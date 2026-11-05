@@ -30,6 +30,7 @@ fails instead of holding a CI runner for hours.
 
 import importlib.util
 import shutil
+import sys
 
 import pytest
 
@@ -173,3 +174,54 @@ def _restore_series_registry():
     yield
     series._POLICIES.clear()
     series._POLICIES.update(saved)
+
+
+def reset_cgaimmd_process_state():
+    """Clear all process-global memory of C-GAIMMD code.
+
+    That is the warn/log-once flags of ``aimmd.cgaimmd._once``, the old names
+    already warned about by ``aimmd.cgaimmd._legacy``, the flow-matching fit's
+    trainer registry ``aimmd.cgaimmd.flow_matching.fit._TRAINERS`` and
+    ``aimmd._config.WORKER_TASK``. Only modules that are already imported are
+    touched, so this imports nothing (and works before the modules of later
+    streams exist). The compatibility modules of the old names
+    (``aimmd.flow``, ``aimmd.network.flow_fit``) are never read here: reading
+    them would warn.
+    """
+    once = sys.modules.get('aimmd.cgaimmd._once')
+    if once is not None:
+        once._reset()
+    legacy = sys.modules.get('aimmd.cgaimmd._legacy')
+    if legacy is not None:
+        legacy._reset()
+    fit = sys.modules.get('aimmd.cgaimmd.flow_matching.fit')
+    trainers = getattr(fit, '_TRAINERS', None)
+    if trainers is not None:
+        trainers.clear()
+    config = sys.modules.get('aimmd._config')
+    if config is not None:
+        config.WORKER_TASK = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_cgaimmd_process_state():
+    """Keep C-GAIMMD process state from leaking between tests.
+
+    Warn-once flags, the trainer registry and the worker task are
+    process-global by design (a process warns once, keeps its trainer across
+    rounds and runs one task at a time). Under pytest many tests share one
+    process, so they are cleared before and after every test and no result
+    depends on collection order. The generator registry
+    (``aimmd.cgaimmd.generation``) is restored after each test, so that a
+    method a test registers does not stay registered; the built-in methods
+    are found again on their next use.
+    """
+    reset_cgaimmd_process_state()
+    generation = sys.modules.get('aimmd.cgaimmd.generation')
+    saved = dict(generation._FACTORIES) if generation is not None else {}
+    yield
+    reset_cgaimmd_process_state()
+    generation = sys.modules.get('aimmd.cgaimmd.generation')
+    if generation is not None:
+        generation._FACTORIES.clear()
+        generation._FACTORIES.update(saved)
