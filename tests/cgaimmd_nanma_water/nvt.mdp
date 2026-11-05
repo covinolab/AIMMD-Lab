@@ -1,0 +1,25 @@
+; NVT MD of NANMA in TIP3P water (tests/cgaimmd_nanma_water); AIMMD supplies velocities
+integrator          = md
+dt                  = 0.002
+nsteps              = -1
+nstcomm             = 100
+nstxout-compressed  = 50
+nstenergy           = 500
+nstlog              = 500
+cutoff-scheme       = Verlet
+pbc                 = xyz
+coulombtype         = PME
+rcoulomb            = 1.0
+vdwtype             = Cut-off
+vdw-modifier        = Potential-shift
+rvdw                = 1.0
+DispCorr            = EnerPres
+constraints         = h-bonds
+constraint-algorithm = lincs
+tcoupl              = V-rescale
+tc-grps             = System
+tau_t               = 0.5
+ref_t               = 300
+pcoupl              = no
+gen_vel             = no
+continuation        = yes

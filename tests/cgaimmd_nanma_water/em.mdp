@@ -1,0 +1,16 @@
+; steepest-descent EM of NANMA in TIP3P water (tests/cgaimmd_nanma_water)
+integrator          = steep
+emtol               = 1000
+emstep              = 0.01
+nsteps              = 5000
+nstenergy           = 100
+nstlog              = 100
+cutoff-scheme       = Verlet
+pbc                 = xyz
+coulombtype         = PME
+rcoulomb            = 1.0
+vdwtype             = Cut-off
+vdw-modifier        = Potential-shift
+rvdw                = 1.0
+DispCorr            = EnerPres
+constraints         = h-bonds
