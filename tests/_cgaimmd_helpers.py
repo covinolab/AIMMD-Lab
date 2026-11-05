@@ -12,6 +12,8 @@ stream's code to build its fixtures:
   for RFPS;
 - :func:`build_cgaimmd_run_dir`: a run folder with shooting chains, free
   trajectories and their caches;
+- :class:`ScriptedShootingPointSource`: a stand-in for the shooting-point
+  source of ``aimmd.worker._shoot`` that hands out scripted shooting points;
 - :func:`gromacs_has_thread_mpi` and :func:`mdrun_thread_options`: mdrun
   thread options that work with a thread-MPI ``gmx`` and an MPI ``gmx_mpi``.
 """
@@ -32,7 +34,8 @@ import aimmd
 from aimmd.cache.npy import save_npy
 from aimmd.cgaimmd.flow_matching.toy import TinyFlowNetwork
 from aimmd.cgaimmd.io import atomic_write_bytes, atomic_write_json
-from aimmd.cgaimmd.types import CandidateContext
+from aimmd.cgaimmd.sidecar import SIDECAR_SCHEMA, SIDECAR_SOURCE
+from aimmd.cgaimmd.types import CandidateContext, ShootingPoint
 from aimmd.params.utils import canonical_cgaimmd_parameters, create_default_values_function
 from aimmd.path.utils import get_cache_fname
 from tests._helpers_unit import state_labels_from_positions, write_trajectory
@@ -130,6 +133,96 @@ def mdrun_thread_options(gmx, ntomp=1):
     """``'-ntmpi 1 -ntomp N'`` for a thread-MPI build of `gmx`, ``'-ntomp N'`` for an MPI build."""
     ntomp = f'-ntomp {int(ntomp)}'
     return f'-ntmpi 1 {ntomp}' if gromacs_has_thread_mpi(gmx) else ntomp
+
+
+# ---------------------------------------------------------------------------
+# shooting-point source
+# ---------------------------------------------------------------------------
+
+class ScriptedShootingPointSource:
+    """Scripted stand-in for ``aimmd.cgaimmd.source.GenerativeShootingPointSource``.
+
+    Parameters
+    ----------
+    params, worker, directory
+        As the real source receives them (stored, not used).
+    points : iterable, optional
+        What successive :meth:`next_shooting_point` calls return: ``(N, 3)``
+        arrays (wrapped into a :class:`ShootingPoint` with ``dimensions`` from
+        ``params.universe`` if it has a box), ``ShootingPoint`` objects (their
+        record gets ``path_name``/``chain`` filled in), or None (returned as is,
+        as after ``must_stop``). Exhausted: None.
+    wait_result : bool, optional
+        What :meth:`wait_for_network` returns.
+
+    Attributes
+    ----------
+    calls : list of (str, dict)
+        Every method call with its arguments, in order.
+    records : list of dict
+        The records handed out with the shooting points.
+    counters : dict
+        ``{'state_readback': n, ...}`` as the real source counts.
+    consecutive_readback : int
+        Read-back rejections since the last registered shot.
+    watcher, pool
+        None (the interface names them; the stand-in has neither).
+    """
+
+    def __init__(self, params, worker, directory, *, points=(), wait_result=True):
+        self.params = params
+        self.worker = worker
+        self.directory = directory
+        self._points = list(points)
+        self.wait_result = wait_result
+        self.calls = [('__init__', {'directory': directory})]
+        self.records = []
+        self.counters = {}
+        self.consecutive_readback = 0
+        self.watcher = None
+        self.pool = None
+
+    def wait_for_network(self):
+        self.calls.append(('wait_for_network', {}))
+        return self.wait_result
+
+    def _dimensions(self):
+        universe = getattr(self.params, 'universe', None)
+        dimensions = getattr(universe, 'dimensions', None) if universe is not None else None
+        return None if dimensions is None else np.asarray(dimensions, dtype=np.float32)
+
+    def next_shooting_point(self, *, chain, folder, path_name):
+        self.calls.append(('next_shooting_point',
+                           {'chain': chain, 'folder': folder, 'path_name': path_name}))
+        if not self._points:
+            return None
+        point = self._points.pop(0)
+        if point is None:
+            return None
+        base = {'schema': SIDECAR_SCHEMA, 'source': SIDECAR_SOURCE,
+                'note': 'ScriptedShootingPointSource', 'lambda_target': 0.0}
+        if isinstance(point, ShootingPoint):
+            record = {**base, **point.record}
+            positions, dimensions = point.positions, point.dimensions
+        else:
+            record = dict(base)
+            positions, dimensions = point, self._dimensions()
+        record.update(path_name=path_name, chain=os.path.basename(os.path.normpath(folder)))
+        self.records.append(record)
+        return ShootingPoint(np.asarray(positions, dtype=np.float32), dimensions, record)
+
+    def note_glitch(self, folder, exc, record):
+        self.calls.append(('note_glitch', {'folder': folder, 'exc': exc, 'record': record}))
+        self.counters['state_readback'] = self.counters.get('state_readback', 0) + 1
+        self.consecutive_readback += 1
+
+    def note_registered(self):
+        self.calls.append(('note_registered', {}))
+        self.consecutive_readback = 0
+
+    def called(self, name):
+        """The argument dicts of every call of method `name`."""
+        return [kwargs for method, kwargs in self.calls if method == name]
 
 
 # ---------------------------------------------------------------------------

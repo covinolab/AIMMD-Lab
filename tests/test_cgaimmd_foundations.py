@@ -178,12 +178,14 @@ def test_package_all_is_computed():
     modules = sorted(info.name for info in pkgutil.iter_modules([str(ROOT / 'aimmd' / 'cgaimmd')])
                      if not info.name.startswith('_') and info.name != 'bioemu2')
     assert {'types', 'protocol', 'generation', 'devices', 'io', 'values', 'dataset',
-            'flow_matching'} <= set(modules)
+            'flow_matching', 'source', 'pool', 'lambda_law', 'sidecar', 'restart'} <= set(modules)
     names = {'Generator', 'register_generator', 'make_generator', 'check_generator',
              'available_generators', 'check_network_protocol', 'check_network_numerics',
              'is_cgaimmd_network', 'ProtocolValuesFunction', 'protocol_values_function',
              'CandidateContext', 'ValidityResult', 'PreparedFrame', 'ShootingPoint',
-             'NetworkInfo', 'TrainingDataset', 'extract_dataset'}
+             'NetworkInfo', 'TrainingDataset', 'extract_dataset', 'GenerativeShootingPointSource',
+             'make_cgaimmd_source', 'prepare_candidate', 'candidate_context', 'PreparedCandidate',
+             'read_shot_sidecar', 'shot_table', 'summarise_shots'}
     out = _run("""
         import json, sys
         import aimmd.cgaimmd
