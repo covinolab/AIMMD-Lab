@@ -195,3 +195,69 @@ def test_what_the_archived_loader_refuses(tiny_peptide_system, tiny_protein_liga
     with pytest.raises(ValueError, match='the archived head reads 320 features'):
         load_archived_network(_old_checkpoint(golden, 'peptide'), tiny_protein_ligand_system)
 
+
+# --------------------------------------------------------------------------- in a params file
+
+PARAMS_FILE = '''\
+import numpy as np
+from aimmd.cgaimmd.bioemu2 import BioEmu2Network, sequential_fit
+
+engine = 'toy'
+states = 'ARB'
+chain_type = 'cgaimmd'
+initial_paths = ['seeds_A.xtc', 'seeds_B.xtc']
+round_shooting_index = True
+gen_temperature = 300.0
+cgaimmd_parameters = {{'placement': 'none', 'window_after_trained_shots': 5}}
+{generator}
+
+def toy_mdrun(ts):
+    ts.positions = ts.positions + 0.01
+
+def states_function(trajectory):
+    x = np.array([ts.positions[0, 0] for ts in trajectory])
+    return np.where(x <= -0.5, 'A', np.where(x >= 0.5, 'B', 'R'))
+
+def descriptors_function(trajectory):
+    frames = [ts.positions.copy() for ts in trajectory]
+    return np.array(frames, dtype=np.float32).reshape(len(frames), -1)
+
+class Network(BioEmu2Network):
+    def __init__(self):
+        super().__init__({system!r}, hidden=(16,))
+
+network = Network()
+
+def fit(params, pathensemble, verbose=False, worker=None):
+    return sequential_fit(params, pathensemble, verbose=verbose, worker=worker, min_shots_for_generator=100)
+'''
+
+
+def _params_folder(tmp_path, system, generator=''):
+    from tests._helpers_unit import write_trajectory
+    for kind, x0 in (('A', -1.0), ('B', 1.0)):
+        positions = np.repeat(system.template[None], 3, axis=0).astype(np.float32)
+        positions[:, 0, 0] = x0 + 0.05 * np.arange(3)              # atom 0's x decides the state
+        write_trajectory(tmp_path, stem=f'seeds_{kind}', positions=positions)
+    fname = tmp_path / 'params.py'
+    fname.write_text(PARAMS_FILE.format(system=str(system.folder), generator=generator))
+    return fname
+
+
+def test_a_params_file_with_the_network_and_its_default_generator(tiny_peptide_system, tmp_path):
+    """Params build the network's generator at load (rule 2): 'bioemu2_edm', or the one named."""
+    import aimmd
+    from aimmd.cgaimmd.bioemu2 import BioEmu2Generator
+    from aimmd.cgaimmd.generation import make_generator
+    from aimmd.cgaimmd.values import ProtocolValuesFunction
+    params = aimmd.Params.load(str(_params_folder(tmp_path, tiny_peptide_system)), save=False)
+    assert params.cgaimmd_generator is None and type(params.network).__name__ == 'Network'
+    assert isinstance(params.values_function, ProtocolValuesFunction)
+    generator = make_generator(params.cgaimmd_generator, params.network)
+    assert isinstance(generator, BioEmu2Generator) and generator.settings()['n_steps'] == 200
+    named = tmp_path / 'named'
+    named.mkdir()
+    params = aimmd.Params.load(str(_params_folder(named, tiny_peptide_system, generator=(
+        "cgaimmd_generator = {'method': 'bioemu2_edm', 'n_steps': 50, 'cfg_scale': 2.0}"))), save=False)
+    assert make_generator(params.cgaimmd_generator, params.network).settings() == {
+        'n_steps': 50, 'cfg_scale': 2.0, 'cfg_schedule': None, 'chunk': 16}

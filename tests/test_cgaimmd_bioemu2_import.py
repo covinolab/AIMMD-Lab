@@ -4,8 +4,8 @@
   need bioemu2 raise one ImportError on first use that says how to install it
   (and names the 'bioemu2' extra for the generator registry);
 - the system maps (``BioEmu2System``, ``MDAtoms``), the build step's MD
-  reader, the command line and the network with its head and adapters
-  import without bioemu2; a network is built from a
+  reader, the command line, the network with its head and adapters, the fit
+  and the pretraining import without bioemu2; a network is built from a
   system folder and loads its weights without bioemu2, and its first BioEmu2
   pass says how to install it; the generator ``'bioemu2_edm'`` names the
   'bioemu2' extra;
@@ -65,7 +65,8 @@ def test_without_bioemu2_the_first_real_use_says_how_to_install_it():
         result = {{'all': adaptor.__all__}}
         from aimmd.cgaimmd.bioemu2 import BioEmu2System, MDAtoms, read_md_atoms
         import aimmd.cgaimmd.bioemu2.__main__
-        from aimmd.cgaimmd.bioemu2 import BioEmu2Network, CommittorHead, TrunkAdapter, load_archived_network
+        from aimmd.cgaimmd.bioemu2 import (BioEmu2Network, CommittorHead, TrunkAdapter, load_archived_network,
+                                           pretrain_initial_network, sequential_fit)
         errors = {{}}
         for name in ('BioEmu2Features', 'BioEmu2Generator'):
             try:
@@ -90,7 +91,8 @@ def test_without_bioemu2_the_first_real_use_says_how_to_install_it():
     assert out['all'] == ['BioEmu2Features', 'BioEmu2Generator', 'BioEmu2Network', 'BioEmu2System',
                           'CommittorHead', 'ConditionedDenoiser', 'FeatureMLP', 'GuidanceSchedule', 'LAMBDA_CLIP',
                           'MDAtoms', 'SIGMA_REF', 'TrunkAdapter', 'build_system', 'fit_scaler',
-                          'load_archived_network', 'parse_guidance_schedule', 'read_md_atoms']
+                          'load_archived_network', 'parse_guidance_schedule', 'pretrain_initial_network',
+                          'read_md_atoms', 'sequential_fit', 'sequential_round']
     assert set(out['errors']) == {'BioEmu2Features', 'BioEmu2Generator', 'build_system', 'BioEmu2System.build'}
     for message, name, cause in out['errors'].values():
         assert message.startswith(HINT) and name == 'bioemu2' and cause == 'ModuleNotFoundError'

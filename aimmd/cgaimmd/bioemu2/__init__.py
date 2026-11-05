@@ -33,9 +33,13 @@ Public names, by module:
   network of a run; default generator ``'bioemu2_edm'``),
   ``load_archived_network``;
 - :mod:`~aimmd.cgaimmd.bioemu2.sampling`: ``BioEmu2Generator``, the
-  generation method ``'bioemu2_edm'``.
+  generation method ``'bioemu2_edm'``;
+- :mod:`~aimmd.cgaimmd.bioemu2.fit`: ``sequential_fit`` (the params file's
+  ``fit``), ``sequential_round``;
+- :mod:`~aimmd.cgaimmd.bioemu2.pretrain`: ``pretrain_initial_network``.
 
-The network, its head and adapters import without bioemu2 (a run can be loaded and analysed elsewhere); the features,
+The network, its head and adapters, the fit and the pretraining import
+without bioemu2 (a run can be loaded and analysed elsewhere); the features,
 the sampling and every BioEmu2 pass need it.
 """
 
@@ -59,6 +63,9 @@ _LAZY_NAMES = {
     'BioEmu2Network': 'network',
     'load_archived_network': 'network',
     'BioEmu2Generator': 'sampling',
+    'sequential_fit': 'fit',
+    'sequential_round': 'fit',
+    'pretrain_initial_network': 'pretrain',
 }
 
 __all__ = sorted(_LAZY_NAMES)
