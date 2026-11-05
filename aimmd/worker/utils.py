@@ -1321,6 +1321,82 @@ def apply_density_adjustment(densities, populations_for_adjustment,
     return densities
 
 
+def collect_shared_shooting_points(shooting_chains, folder, t, ext):
+    """
+    The shooting points that the shared density adjustment counts.
+
+    Shared by :func:`select_shooting_point` (RFPS) and the ``'bins'`` law of
+    C-GAIMMD's target committors (:mod:`aimmd.cgaimmd.lambda_law`), so that
+    both count the same frames.
+
+    Parameters
+    ----------
+    shooting_chains : sequence of aimmd.pathensemble.PathEnsemble
+        The shooting chains of the worker (their registered paths).
+    folder : str
+        The chain folder of the selecting worker; the backward halves in
+        flight are looked for in its sibling folders.
+    t : str
+        The reactive-region state label (``params.states[1]``).
+    ext : str
+        ``params.trajectory_extension``.
+
+    Returns
+    -------
+    tuple of aimmd.path.Path
+        ``(registered, shared)``: the shooting points of the registered
+        paths of `shooting_chains`, and those followed by frame 0 of every
+        backward half in flight, ``{folder}/../chain{t}*/back{ext}`` (the
+        shooting points of the shots other workers are running).
+    """
+    shooting_chains = PathEnsemble(shooting_chains)
+    registered = shooting_chains.shooting('self').join()
+    shared = registered
+    for fname in glob(f'{folder}/../chain{t}*/back{ext}'):
+        shared += Path(fname, stop=1)
+    return registered, shared
+
+
+def shared_shooting_populations(registered, shared, params, bins):
+    """
+    Histogram of the values of the shared shooting points over `bins`.
+
+    Parameters
+    ----------
+    registered, shared : aimmd.path.Path
+        From :func:`collect_shared_shooting_points`.
+    params : aimmd.params.Params
+        Provides the descriptor and value functions (``compute_values_args``).
+    bins : numpy.ndarray
+        Bin edges.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(len(bins) - 1,)`` int counts; zeros (with a printed warning) if
+        anything fails, so that a broken frame never stops a selection.
+
+    Notes
+    -----
+    Descriptors are ensured on the registered shooting points only
+    (:func:`ensure_descriptors`): the halves in flight belong to other
+    workers, which write their series while they ingest the frames (and
+    replace the files with every shot), so they are only read. The values
+    are computed without being cached.
+    """
+    try:  # catch instabilities in try/except loop
+        ensure_descriptors(registered, params)
+        compute_values_args = params.compute_values_args
+        return np.histogram(
+            shared.compute(compute_values_args[0], '',
+                           *compute_values_args[2:]),
+            bins)[0]
+    except Exception as exception:
+        print("!!! Warning: in computing shared_populations_for_adjustment:"
+              f" {exception}")
+        return np.zeros(len(bins) - 1, dtype=np.int64)
+
+
 def select_shooting_point(pool, params, folder,
                           chain=None,
                           free_trajectories=[],
@@ -1463,11 +1539,8 @@ def select_shooting_point(pool, params, folder,
     # (registered chain paths, then frame 0 of the backward halves in flight)
     shared_shooting_points = registered_shooting_points = Path()
     if shared_density_adjustment:
-        shooting_chains = PathEnsemble(shooting_chains)
-        registered_shooting_points = shooting_chains.shooting('self').join()
-        shared_shooting_points = registered_shooting_points
-        for fname in glob(f'{folder}/../chain{t}*/back{ext}'):
-            shared_shooting_points += Path(fname, stop=1)
+        registered_shooting_points, shared_shooting_points = (
+            collect_shared_shooting_points(shooting_chains, folder, t, ext))
 
     # overriding configurations
     candidate_paths = PathEnsemble()
@@ -1530,20 +1603,8 @@ def select_shooting_point(pool, params, folder,
     else:
         populations_for_adjustment = np.zeros_like(populations)
     if shared_density_adjustment:
-        try:  # catch instabilities in try/except loop
-            # featurize registered paths only: the halves in flight belong
-            # to other workers, which write their series while ingesting
-            # them (and replace them with every shot), so they are only read
-            ensure_descriptors(registered_shooting_points, params)
-            shared_populations_for_adjustment = np.histogram(
-                shared_shooting_points.compute(
-                    compute_values_args[0], '',
-                    *compute_values_args[2:]),
-                bins)[0]
-        except Exception as exception:
-            shared_populations_for_adjustment = np.zeros_like(populations)
-            print("!!! Warning: in computing shared_populations_for_adjustment:"
-                  f" {exception}")
+        shared_populations_for_adjustment = shared_shooting_populations(
+            registered_shooting_points, shared_shooting_points, params, bins)
     else:
         shared_populations_for_adjustment = np.zeros_like(populations)
 
