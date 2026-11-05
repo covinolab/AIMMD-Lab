@@ -619,6 +619,11 @@ def check_descriptor_record(params, run_dir, *, write=True):
     whose caches predate the record continues without one only when its
     descriptors have no cluster (the solute's coordinates did not change
     between versions); the record is then written.
+
+    Every C-GAIMMD worker task calls it before it starts (``Worker.run``),
+    and so do the Launcher and the trainer (through
+    :func:`check_cgaimmd_restart`), so the first process of a new run writes
+    the record before any cache exists; the run folder is created if needed.
     """
     from .preparation.descriptors import find_generator_descriptors
     if _series(params) != DEFAULT_SERIES:
@@ -655,6 +660,7 @@ def check_descriptor_record(params, run_dir, *, write=True):
             f"{hint}")
     if write:
         from .io import atomic_write_json
+        os.makedirs(str(run_dir), exist_ok=True)
         atomic_write_json(fname, record)
     return record
 

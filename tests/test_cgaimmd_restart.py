@@ -739,3 +739,74 @@ def test_migrate_sets_the_record_aside(tmp_path, generator_descriptors):
     assert report['record'] == os.path.join(layout.run, restart.DESCRIPTOR_RECORD)
     assert not os.path.exists(report['record'])
     assert os.path.isfile(os.path.join(layout.run, 'cgaimmd_descriptors.pre_cgaimmd.json'))
+
+
+# ---------------------------------------------------------------------------
+# every worker task records the settings before it writes caches
+# ---------------------------------------------------------------------------
+
+def _run_worker(tmp_path, params, run):
+    from aimmd.worker._run import WorkerRun
+
+    class Worker(WorkerRun):
+        def __init__(self):
+            self.directory = self._directory = str(run)
+            self.params = params
+            self.log_file = self.original_stdout = 'stdout'
+            self.localid = 0
+            self.ran = []
+            self.termination_signal = 0
+
+        def _bind_resources(self):
+            pass
+
+        def _update_stop_condition(self, **kwargs):
+            pass
+
+        def _terminate_operations(self):
+            pass
+
+        def _reset_stop_condition(self):
+            pass
+
+        def _free(self, *args, **kwargs):
+            self.ran.append('free')
+
+        def _shoot(self, *args, **kwargs):
+            self.ran.append('shoot')
+
+    return Worker()
+
+
+def test_every_worker_task_records_the_descriptor_settings(tmp_path, generator_descriptors):
+    """The first task of a new cluster run writes the record before it writes any cache, so
+    that a later start never finds caches without one; a run whose caches predate the record
+    is refused before the task runs."""
+    from aimmd.cgaimmd.preparation.descriptors import ClusterSelection, GeneratorAtoms
+    generator_descriptors(GeneratorAtoms(n_solute=22, cluster=ClusterSelection(n_waters=4)))
+    params = _record_params(path=tmp_path)
+    run = tmp_path / 'new_run'
+    worker = _run_worker(tmp_path, params, run)
+    worker.run('free')
+    assert worker.ran == ['free']
+    assert (run / restart.DESCRIPTOR_RECORD).is_file()
+    old = build_cgaimmd_run_dir(tmp_path / 'old', n_chains=1, n_shots=1)
+    worker = _run_worker(tmp_path, params, old.run)
+    with pytest.raises(ValueError, match='water placement 1'):
+        worker.run('shoot')
+    assert worker.ran == []
+    rfps = _run_worker(tmp_path, cgaimmd_params_namespace(chain_type='rfps',
+                                                          descriptors_function=wrapped_descriptors,
+                                                          path=tmp_path), old.run)
+    rfps.run('shoot')                                         # other chain types: nothing
+    assert rfps.ran == ['shoot']
+    assert not os.path.exists(os.path.join(old.run, restart.DESCRIPTOR_RECORD))
+
+
+def test_launcher_records_the_settings_of_a_new_run(tmp_path, generator_descriptors):
+    """The Launcher's check writes the record of a run folder that does not exist yet."""
+    from aimmd.cgaimmd.preparation.descriptors import ClusterSelection, GeneratorAtoms
+    generator_descriptors(GeneratorAtoms(n_solute=22, cluster=ClusterSelection(n_waters=4)))
+    run = tmp_path / 'not_yet'
+    check_cgaimmd_restart(_record_params(), str(run), descriptors=True)
+    assert (run / restart.DESCRIPTOR_RECORD).is_file()
