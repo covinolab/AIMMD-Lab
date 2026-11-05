@@ -33,6 +33,8 @@ compute_values_args
 pipeline
     Ordered tuple of compute-argument tuples describing the preferred compute
     pipeline for a Path/PathEnsemble under the current configuration.
+cgaimmd_settings
+    ``cgaimmd_parameters`` with the defaults of the missing keys filled in.
 
 Notes
 -----
@@ -49,7 +51,7 @@ from abc import ABC
 from dataclasses import MISSING
 
 # aimmd imports
-from .utils import (create_default_values_function,
+from .utils import (create_default_values_function, CGAIMMD_PARAMETER_DEFAULTS,
                     gromacs_topology_file, gromacs_include_dir,
                     read_topology_masses, masses_disagreement)
 from .._config import print
@@ -270,6 +272,21 @@ class ParamsProperties(ABC):
             return None
         return masses
 
+    def _initial_network_fname(self):
+        """The file of ``initial_network``, joined to ``params.parent`` when relative.
+
+        Returns
+        -------
+        str or None
+            None when ``initial_network`` is None.
+        """
+        value = getattr(self, 'initial_network', None)
+        if value is None:
+            return None
+        if os.path.isabs(value):
+            return value
+        return os.path.join(os.fspath(self.parent), value)
+
     def universe_of(self, system_id=None):
         """
         MDAnalysis Universe for a given system.
@@ -331,6 +348,29 @@ class ParamsProperties(ABC):
         entries = caps if isinstance(caps, (list, tuple)) else [caps]
         return any(entry and any(cap is not None for cap in entry.values())
                    for entry in entries)
+
+    @property
+    def cgaimmd_settings(self):
+        """
+        C-GAIMMD settings with the defaults filled in.
+
+        Returns
+        -------
+        dict
+            A new dict ``{**CGAIMMD_PARAMETER_DEFAULTS, **cgaimmd_parameters}``.
+
+        Notes
+        -----
+        ``cgaimmd_parameters`` stores only the keys the user gave, so saved
+        params files carry no defaults; this property is what C-GAIMMD code
+        reads (under any ``chain_type``: the generator fits read
+        ``training_device`` and ``lambda_clip`` from it too). All defaults
+        when ``cgaimmd_parameters`` is None (see
+        ``aimmd.params.utils.CGAIMMD_PARAMETER_DEFAULTS``); changing the
+        returned dict does not change the params.
+        """
+        return {**CGAIMMD_PARAMETER_DEFAULTS,
+                **(getattr(self, 'cgaimmd_parameters', None) or {})}
 
     @property
     def compute_states_args(self):
