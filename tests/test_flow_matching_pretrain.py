@@ -167,6 +167,25 @@ def test_the_old_prior_keywords(tmp_path):
     assert ('pretrain_end_states', 'prior') in _legacy.DROPPED_KEYWORDS
 
 
+def test_cosine_spans_the_pretraining_steps(tmp_path, monkeypatch):
+    """Pretraining is one round of `steps` steps: more steps than the fit's steps_per_round are fine."""
+    trainers = []
+
+    class Recorded(ff.FlowTrainer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            trainers.append(self)
+    monkeypatch.setattr(ff, 'FlowTrainer', Recorded)
+    monkeypatch.setitem(ff.FLOW_FIT_DEFAULTS, 'steps_per_round', 2)    # below `steps`
+    net = TinyFlowNetwork(n_atoms=3, lambda_clip=10.0)
+    report = pretrain.pretrain_end_states(net, _frames(), tmp_path, states='ARB', steps=4,
+                                          batch_size=4, warmup_steps=1, device='cpu')
+    assert report['steps_done'] == 4
+    (trainer,) = trainers
+    assert trainer.settings['total_steps'] == trainer.settings['steps_per_round'] == 4
+    assert trainer._lr_factor(3) > 0.0 and trainer._lr_factor(4) == pytest.approx(0.0, abs=1e-12)
+
+
 def test_divergence_guard(tmp_path, monkeypatch, capsys):
     """Consecutive non-finite gradients: a warning every 100, RuntimeError at the limit, no network file."""
     class Broken(TinyFlowNetwork):

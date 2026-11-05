@@ -159,7 +159,10 @@ FLOW_FIT_DEFAULTS = {
 """Keyword arguments of :func:`flow_matching_fit` with their defaults.
 
 ``lr_schedule='cosine'`` decays to 0 at ``total_steps`` (None: the round's
-``steps_per_round``); the schedule and the warm-up restart with every round.
+``steps_per_round``); the schedule and the warm-up restart with every round,
+so ``total_steps`` larger than ``steps_per_round`` is refused (the cosine
+would never reach 0; the flow branch's templates set it to "rounds x steps
+per round" for warm-started rounds).
 ``trainer_seed`` None takes the run's seed (:func:`aimmd.cgaimmd.fitting.fit_seed`).
 """
 
@@ -732,6 +735,15 @@ def _settings_from(kwargs):
     need(s['basin_draw'] in BASIN_DRAWS, 'basin_draw', "'uniform' or 'density'")
     need(s['total_steps'] is None or _is_int(s['total_steps'], 1), 'total_steps',
          'None or an int >= 1')
+    if s['lr_schedule'] == 'cosine' and _is_int(s['total_steps'], 1) \
+            and _is_int(s['steps_per_round'], 1) and s['total_steps'] > s['steps_per_round']:
+        # every round restarts the schedule: a cosine longer than the round never anneals
+        problems.append(
+            f'total_steps={s["total_steps"]} is larger than steps_per_round='
+            f'{s["steps_per_round"]}: every round trains again from the start with a new '
+            f'optimizer, so the cosine schedule restarts every round and would stop short of 0; '
+            f'leave total_steps None (the cosine then ends at steps_per_round) or set it to at '
+            f'most steps_per_round')
     need(s['trainer_seed'] is None or _is_int(s['trainer_seed'], 0), 'trainer_seed',
          'None or an int >= 0')
     need(s['early_stopping_patience'] is None or _is_int(s['early_stopping_patience'], 1),

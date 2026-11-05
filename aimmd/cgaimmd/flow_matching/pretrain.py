@@ -295,8 +295,9 @@ def pretrain_end_states(network, frames, out_dir, *, states, steps, batch_size=6
     -----
     The trainer is the online fit's core with ``n_sp = 0``, ``n_anchor =
     n_fm = batch_size`` and every flow-matching sample a basin frame
-    conditioned at ``-+L`` (``instate_fm_share = 1``); the other training
-    settings are the fit's defaults
+    conditioned at ``-+L`` (``instate_fm_share = 1``), as one round of
+    `steps` steps (the cosine ends at `steps`); the other training settings
+    are the fit's defaults
     (:data:`aimmd.cgaimmd.flow_matching.fit.FLOW_FIT_DEFAULTS`). The committor
     terms use :func:`aimmd.cgaimmd.protocol.coordinate_committor` (the frames
     are in memory). Only protocol and flow-matching members are used, so any
@@ -347,7 +348,8 @@ def pretrain_end_states(network, frames, out_dir, *, states, steps, batch_size=6
     try:
         settings = ff._settings_from({
             'lr': lr, 'weight_decay': weight_decay, 'warmup_steps': warmup_steps,
-            'lr_schedule': lr_schedule, 'total_steps': steps, 'grad_clip': grad_clip,
+            'lr_schedule': lr_schedule, 'total_steps': steps, 'steps_per_round': steps,
+            'grad_clip': grad_clip,
             'ema_decay': ema_decay, 'n_sp': 0, 'n_anchor': batch_size, 'n_fm': batch_size,
             'instate_fm_share': 1.0, 'p_uncond': p_uncond, 't_schedule': t_schedule,
             'fm_max_sample_loss': fm_max_sample_loss, 'trainer_seed': seed, 'grad_penalty': 0.0})

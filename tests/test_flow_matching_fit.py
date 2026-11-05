@@ -1080,10 +1080,35 @@ def test_lr_factor_warmup_and_cosine():
     round_long = _hand(net, m=1, warmup_steps=10, lr_schedule='cosine', steps_per_round=110)
     assert [round_long._lr_factor(k) for k in (10, 60, 110)] == pytest.approx([1.0, 0.5, 0.0],
                                                                                 abs=1e-12)
+    shorter = _hand(net, m=1, warmup_steps=10, lr_schedule='cosine', steps_per_round=200,
+                    total_steps=110)                     # anneals early, then lr 0 to the end
+    assert [shorter._lr_factor(k) for k in (60, 110, 199)] == pytest.approx([0.5, 0.0, 0.0],
+                                                                             abs=1e-12)
     constant = _hand(net, m=1, warmup_steps=4)
     assert [constant._lr_factor(k) for k in (0, 3, 4, 1000)] == pytest.approx([0.25, 1, 1, 1])
     constant.step()
     assert constant.optimizer.param_groups[0]['lr'] == pytest.approx(0.25 * 3e-4)
+
+
+def test_cosine_longer_than_a_round_is_refused(tmp_path):
+    """total_steps > steps_per_round with the cosine is refused: every round restarts the schedule.
+
+    The flow branch's templates set ``total_steps`` to "rounds x steps per
+    round" for warm-started rounds; under the restart such a cosine would end
+    every round at a learning-rate factor of 0.88 (16,000 against 4,000 steps).
+    """
+    old_template = dict(steps_per_round=4000, total_steps=16000, warmup_steps=500,
+                        lr_schedule='cosine')
+    with pytest.raises(ValueError, match='total_steps=16000 is larger than steps_per_round=4000'):
+        ff._settings_from(old_template)
+    for fine in (dict(old_template, total_steps=4000), dict(old_template, total_steps=None),
+                 dict(old_template, total_steps=2000),
+                 dict(old_template, lr_schedule='constant')):    # (constant: total_steps unused)
+        ff._settings_from(fine)
+    s = _setup(tmp_path)
+    with pytest.raises(ValueError, match='total_steps=4 is larger than steps_per_round=3'):
+        _fit(s, lr_schedule='cosine', total_steps=4)
+    assert not os.path.exists(f'{s.run}/flow_fitARB')            # refused before any set-up
 
 
 def test_fm_runaway_guard():
