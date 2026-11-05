@@ -1,0 +1,8 @@
+# Residues 187-206 of bovine beta-trypsin (one chain) and benzamidinium, for BioEmu2.
+entities:
+- entity_type: protein
+  asym_ids: [A]
+  sequence: LQGIVSWGSGCAQKNKPGVY
+- entity_type: ligand
+  asym_ids: [L]
+  smiles: NC(=[NH2+])c1ccccc1

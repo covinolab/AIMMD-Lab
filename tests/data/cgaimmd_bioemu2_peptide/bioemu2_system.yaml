@@ -1,0 +1,5 @@
+# CLN025 (chignolin) for BioEmu2: one protein chain, no ligand.
+entities:
+- entity_type: protein
+  asym_ids: [A]
+  sequence: YYDPETGTWY
