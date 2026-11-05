@@ -13,6 +13,8 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 CONFTEST = Path(__file__).with_name('conftest.py')
 
 TEST_MODULE = '''
@@ -105,3 +107,8 @@ def test_flags_and_gromacs_on_path_run_every_group(tmp_path):
         **_expected_self_skipping(),
     }
 
+
+def test_every_test_has_a_time_limit(pytestconfig):
+    """pytest-timeout is configured in pyproject.toml: a hung test fails after 15 min."""
+    pytest.importorskip('pytest_timeout')
+    assert float(pytestconfig.getini('timeout')) == 900

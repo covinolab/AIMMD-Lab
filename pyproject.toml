@@ -58,6 +58,7 @@ graphs = [
 tests = [
     "pytest",
     "pytest-cov",
+    "pytest-timeout",
 ]
 docs = [
     "sphinx",
@@ -83,3 +84,7 @@ aimmd = ["engines/*.mdp"]
 [tool.pytest.ini_options]
 # The markers (slow, graph, gromacs, bioemu2, bioemu2_weights, gpu) are
 # registered in tests/conftest.py, next to the flags and checks that select them.
+# Per-test time limit in seconds (pytest-timeout): a hung test fails instead
+# of holding the CI job until GitHub's 6 h limit. The slowest test of the
+# default lane takes about 3 min.
+timeout = 900

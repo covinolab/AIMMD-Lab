@@ -22,6 +22,10 @@ Markers that skip themselves when what they need is missing (no flag):
 
 A marker can be combined with others: a long GROMACS run is ``slow`` and
 ``gromacs``, and runs only with ``--runslow`` on a machine with GROMACS.
+
+Every test also has a time limit from pytest-timeout (``timeout`` under
+``[tool.pytest.ini_options]`` in ``pyproject.toml``), so that a hung test
+fails instead of holding a CI runner for hours.
 """
 
 import importlib.util
