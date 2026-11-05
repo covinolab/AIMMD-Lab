@@ -287,7 +287,8 @@ Supported values:
               returning the flat Angstrom coordinates of the network's atoms;
               no initial transition is needed.
 The value is case-insensitive; any value starting with 'tp', 'rf' or 'cg' is
-stored as 'tps', 'rfps' or 'cgaimmd'."""
+stored as 'tps', 'rfps' or 'cgaimmd'. The old name 'flow' (any value starting
+with 'fl') is read as 'cgaimmd' with a DeprecationWarning."""
                  })
 
     selection_pool_size: int = field(
@@ -403,7 +404,9 @@ keep_scratch (False). training_device and lambda_clip are also read by the
 generator fits under any chain_type. Shots whose shooting value falls outside
 the trainer's sp cutoffs are reweighted as free excursions, as in RFPS; the
 default lambda_window='bins' draws the targets inside them. How candidates
-are generated is set by `cgaimmd_generator`."""
+are generated is set by `cgaimmd_generator`. The old field name
+'flow_parameters' is read with a DeprecationWarning (its ODE keys
+'ode_sampler', 'ode_steps' and 'generate_chunk' go to `cgaimmd_generator`)."""
                  })
 
     cgaimmd_generator: object = field(
@@ -429,7 +432,7 @@ imports."""
 applied to every raw generated sample (n, M, 3) in Angstrom: relabel to the
 network's atom order and reject invalid structures (bond graph, chirality,
 clashes). None (default) checks finiteness only. Must be a function defined
-in the params file (wrap tooling objects)."""
+in the params file (wrap tooling objects). Old name: flow_validity_function."""
                  })
 
     cgaimmd_prepare_function: Callable = field(
@@ -440,7 +443,7 @@ that turns one valid generated configuration of the network's M atoms into a
 full system of params.topology (e.g. re-solvation with GROMACS). None
 (default) places the generated atoms in the box of params.topology
 (cgaimmd_parameters['placement']); then the network's atoms must be the whole
-system."""
+system. Old name: flow_prepare_function."""
                  })
 
     cgaimmd_minimize_function: Callable = field(
@@ -448,7 +451,7 @@ system."""
         metadata={'description':
 """Optional function (frame, context) -> aimmd.cgaimmd.types.PreparedFrame
 applied after preparation, e.g. restrained GROMACS energy minimization. None
-(default): no minimization."""
+(default): no minimization. Old name: flow_minimize_function."""
                  })
 
     cgaimmd_lambda_sampler: Callable = field(
@@ -457,7 +460,7 @@ applied after preparation, e.g. restrained GROMACS energy minimization. None
 """Optional function (n, context) -> (n,) array of target committor logits for
 C-GAIMMD, overriding cgaimmd_parameters['lambda_law']. Values must be finite
 and inside the lambda window; use context.rng for randomness. None
-(default): lambda_law."""
+(default): lambda_law. Old name: flow_lambda_sampler."""
                  })
 
     nbins: int = field(

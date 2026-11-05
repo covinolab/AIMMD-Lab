@@ -5,11 +5,11 @@
   AIMMD already imports scipy.optimize (``aimmd/analysis/utils.py``) and, when
   it is installed, rdkit (through MDAnalysis, ``aimmd/_init.py``), and
   C-GAIMMD code must not add any of them.
-- Every ``aimmd.cgaimmd`` module must import under the Read-the-Docs stubs of
-  ``docs/source``.
+- Every ``aimmd.cgaimmd`` module and the compatibility modules of the old names
+  must import under the Read-the-Docs stubs of ``docs/source``.
 - ``aimmd.cgaimmd._once`` is the only process-global memory of C-GAIMMD code
-  besides the generator registry; the autouse fixture of
-  ``tests/conftest.py`` resets them (with the trainer registry and
+  besides the old-name warnings and the generator registry; the autouse
+  fixture of ``tests/conftest.py`` resets them (with the trainer registry and
   ``aimmd._config.WORKER_TASK``) around every test.
 
 The subprocess tests run the interpreter of this test session on the checkout
@@ -39,15 +39,17 @@ HEAVY = ('networkx', 'torch_geometric', 'torch_cluster', 'mlcolvar', 'scipy.opti
          'rdkit') + BIOEMU2_STACK
 # where core AIMMD imports the heavy modules it already imports (rdkit only when installed)
 PRE_EXISTING = {'scipy.optimize': 'aimmd/analysis/utils.py', 'rdkit': 'aimmd/_init.py'}
+# the compatibility modules of the old names
+OLD_NAME_MODULES = ('aimmd.flow', 'aimmd.network.flow_fit', 'aimmd.network.joint_painn')
 
 
 def _cgaimmd_module_names():
-    """Every module of aimmd.cgaimmd (subpackages included)."""
+    """Every module of aimmd.cgaimmd (subpackages included), then the compatibility modules."""
     names = ['aimmd.cgaimmd']
     names += sorted(info.name for info in pkgutil.walk_packages(
         [str(ROOT / 'aimmd' / 'cgaimmd')], prefix='aimmd.cgaimmd.')
         if info.name.split('.')[2] != 'bioemu2')            # the bioemu2 extra: its own test
-    return names
+    return names + list(OLD_NAME_MODULES)
 
 
 def _run(code):
@@ -105,7 +107,7 @@ def test_cgaimmd_modules_add_no_heavy_imports():
     """With the heavy modules dropped and blocked after `import aimmd`, C-GAIMMD still imports."""
     names = _cgaimmd_module_names()
     for name in ('aimmd.cgaimmd.protocol', 'aimmd.cgaimmd.generation',
-                 'aimmd.cgaimmd.flow_matching.sampler'):
+                 'aimmd.cgaimmd.flow_matching.sampler', 'aimmd.cgaimmd._legacy'):
         assert name in names                       # the modules are found
     out = _run(f'''
         import importlib, json, sys
@@ -182,9 +184,9 @@ def test_import_aimmd_imports_no_cgaimmd_module():
 
 
 def test_light_modules_import_stdlib_numpy_only():
-    """io, _once and generation import only the standard library and numpy."""
+    """io, _once, _legacy and generation import only the standard library and numpy."""
     allowed_relative = {'io', '_once'}
-    for name in ('io', '_once', 'generation'):
+    for name in ('io', '_once', '_legacy', 'generation'):
         fname = ROOT / 'aimmd' / 'cgaimmd' / f'{name}.py'
         tree = ast.parse(fname.read_text())
         # module level = statements not nested in a function or class body
@@ -254,7 +256,7 @@ def test_once_and_reset():
 def test_conftest_fixture_resets_process_state(request):
     """The autouse fixture clears the process state of C-GAIMMD code around each test."""
     import aimmd._config as config
-    from aimmd.cgaimmd import _once, generation
+    from aimmd.cgaimmd import _legacy, _once, generation
     from tests.conftest import reset_cgaimmd_process_state
 
     assert '_reset_cgaimmd_process_state' in request.fixturenames
@@ -273,10 +275,14 @@ def test_conftest_fixture_resets_process_state(request):
         fit._TRAINERS['/some/state_dir'] = object()
         config.WORKER_TASK = 'train'
         _once.once('some flag')
+        with pytest.warns(DeprecationWarning):
+            assert _legacy.warn_renamed('old', 'new', key='some old name')
         reset_cgaimmd_process_state()
         assert fit._TRAINERS == {}
         assert config.WORKER_TASK is None
         assert _once.once('some flag') is True
+        with pytest.warns(DeprecationWarning):                           # warns again
+            assert _legacy.warn_renamed('old', 'new', key='some old name')
     finally:
         if inserted:
             del sys.modules[name]

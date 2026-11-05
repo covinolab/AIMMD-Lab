@@ -74,6 +74,13 @@ Assigning one of them under ``chain_type='cgaimmd'`` runs the rules again
 initial-path rules).
 """
 
+_LEGACY_FIELDS = frozenset({'flow_parameters', 'flow_validity_function',
+                            'flow_prepare_function', 'flow_minimize_function',
+                            'flow_lambda_sampler'})
+"""Old names of C-GAIMMD fields, read with a warning for one release
+(``aimmd.cgaimmd._legacy.PARAMS_FIELDS``, kept here so that ordinary params
+import no C-GAIMMD code)."""
+
 
 def _may_be_cgaimmd_network(network):
     """Cheap pre-test of ``is_cgaimmd_network`` that imports no C-GAIMMD code.
@@ -335,6 +342,14 @@ class ParamsHelpers(ABC):
         - `topology`: attempts to build an MDAnalysis Universe to cache masses.
         - `initial_paths`: immediately coerced into a PathEnsemble.
         """
+        # old names of C-GAIMMD fields: assigned to the new fields (one
+        # DeprecationWarning each, see aimmd.cgaimmd._legacy)
+        if name in _LEGACY_FIELDS:
+            from ..cgaimmd import _legacy
+            for new_name, new_value in _legacy.params_field(name, value).items():
+                self._setattr(new_name, new_value, process_and_check)
+            return
+
         # assign fields
         if name in self.__dataclass_fields__:
             expected_type = self.__dataclass_fields__[name].type
@@ -578,6 +593,10 @@ class ParamsHelpers(ABC):
                     value = 'rfps'
                 elif value.startswith('cg'):
                     value = 'cgaimmd'
+                elif value.startswith('fl'):
+                    # the old name, read for one release
+                    from ..cgaimmd import _legacy
+                    value = _legacy.chain_type(value)
                 else:
                     raise TypeError(f"{name!r} must be 'tps', 'rfps' or "
                                     f"'cgaimmd', got {value!r}")

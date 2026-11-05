@@ -52,6 +52,7 @@ from ..path import Path
 from .._config import print
 from ..core.utils import unique_path
 from .utils import resolve_path_names
+from ._helpers import _LEGACY_FIELDS
 from ..pathensemble import PathEnsemble
 from ..core.decorators import class_or_instancemethod
 
@@ -193,6 +194,18 @@ class ParamsIO(ABC):
                                     f'the keyword argument')
                 kwargs[name] = value
 
+            # old names of C-GAIMMD fields given as keywords: read as the new
+            # fields (one DeprecationWarning each)
+            for name in [name for name in kwargs if name in _LEGACY_FIELDS]:
+                from ..cgaimmd import _legacy
+                for new_name, value in _legacy.params_field(
+                        name, kwargs.pop(name)).items():
+                    if new_name in kwargs:
+                        raise TypeError(f'both {name!r} and its new name '
+                                        f'{new_name!r} were given; give '
+                                        f'{new_name!r} only')
+                    kwargs[new_name] = value
+
             # update fields with kwargs
             for name, value in kwargs.items():
                 if name in fields:
@@ -245,6 +258,7 @@ class ParamsIO(ABC):
                 exec(compile(source, path, "exec"), module.__dict__)
 
                 # populate the fields
+                legacy_values = {}
                 for name in module.__dict__:
 
                     # ...only if not assigned already
@@ -253,6 +267,25 @@ class ParamsIO(ABC):
                         # get new values
                         fields[name] = module.__dict__[name]
                         updated_fields.append(name)
+                        num_fields_from_filename += 1
+
+                    # old names of C-GAIMMD fields (read for one release)
+                    elif name in _LEGACY_FIELDS:
+                        legacy_values[name] = module.__dict__[name]
+
+                # ...read as the new fields, with one DeprecationWarning each
+                for name, value in legacy_values.items():
+                    from ..cgaimmd import _legacy
+                    for new_name, new_value in _legacy.params_field(
+                            name, value).items():
+                        if new_name in kwargs:
+                            continue
+                        if new_name in module.__dict__:
+                            raise TypeError(
+                                f'{path.name} sets both {name!r} and its new '
+                                f'name {new_name!r}; keep {new_name!r} only')
+                        fields[new_name] = new_value
+                        updated_fields.append(new_name)
                         num_fields_from_filename += 1
 
                 # Remember the file's initial-path FILE NAMES, whatever the

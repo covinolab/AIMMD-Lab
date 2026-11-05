@@ -179,16 +179,21 @@ def _restore_series_registry():
 def reset_cgaimmd_process_state():
     """Clear all process-global memory of C-GAIMMD code.
 
-    That is the warn/log-once flags of ``aimmd.cgaimmd._once``, the
-    flow-matching fit's trainer registry
-    ``aimmd.cgaimmd.flow_matching.fit._TRAINERS`` and
+    That is the warn/log-once flags of ``aimmd.cgaimmd._once``, the old names
+    already warned about by ``aimmd.cgaimmd._legacy``, the flow-matching fit's
+    trainer registry ``aimmd.cgaimmd.flow_matching.fit._TRAINERS`` and
     ``aimmd._config.WORKER_TASK``. Only modules that are already imported are
     touched, so this imports nothing (and works before the modules of later
-    streams exist).
+    streams exist). The compatibility modules of the old names
+    (``aimmd.flow``, ``aimmd.network.flow_fit``) are never read here: reading
+    them would warn.
     """
     once = sys.modules.get('aimmd.cgaimmd._once')
     if once is not None:
         once._reset()
+    legacy = sys.modules.get('aimmd.cgaimmd._legacy')
+    if legacy is not None:
+        legacy._reset()
     fit = sys.modules.get('aimmd.cgaimmd.flow_matching.fit')
     trainers = getattr(fit, '_TRAINERS', None)
     if trainers is not None:
