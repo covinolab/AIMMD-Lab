@@ -1,12 +1,54 @@
-"""Pytest configuration for optional AIMMD test groups.
+"""Pytest configuration: test groups, the markers that select them, shared fixtures.
 
-The repository already had a `--runslow` opt-in for long integration tests.
-This file now also exposes a separate `--rungraph` opt-in for the graph/GNN
-utility tests, because those depend on a larger external stack and exercise
-functionality that is not part of the default unit-test surface.
+Markers that need an opt-in flag (the test is skipped unless the flag is given):
+
+- ``slow`` (``--runslow``): long end-to-end runs, e.g. GROMACS campaigns.
+- ``graph`` (``--rungraph``): the graph/GNN utilities. They need
+  ``torch_geometric`` and ``torch_cluster``, a larger external stack that is
+  not part of the default unit-test surface.
+- ``bioemu2_weights`` (``--runweights``): the real BioEmu2 checkpoint from the
+  Hugging Face cache (several GB, usually a GPU). Never run in GitHub CI.
+
+Markers that skip themselves when what they need is missing (no flag):
+
+- ``gromacs``: the test starts ``gmx``. Skipped when neither ``gmx`` nor
+  ``gmx_mpi`` is on ``PATH``. Take the executable from the ``gmx_executable``
+  fixture rather than looking it up again in the test module.
+- ``bioemu2``: the test needs the ``bioemu2`` package (it uses a tiny
+  random-weight model on the CPU, no download). Skipped when the package is
+  not installed.
+- ``gpu``: the test needs CUDA. Skipped when ``torch.cuda.is_available()`` is
+  False.
+
+A marker can be combined with others: a long GROMACS run is ``slow`` and
+``gromacs``, and runs only with ``--runslow`` on a machine with GROMACS.
 """
 
+import importlib.util
+import shutil
+
 import pytest
+
+#: marker name -> what it means (registered in `pytest_configure`, so that
+#: ``--strict-markers`` accepts them and ``pytest --markers`` lists them)
+MARKERS = {
+    'slow': 'long end-to-end run; skipped unless --runslow',
+    'graph': 'needs torch_geometric and torch_cluster; skipped unless --rungraph',
+    'gromacs': 'starts gmx; skipped when no gmx or gmx_mpi is on PATH '
+               '(use the gmx_executable fixture)',
+    'bioemu2': 'needs the bioemu2 package (tiny random-weight model on the CPU); '
+               'skipped when bioemu2 is not installed',
+    'bioemu2_weights': 'needs the real BioEmu2 checkpoint in the Hugging Face '
+                       'cache; skipped unless --runweights',
+    'gpu': 'needs CUDA; skipped when torch.cuda.is_available() is False',
+}
+
+#: markers that run only when their command-line flag is given
+OPT_IN_FLAGS = {
+    'slow': '--runslow',
+    'graph': '--rungraph',
+    'bioemu2_weights': '--runweights',
+}
 
 
 def pytest_addoption(parser):
@@ -16,21 +58,75 @@ def pytest_addoption(parser):
     parser.addoption(
         "--rungraph", action="store_true", default=False, help="run optional graph utility tests"
     )
+    parser.addoption(
+        "--runweights", action="store_true", default=False,
+        help="run the tests that need the real BioEmu2 checkpoint (marker bioemu2_weights)"
+    )
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "slow: mark test as slow to run")
-    config.addinivalue_line("markers", "graph: mark optional graph utility tests")
+    for name, meaning in MARKERS.items():
+        config.addinivalue_line("markers", f"{name}: {meaning}")
+
+
+def find_gromacs():
+    """The GROMACS executable on PATH (``gmx``, else ``gmx_mpi``), or None.
+
+    The same lookup as `aimmd._init._resolve_gromacs`, without importing aimmd.
+    """
+    return shutil.which('gmx') or shutil.which('gmx_mpi')
+
+
+def _cuda_available():
+    try:
+        import torch
+    except ImportError:
+        return False
+    return torch.cuda.is_available()
+
+
+def _missing_requirements(items):
+    """Skip reason for each self-skipping marker whose requirement is missing.
+
+    Only the markers that some collected test carries are checked, so a run
+    without ``gpu`` tests never imports torch here.
+    """
+    used = {name for item in items for name in ('gromacs', 'bioemu2', 'gpu')
+            if item.get_closest_marker(name) is not None}
+    reasons = {}
+    if 'gromacs' in used and find_gromacs() is None:
+        reasons['gromacs'] = 'GROMACS not found (no gmx or gmx_mpi on PATH)'
+    if 'bioemu2' in used and importlib.util.find_spec('bioemu2') is None:
+        reasons['bioemu2'] = 'bioemu2 is not installed'
+    if 'gpu' in used and not _cuda_available():
+        reasons['gpu'] = 'CUDA is not available'
+    return reasons
 
 
 def pytest_collection_modifyitems(config, items):
-    skip_slow = pytest.mark.skip(reason="need --runslow option to run")
-    skip_graph = pytest.mark.skip(reason="need --rungraph option to run")
+    reasons = {name: f"need {flag} option to run"
+               for name, flag in OPT_IN_FLAGS.items() if not config.getoption(flag)}
+    reasons.update(_missing_requirements(items))
     for item in items:
-        if "slow" in item.keywords and not config.getoption("--runslow"):
-            item.add_marker(skip_slow)
-        if "graph" in item.keywords and not config.getoption("--rungraph"):
-            item.add_marker(skip_graph)
+        for name, reason in reasons.items():
+            if item.get_closest_marker(name) is not None:
+                item.add_marker(pytest.mark.skip(reason=reason))
+
+
+@pytest.fixture(scope="session")
+def gmx_executable():
+    """Path of the GROMACS executable for tests that start ``gmx``.
+
+    It is the executable AIMMD resolved at import (``aimmd._config.GROMACS``),
+    else the one on PATH; the test is skipped when there is none. Tests that
+    take this fixture should also carry the ``gromacs`` marker.
+    """
+    import aimmd
+
+    gmx = getattr(aimmd._config, 'GROMACS', None) or find_gromacs()
+    if gmx is None:
+        pytest.skip('GROMACS not found (no gmx or gmx_mpi on PATH)')
+    return gmx
 
 
 @pytest.fixture(autouse=True)

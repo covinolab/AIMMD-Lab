@@ -81,6 +81,5 @@ exclude = ["tests*", "docs*", "examples*", "devtools*", "dev*", "implementation_
 aimmd = ["engines/*.mdp"]
 
 [tool.pytest.ini_options]
-markers = [
-    "integration: end-to-end tests that run full AIMMD simulations (slow)",
-]
+# The markers (slow, graph, gromacs, bioemu2, bioemu2_weights, gpu) are
+# registered in tests/conftest.py, next to the flags and checks that select them.
