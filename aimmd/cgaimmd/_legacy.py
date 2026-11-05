@@ -12,7 +12,11 @@ those runs can still be loaded, resumed and analysed with the new tools, the
 old names are **read** for one release and never written:
 
 - every old name in use emits exactly one ``DeprecationWarning`` per process
-  (and one log line) that names the new spelling;
+  (and one log line) that names the new spelling; this includes the
+  restraint modes of the preparation tools (``restrain='flow_heavy'``), the
+  private polish of the archived params (``aimmd.flow.validate._polish``,
+  now the public ``aimmd.cgaimmd.preparation.minimize.polish``) and the
+  attributes of :data:`ATTRIBUTES`;
 - this module holds every old -> new table, and the compatibility modules
   ``aimmd.flow`` and ``aimmd.network.{flow_fit,joint_painn}`` only resolve
   names through these tables;
@@ -104,6 +108,9 @@ IN_FLIGHT_MARKERS = {'.flow_shooting_point.json': '.cgaimmd_shooting_point.json'
 
 SCRATCH_FOLDERS = {'flow_scratch': 'cgaimmd_scratch'}
 """Scratch folder of a chain: old -> new (scratch only; nothing reads the old one)."""
+
+ATTRIBUTES = {('GeneratorDescriptors', 'flow_atoms'): 'generator_atoms'}
+"""(class, old attribute) -> new attribute; the class keeps the old one as a property that warns."""
 
 
 # ════════════════════════════════════════════════════════════════════════════

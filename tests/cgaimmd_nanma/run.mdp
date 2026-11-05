@@ -1,0 +1,28 @@
+integrator          = sd           ; Langevin, friction = 1/tau_t
+dt                  = 0.001        ; DECIDE: 0.001 (default, 2x faster) or 0.0005 (exact Gen-COMPAS); use the same everywhere
+nsteps              = -1
+tinit               = 0
+nstcomm             = 100
+comm-mode           = Linear
+nstxout-compressed  = 50           ; 50 fs per frame
+compressed-x-precision = 10000
+nstenergy           = 5000
+nstlog              = 5000
+constraints         = none
+cutoff-scheme       = Verlet
+nstlist             = 20
+verlet-buffer-tolerance = -1
+rlist               = 3.0
+pbc                 = xyz
+coulombtype         = Cut-off      ; plain cutoff (reaction-field eps_rf=1); molecule << rcoulomb so exact
+rcoulomb            = 3.0
+vdwtype             = Cut-off
+rvdw                = 3.0
+DispCorr            = no
+tcoupl              = no           ; sd integrates the thermostat
+tc-grps             = System
+tau_t               = 1.0
+ref_t               = 300
+pcoupl              = no
+gen_vel             = no           ; AIMMD supplies velocities via grompp -t
+continuation        = yes

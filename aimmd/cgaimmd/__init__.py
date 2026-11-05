@@ -33,6 +33,10 @@ Public names, by module:
 - :mod:`~aimmd.cgaimmd.dataset`: ``TrainingDataset``, ``extract_dataset``;
 - :mod:`~aimmd.cgaimmd.types`: ``CandidateContext``, ``ValidityResult``,
   ``PreparedFrame``, ``ShootingPoint``, ``NetworkInfo``.
+
+The GROMACS tools that turn a generated configuration into a shooting point
+(descriptors, validity checks, the polish, re-solvation, minimization) are in
+the subpackage :mod:`aimmd.cgaimmd.preparation`.
 """
 
 import importlib as _importlib
