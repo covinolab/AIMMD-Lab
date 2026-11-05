@@ -332,3 +332,25 @@ def test_nanma_missing_plumed_file_fails(tmp_path, gmx_executable, capsys):
     assert f"FAIL     plumed: the -plumed file '{folder / 'wall.dat'}' does not exist" in out
     assert 'SKIPPED  bias zero point: not checked' in out
     assert out.strip().splitlines()[-1].startswith('preflight FAILED: 1 of ')
+
+
+def test_plumed_input_files_follow_includes(tmp_path):
+    """The files a PLUMED input reads, followed into INCLUDE files; comments and outputs ignored."""
+    from aimmd.cgaimmd.plumed import (mdrun_executable, plumed_file_of, plumed_input_files,
+                                      print_files)
+    (tmp_path / 'grid.dat').write_text('grid')
+    (tmp_path / 'inner.dat').write_text('m: METAD ARG=d GRID_RFILE=grid.dat FILE=HILLS '
+                                        '# STATE_RFILE=commented\n')
+    (tmp_path / 'main.dat').write_text('# INCLUDE FILE=commented.dat\nINCLUDE FILE=inner.dat\n'
+                                       'PRINT ARG=d FILE=OUT\nPRINT ARG=d\n')
+    files = plumed_input_files(str(tmp_path / 'main.dat'))
+    assert [(entry['keyword'], entry['written'], entry['exists'], entry['relative'])
+            for entry in files] == [('INCLUDE FILE', 'inner.dat', True, True),
+                                    ('GRID_RFILE', 'grid.dat', True, True)]
+    assert files[1]['path'] == str(tmp_path / 'grid.dat') and files[1]['sha256']
+    assert print_files(str(tmp_path / 'main.dat')) == ['OUT', 'COLVAR']
+    assert plumed_file_of('srun -p queue gmx_mpi mdrun -ntomp 2 -plumed /a/b.dat') == '/a/b.dat'
+    assert plumed_file_of('gmx mdrun -ntomp 2') is None
+    assert mdrun_executable('srun -n 1 gmx_mpi mdrun -ntomp 2') == 'srun -n 1 gmx_mpi mdrun'
+    assert mdrun_executable('mdrun_mpi -ntomp 2') == 'mdrun_mpi'
+    assert mdrun_executable('python run.py') is None
