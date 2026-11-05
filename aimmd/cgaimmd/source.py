@@ -240,6 +240,143 @@ def _batch_size(settings):
     return int(chunk)
 
 
+def build_checked_generator(params):
+    """The run's generator, built from ``params.cgaimmd_generator`` and checked strictly.
+
+    Parameters
+    ----------
+    params : aimmd.Params
+        The run's params (``network``, ``cgaimmd_generator``).
+
+    Returns
+    -------
+    aimmd.cgaimmd.generation.Generator
+
+    Raises
+    ------
+    TypeError
+        If the network does not follow the protocol
+        (:func:`~aimmd.cgaimmd.protocol.check_network_protocol`), the
+        generator cannot be built (:func:`~aimmd.cgaimmd.generation.make_generator`)
+        or cannot use the network (:func:`~aimmd.cgaimmd.generation.check_generator`);
+        the message names ``params.cgaimmd_generator``. This holds for params
+        read through old names too (``Params.load`` only warns for those).
+
+    Notes
+    -----
+    What a shooting worker checks at start-up, and what
+    :mod:`aimmd.cgaimmd.preflight` checks before a job.
+    """
+    network = params.network
+    check_network_protocol(network)
+    spec = getattr(params, 'cgaimmd_generator', None)
+    try:
+        generator = make_generator(spec, network)
+    except (TypeError, ValueError, ImportError) as exc:
+        raise TypeError(f"chain_type='cgaimmd': the generator of params.cgaimmd_generator = "
+                        f"{spec!r} cannot be built for {type(network).__name__}: "
+                        f"{exc}") from exc
+    problems = check_generator(generator, network)
+    if problems:
+        raise TypeError(f"chain_type='cgaimmd': the generator {generator.method!r} "
+                        f"(params.cgaimmd_generator = {spec!r}) cannot use "
+                        f"{type(network).__name__}:\n  - " + '\n  - '.join(problems))
+    return generator
+
+
+def check_start_up_numerics(params, generator, n_atoms, initial_paths):
+    """The descriptor width and the network numerics, as a shooting worker checks them at start-up.
+
+    Parameters
+    ----------
+    params : aimmd.Params
+        The run's params (``descriptors_function``, ``network``, ``descriptor_transform``).
+    generator : aimmd.cgaimmd.generation.Generator
+        The run's generator (one tiny generation goes through it).
+    n_atoms : int
+        ``M``, the atoms the network generates.
+    initial_paths : sequence of aimmd.path.Path
+        The run's initial paths; the first :data:`NUMERICS_FRAMES` frames of
+        the first one are featurized and evaluated.
+
+    Returns
+    -------
+    dict
+        The report of :func:`~aimmd.cgaimmd.protocol.check_network_numerics`.
+
+    Raises
+    ------
+    TypeError
+        Without a ``descriptors_function``.
+    ValueError
+        If the descriptors are not ``3 M`` wide (with the migration hint), or
+        from the numerics check.
+    """
+    m = int(n_atoms)
+    function = getattr(params, 'descriptors_function', None)
+    if function is None:
+        raise TypeError("chain_type='cgaimmd' needs a descriptors_function returning the "
+                        "flat Angstrom coordinates of the network's atoms, e.g. "
+                        "GeneratorDescriptors (aimmd.cgaimmd.preparation.descriptors)")
+    where = 'no initial path'
+    descriptors = np.zeros((0, 3 * m), dtype=np.float32)
+    if initial_paths and len(initial_paths[0]):
+        first = initial_paths[0]
+        frames = first[:min(len(first), NUMERICS_FRAMES)]
+        descriptors = np.asarray(frames.compute(function, '', 'reader', return_result=True),
+                                 dtype=np.float32)
+        descriptors = descriptors.reshape(len(descriptors), -1)
+        where = str(getattr(first, 'fname', first))
+    if descriptors.shape[1] != 3 * m:
+        raise descriptor_width_error(descriptors.shape[1], m,
+                                     f'the descriptors_function values of {where}')
+    coordinates = descriptors.reshape(len(descriptors), m, 3)
+    forward_input = None
+    if len(descriptors):
+        forward_input = _values_input(descriptors, network_device(params.network),
+                                      getattr(params, 'descriptor_transform', None))
+    return check_network_numerics(params.network, coordinates, forward_input,
+                                  generation=generator)
+
+
+def check_generator_atoms(params, n_atoms):
+    """Refuse a network whose atom count is not that of the run's generator atoms.
+
+    Parameters
+    ----------
+    params : aimmd.Params
+        The run's params; their ``descriptors_function`` is looked at.
+    n_atoms : int
+        ``M``, the atoms the network generates.
+
+    Raises
+    ------
+    ValueError
+        If the descriptors function is (or wraps, see
+        :func:`aimmd.cgaimmd.preparation.descriptors.find_generator_descriptors`)
+        a :class:`~aimmd.cgaimmd.preparation.descriptors.GeneratorDescriptors`
+        (or another object with ``generator_atoms`` and ``n_atoms``) whose
+        ``n_atoms`` is not `n_atoms`. Other descriptors functions are checked
+        by the width of their rows only (at start-up, on the initial paths).
+    """
+    function = getattr(params, 'descriptors_function', None)
+    if function is None:
+        return
+    descriptors = function
+    if not hasattr(function, 'generator_atoms'):
+        from .preparation.descriptors import find_generator_descriptors
+        descriptors = find_generator_descriptors(function)
+        if descriptors is None:
+            return
+    m = getattr(descriptors, 'n_atoms', None)
+    if isinstance(m, Integral) and int(m) != int(n_atoms):
+        raise ValueError(
+            f'the network generates {n_atoms} atoms but the descriptors function '
+            f'({type(descriptors).__name__}) selects {int(m)} generator atoms '
+            f'(GeneratorAtoms); the network (for BioEmu2: its system folder) and the '
+            f'descriptors must describe the same atoms')
+
+
 def place_in_box(positions, params, placement):
     """Turn the generator atoms of a candidate into the full system without a prepare function.
 
@@ -814,35 +951,11 @@ class GenerativeShootingPointSource:
 
     def _build_generator(self):
         """The run's generator, built and checked strictly against the network."""
-        params = self.params
-        network = params.network
-        check_network_protocol(network)
-        spec = getattr(params, 'cgaimmd_generator', None)
-        try:
-            generator = make_generator(spec, network)
-        except (TypeError, ValueError, ImportError) as exc:
-            raise TypeError(f"chain_type='cgaimmd': the generator of params.cgaimmd_generator = "
-                            f"{spec!r} cannot be built for {type(network).__name__}: "
-                            f"{exc}") from exc
-        problems = check_generator(generator, network)
-        if problems:
-            raise TypeError(f"chain_type='cgaimmd': the generator {generator.method!r} "
-                            f"(params.cgaimmd_generator = {spec!r}) cannot use "
-                            f"{type(network).__name__}:\n  - " + '\n  - '.join(problems))
-        return generator
+        return build_checked_generator(self.params)
 
     def _check_generator_atoms(self):
         """``M`` must equal the generator atoms of a GeneratorDescriptors descriptors function."""
-        function = getattr(self.params, 'descriptors_function', None)
-        if function is None or not hasattr(function, 'generator_atoms'):
-            return
-        n_atoms = getattr(function, 'n_atoms', None)
-        if isinstance(n_atoms, Integral) and int(n_atoms) != self.n_atoms:
-            raise ValueError(
-                f'the network generates {self.n_atoms} atoms but the descriptors function '
-                f'({type(function).__name__}) selects {int(n_atoms)} generator atoms '
-                f'(GeneratorAtoms); the network (for BioEmu2: its system folder) and the '
-                f'descriptors must describe the same atoms')
+        check_generator_atoms(self.params, self.n_atoms)
 
     def _start_up(self):
         params = self.params
@@ -926,32 +1039,7 @@ class GenerativeShootingPointSource:
                  f'only.')
 
     def _check_numerics(self, initial_paths):
-        params = self.params
-        m = self.n_atoms
-        function = getattr(params, 'descriptors_function', None)
-        if function is None:
-            raise TypeError("chain_type='cgaimmd' needs a descriptors_function returning the "
-                            "flat Angstrom coordinates of the network's atoms, e.g. "
-                            "GeneratorDescriptors (aimmd.cgaimmd.preparation.descriptors)")
-        where = 'no initial path'
-        descriptors = np.zeros((0, 3 * m), dtype=np.float32)
-        if initial_paths and len(initial_paths[0]):
-            first = initial_paths[0]
-            frames = first[:min(len(first), NUMERICS_FRAMES)]
-            descriptors = np.asarray(frames.compute(function, '', 'reader', return_result=True),
-                                     dtype=np.float32)
-            descriptors = descriptors.reshape(len(descriptors), -1)
-            where = str(getattr(first, 'fname', first))
-        if descriptors.shape[1] != 3 * m:
-            raise descriptor_width_error(descriptors.shape[1], m,
-                                         f'the descriptors_function values of {where}')
-        coordinates = descriptors.reshape(len(descriptors), m, 3)
-        forward_input = None
-        if len(descriptors):
-            forward_input = _values_input(descriptors, network_device(params.network),
-                                          getattr(params, 'descriptor_transform', None))
-        return check_network_numerics(params.network, coordinates, forward_input,
-                                      generation=self.generator)
+        return check_start_up_numerics(self.params, self.generator, self.n_atoms, initial_paths)
 
     # -- the loop ------------------------------------------------------------------
 
