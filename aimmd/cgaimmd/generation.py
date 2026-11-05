@@ -260,9 +260,10 @@ def _default_spec(network):
     default = getattr(network, 'default_generator', None)
     if not callable(default):
         raise TypeError(f'{type(network).__name__} has no default_generator(), so '
-                        f'params.cgaimmd_generator must name the generation method, e.g. '
-                        f"cgaimmd_generator = 'ode' or {{'method': 'ode', 'n_steps': 16}} "
-                        f'(known methods: {available_generators()})')
+                        f'params.cgaimmd_generator must name the generation method, as a '
+                        f"name or as a settings dict {{'method': name, ...}} (known methods: "
+                        f'{available_generators()}; each one checks that it can use the '
+                        f'network)')
     spec = default()
     if spec is None:
         raise TypeError(f'{type(network).__name__}.default_generator() returned None, so '

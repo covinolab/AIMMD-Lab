@@ -74,6 +74,9 @@ Assigning one of them under ``chain_type='cgaimmd'`` runs the rules again
 initial-path rules).
 """
 
+_ABSENT = object()
+"""Marks a field that had no value before an assignment (restored as absent)."""
+
 _LEGACY_FIELDS = frozenset({'flow_parameters', 'flow_validity_function',
                             'flow_prepare_function', 'flow_minimize_function',
                             'flow_lambda_sampler'})
@@ -343,11 +346,29 @@ class ParamsHelpers(ABC):
         - `initial_paths`: immediately coerced into a PathEnsemble.
         """
         # old names of C-GAIMMD fields: assigned to the new fields (one
-        # DeprecationWarning each, see aimmd.cgaimmd._legacy)
+        # DeprecationWarning each, see aimmd.cgaimmd._legacy), together: if
+        # one of them is refused, none is assigned
         if name in _LEGACY_FIELDS:
             from ..cgaimmd import _legacy
-            for new_name, new_value in _legacy.params_field(name, value).items():
-                self._setattr(new_name, new_value, process_and_check)
+            new_values = _legacy.params_field(name, value)
+            backups = {new_name: self.__dict__.get(new_name, _ABSENT)
+                       for new_name in (*new_values, '_read_old_names')}
+            try:
+                for new_name, new_value in new_values.items():
+                    self._setattr(new_name, new_value, process_and_check=False)
+                self.__dict__['_read_old_names'] = True
+                if process_and_check:
+                    self._process_and_check(list(new_values))
+            except Exception as exception:
+                for new_name, backup in backups.items():
+                    if backup is _ABSENT:
+                        self.__dict__.pop(new_name, None)
+                    else:
+                        self.__dict__[new_name] = backup
+                if isinstance(exception, NotImplementedError):
+                    raise
+                raise TypeError(f'can\'t update {name!r} with {value!r}: '
+                                f'{exception}') from exception
             return
 
         # assign fields
@@ -597,6 +618,7 @@ class ParamsHelpers(ABC):
                     # the old name, read for one release
                     from ..cgaimmd import _legacy
                     value = _legacy.chain_type(value)
+                    self.__dict__['_read_old_names'] = True
                 else:
                     raise TypeError(f"{name!r} must be 'tps', 'rfps' or "
                                     f"'cgaimmd', got {value!r}")
@@ -736,6 +758,8 @@ class ParamsHelpers(ABC):
         self._check_cgaimmd_fields(fields)
         cgaimmd_checks = self._cgaimmd_rules_apply(fields)
         if cgaimmd_checks:
+            if self.__dict__.get('_read_old_names', False):
+                self._complete_old_generator()
             self._check_cgaimmd(fields)
 
         # check nbins
@@ -997,12 +1021,29 @@ class ParamsHelpers(ABC):
                 and _is_cgaimmd_network(self.network)):
             self._check_network_class_local()
 
+    def _complete_old_generator(self):
+        """``cgaimmd_generator`` of params read through old names: the old worker's method.
+
+        A network of the old code has no ``default_generator()``; the old
+        worker used the network's own ``generate`` if it had one, else the ODE
+        (``aimmd.cgaimmd._legacy.generator_spec``). The completed spec is
+        stored, so that it is what ``Params.save`` writes.
+        """
+        from ..cgaimmd import _legacy
+        spec = self.cgaimmd_generator
+        new = _legacy.generator_spec(spec, self.network)
+        if new is not spec:
+            from ..cgaimmd.generation import canonical_generator_spec
+            self.__dict__['cgaimmd_generator'] = canonical_generator_spec(new)
+
     def _check_cgaimmd(self, fields=[]):
         """The rules of ``chain_type='cgaimmd'`` that need no initial paths.
 
         1. the network implements the C-GAIMMD network protocol;
         2. the generator (``cgaimmd_generator``, else the network's default)
-           can be built and can use the network;
+           can be built and can use the network. For params read through old
+           names (a run of the old code) this is a warning: they load for
+           analysis, and a shooting worker checks its generator at start-up;
         3. a single system;
         4. a ``descriptors_function`` (the flat Angstrom coordinates);
         5. no ``rescale_committor``;
@@ -1018,12 +1059,23 @@ class ParamsHelpers(ABC):
         from ..cgaimmd._once import once
         network = self.network
         check_network_protocol(network)                                  # 1
-        generator = make_generator(self.cgaimmd_generator, network)       # 2
-        problems = check_generator(generator, network)
+        old_run = self.__dict__.get('_read_old_names', False)             # 2
+        try:
+            generator = make_generator(self.cgaimmd_generator, network)
+            problems = check_generator(generator, network)
+        except Exception as exception:
+            if not old_run:
+                raise
+            problems = [f'{type(exception).__name__}: {exception}']
         if problems:
-            raise TypeError(
-                f"chain_type='cgaimmd': the generator cannot use "
-                f"{type(network).__name__}:\n  - " + '\n  - '.join(problems))
+            message = (f"chain_type='cgaimmd': the generator cannot use "
+                       f"{type(network).__name__}:\n  - " + '\n  - '.join(problems))
+            if not old_run:
+                raise TypeError(message)
+            if once(f'params: old run generator {message}'):
+                print(f'Warning: {message}\nThese params were read through old '
+                      f'names (a run of the old code): they load for analysis, '
+                      f'but no shooting worker can generate with them.')
         if getattr(self, 'multi_system', False):                          # 3
             raise NotImplementedError(
                 "chain_type='cgaimmd' supports single systems only")

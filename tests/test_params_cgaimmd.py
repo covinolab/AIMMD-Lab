@@ -679,8 +679,12 @@ def test_generator_default_is_the_network_default(tmp_path):
 def test_a_committor_only_network_needs_a_generator(tmp_path):
     """No default_generator and no cgaimmd_generator: the error names the field."""
     with pytest.raises(TypeError, match='params.cgaimmd_generator must name the generation '
-                                        'method'):
+                                        'method') as info:
         load(tmp_path, COMMITTOR_ONLY_NETWORK)
+    # it lists the methods and recommends none: 'ode' would integrate whatever
+    # velocity field a network happens to have
+    assert "known methods: ['bioemu2_edm', 'ode']" in str(info.value)
+    assert "= 'ode'" not in str(info.value)
     # the 'ode' method names what the network lacks
     with pytest.raises(TypeError, match=r"generator 'ode': needs velocity\(x_t, t, lam"):
         load(tmp_path / 'ode', COMMITTOR_ONLY_NETWORK + "cgaimmd_generator = 'ode'\n")

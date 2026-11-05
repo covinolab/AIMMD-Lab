@@ -226,12 +226,140 @@ def test_generate_chunk_alone_is_a_setting_of_the_default_method(tmp_path, recwa
 
 def test_old_and_new_in_one_file_is_an_error(tmp_path):
     with pytest.raises(TypeError, match="sets both 'flow_parameters' and its new name "
-                                        "'cgaimmd_generator'"), \
+                                        r"'cgaimmd_generator'; move its keys 'ode_steps' into "
+                                        r"'cgaimmd_generator' \(as 'n_steps'\), then delete "
+                                        "'flow_parameters'"), \
             pytest.warns(DeprecationWarning):
         aimmd.Params.load(write_params(tmp_path, NEW + textwrap.dedent('''
             flow_parameters = {'ode_steps': 4}
             cgaimmd_generator = 'ode'
             ''')), save=False)
+
+
+def test_a_half_migrated_file_is_told_where_each_key_goes(tmp_path):
+    """Deleting flow_parameters alone would drop its loop settings: the message says where they go."""
+    old = "{'window_after_trained_shots': 5, 'ode_steps': 4, 'lambda_tolerance': 0.5}"
+    advice = (r"move its keys 'ode_steps' into 'cgaimmd_generator' \(as 'n_steps'\) and its "
+              r"keys 'window_after_trained_shots', 'lambda_tolerance' into "
+              r"'cgaimmd_parameters', then delete 'flow_parameters'")
+    fname = write_params(tmp_path, NEW + f"flow_parameters = {old}\ncgaimmd_generator = 'ode'\n")
+    with pytest.raises(TypeError, match="params.py sets both 'flow_parameters' and its new "
+                                        "name 'cgaimmd_generator'; " + advice), \
+            pytest.warns(DeprecationWarning):
+        aimmd.Params.load(fname, save=False)
+    fname = write_params(tmp_path / 'keywords', NEW)
+    with pytest.raises(TypeError, match="both 'flow_parameters' and its new name "
+                                        "'cgaimmd_generator' were given; " + advice):
+        aimmd.Params.load(fname, save=False, cgaimmd_generator='ode',
+                          flow_parameters=eval(old))
+
+
+def test_an_old_field_is_assigned_whole_or_not_at_all(tmp_path, recwarn):
+    params = aimmd.Params.load(write_params(tmp_path, NEW), save=False)
+    before = dict(params.cgaimmd_parameters)
+    with pytest.raises(TypeError, match="can't update 'flow_parameters'.*bogus_key"):
+        params.flow_parameters = {'ode_steps': 4, 'bogus_key': 1}
+    assert params.cgaimmd_generator is None                 # not {'method': 'ode', 'n_steps': 4}
+    assert params.cgaimmd_parameters == before
+    assert '_read_old_names' not in params.__dict__
+
+
+# ---------------------------------------------------------------------------
+# networks of the old code: the generation method the old worker chose
+# ---------------------------------------------------------------------------
+
+ARCHIVED_NETWORK = '''
+import torch
+
+class ArchivedNetwork(torch.nn.Module):
+    """The members of the archived BioEmu2 network (bioemu2_committor.aimmd_flow):
+    a committor, a stand-in velocity field and prior, its own generate, and no
+    default_generator."""
+    n_atoms = 1
+    lambda_clip = 10.0
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(3, 1)
+    def forward(self, x):
+        return self.linear(torch.as_tensor(x, dtype=torch.float32).reshape(len(x), -1)[:, :3])
+    def sample_prior(self, lam, n, *, uncond_mask=None, generator=None):
+        return torch.randn((n, 1, 3), generator=generator)
+    def velocity(self, x_t, t, lam, *, uncond_mask=None):
+        return torch.zeros_like(x_t)
+    def generate(self, lam, n=None, *, sampler='midpoint', n_steps=16, chunk=128,
+                 generator=None):
+        return torch.zeros((len(lam), 1, 3))
+
+class Network(ArchivedNetwork):
+    pass
+
+network = Network()
+'''
+
+WITHOUT_GENERATE = ARCHIVED_NETWORK.replace('''class Network(ArchivedNetwork):
+    pass''', '''class Network(ArchivedNetwork):
+    generate = None                                     # an old PaiNN-like network''')
+
+ARCHIVED_BIOEMU2_PARAMS = OLD.replace("flow_parameters = {", "flow_parameters = {'generate_chunk': 64, ")
+"""What the five archived BioEmu2 params set: chain_type 'flow' and generate_chunk only."""
+
+
+def test_the_archived_bioemu2_params_load(tmp_path, recwarn, capsys, monkeypatch):
+    """Their network has its own generate and no default_generator: the old worker used generate."""
+    params = aimmd.Params.load(write_params(tmp_path, ARCHIVED_BIOEMU2_PARAMS + ARCHIVED_NETWORK),
+                               save=False)
+    assert params.chain_type == 'cgaimmd'
+    assert params.cgaimmd_generator == {'method': 'bioemu2_edm', 'chunk': 64}
+    found = deprecations(recwarn)
+    assert len(found) == 3                       # chain_type, flow_parameters, the method
+    assert ("letting the old worker pick the generation method of Network (it used its own "
+            "generate()) is deprecated; use cgaimmd_generator = {'method': 'bioemu2_edm', "
+            "'chunk': 64}") in found[-1]
+    # the method cannot be used here (no adaptor, or not a BioEmu2Network): a warning, as
+    # the params of an old run load for analysis; a worker's start-up check refuses them
+    out = capsys.readouterr().out
+    assert 'These params were read through old names' in out
+    if importlib.util.find_spec('aimmd.cgaimmd.bioemu2') is None:
+        assert "generation method 'bioemu2_edm'" in out and 'aimmd.cgaimmd.bioemu2' in out
+    # saved under the new names, with the method the old worker used
+    monkeypatch.chdir(params.parent)
+    text = open(params.save(os.path.join(params.parent, 'saved.py'))).read()
+    assert "cgaimmd_generator = {'method': 'bioemu2_edm', 'chunk': 64}" in text
+    assert "chain_type = 'cgaimmd'" in text
+    # the same params under the new names are refused: a network needs a default_generator()
+    # or the field, and the message recommends no method
+    with pytest.raises(TypeError, match=r'Network has no default_generator\(\), so '
+                                        r'params.cgaimmd_generator must name') as info:
+        aimmd.Params.load(write_params(tmp_path / 'new', NEW + ARCHIVED_NETWORK), save=False)
+    assert "'ode'" not in str(info.value).split('known methods')[0]
+
+
+def test_an_old_network_without_generate_gets_the_ode(tmp_path, recwarn, capsys):
+    params = aimmd.Params.load(write_params(tmp_path, ARCHIVED_BIOEMU2_PARAMS + WITHOUT_GENERATE),
+                               save=False)
+    assert params.cgaimmd_generator == {'method': 'ode', 'chunk': 64}
+    assert any("(it used AIMMD's ODE sampler) is deprecated; use cgaimmd_generator = "
+               "{'method': 'ode', 'chunk': 64}" in message for message in deprecations(recwarn))
+    assert 'These params were read through old names' not in capsys.readouterr().out
+    # chain_type 'flow' and no generator settings at all
+    params = aimmd.Params.load(write_params(tmp_path / 'bare', OLD + WITHOUT_GENERATE), save=False)
+    assert params.cgaimmd_generator == {'method': 'ode'}
+
+
+def test_an_old_network_with_generate_never_gets_the_ode(tmp_path, recwarn):
+    """The old worker called a network's own generate even when ODE settings were given."""
+    params = aimmd.Params.load(write_params(tmp_path, OLD + ARCHIVED_NETWORK), save=False)
+    assert params.cgaimmd_generator == {'method': 'bioemu2_edm'}
+    params = aimmd.Params.load(write_params(tmp_path / 'ode_keys', OLD.replace(
+        "flow_parameters = {", "flow_parameters = {'ode_sampler': 'rk4', 'ode_steps': 8, "
+                               "'generate_chunk': 32, ") + ARCHIVED_NETWORK), save=False)
+    assert params.cgaimmd_generator == {'method': 'bioemu2_edm', 'chunk': 32}
+    assert any("(it used its own generate(), which ignored 'sampler', 'n_steps')" in message
+               for message in deprecations(recwarn))
+    # assigned later, the old field is completed the same way
+    params.flow_parameters = {'generate_chunk': 16, 'placement': 'none', 'lambda_clip': 10.0,
+                              'window_after_trained_shots': 5}
+    assert params.cgaimmd_generator == {'method': 'bioemu2_edm', 'chunk': 16}
 
 
 # ---------------------------------------------------------------------------

@@ -84,12 +84,15 @@ SIDECAR_SCHEMAS = {'aimmd.flow.shot/1': 'aimmd.cgaimmd.shot/1'}
 SIDECAR_SOURCES = {'flow': 'cgaimmd'}
 """The ``source`` field of a per-shot sidecar: old -> new."""
 
-GENERATOR_LABELS = {'network.generate': 'bioemu2_edm', 'aimmd sampler': 'ode'}
-"""The ``generator.method`` label of an old sidecar -> the generation method name.
+GENERATOR_LABELS = {'network.generate': 'bioemu2_edm', 'aimmd sampler': 'ode',
+                    'aimmd.flow.sampler.generate': 'ode'}
+"""How an old run generated -> the generation method name.
 
-Old sidecars recorded *how* the network was asked to generate: through its
-own ``generate`` (only the BioEmu2 networks had one) or through AIMMD's ODE
-sampler.
+Old sidecars (``generator.method``) and validation reports
+(``settings['generate']``) recorded *how* the network was asked to generate:
+through its own ``generate`` (``'network.generate'``; only the BioEmu2
+networks had one) or through AIMMD's ODE sampler (``'aimmd sampler'`` in
+sidecars, ``'aimmd.flow.sampler.generate'`` in validation reports).
 """
 
 VALIDATION_SCHEMAS = {'aimmd.flow.validate/1': 'aimmd.cgaimmd.validate/1'}
@@ -310,6 +313,91 @@ def params_field(name, value):
     warn_renamed(f'the params field {name!r}', f'{new!r}{note}', key=('field', name),
                  stacklevel=5)
     return out
+
+
+def both_names_advice(name, value):
+    """What to do when the old field `name` (set to `value`) and its new name are both set.
+
+    For ``flow_parameters`` it says which keys go to ``cgaimmd_generator``
+    (under their new names) and which to ``cgaimmd_parameters``: deleting
+    the old field alone would drop the loop settings it holds.
+    """
+    new = PARAMS_FIELDS[name]
+    if name != 'flow_parameters' or not isinstance(value, dict):
+        return f'keep {new!r} only'
+    moved = [key for key in value if key in GENERATOR_SETTINGS]
+    rest = [key for key in value if key not in GENERATOR_SETTINGS]
+    parts = []
+    if moved:
+        parts.append(f"its keys {', '.join(repr(key) for key in moved)} into "
+                     f"'cgaimmd_generator' (as "
+                     f"{', '.join(repr(GENERATOR_SETTINGS[key]) for key in moved)})")
+    if rest:
+        parts.append(f"its keys {', '.join(repr(key) for key in rest)} into "
+                     f"'cgaimmd_parameters'")
+    if not parts:
+        return f'delete {name!r}'
+    return f"move {' and '.join(parts)}, then delete {name!r}"
+
+
+def generator_spec(spec, network):
+    """The ``cgaimmd_generator`` of an old run, with the method its worker chose.
+
+    The old worker had no generation method to pick: it called the network's
+    own ``generate`` when the network had one (only the BioEmu2 networks did;
+    the ODE settings were passed to it, and it used its own) and AIMMD's ODE
+    sampler otherwise. A network of that time has no ``default_generator()``,
+    so a spec that leaves the method to the network (None, or the settings
+    dict that ``flow_parameters['generate_chunk']`` became) would leave the
+    run without a method. This completes it the way the old worker chose
+    (:data:`GENERATOR_LABELS`), and never gives ``'ode'`` to a network with
+    its own ``generate``: its velocity field may be a stand-in that the old
+    worker never integrated.
+
+    Parameters
+    ----------
+    spec : str, dict, generator object or None
+        The ``cgaimmd_generator`` of params read through old names.
+    network : object
+        Their network.
+
+    Returns
+    -------
+    object
+        `spec` itself when the network has a ``default_generator()``, when
+        the spec names a method other than ``'ode'``, or names ``'ode'`` for a
+        network without its own ``generate``. Else a new settings dict:
+        ``{'method': 'bioemu2_edm', 'chunk': ...}`` for a network with its
+        own ``generate`` (other settings dropped: that ``generate`` ignored
+        them), ``{'method': 'ode', **settings}`` for any other network. One
+        ``DeprecationWarning`` per process and result names it.
+    """
+    if callable(getattr(network, 'default_generator', None)):
+        return spec
+    own_generate = callable(getattr(network, 'generate', None))
+    if spec is None or (isinstance(spec, str) and spec == 'ode'):
+        settings, named = {}, spec is not None
+    elif isinstance(spec, dict) and spec.get('method', 'ode') == 'ode':
+        settings = {key: item for key, item in spec.items() if key != 'method'}
+        named = 'method' in spec
+    else:
+        return spec
+    if not own_generate:
+        if named:                                           # 'ode', as the old worker used
+            return spec
+        new = {'method': GENERATOR_LABELS['aimmd sampler'], **settings}
+        how = "AIMMD's ODE sampler"
+    else:
+        ignored = [key for key in settings if key != 'chunk']
+        new = {'method': GENERATOR_LABELS['network.generate'],
+               **{key: item for key, item in settings.items() if key == 'chunk'}}
+        how = 'its own generate()'
+        if ignored:
+            how += f", which ignored {', '.join(repr(key) for key in ignored)}"
+    warn_renamed(f'letting the old worker pick the generation method of '
+                 f'{type(network).__name__} (it used {how})', f'cgaimmd_generator = {new!r}',
+                 key=('generator', type(network).__name__, repr(new)), stacklevel=4)
+    return new
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -198,13 +198,16 @@ class ParamsIO(ABC):
             # fields (one DeprecationWarning each)
             for name in [name for name in kwargs if name in _LEGACY_FIELDS]:
                 from ..cgaimmd import _legacy
+                old_value = kwargs.pop(name)
                 for new_name, value in _legacy.params_field(
-                        name, kwargs.pop(name)).items():
+                        name, old_value).items():
                     if new_name in kwargs:
-                        raise TypeError(f'both {name!r} and its new name '
-                                        f'{new_name!r} were given; give '
-                                        f'{new_name!r} only')
+                        raise TypeError(
+                            f'both {name!r} and its new name {new_name!r} '
+                            f'were given; '
+                            f'{_legacy.both_names_advice(name, old_value)}')
                     kwargs[new_name] = value
+                self.__dict__['_read_old_names'] = True
 
             # update fields with kwargs
             for name, value in kwargs.items():
@@ -283,10 +286,12 @@ class ParamsIO(ABC):
                         if new_name in module.__dict__:
                             raise TypeError(
                                 f'{path.name} sets both {name!r} and its new '
-                                f'name {new_name!r}; keep {new_name!r} only')
+                                f'name {new_name!r}; '
+                                f'{_legacy.both_names_advice(name, value)}')
                         fields[new_name] = new_value
                         updated_fields.append(new_name)
                         num_fields_from_filename += 1
+                    self.__dict__['_read_old_names'] = True
 
                 # Remember the file's initial-path FILE NAMES, whatever the
                 # caller did with the field itself. A worker loads params with
