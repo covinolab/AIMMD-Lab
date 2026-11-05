@@ -683,7 +683,7 @@ def test_graph_forward_input_passes_the_start_up_check(tmp_path):
 DROPPED_WORDS = re.compile(r'harmonic|mixture|cfaimmd|mace', re.IGNORECASE)
 """The harmonic and mixture priors and the prototype (MACE) converters are not part of C-GAIMMD."""
 
-NEW_MODULES = ('flowmath', 'prior', 'graph_batch', 'graphs', 'painn')
+NEW_MODULES = ('flowmath', 'prior', 'graph_batch', 'graphs', 'painn', 'fit')
 """The modules of this port."""
 
 
