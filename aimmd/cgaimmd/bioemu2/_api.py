@@ -44,6 +44,7 @@ Nothing here patches bioemu2.
 import hashlib
 import importlib.metadata
 import warnings
+import weakref
 from pathlib import Path
 
 from .. import _once
@@ -70,6 +71,7 @@ except ImportError as _exc:                                   # pragma: no cover
 
 __all__ = ['INSTALL_HINT', 'SUPPORTED_VERSION', 'bioemu2', 'Chem', 'MSA', 'System', 'TrunkEmbeddings',
            'weighted_rigid_align', 'bioemu2_version', 'check_version', 'load_model', 'parameter_checksum',
+           'model_parameter_checksum', 'checkpoint_snapshot',
            'make_system', 'system_to_dict', 'polymer_sequences', 'ligand_chains', 'query_only_msa', 'read_msa',
            'embed', 'save_trunk', 'load_trunk', 'sampling_inputs', 'topology_atoms', 'topology_bonds',
            'token_feature_width', 'ReadoutCapture', 'static_context_with_grad', 'expand_batch',
@@ -145,6 +147,62 @@ def parameter_checksum(model):
         digest.update(name.encode())
         digest.update(tensor.detach().float().cpu().numpy().tobytes())
     return digest.hexdigest()
+
+
+_CHECKSUMS = weakref.WeakKeyDictionary()
+"""Parameter checksums of loaded models (computed once per model object)."""
+
+
+def model_parameter_checksum(model):
+    """:func:`parameter_checksum` of `model`, computed once per model object (the model is frozen)."""
+    try:
+        return _CHECKSUMS[model]
+    except (KeyError, TypeError):
+        pass
+    checksum = parameter_checksum(model)
+    try:
+        _CHECKSUMS[model] = checksum
+    except TypeError:                                        # pragma: no cover - not weak-referenceable
+        pass
+    return checksum
+
+
+def checkpoint_snapshot(checkpoint=None, checkpoint_path=None, *, cache_dir=None):
+    """The Hugging Face snapshot (commit) a BioEmu2 checkpoint comes from, without any download.
+
+    Parameters
+    ----------
+    checkpoint : str, optional
+        A checkpoint name of the ``microsoft/bioemu2`` repository (``'bioemu2-preview'``): the
+        snapshot of the local Hugging Face cache that holds it, found as
+        ``bioemu2.checkpoints.get_checkpoint_files`` finds it.
+    checkpoint_path : str or Path, optional
+        A local checkpoint file instead: its snapshot when the path lies in a Hugging Face cache
+        (read from the path as bioemu2 reads it), else None.
+    cache_dir : str or Path, optional
+        The Hugging Face cache (default: ``huggingface_hub.constants.HF_HUB_CACHE``).
+
+    Returns
+    -------
+    str or None
+        The snapshot folder name (the repository commit), or None when it cannot be told.
+    """
+    from bioemu2.checkpoints import HF_CHECKPOINT_REPO
+    from huggingface_hub import constants
+    from huggingface_hub.file_download import repo_folder_name
+    folder = repo_folder_name(repo_id=HF_CHECKPOINT_REPO, repo_type='model')
+    if checkpoint_path is not None:
+        _, found, rest = Path(checkpoint_path).expanduser().absolute().as_posix().partition(
+            f'{folder}/snapshots/')
+        return rest.split('/')[0] if found and rest else None
+    if checkpoint is None:
+        return None
+    hub_cache = Path(constants.HF_HUB_CACHE if cache_dir is None else cache_dir)
+    for snapshot in (hub_cache / folder / 'snapshots').glob('*'):
+        files = snapshot / 'checkpoints' / str(checkpoint)
+        if (files / 'checkpoint.ckpt').is_file() and (files / 'config.yaml').is_file():
+            return snapshot.name
+    return None
 
 
 def token_feature_width(model):

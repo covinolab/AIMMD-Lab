@@ -45,7 +45,8 @@ one fallback, kept for the networks of the old code and removed with the old
 names).
 """
 
-OPTIONAL_MEMBERS = ('committor', 'lambda_clip', 'reset_parameters', 'default_generator')
+OPTIONAL_MEMBERS = ('committor', 'lambda_clip', 'reset_parameters', 'default_generator',
+                    'provenance')
 """Members a C-GAIMMD network may have; each has a documented fallback."""
 
 _MISSING = object()
@@ -91,6 +92,7 @@ def _problems(network):
         'committor': (('x',), 'committor(x)'),
         'reset_parameters': ((), 'reset_parameters()'),
         'default_generator': ((), 'default_generator()'),
+        'provenance': ((), 'provenance()'),
     }
     for name, (args, expected) in optional.items():
         member = getattr(network, name, None)
@@ -199,6 +201,12 @@ def check_network_protocol(network):
       with ``'method'`` or a generator object
       (:func:`aimmd.cgaimmd.generation.make_generator`). Without it,
       ``cgaimmd_generator`` must be set.
+    - ``provenance()``: a JSON-serializable dict of what the network's
+      results depend on beyond its weights (for example a frozen pretrained
+      model: its checkpoint, the snapshot it came from, a parameter
+      checksum); the shooting worker calls it once at start-up and writes it
+      into every sidecar (``network.provenance``). Without it the sidecar
+      records None there.
 
     Generation members (``velocity``, ``sample_prior``, ``generate``, ...)
     are not part of this protocol: each generation method checks the members
@@ -219,8 +227,8 @@ def check_network_protocol(network):
     Checks: the required members exist and are callable; a
     ``torch.nn.Module`` overrides ``forward``; ``n_atoms`` is an int >= 1
     (or absent on a network with ``sample_prior``); present optional members
-    bind their arguments (``committor``: one; ``reset_parameters`` and
-    ``default_generator``: none); ``lambda_clip`` converts to a finite float
+    bind their arguments (``committor``: one; ``reset_parameters``,
+    ``default_generator`` and ``provenance``: none); ``lambda_clip`` converts to a finite float
     > 0. ``**kwargs`` satisfies any keyword.
     """
     problems = _problems(network) if network is not None else ['network is None']
