@@ -24,8 +24,12 @@ from ._cgaimmd_bioemu2_golden import GEN_BATCH, GUIDANCE_SCHEDULE, SAMPLER_LAMBD
 
 pytestmark = pytest.mark.bioemu2
 
-SAMPLE_ATOL = 2e-4
-"""Ångström: the old sampler's samples against the public sampler's (both float32; measured 4.5e-5)."""
+SAMPLE_ATOL = 1e-4
+"""Ångström: the old sampler's samples against the public sampler's (both float32; measured 4.5e-5).
+
+Looser than the 1e-6 of DESIGN 6.1: the public ``EDMSampler`` orders its float32
+operations differently from the old copy of the sampler (same random numbers).
+"""
 
 
 def _system(request, which):

@@ -64,3 +64,21 @@ def test_pretraining_needs_both_states(tiny_peptide_system):
         pretrain_initial_network(network, frames, [1, 1, 1, 1], steps=1)
     with pytest.raises(ValueError, match='with frames of both'):
         pretrain_initial_network(network, frames, [0, 1, 2, 1], steps=1)
+
+
+def test_the_pretraining_learning_rate_warms_up_and_decays(tiny_peptide_system, monkeypatch):
+    """Step k runs at ``lr min(1, (k + 1) / 100) (1 + cos(pi k / steps)) / 2``: 100 warm-up steps, cosine decay."""
+    from aimmd.cgaimmd.bioemu2 import BioEmu2Network, pretrain_initial_network
+    rates, real_step = [], torch.optim.AdamW.step
+
+    def step(self, *args, **kwargs):
+        rates.append(self.param_groups[0]['lr'])
+        return real_step(self, *args, **kwargs)
+    monkeypatch.setattr(torch.optim.AdamW, 'step', step)
+    network = BioEmu2Network(tiny_peptide_system, hidden=(16,))
+    frames, states = _frames(tiny_peptide_system)
+    steps, lr = 150, 2e-3
+    pretrain_initial_network(network, frames, states, steps=steps, batch=4, lr=lr, seed=1)
+    expected = [lr * min(1.0, (k + 1) / 100) * 0.5 * (1 + np.cos(np.pi * k / steps)) for k in range(steps)]
+    assert rates == pytest.approx(expected, rel=1e-12, abs=0)
+    network.engine().close()
