@@ -255,6 +255,8 @@ class BioEmu2Network(nn.Module):
             object.__setattr__(self, '_engine', None)
         # bioemu2 draws random numbers while it prepares a system: keep them off the global streams
         devices = list(range(torch.cuda.device_count())) if torch.cuda.is_initialized() else []
+        if device.type == 'cuda' and not devices:
+            devices = [device.index if device.index is not None else torch.cuda.current_device()]
         with torch.random.fork_rng(devices=devices):
             engine = _Engine(self, device)
         object.__setattr__(self, '_engine', engine)
