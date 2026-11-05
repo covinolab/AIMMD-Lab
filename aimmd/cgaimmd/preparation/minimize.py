@@ -360,6 +360,9 @@ def polish(positions, minimizer, network, params, box, scratch, workers=1, seed=
     seed)`` is the call of the validity hooks in the archived production
     params files, which called it by its old private name
     ``aimmd.flow.validate._polish``; that name still works for one release.
+    The old function named the minimizer's context ``validate<k:06d>``;
+    :class:`GromacsMinimizer` does not read ``path_name``, so only a custom
+    minimizer that names its files after it sees the difference.
 
     Examples
     --------
