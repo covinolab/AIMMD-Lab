@@ -33,6 +33,8 @@ The trunk embeddings and the static context do not depend on the
 coordinates: they are loaded (or given) and computed once.
 """
 
+import weakref
+
 import numpy as np
 import torch
 
@@ -143,6 +145,9 @@ class BioEmu2Features(torch.nn.Module):
             self.register_buffer(f'pool_{name}', torch.as_tensor(pools[name], dtype=torch.long,
                                                                  device=self.device))
         self._readout = _api.ReadoutCapture(model)
+        # the model is shared by every network of the process: the hook (and the tensors it last captured) goes
+        # with this object, also when it is dropped without close() (a discarded network copy)
+        self._remove_readout = weakref.finalize(self, self._readout.remove)
 
     @property
     def n_features(self):
@@ -212,5 +217,5 @@ class BioEmu2Features(torch.nn.Module):
                     parameter_checksum=_api.parameter_checksum(self.model))
 
     def close(self):
-        """Remove the readout hook from the model."""
-        self._readout.remove()
+        """Remove the readout hook from the model (done anyway when this object is garbage-collected)."""
+        self._remove_readout()

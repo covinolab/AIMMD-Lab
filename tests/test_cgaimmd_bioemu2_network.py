@@ -109,6 +109,28 @@ def test_copies_and_pickles_never_carry_bioemu2(tiny_peptide_system, golden):
     network.engine().close()
 
 
+def test_a_discarded_copy_takes_its_readout_hook_along(tiny_peptide_system, golden):
+    """Copies share one BioEmu2 model; a copy that is thrown away leaves no hook (and no tensors) on it."""
+    import gc
+    from aimmd.cgaimmd.bioemu2 import BioEmu2Network
+    network = BioEmu2Network(tiny_peptide_system, hidden=(16,), value_batch=2)
+    x = torch.as_tensor(golden['peptide.x_md'][:2]).reshape(2, -1)
+    with torch.no_grad():
+        network(x)
+    readout = network.engine().model.score_model.structure_module.readout
+    hooks = len(readout._forward_pre_hooks)
+    for _ in range(3):
+        clone = copy.deepcopy(network)
+        with torch.no_grad():
+            clone(x)
+        assert len(readout._forward_pre_hooks) == hooks + 1
+        del clone
+        gc.collect()
+        assert len(readout._forward_pre_hooks) == hooks
+    network.engine().close()
+    assert len(readout._forward_pre_hooks) == hooks - 1
+
+
 def test_a_given_model_is_used_and_must_be_on_the_device(tiny_peptide_system, tiny_bioemu2_model):
     from aimmd.cgaimmd.bioemu2 import BioEmu2Network
     network = BioEmu2Network(tiny_peptide_system, model=tiny_bioemu2_model)
