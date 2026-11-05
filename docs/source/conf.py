@@ -85,7 +85,15 @@ def _install_doc_stubs() -> None:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
+        class Timeout(TimeoutError):
+            """A lock not acquired in time (``aimmd.core.series`` imports it)."""
+
+            def __init__(self, lock_file=""):
+                super().__init__(f"The file lock '{lock_file}' could not be acquired.")
+                self.lock_file = lock_file
+
         filelock.FileLock = FileLock
+        filelock.Timeout = Timeout
 
     if not _can_import("psutil"):
         psutil = _ensure_module("psutil")
