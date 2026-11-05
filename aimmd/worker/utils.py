@@ -1194,6 +1194,133 @@ def evict_segment_caches(folder):
     return len(keys)
 
 
+def reweight_parameters_with_bins(reweight_parameters, bins):
+    """
+    The trainer's reweighting parameters with the shooting-point cutoffs of `bins`.
+
+    ``PathEnsemble.reweight`` treats a shot whose shooting value lies outside
+    ``[sp_cutoff_min, sp_cutoff_max]`` as a free excursion. The trainer sets
+    these cutoffs from its current adaptive bins: the first finite inner edge
+    at each end (``bins[0]``, or ``bins[1]`` when ``bins[0]`` is ``-inf`` and
+    ``bins[1]`` is finite; mirrored at the top). User values in
+    `reweight_parameters` win.
+
+    Parameters
+    ----------
+    reweight_parameters : dict
+        ``params.reweight_parameters``; not modified.
+    bins : array-like or None
+        Adaptive bin edges. None or empty (``nbins <= 0``, or no bins yet):
+        no cutoffs are added and ``reweight`` uses its own defaults.
+
+    Returns
+    -------
+    dict
+        A new dict, ``reweight_parameters`` plus the missing ``sp_cutoff_min``
+        and ``sp_cutoff_max`` (numpy scalars taken from `bins`, as before).
+
+    Notes
+    -----
+    Factored out of the single- and multi-system trainer
+    (``aimmd.worker._train``) without change, so that code which reweights
+    a run outside the trainer (a generator's own fit, for example) can apply
+    exactly the trainer's rule instead of copying it.
+    """
+    rw_p = reweight_parameters.copy()
+    if bins is not None and len(bins):
+        sp_cutoff_min = bins[+0]
+        sp_cutoff_max = bins[-1]
+        if sp_cutoff_min == -inf and bins[+1] < +inf:
+            sp_cutoff_min = bins[+1]
+        if sp_cutoff_max == +inf and bins[-2] > -inf:
+            sp_cutoff_max = bins[-2]
+        if 'sp_cutoff_min' not in rw_p:
+            rw_p['sp_cutoff_min'] = sp_cutoff_min
+        if 'sp_cutoff_max' not in rw_p:
+            rw_p['sp_cutoff_max'] = sp_cutoff_max
+    return rw_p
+
+
+def apply_lorentzian(densities, bins, lorentzian):
+    """
+    Bias bin densities toward the center of value space with a Lorentzian.
+
+    Parameters
+    ----------
+    densities : numpy.ndarray
+        Normalized densities of the bins (not modified).
+    bins : numpy.ndarray
+        Bin edges (``len(densities) + 1``).
+    lorentzian : float
+        ``params.lorentzian``, the width in value space; ``inf`` disables it.
+
+    Returns
+    -------
+    numpy.ndarray
+        A new array with the dtype of `densities`: ``densities *
+        (centers**2 + lorentzian**2)``, normalized, where ``centers =
+        aimmd.analysis.utils.bin_centers(bins)``; for ``lorentzian = inf`` an
+        unchanged copy. Shooting points are then drawn with probability
+        proportional to ``1 / density``, i.e. more often near value 0.
+
+    Notes
+    -----
+    Factored out of :func:`select_shooting_point` without change (the same
+    in-place operations on a copy), so that other selection laws can apply
+    exactly RFPS's adjustment instead of copying it.
+    """
+    densities = np.array(densities, copy=True)
+    if lorentzian < inf:
+        centers = bin_centers(bins)
+        densities *= centers ** 2 + lorentzian ** 2
+        densities /= densities.sum()
+    return densities
+
+
+def apply_density_adjustment(densities, populations_for_adjustment,
+                             shared_populations_for_adjustment, merged_bin_counts,
+                             density_adjustment):
+    """
+    Correct bin densities by the shooting points already selected in each bin.
+
+    Parameters
+    ----------
+    densities : numpy.ndarray
+        Bin densities (not modified).
+    populations_for_adjustment : numpy.ndarray
+        Histogram of the chain's last ``density_adjustment`` shooting values
+        (all of them for ``inf``) over the bins.
+    shared_populations_for_adjustment : numpy.ndarray
+        Histogram of the shooting values of every chain the worker manages
+        (``params.shared_density_adjustment``), else zeros.
+    merged_bin_counts : numpy.ndarray
+        How many original bins each bin stands for (ones without merging).
+    density_adjustment : Number
+        ``params.density_adjustment`` as used (``max(value, 0)``); 0 disables
+        the correction.
+
+    Returns
+    -------
+    numpy.ndarray
+        A new array with the dtype of `densities`: ``densities *
+        (populations + merged counts) * (shared populations + merged
+        counts)``, normalized; for ``density_adjustment = 0`` an unchanged
+        (and not normalized) copy.
+
+    Notes
+    -----
+    Factored out of :func:`select_shooting_point` without change;
+    :func:`select_shooting_point` still normalizes the densities itself when
+    the adjustment is off, so RFPS selection is bitwise unchanged.
+    """
+    densities = np.array(densities, copy=True)
+    if density_adjustment:
+        densities *= populations_for_adjustment + merged_bin_counts
+        densities *= shared_populations_for_adjustment + merged_bin_counts
+        densities /= densities.sum()
+    return densities
+
+
 def select_shooting_point(pool, params, folder,
                           chain=None,
                           free_trajectories=[],
@@ -1438,9 +1565,7 @@ def select_shooting_point(pool, params, folder,
     densities /= densities.sum()
     print(f'*** densities    {densities}')
     if lorentzian < inf:
-        centers = bin_centers(bins)
-        densities *= centers ** 2 + lorentzian ** 2
-        densities /= densities.sum()
+        densities = apply_lorentzian(densities, bins, lorentzian)
         print(f'    (after applying the Loretzian) {densities}')
     
     # merge empty bins, update histograms and densities
@@ -1475,9 +1600,12 @@ def select_shooting_point(pool, params, folder,
     
     # density adjustment (populations)
     if density_adjustment:
-        densities *= populations_for_adjustment + merged_bin_counts
-        densities *= shared_populations_for_adjustment + merged_bin_counts
-    densities /= densities.sum()
+        densities = apply_density_adjustment(
+            densities, populations_for_adjustment,
+            shared_populations_for_adjustment, merged_bin_counts,
+            density_adjustment)
+    else:
+        densities /= densities.sum()
     print(f'    (adjusted)   {densities}')
 
     # report also overriding
