@@ -417,12 +417,17 @@ a method name, e.g. 'ode' (the flow-matching ODE of a PaiNN or toy network) or
 'bioemu2_edm' (BioEmu2's diffusion sampler, with the bioemu2 extra); a settings
 dict {'method': name, **settings}, e.g. {'method': 'ode', 'sampler':
 'midpoint', 'n_steps': 16, 'chunk': 128}; a dict without 'method', which
-overrides settings of the network's default method; or a generator object
-(defined or imported in the params file). None (default): the network's
-default_generator() decides, and a network without one is an error under
-chain_type='cgaimmd'. More methods are added with
-aimmd.cgaimmd.generation.register_generator, e.g. in a module the params file
-imports."""
+overrides settings of the network's default method; or a generator object,
+which is saved as its settings dict when its method is registered, else as an
+import from the params file (so its class must be defined there). None
+(default): the network's default_generator() decides, and a network without
+one is an error under chain_type='cgaimmd'. More methods are added with
+aimmd.cgaimmd.generation.register_generator, in the params file or a module it
+imports; a name or settings dict is the safest value, since the workers load
+the params from the saved file. Params read through the old names (chain_type
+'flow', flow_parameters) whose network has no default_generator() get the
+method their old worker used: 'bioemu2_edm' for a network with its own
+generate(), else 'ode'."""
                  })
 
     cgaimmd_validity_function: Callable = field(

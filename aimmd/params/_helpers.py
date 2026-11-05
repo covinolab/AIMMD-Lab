@@ -29,6 +29,7 @@ Notes
 # external
 import os
 import sys
+import json
 import numpy as np
 import functools
 import inspect
@@ -109,17 +110,37 @@ def _is_cgaimmd_network(network):
 def _generator_source(value, name):
     """Give a generator object of `cgaimmd_generator` the ``__source__`` that saves it.
 
-    A generator of an aimmd class cannot be imported by name from its module,
-    so it is saved as its settings dict (``make_generator`` builds an equal
-    one); any other generator object is imported from the module that defines
-    it, like the network.
+    The workers load the params from the saved file, so the object must be
+    rebuilt from what is written there:
+
+    - a generator of a registered (or built-in) method is saved as its
+      settings dict ``{'method': ..., **settings()}``, from which
+      ``make_generator`` builds an equal one (the generator contract);
+    - any other generator is saved as ``from <module> import <name>``, which
+      works only when the module of its class (the params file, or a module
+      next to it) binds `name` to this very object;
+    - anything else is refused here, not in every worker.
     """
-    module = type(value).__module__
-    if module == 'aimmd' or module.startswith('aimmd.'):
+    from ..cgaimmd.generation import is_known_generator
+    if is_known_generator(value.method):
         spec = {'method': value.method, **value.settings()}
+        try:
+            json.dumps(spec)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f'{name}: settings() of {type(value).__name__} must be '
+                            f'JSON-serializable to be saved, got {spec!r} ({exc})') from exc
         value.__source__ = f'{name} = {spec!r}\n'
-    else:
-        update_source(value, name)
+        return
+    module = sys.modules.get(type(value).__module__)
+    if getattr(module, name, None) is not value:
+        raise TypeError(
+            f'{name}: a {type(value).__name__} object of the unregistered method '
+            f'{value.method!r} cannot be saved for the workers. Register the method '
+            f'(aimmd.cgaimmd.generation.register_generator, in the params file or a '
+            f'module it imports) and give its name or settings dict, or define the '
+            f"class in the params file and assign '{name} = {type(value).__name__}(...)' "
+            f'there')
+    update_source(value, name)
 
 
 def _check_caps_dict(value):

@@ -12,6 +12,8 @@ import ast
 import importlib.util
 import os
 import re
+import subprocess
+import sys
 import textwrap
 import types
 
@@ -737,15 +739,98 @@ def test_generator_validated_on_assignment(tmp_path):
     assert params.cgaimmd_generator == {'chunk': 8, 'note': (1, 2)}
 
 
+def test_a_params_file_that_registers_a_method_loads_again(tmp_path):
+    """Params.load executes the params file and its local modules again on every load."""
+    no_replace = PARAMS_FILE_GENERATOR.replace(', replace=True', '')
+    assert 'replace=True' not in no_replace
+    fname = write_params(tmp_path / 'in_file', textwrap.dedent(no_replace) + textwrap.dedent('''
+        cgaimmd_generator = {'method': 'params_file_constant', 'x': 1.0}
+        '''))
+    for _ in range(3):
+        params = aimmd.Params.load(fname, save=False)
+        assert generation.make_generator(params.cgaimmd_generator).settings() == {'x': 1.0}
+    # the same from a module next to the params file
+    folder = tmp_path / 'in_helper'
+    os.makedirs(folder)
+    with open(folder / 'helper_generators.py', 'w') as file:
+        file.write(textwrap.dedent(no_replace).replace('params_file_constant', 'helper_constant'))
+    fname = write_params(folder, '''
+        from helper_generators import ConstantGenerator
+        cgaimmd_generator = {'method': 'helper_constant', 'x': 2.0}
+        ''')
+    for _ in range(3):
+        params = aimmd.Params.load(fname, save=False)
+        assert generation.make_generator(params.cgaimmd_generator).settings() == {'x': 2.0}
+
+
+LOCAL_GENERATOR = '''
+    import torch
+    class LocalConstant:
+        """A generator class defined in the params file, its method not registered."""
+        method = 'params_file_local'
+        def __init__(self, x=0.0):
+            self.x = float(x)
+        def check(self, network):
+            return []
+        def generate(self, network, lam, *, generator=None):
+            return torch.full((len(lam), network.n_atoms, 3), self.x)
+        def settings(self):
+            return {'x': self.x}
+    '''
+
+
+def _load_in_a_fresh_process(*fnames):
+    """What ``Params.load(fname).cgaimmd_generator`` is in a new process, as a worker loads it."""
+    script = textwrap.dedent('''
+        import sys
+        import aimmd
+        for fname in sys.argv[1:]:
+            spec = aimmd.Params.load(fname, save=False).cgaimmd_generator
+            print('generator:', repr(spec.settings() if hasattr(spec, 'settings') else spec))
+        ''')
+    done = subprocess.run([sys.executable, '-c', script, *map(str, fnames)],
+                          capture_output=True, text=True, timeout=600)
+    assert done.returncode == 0, done.stderr[-3000:]
+    return [line[len('generator: '):] for line in done.stdout.splitlines()
+            if line.startswith('generator: ')]
+
+
 def test_generator_object_saved(tmp_path, monkeypatch):
-    """A generator object is kept; it is saved as its settings (aimmd class) or imported."""
-    params = load(tmp_path, PARAMS_FILE_GENERATOR + '''
+    """A generator object is kept; it is saved so that a worker's fresh process rebuilds it.
+
+    A registered method is saved as its settings dict; an object of a class
+    defined in the params file as an import from it; anything else is refused
+    when it is assigned, not in every worker.
+    """
+    registered = load(tmp_path / 'registered', PARAMS_FILE_GENERATOR + '''
     cgaimmd_generator = ConstantGenerator(x=2.0)
     ''')
-    assert params.cgaimmd_generator.method == 'params_file_constant'
-    monkeypatch.chdir(params.parent)
-    text = open(params.save()).read()
-    assert 'from params import cgaimmd_generator' in text
+    assert registered.cgaimmd_generator.method == 'params_file_constant'
+    monkeypatch.chdir(registered.parent)
+    registered_saved = os.path.abspath(registered.save())
+    assert ("cgaimmd_generator = {'method': 'params_file_constant', 'x': 2.0}"
+            in open(registered_saved).read())
+    local = load(tmp_path / 'local', LOCAL_GENERATOR + '''
+    cgaimmd_generator = LocalConstant(x=3.0)
+    ''')
+    monkeypatch.chdir(local.parent)
+    local_saved = os.path.abspath(local.save())
+    assert 'from params import cgaimmd_generator' in open(local_saved).read()
+    assert _load_in_a_fresh_process(registered_saved, local_saved) == [
+        "{'method': 'params_file_constant', 'x': 2.0}", "{'x': 3.0}"]
+    # a class from another module, its method not registered: refused at load
+    folder = tmp_path / 'imported'
+    os.makedirs(folder)
+    with open(folder / 'helper_generators.py', 'w') as file:
+        file.write(textwrap.dedent(LOCAL_GENERATOR))
+    with pytest.raises(TypeError, match="LocalConstant object of the unregistered method "
+                                        "'params_file_local' cannot be saved for the workers"):
+        aimmd.Params.load(write_params(folder, '''
+            from helper_generators import LocalConstant
+            cgaimmd_generator = LocalConstant(x=1.0)
+            '''), save=False)
+    # an object of an aimmd class is saved as its settings
+    params = registered
     params.cgaimmd_generator = ODEGenerator(n_steps=3)
     assert isinstance(params.cgaimmd_generator, ODEGenerator)
     saved = params.save()
