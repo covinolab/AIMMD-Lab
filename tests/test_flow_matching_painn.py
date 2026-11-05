@@ -327,6 +327,100 @@ def test_gradients_through_forward():
     assert any(p.grad is not None and bool(p.grad.abs().sum() > 0) for p in net.parameters())
 
 
+def _structure(tmp_path, positions):
+    """A PDB of the 7 generator atoms (the structure FlowGraphTransform builds its universe from)."""
+    import MDAnalysis as mda
+    universe = mda.Universe.empty(M, n_residues=1, atom_resindex=[0] * M, trajectory=True)
+    universe.add_TopologyAttr('names', ['C1', 'H1', 'H2', 'O1', 'C2', 'H3', 'N1'])
+    universe.add_TopologyAttr('types', ['C', 'H', 'H', 'O', 'C', 'H', 'N'])
+    universe.add_TopologyAttr('elements', ['C', 'H', 'H', 'O', 'C', 'H', 'N'])
+    universe.add_TopologyAttr('resnames', ['MOL'])
+    universe.add_TopologyAttr('resids', [1])
+    universe.atoms.positions = np.asarray(positions)
+    universe.dimensions = np.array([30, 30, 30, 90, 90, 90], dtype=np.float32)
+    structure = str(tmp_path / 'generator_atoms.pdb')
+    universe.atoms.write(structure)
+    return structure
+
+
+@pytest.mark.graph
+def test_forward_graph_equals_committor(tmp_path):
+    """forward on the cached graphs of MD frames equals committor on their coordinates."""
+    pytest.importorskip('aimmd.network.graph_utils')
+    from torch_geometric.data import Batch
+    from aimmd.cgaimmd.flow_matching.graphs import FlowGraphTransform
+    x = _molecule(4) + 20.0
+    structure = _structure(tmp_path, x[0].numpy())
+    transform = FlowGraphTransform(structure, TINY['cutoff'],
+                                   graph_cache=tmp_path / 'graphs.sqlite', write_graph_cache=True)
+    try:
+        data = transform(x.reshape(4, -1).numpy())
+    finally:
+        transform.close()
+    net = _net(edge_backend='pyg').eval()
+    with torch.no_grad():
+        d = Batch.from_data_list(data).to_dict()
+        assert torch.allclose(net(d)[:, 0], net.committor(x), atol=1e-4)
+        torch_net = _net(edge_backend='torch').eval()
+        assert torch.allclose(torch_net.committor(x), net.committor(x), atol=1e-5)
+
+
+@pytest.mark.graph
+def test_forward_graph_precision_steep_committor(tmp_path):
+    """A steep committor near 1/2: graphs of the cache's default box match committor within the start-up tolerance.
+
+    The graph pipeline moves every frame to the center of its box in float32,
+    so the rounding error of the graph positions grows with the box. The
+    start-up checks accept ``|forward(graph) - committor| <= 1e-4 + 1e-4
+    |lambda|`` (``protocol.check_network_numerics``); with the default box of
+    100 A a committor with gradients of more than 10 per A stays well inside
+    it, while a 1000 A box is several times worse. The default (cache-free)
+    route keeps the coordinates as they are and has no such error.
+    """
+    pytest.importorskip('aimmd.network.graph_utils')
+    from torch_geometric.data import Batch
+    from aimmd.cgaimmd.flow_matching.graphs import FlowGraphTransform
+    x = _molecule(64) + torch.tensor([23.7, 41.2, 17.9])
+    rows = x.reshape(len(x), -1).numpy()
+    structure = _structure(tmp_path, x[0].numpy())
+    net = _net(edge_backend='torch').eval()
+    head = net.committor_head.heads[0][-1]
+    with torch.no_grad():
+        head.weight.mul_(10.0)
+        head.bias.sub_(net.committor(x).mean() / M)          # lambda ~ 0: the tightest tolerance
+        lam = net.committor(x).double()
+    x_grad = x.clone().requires_grad_(True)
+    (grad,) = torch.autograd.grad(net.committor(x_grad).sum(), x_grad)
+    assert float(grad.reshape(len(x), -1).norm(dim=1).median()) > 10.0     # steep
+    assert float(lam.abs().median()) < 3.0                      # near 1/2: tight tolerance
+
+    def worst(box_length):
+        transform = FlowGraphTransform(
+            structure, TINY['cutoff'], box_length=box_length, write_graph_cache=True,
+            graph_cache=tmp_path / f'graphs_box{box_length:g}.sqlite')
+        try:
+            data = transform(rows)
+        finally:
+            transform.close()
+        with torch.no_grad():
+            out = net(Batch.from_data_list(data).to_dict())[:, 0].double()
+        return float(((out - lam).abs() / (1e-4 + 1e-4 * lam.abs())).max())
+
+    default = worst(FlowGraphTransform.__init__.__kwdefaults__['box_length'])
+    assert default < 0.5                                   # measured: 0.24 (100 A)
+    assert worst(1000.0) > 4 * default                     # measured: 3.0, it would fail
+    with torch.no_grad():
+        plain = net(FlowGraphTransform(structure, TINY['cutoff'], edge_backend='torch')(rows))
+    assert float(((plain[:, 0].double() - lam).abs() / (1e-4 + 1e-4 * lam.abs())).max()) < 0.05
+    transform = FlowGraphTransform(structure, TINY['cutoff'], graph_cache=tmp_path /
+                                   'graphs_box100.sqlite')
+    data = transform(rows[:4])
+    transform.close()
+    report = protocol.check_network_numerics(net, x[:4].numpy(),
+                                             Batch.from_data_list(data).to_dict())
+    assert report['n_atoms'] == M
+
+
 def test_architecture_kwargs_required():
     """Every architecture hyperparameter is required (no silent defaults from another system)."""
     for name in TINY:
@@ -570,6 +664,18 @@ def test_protocol_and_the_ode_generator():
     assert torch.allclose(protocol.coordinate_committor(net, x), net.committor(x), atol=1e-6)
 
 
+def test_graph_forward_input_passes_the_start_up_check(tmp_path):
+    """check_network_numerics with the default graph route's batch dict as the forward input."""
+    from aimmd.cgaimmd.flow_matching.graphs import FlowGraphTransform
+    x = _molecule(4) + 7.0
+    transform = FlowGraphTransform(_structure(tmp_path, x[0].numpy()), TINY['cutoff'],
+                                   edge_backend='torch')
+    net = _net()
+    report = protocol.check_network_numerics(net, x.numpy(), transform(x.reshape(4, -1).numpy()),
+                                             generation={'method': 'ode', 'n_steps': 2})
+    assert report['committor_max_abs_diff'] < 1e-4
+
+
 # ---------------------------------------------------------------------------
 # what was dropped stays dropped
 # ---------------------------------------------------------------------------
@@ -680,3 +786,90 @@ def test_old_template_keywords_of_from_topology(tmp_path, recwarn):
                               **{**TINY, 'edge_backend': 'torch'})
     with pytest.raises(TypeError, match="unexpected keyword argument 'no_such_switch'"):
         Network(M, TOKENS, no_such_switch=1, **TINY)
+
+
+PARAMS = '''\
+"""A C-GAIMMD params file with the PaiNN network in graph mode (the default route, no cache)."""
+import numpy as np
+from aimmd.cgaimmd.flow_matching.graphs import FlowGraphTransform
+from aimmd.cgaimmd.flow_matching.painn import JointPaiNN
+
+engine = 'toy'
+states = 'ARB'
+chain_type = 'cgaimmd'
+initial_paths = ['seeds_A.xtc', 'seeds_B.xtc']
+round_shooting_index = True
+gen_temperature = 300.0
+cgaimmd_parameters = {'placement': 'none', 'window_after_trained_shots': 5}
+
+
+def toy_mdrun(ts):
+    ts.positions = ts.positions + 0.01
+
+
+def states_function(trajectory):
+    x = np.array([ts.positions[0, 0] for ts in trajectory])
+    return np.where(x <= -0.5, 'A', np.where(x >= 0.5, 'B', 'R'))
+
+
+def descriptors_function(trajectory):
+    frames = [ts.positions.copy() for ts in trajectory]
+    return np.array(frames, dtype=np.float32).reshape(len(frames), -1)
+
+
+_graphs = FlowGraphTransform('generator_atoms.pdb', 4.0, edge_backend='torch')
+
+
+def descriptor_transform(descriptors):
+    return _graphs(descriptors)
+
+
+class Network(JointPaiNN):
+    """Local subclass: Params.save writes 'from <this module> import network'."""
+
+
+network = Network(3, [6, 6, 6], bond_distances=[[0, 1, 2], [1, 0, 1], [2, 1, 0]],
+                  coord_scale=1.5, lambda_clip=10.0, n_channels=8, n_layers=2, n_basis=6,
+                  cutoff=4.0, cond_dim=8, lambda_embedding_scale=4.0, committor_hidden=(8,),
+                  velocity_hidden=8, velocity_radial=6, velocity_min_distance=0.7,
+                  parity_breaking=True, edge_backend='torch')
+'''
+
+
+def test_a_params_file_with_the_network_in_graph_mode(tmp_path, monkeypatch):
+    """chain_type='cgaimmd' with the PaiNN network and graph mode's default route: it loads, its
+    generator is 'ode', its values come through the batch dicts, and no graph cache is written."""
+    import MDAnalysis as mda
+    import aimmd
+    from aimmd.cgaimmd.values import ProtocolValuesFunction
+    from tests._helpers_unit import write_trajectory
+    for kind, x0 in (('A', -1.5), ('B', 1.5)):
+        positions = np.zeros((4, 3, 3), dtype=np.float32)
+        positions[:, :, 0] = x0 + 0.05 * np.arange(4)[:, None]
+        positions[:, :, 1] = 1.5 * np.arange(3)[None, :]
+        write_trajectory(tmp_path, stem=f'seeds_{kind}', positions=positions)
+    universe = mda.Universe.empty(3, n_residues=1, atom_resindex=[0] * 3, trajectory=True)
+    universe.add_TopologyAttr('names', ['C1', 'C2', 'C3'])
+    universe.add_TopologyAttr('types', ['C'] * 3)
+    universe.add_TopologyAttr('resnames', ['MOL'])
+    universe.add_TopologyAttr('resids', [1])
+    universe.atoms.positions = np.array([[0.0, 0.0, 0.0], [0.0, 1.5, 0.0], [0.0, 3.0, 0.0]])
+    universe.dimensions = np.array([30, 30, 30, 90, 90, 90], dtype=np.float32)
+    universe.atoms.write(str(tmp_path / 'generator_atoms.pdb'))
+    (tmp_path / 'params.py').write_text(PARAMS)
+    monkeypatch.chdir(tmp_path)
+    params = aimmd.Params.load(str(tmp_path / 'params.py'), save=False)
+    network = _randomize(params.network, 4, scale=0.2).eval()
+    assert isinstance(params.values_function, ProtocolValuesFunction)
+    assert params.values_function.descriptor_transform is params.descriptor_transform
+    assert isinstance(make_generator(params.cgaimmd_generator, network), sampler.ODEGenerator)
+    g = np.random.default_rng(0)
+    rows = (np.tile([0.0, 0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 3.0, 0.0], (5, 1))
+            + 0.2 * g.normal(size=(5, 9))).astype(np.float32)
+    assert isinstance(params.descriptor_transform(rows), dict)
+    values = params.values_function(rows)
+    with torch.no_grad():
+        dense = network.committor(torch.as_tensor(rows)).double().numpy()
+    assert float(np.abs(dense).max()) > 1e-3
+    assert np.allclose(values, dense, atol=1e-5)
+    assert not list(tmp_path.rglob('*.sqlite*'))

@@ -389,6 +389,38 @@ def test_from_topology_switches(tmp_path):
         assert torch.equal(fresh.committor(x), a.committor(x))
 
 
+def test_forward_on_the_default_graph_batch_with_topology_edges(tmp_path):
+    """The graph batch of graph mode's default route gets the topology edges too: forward equals committor."""
+    from aimmd.cgaimmd.flow_matching.graphs import FlowGraphTransform
+    x = _frames(4, stretch=1.8) + 20.0
+    structure = _write_ethanol_gro(tmp_path, x[0].numpy() - 10.0, 'generator_atoms.gro')
+    batch = FlowGraphTransform(structure, TINY['cutoff'], edge_backend='torch')(
+        x.reshape(4, -1).numpy())
+    net = _net(tmp_path, pe=True).eval()
+    with torch.no_grad():
+        assert torch.allclose(net(batch)[:, 0], net.committor(x), atol=1e-5)
+
+
+@pytest.mark.graph
+def test_forward_graph_with_topology_edges_equals_committor(tmp_path):
+    """Cached graphs of MD frames get the topology edges too: forward equals committor."""
+    pytest.importorskip('aimmd.network.graph_utils')
+    from torch_geometric.data import Batch
+    from aimmd.cgaimmd.flow_matching.graphs import FlowGraphTransform
+    x = _frames(4, stretch=1.8) + 20.0
+    structure = _write_ethanol_gro(tmp_path, x[0].numpy() - 10.0, 'generator_atoms.gro')
+    transform = FlowGraphTransform(structure, TINY['cutoff'],
+                                   graph_cache=tmp_path / 'graphs.sqlite', write_graph_cache=True)
+    try:
+        data = transform(x.reshape(4, -1).numpy())
+    finally:
+        transform.close()
+    net = _net(tmp_path, pe=True, edge_backend='pyg').eval()
+    with torch.no_grad():
+        d = Batch.from_data_list(data).to_dict()
+        assert torch.allclose(net(d)[:, 0], net.committor(x), atol=1e-4)
+
+
 # ---------------------------------------------------------------------------
 # the force-field reference geometry of the topology edges
 # ---------------------------------------------------------------------------
@@ -538,3 +570,5 @@ def test_random_walk_encoding():
     assert np.all(pe[:, 0] == 0.0)                               # no self loops
     with pytest.raises(ValueError):
         T.random_walk_encoding(3, [(0, 1)], steps=0)
+
+

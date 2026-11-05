@@ -35,8 +35,8 @@ this checkout, with ``<export>`` an empty folder::
         tests/data/flow_matching_painn_flowdev_bb98943.pt
 
 ``aimmd`` is then imported from ``<export>`` (the script refuses to record
-from this checkout). This module imports only the standard library, numpy
-and torch at module level; the old and the new package are reached through
+from this checkout). This module imports only the standard library and torch
+at module level; the old and the new package are reached through
 the namespaces of :func:`old_api` and :func:`new_api`.
 """
 
@@ -48,7 +48,6 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
 import torch
 
 
