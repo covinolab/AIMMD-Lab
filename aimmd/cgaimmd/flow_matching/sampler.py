@@ -20,7 +20,10 @@ The members of a flow-matching network, beyond the protocol:
 - ``velocity(x_t, t, lam, *, uncond_mask=None) -> Tensor (B, M, 3)``: flow
   units; ``t`` ``(B,)`` in ``[0, 1]``; ``lam`` ``(B,)`` logits or None (the
   learned null token, never the same as ``lam = 0``); ``uncond_mask`` ``(B,)``
-  bool rows that use the null token.
+  bool rows that use the null token. The keyword ``uncond_mask`` is needed
+  only for classifier-free guidance (``guidance_scale != 1``) and by the
+  flow-matching fit (:mod:`~aimmd.cgaimmd.flow_matching.fit`), which drops
+  labels with it; plain generation calls ``velocity(x_t, t, lam)``.
 - ``sample_prior(lam, n, *, generator=None) -> Tensor (n, M, 3)``: flow units.
 - optional ``to_flow(x)``, ``from_flow(z)``: Å to flow units and back
   [:func:`to_flow`, :func:`from_flow`: identity]; optional
@@ -33,7 +36,8 @@ in that subspace itself. That is what lets a one-atom toy network, whose
 coordinates are absolute, use the same code.
 """
 
-from numbers import Integral
+import math
+from numbers import Integral, Real
 
 import torch
 
@@ -51,8 +55,7 @@ OPTIONAL_MEMBERS = ('to_flow', 'from_flow', 'flow_pair')
 """Members a flow-matching network may have; each has an identity fallback."""
 
 _SIGNATURES = {
-    'velocity': (('x_t', 't', 'lam'), {'uncond_mask': None},
-                 'velocity(x_t, t, lam, *, uncond_mask=None)'),
+    'velocity': (('x_t', 't', 'lam'), {}, 'velocity(x_t, t, lam)'),
     'sample_prior': (('lam', 'n'), {'generator': None},
                      'sample_prior(lam, n, *, generator=None)'),
     'to_flow': (('x',), {}, 'to_flow(x)'),
@@ -83,27 +86,38 @@ def pair(network, x1, x0):
     return method(x1, x0) if callable(method) else x1
 
 
-def flow_matching_problems(network):
+_VELOCITY_WITH_MASK = (('x_t', 't', 'lam'), {'uncond_mask': None},
+                       'velocity(x_t, t, lam, *, uncond_mask=None)')
+"""The signature of ``velocity`` that classifier-free guidance and the fit need."""
+
+
+def flow_matching_problems(network, *, uncond_mask=False):
     """What `network` lacks to be integrated by this module, one message per problem.
 
     Parameters
     ----------
     network : object
         The candidate flow-matching network.
+    uncond_mask : bool, optional
+        Also require the keyword ``uncond_mask`` of ``velocity`` (the null
+        token on chosen rows): classifier-free guidance and the
+        flow-matching fit use it.
 
     Returns
     -------
     list of str
         Empty when ``velocity`` and ``sample_prior`` exist, are callable and
-        bind their arguments (``velocity``: ``(x_t, t, lam)`` and the keyword
-        ``uncond_mask``; ``sample_prior``: ``(lam, n)`` and the keyword
-        ``generator``) and every present optional member binds its arguments
-        (``to_flow``, ``from_flow``: one; ``flow_pair``: two). ``**kwargs``
-        satisfies any keyword.
+        bind their arguments (``velocity``: ``(x_t, t, lam)``, and with
+        `uncond_mask` the keyword ``uncond_mask``; ``sample_prior``:
+        ``(lam, n)`` and the keyword ``generator``) and every present optional
+        member binds its arguments (``to_flow``, ``from_flow``: one;
+        ``flow_pair``: two). ``**kwargs`` satisfies any keyword.
     """
     problems = []
     for name in REQUIRED_MEMBERS + OPTIONAL_MEMBERS:
         args, kwargs, expected = _SIGNATURES[name]
+        if name == 'velocity' and uncond_mask:
+            args, kwargs, expected = _VELOCITY_WITH_MASK
         member = getattr(network, name, None)
         if member is None:
             if name in REQUIRED_MEMBERS:
@@ -188,8 +202,15 @@ def _check_chunk(chunk):
     return int(chunk)
 
 
+def _check_guidance_scale(value):
+    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) \
+            or value < 0:
+        raise ValueError(f'guidance_scale must be a finite number >= 0, got {value!r}')
+    return float(value)
+
+
 def generate(network, lam, *, n=None, sampler='midpoint', n_steps=16, chunk=128,
-             generator=None):
+             generator=None, guidance_scale=1.0):
     """Generate configurations by integrating the network's velocity field.
 
     Parameters
@@ -207,6 +228,14 @@ def generate(network, lam, *, n=None, sampler='midpoint', n_steps=16, chunk=128,
         Samples per network call (>= 1).
     generator : torch.Generator, optional
         On the network's device; passed to ``sample_prior``.
+    guidance_scale : float, optional
+        Classifier-free guidance weight ``w >= 0``: the ODE integrates ``v_u +
+        w (v_c - v_u)``, with ``v_c = velocity(x_t, t, lam)`` and ``v_u =
+        velocity(x_t, t, lam, uncond_mask=<all rows>)`` (the null token).
+        1 (the default) is plain conditional generation and evaluates
+        ``velocity`` once per stage, exactly as without guidance; any other
+        value evaluates it twice. With ``lam=None`` there is nothing to guide
+        and `guidance_scale` is ignored.
 
     Returns
     -------
@@ -216,16 +245,19 @@ def generate(network, lam, *, n=None, sampler='midpoint', n_steps=16, chunk=128,
     Raises
     ------
     ValueError
-        For inconsistent `lam` and `n`, a bad `chunk`, `sampler` or
-        `n_steps`, or a ``sample_prior``, ``velocity`` or ``from_flow`` output
-        of the wrong shape (the message names the member).
+        For inconsistent `lam` and `n`, a bad `chunk`, `sampler`, `n_steps`
+        or `guidance_scale`, or a ``sample_prior``, ``velocity`` or
+        ``from_flow`` output of the wrong shape (the message names the member).
 
     Notes
     -----
     For each chunk of at most `chunk` samples: ``z =
     network.sample_prior(lam_chunk, n_chunk, generator=generator)``, ``x =
-    integrate(lambda x, t: network.velocity(x, t, lam_chunk), z, ...)``, then
-    :func:`from_flow`. The network's train/eval mode is left as it is.
+    integrate(lambda x, t: network.velocity(x, t, lam_chunk), z, ...)`` (or
+    the guided velocity), then :func:`from_flow`. The prior does not depend
+    on `guidance_scale`, and guidance draws no random numbers, so the same
+    `generator` gives the same prior samples at every guidance weight. The
+    network's train/eval mode is left as it is.
     """
     device = protocol.network_device(network)
     if lam is None:
@@ -238,6 +270,7 @@ def generate(network, lam, *, n=None, sampler='midpoint', n_steps=16, chunk=128,
         if n is not None and int(n) != total:
             raise ValueError(f'n={n} differs from len(lam)={total}')
     chunk = _check_chunk(chunk)
+    guidance_scale = _check_guidance_scale(guidance_scale)
     n_atoms = protocol.n_atoms_of(network)
     out = []
     with torch.no_grad():
@@ -253,11 +286,25 @@ def generate(network, lam, *, n=None, sampler='midpoint', n_steps=16, chunk=128,
                 return _checked('velocity(x_t, t, lam)', network.velocity(x, t, lam_chunk),
                                 shape)
 
+            if guidance_scale != 1.0 and lam_chunk is not None:
+                velocity = _guided(network, lam_chunk, shape, guidance_scale)
             x = integrate(velocity, z, sampler=sampler, n_steps=n_steps)
             out.append(_checked('from_flow(z)', from_flow(network, x), shape).to(torch.float32))
     if not out:
         return torch.zeros((0, n_atoms, 3), dtype=torch.float32, device=device)
     return torch.cat(out)
+
+
+def _guided(network, lam, shape, weight):
+    """The classifier-free-guided velocity ``v_u + weight (v_c - v_u)`` at the levels `lam`."""
+    null = torch.ones(len(lam), dtype=torch.bool, device=lam.device)
+
+    def velocity(x, t):
+        v_c = _checked('velocity(x_t, t, lam)', network.velocity(x, t, lam), shape)
+        v_u = _checked('velocity(x_t, t, lam, uncond_mask=...)',
+                       network.velocity(x, t, lam, uncond_mask=null), shape)
+        return v_u + weight * (v_c - v_u)
+    return velocity
 
 
 class ODEGenerator:
@@ -271,19 +318,27 @@ class ODEGenerator:
         Integration steps from the prior (``t = 0``) to configurations (``t = 1``).
     chunk : int, optional
         Candidates per network call.
+    guidance_scale : float, optional
+        Classifier-free guidance weight ``w >= 0`` (:func:`generate`): 1, the
+        default, is plain conditional generation; ``w > 1`` pushes the samples
+        further toward their committor level. Offline, on chignolin, ``w = 3``
+        raised the committor adherence of PaiNN samples at about the same
+        validity; the default stays 1 until the online loop has been tested
+        with guidance.
 
     Notes
     -----
     It implements :class:`aimmd.cgaimmd.generation.Generator`:
     :meth:`check` names what the network lacks of a flow-matching network
-    (:func:`flow_matching_problems`), :meth:`generate` is :func:`generate`
-    with these settings, and :meth:`settings` returns them.
+    (:func:`flow_matching_problems`; the keyword ``uncond_mask`` of
+    ``velocity`` only when guidance is on), :meth:`generate` is
+    :func:`generate` with these settings, and :meth:`settings` returns them.
     """
 
     method = 'ode'
     """The registry name of this method."""
 
-    def __init__(self, sampler='midpoint', n_steps=16, chunk=128):
+    def __init__(self, sampler='midpoint', n_steps=16, chunk=128, guidance_scale=1.0):
         if sampler not in SAMPLERS:
             raise ValueError(f'unknown ODE sampler {sampler!r}; expected one of {SAMPLERS}')
         if isinstance(n_steps, bool) or not isinstance(n_steps, Integral) or n_steps < 1:
@@ -294,26 +349,34 @@ class ODEGenerator:
         """Integration steps."""
         self.chunk = _check_chunk(chunk)
         """Candidates per network call."""
+        self.guidance_scale = _check_guidance_scale(guidance_scale)
+        """Classifier-free guidance weight (1: off)."""
 
     def __repr__(self):
         return (f'{type(self).__name__}(sampler={self.sampler!r}, n_steps={self.n_steps}, '
-                f'chunk={self.chunk})')
+                f'chunk={self.chunk}, guidance_scale={self.guidance_scale!r})')
 
     def __eq__(self, other):
         return type(other) is type(self) and other.settings() == self.settings()
 
     def check(self, network):
-        """What `network` lacks for this method (see :func:`flow_matching_problems`)."""
-        return flow_matching_problems(network)
+        """What `network` lacks for this method (see :func:`flow_matching_problems`).
+
+        ``velocity`` must accept the keyword ``uncond_mask`` only when
+        guidance is on (``guidance_scale != 1``).
+        """
+        return flow_matching_problems(network, uncond_mask=self.guidance_scale != 1.0)
 
     def generate(self, network, lam, *, generator=None):
         """``(B,)`` target logits -> ``(B, M, 3)`` Å candidates on the network's device."""
         return generate(network, lam, sampler=self.sampler, n_steps=self.n_steps,
-                        chunk=self.chunk, generator=generator)
+                        chunk=self.chunk, generator=generator,
+                        guidance_scale=self.guidance_scale)
 
     def settings(self):
-        """``{'sampler', 'n_steps', 'chunk'}``."""
-        return {'sampler': self.sampler, 'n_steps': self.n_steps, 'chunk': self.chunk}
+        """``{'sampler', 'n_steps', 'chunk', 'guidance_scale'}``."""
+        return {'sampler': self.sampler, 'n_steps': self.n_steps, 'chunk': self.chunk,
+                'guidance_scale': self.guidance_scale}
 
 
 # a user's replacement of 'ode' registered before this import is kept

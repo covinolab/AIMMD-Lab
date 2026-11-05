@@ -250,11 +250,12 @@ class CommittorOnly(torch.nn.Module):
 def test_ode_generator_settings():
     generator = ODEGenerator()
     assert generator.method == 'ode'
-    assert generator.settings() == {'sampler': 'midpoint', 'n_steps': 16, 'chunk': 128}
-    other = ODEGenerator(sampler='rk4', n_steps=np.int64(4), chunk=3)
+    assert generator.settings() == {'sampler': 'midpoint', 'n_steps': 16, 'chunk': 128,
+                                    'guidance_scale': 1.0}
+    other = ODEGenerator(sampler='rk4', n_steps=np.int64(4), chunk=3, guidance_scale=np.int64(3))
     settings = other.settings()
-    assert settings == {'sampler': 'rk4', 'n_steps': 4, 'chunk': 3}
-    assert type(settings['n_steps']) is int
+    assert settings == {'sampler': 'rk4', 'n_steps': 4, 'chunk': 3, 'guidance_scale': 3.0}
+    assert type(settings['n_steps']) is int and type(settings['guidance_scale']) is float
     assert json.loads(json.dumps(settings)) == settings
     # make_generator({'method': 'ode', **settings()}) builds an equal generator
     assert generation.make_generator({'method': 'ode', **settings}) == other
@@ -262,7 +263,8 @@ def test_ode_generator_settings():
     assert generator != other
     assert 'rk4' in repr(other)
     for bad in ({'sampler': 'dopri5'}, {'n_steps': 0}, {'n_steps': 2.5}, {'chunk': 0},
-                {'chunk': True}):
+                {'chunk': True}, {'guidance_scale': -1.0}, {'guidance_scale': float('nan')},
+                {'guidance_scale': True}, {'guidance_scale': '3'}):
         with pytest.raises(ValueError):
             ODEGenerator(**bad)
     with pytest.raises(TypeError, match="'ode'.*bogus"):
@@ -285,7 +287,7 @@ def test_ode_check_names_what_the_network_lacks():
     # a network with only a committor: both flow-matching members, by their signature
     protocol.check_network_protocol(CommittorOnly())
     assert generator.check(CommittorOnly()) == [
-        'needs velocity(x_t, t, lam, *, uncond_mask=None), which the network lacks',
+        'needs velocity(x_t, t, lam), which the network lacks',
         'needs sample_prior(lam, n, *, generator=None), which the network lacks']
     # one member missing: only that one is named
     only_velocity = type('OnlyVelocity', (CommittorOnly,), {
@@ -299,8 +301,7 @@ def test_ode_check_names_what_the_network_lacks():
         'from_flow': 3.0})()
     problems = generator.check(bad)
     assert len(problems) == 3
-    assert problems[0].startswith('velocity must accept velocity(x_t, t, lam, *, '
-                                  'uncond_mask=None)')
+    assert problems[0].startswith('velocity must accept velocity(x_t, t, lam)')
     assert problems[1].startswith('sample_prior must accept sample_prior(lam, n, *, '
                                   'generator=None)')
     assert problems[2] == 'from_flow is set but not callable (expected from_flow(z))'
@@ -335,5 +336,149 @@ def test_ode_generator_through_the_protocol_numerics():
     report = protocol.check_network_numerics(net, coords, coords.reshape(3, 6),
                                              generation=ODEGenerator(n_steps=2))
     assert report['generation'] == {'method': 'ode', 'settings': {
-        'sampler': 'midpoint', 'n_steps': 2, 'chunk': 128}}
+        'sampler': 'midpoint', 'n_steps': 2, 'chunk': 128, 'guidance_scale': 1.0}}
     assert report['sample_shape'] == [2, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# classifier-free guidance
+# ---------------------------------------------------------------------------
+
+class LinearField(RequiredOnly):
+    """A velocity field that a hand computation can follow: ``v = a x + b lam`` (``b lam`` -> ``c`` on null rows).
+
+    The conditional and the unconditional field differ, the field depends on
+    ``x``, and the null token is not ``lam = 0``.
+    """
+
+    a, b, c = -0.5, 0.4, 0.3
+    n_atoms = 2
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def velocity(self, x_t, t, lam, *, uncond_mask=None):
+        self.calls.append(None if uncond_mask is None else uncond_mask.clone())
+        drive = (torch.full((len(x_t),), self.c) if lam is None
+                 else self.b * torch.as_tensor(lam, dtype=x_t.dtype))
+        if lam is not None and uncond_mask is not None:
+            drive = torch.where(uncond_mask, torch.full_like(drive, self.c), drive)
+        return self.a * x_t + drive[:, None, None]
+
+    def sample_prior(self, lam, n, *, uncond_mask=None, generator=None):
+        return torch.randn(n, 2, 3, generator=generator)
+
+
+def test_guidance_scale_one_is_no_guidance_bit_for_bit():
+    """guidance_scale=1 evaluates the conditional velocity once per stage, as before: identical bits."""
+    torch.manual_seed(3)
+    net = TinyFlowNetwork(n_atoms=2, hidden=8)
+    with torch.no_grad():
+        for p in net.parameters():
+            p.copy_(0.5 * torch.randn_like(p))
+    lam = torch.linspace(-4, 4, 5)
+    for method in sampler.SAMPLERS:
+        plain = sampler.generate(net, lam, sampler=method, n_steps=3,
+                                 generator=torch.Generator().manual_seed(9))
+        one = ODEGenerator(sampler=method, n_steps=3, guidance_scale=1.0).generate(
+            net, lam, generator=torch.Generator().manual_seed(9))
+        assert torch.equal(plain, one)
+    # no unconditional evaluation at all
+    field = LinearField()
+    ODEGenerator(n_steps=2, guidance_scale=1).generate(field, lam,
+                                                       generator=torch.Generator().manual_seed(0))
+    assert field.calls and all(mask is None for mask in field.calls)
+
+
+def _hand_guided_euler(x0, lam, w, a, b, c, n_steps):
+    """Euler steps of v_u + w (v_c - v_u) for v_c = a x + b lam, v_u = a x + c, by hand (float64)."""
+    x = x0.to(torch.float64)
+    lam = lam.to(torch.float64)[:, None, None]
+    dt = 1.0 / n_steps
+    for _ in range(n_steps):
+        v_c = a * x + b * lam
+        v_u = a * x + c
+        x = x + dt * (w * v_c + (1.0 - w) * v_u)
+    return x
+
+
+@pytest.mark.parametrize('w', [0.0, 2.0, 3.0])
+def test_guidance_matches_a_hand_computation(w):
+    """On a linear toy field the guided ODE is w v_cond + (1 - w) v_uncond, integrated by hand."""
+    field = LinearField()
+    lam = torch.tensor([-3.0, 0.0, 1.5, 4.0])
+    out = ODEGenerator(sampler='euler', n_steps=5, guidance_scale=w).generate(
+        field, lam, generator=torch.Generator().manual_seed(4))
+    x0 = torch.randn(4, 2, 3, generator=torch.Generator().manual_seed(4))   # the same prior draw
+    expected = _hand_guided_euler(x0, lam, w, field.a, field.b, field.c, 5)
+    torch.testing.assert_close(out.to(torch.float64), expected, rtol=1e-6, atol=1e-6)
+    # two velocity evaluations per stage, the second on null rows only
+    masks = [m for m in field.calls if m is not None]
+    assert len(field.calls) == 2 * 5 and len(masks) == 5
+    assert all(bool(m.all()) and len(m) == 4 for m in masks)
+    # closed form of one Euler step, w v_c + (1 - w) v_u = a x + w b lam + (1 - w) c
+    one = ODEGenerator(sampler='euler', n_steps=1, guidance_scale=w).generate(
+        LinearField(), lam, generator=torch.Generator().manual_seed(4))
+    closed = x0 + (field.a * x0 + (w * field.b * lam + (1 - w) * field.c)[:, None, None])
+    torch.testing.assert_close(one, closed, rtol=1e-6, atol=1e-6)
+
+
+def test_guidance_with_the_null_token_is_plain():
+    """lam=None generates with the null token: nothing to guide, one evaluation per stage."""
+    field = LinearField()
+    guided = sampler.generate(field, None, n=3, n_steps=2, guidance_scale=3.0,
+                              generator=torch.Generator().manual_seed(1))
+    plain = sampler.generate(field, None, n=3, n_steps=2,
+                             generator=torch.Generator().manual_seed(1))
+    assert torch.equal(guided, plain)
+    assert len(field.calls) == 2 * 2 * 2 and all(mask is None for mask in field.calls)
+
+
+def test_guidance_draws_the_same_prior():
+    """The prior does not depend on the guidance weight: the same generator, the same prior draw."""
+    seen = []
+
+    class Recording(LinearField):
+        def sample_prior(self, lam, n, *, uncond_mask=None, generator=None):
+            z = super().sample_prior(lam, n, generator=generator)
+            seen.append(z.clone())
+            return z
+
+    for w in (1.0, 3.0):
+        ODEGenerator(n_steps=2, guidance_scale=w).generate(
+            Recording(), torch.zeros(3), generator=torch.Generator().manual_seed(2))
+    assert torch.equal(seen[0], seen[1])
+
+
+def test_guidance_check_requires_uncond_mask_only_when_on():
+    """check() asks for velocity's keyword uncond_mask only when guidance is on."""
+
+    class NoMask(RequiredOnly):
+        def velocity(self, x_t, t, lam):
+            return torch.zeros_like(x_t)
+
+        def sample_prior(self, lam, n, *, generator=None):
+            return torch.zeros(n, 2, 3)
+
+    assert ODEGenerator().check(NoMask()) == []
+    assert ODEGenerator(guidance_scale=1.0).check(NoMask()) == []
+    out = ODEGenerator(n_steps=2).generate(NoMask(), torch.zeros(2))
+    assert out.shape == (2, 2, 3)
+    problems = ODEGenerator(guidance_scale=3.0).check(NoMask())
+    assert len(problems) == 1
+    assert problems[0].startswith('velocity must accept velocity(x_t, t, lam, *, '
+                                  'uncond_mask=None)')
+    assert generation.check_generator(ODEGenerator(guidance_scale=2.0), TinyFlowNetwork()) == []
+    assert sampler.flow_matching_problems(NoMask()) == []
+    assert sampler.flow_matching_problems(NoMask(), uncond_mask=True) == problems
+
+
+def test_guidance_through_the_params_spec():
+    """{'method': 'ode', 'guidance_scale': w} builds a guided generator; its settings record w."""
+    built = generation.make_generator({'method': 'ode', 'guidance_scale': 3.0, 'n_steps': 2},
+                                      TinyFlowNetwork())
+    assert isinstance(built, ODEGenerator) and built.guidance_scale == 3.0
+    assert built.settings()['guidance_scale'] == 3.0
+    assert 'guidance_scale=3.0' in repr(built)
+    assert generation.make_generator({'method': 'ode', **built.settings()}) == built

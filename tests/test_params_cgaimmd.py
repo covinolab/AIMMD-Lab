@@ -836,7 +836,7 @@ def test_generator_object_saved(tmp_path, monkeypatch):
     saved = params.save()
     text = open(saved).read()
     assert ("cgaimmd_generator = {'method': 'ode', 'sampler': 'midpoint', 'n_steps': 3, "
-            "'chunk': 128}") in text
+            "'chunk': 128, 'guidance_scale': 1.0}") in text
     reloaded = aimmd.Params.load(saved, save=False)
     assert generation.make_generator(reloaded.cgaimmd_generator) == ODEGenerator(n_steps=3)
 
