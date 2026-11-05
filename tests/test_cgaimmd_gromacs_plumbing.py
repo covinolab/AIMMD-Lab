@@ -407,6 +407,26 @@ def test_solvator_commands(tmp_path):
     assert wrapped['mdrun'] == wrapped['mdrun_em'] == 'bash mdrun_gpu.sh -pme gpu'
 
 
+def test_explicit_mdrun_commands_lose_plumed(tmp_path):
+    """An explicit mdrun= loses -plumed and the checkpoint options too: preparation is unbiased.
+
+    A run under a static PLUMED bias hands its shooting command to the minimizer and the
+    solvator; the launcher prefix keeps its own options, the explicit offloads stay.
+    """
+    params = SimpleNamespace(gmx_grompp='/g/gmx grompp -p topol.top',
+                             gmx_mdrun='/g/gmx mdrun -plumed run_bias.dat', parent=tmp_path)
+    explicit = ('srun -c 4 /g/gmx_mpi mdrun -plumed /abs/opes.dat -ntomp 4 -cpi state.cpt '
+                '-cpt 5 -maxh 2 -noappend -pme gpu -nb gpu')
+    unbiased = 'srun -c 4 /g/gmx_mpi mdrun -ntomp 4 -pme gpu -nb gpu'
+    assert GromacsMinimizer(mdrun=explicit)._commands(params)[1] == unbiased
+    assert GromacsMinimizer(mdrun=explicit).settings['mdrun'] == explicit      # recorded as given
+    commands = GromacsSolvator(_cluster_descriptors(tmp_path), topology=str(tmp_path / 'topol.top'),
+                               mdrun=explicit)._commands(params)
+    assert commands['mdrun'] == commands['mdrun_em'] == unbiased
+    # the run's own command, as before
+    assert GromacsMinimizer()._commands(params)[1] == '/g/gmx mdrun'
+
+
 def _cluster_descriptors(tmp_path, n_waters=4, **kwargs):
     _, structure = _system(tmp_path, **kwargs)
     return GeneratorDescriptors(str(structure), GeneratorAtoms(3, ClusterSelection(n_waters=n_waters)))

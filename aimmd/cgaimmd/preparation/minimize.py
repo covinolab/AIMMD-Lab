@@ -73,7 +73,8 @@ class GromacsMinimizer:
     nsteps : int, optional
         Maximum number of EM steps.
     mdrun : str, optional
-        mdrun command (default ``sanitize_mdrun(params.gmx_mdrun)``, without GPU PME/bonded/update offloads; see Notes).
+        mdrun command (default ``params.gmx_mdrun`` without GPU PME/bonded/update offloads); either is passed through
+        ``sanitize_mdrun`` (no ``-plumed``, no checkpoint options; see Notes).
     grompp : str, optional
         grompp command (default ``split_grompp(params.gmx_grompp)[0]``; an index file ``-n`` is kept, see Notes).
     topology : str, optional
@@ -118,6 +119,13 @@ class GromacsMinimizer:
     mdrun_gpu.sh'`` that adds ``-pme gpu``): with a wrapper, pass `mdrun`
     explicitly.
 
+    The minimization is never biased: ``-plumed`` (and ``-cpi``, ``-cpt``,
+    ``-maxh``, ``-deffnm``, ``-noappend``) is removed from the run's command
+    and from an explicit `mdrun` alike (:func:`~aimmd.cgaimmd.preparation.gromacs.sanitize_mdrun`),
+    so a run under a static PLUMED bias can hand its shooting command to the
+    minimizer. A wrapper script that adds ``-plumed`` itself is invisible
+    here; it must not.
+
     A GROMACS failure (non-zero exit, a stop by ``must_stop``, the timeout,
     missing or non-finite output) is ``ok=False`` with ``reason=
     'minimize_failed: <message>'``; configuration errors (an unreadable
@@ -161,7 +169,8 @@ class GromacsMinimizer:
         grompp = _grompp_command(grompp, maxwarn=self.maxwarn)
         if self.maxwarn is not None:
             grompp = f'{grompp} -maxwarn {self.maxwarn}'
-        mdrun = self.mdrun if self.mdrun is not None else sanitize_mdrun(params.gmx_mdrun)
+        # an explicit command is sanitized too: candidate preparation is never biased
+        mdrun = sanitize_mdrun(self.mdrun if self.mdrun is not None else params.gmx_mdrun)
         mdrun = _mdrun_command(mdrun, minimization=self.mdrun is None)
         topology = self.topology or topology_file(params)
         return grompp, mdrun, topology, self.em_mdp or _default_em_mdp()

@@ -214,7 +214,8 @@ class GromacsSolvator:
     nvt_stages : sequence of NVTStage, optional
         Restrained NVT stages after the EM.
     mdrun : str, optional
-        mdrun command (default ``sanitize_mdrun(params.gmx_mdrun)``; with a wrapper script, pass it, see Notes).
+        mdrun command (default ``params.gmx_mdrun``; with a wrapper script, pass it, see Notes); either is passed
+        through ``sanitize_mdrun`` (no ``-plumed``, no checkpoint options).
     grompp : str, optional
         grompp command (default ``split_grompp(params.gmx_grompp)[0]``; an index file ``-n`` is kept, see Notes).
     maxwarn : int, optional
@@ -252,6 +253,12 @@ class GromacsSolvator:
     support for EM, but it cannot see inside a wrapper script (``gmx_mdrun =
     'bash mdrun_gpu.sh'`` that adds ``-pme gpu``): with a wrapper, pass
     `mdrun` explicitly (it is then used for EM and NVT alike).
+
+    The EM and the NVT stages are never biased: ``-plumed`` (and ``-cpi``,
+    ``-cpt``, ``-maxh``, ``-deffnm``, ``-noappend``) is removed from the run's
+    command and from an explicit `mdrun` alike
+    (:func:`~aimmd.cgaimmd.preparation.gromacs.sanitize_mdrun`). A wrapper
+    script that adds ``-plumed`` itself is invisible here; it must not.
 
     GROMACS seeds are derived from ``context.seed`` (32-bit, never 0):
     ``genion -seed`` from the seed itself, ``gen_seed`` and ``ld_seed`` of
@@ -540,7 +547,8 @@ class GromacsSolvator:
     def _commands(self, params):
         """The resolved commands: grompp, grompp_genion (no index file), mdrun, mdrun_em, gmx."""
         grompp = self.grompp if self.grompp is not None else _params_grompp(params)
-        mdrun = self.mdrun if self.mdrun is not None else sanitize_mdrun(params.gmx_mdrun)
+        # an explicit command is sanitized too: candidate preparation is never biased
+        mdrun = sanitize_mdrun(self.mdrun if self.mdrun is not None else params.gmx_mdrun)
         return {
             'grompp': f'{_grompp_command(grompp, maxwarn=self.maxwarn)} -maxwarn {self.maxwarn}',
             # the pre-ion system has fewer atoms than the run's: its index groups do not apply

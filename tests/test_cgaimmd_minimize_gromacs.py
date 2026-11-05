@@ -138,6 +138,28 @@ def test_nstxout_override(tmp_path, gmx_executable):
         assert len([f for f in handle]) == 1
 
 
+def test_explicit_mdrun_with_plumed_minimizes_unbiased(tmp_path, gmx_executable):
+    """An explicit mdrun command with -plumed: the EM runs without the bias.
+
+    The PLUMED input restrains the CL-CA distance far from its value and prints it every
+    step; the EM with that command must write no PLUMED output and give the frame of the
+    EM without -plumed. (A GROMACS without PLUMED would fail on -plumed.)
+    """
+    plumed = tmp_path / 'bias.dat'
+    plumed.write_text('d: DISTANCE ATOMS=1,9\n'
+                      'RESTRAINT ARG=d AT=0.6 KAPPA=100000.0\n'
+                      'PRINT ARG=d FILE=COLVAR_preparation_bias STRIDE=1\n')
+    params = _params(tmp_path, gmx_executable)
+    context = _context(tmp_path, params, keep_scratch=True)
+    frame = _candidate(4)
+    plain = GromacsMinimizer(em_mdp=str(NANMA / 'em.mdp'), mdrun=params.gmx_mdrun)(frame, context)
+    biased = GromacsMinimizer(em_mdp=str(NANMA / 'em.mdp'),
+                              mdrun=f'{params.gmx_mdrun} -plumed {plumed}')(frame, context)
+    assert plain.ok and biased.ok, (plain.reason, biased.reason)
+    assert list(tmp_path.rglob('COLVAR_preparation_bias*')) == []
+    np.testing.assert_allclose(biased.positions, plain.positions, atol=1e-5)
+
+
 def test_must_stop_kills_mdrun(tmp_path, gmx_executable):
     """must_stop terminates a running mdrun (not grompp): a failed candidate, returned promptly.
 
