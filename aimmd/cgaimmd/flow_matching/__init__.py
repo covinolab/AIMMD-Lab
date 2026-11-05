@@ -22,6 +22,9 @@ subpackage holds what is specific to that technique:
   (:mod:`~aimmd.cgaimmd.flow_matching.graph_batch`) and graph mode for MD
   frames, the bond and topology edges
   (:mod:`~aimmd.cgaimmd.flow_matching.graphs`);
+- the online fit, every round trained again from the same start
+  (:mod:`~aimmd.cgaimmd.flow_matching.fit`), and the end-state pretraining
+  that is that start (:mod:`~aimmd.cgaimmd.flow_matching.pretrain`);
 - the documented minimal network (:mod:`~aimmd.cgaimmd.flow_matching.toy`).
 
 Importing the package imports no submodule: every submodule is imported
