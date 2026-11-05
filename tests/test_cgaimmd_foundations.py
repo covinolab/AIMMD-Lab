@@ -401,12 +401,3 @@ def test_cgaimmd_helpers(tmp_path, monkeypatch):
     context.log('hello')
     assert context.log.messages == ['hello'] and context.must_stop() is False
     assert context.rng.integers(10**6) == np.random.default_rng(0).integers(10**6)
-
-
-def test_a_cgaimmd_chain_does_not_shoot_like_rfps():
-    """Without its shooting-point source, a C-GAIMMD chain must not shoot RFPS-style."""
-    from aimmd.worker._shoot import WorkerShoot
-    worker = types.SimpleNamespace(_directory=None,
-                                   params=types.SimpleNamespace(chain_type='cgaimmd'))
-    with pytest.raises(NotImplementedError, match="chain_type='cgaimmd' cannot shoot yet"):
-        WorkerShoot._shoot(worker)

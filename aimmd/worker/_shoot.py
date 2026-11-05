@@ -108,7 +108,10 @@ This mixin relies on worker components providing:
 - :attr:`initial_paths` and :attr:`must_stop`,
 - path and pool utilities from :mod:`aimmd.worker.utils`:
   ``register_path``, ``update_selection_pool``, ``select_shooting_point``,
-  ``accept_or_reject_last_path``, ``compute_shooting_point_value``.
+  ``accept_or_reject_last_path``, ``compute_shooting_point_value``;
+- under ``chain_type='cgaimmd'``, the shooting-point source of
+  :mod:`aimmd.cgaimmd.source` and the in-flight records and sidecars of
+  :mod:`aimmd.cgaimmd.sidecar` (imported only for such chains).
 
 Notes
 -----
@@ -248,13 +251,6 @@ class WorkerShoot(ABC):
         # progress bar)
         directory = self._directory or '.'
         params = self.params
-        if params.chain_type == 'cgaimmd':
-            # its shooting points come from the generator, through a source
-            # this worker does not have yet; shooting from path frames instead
-            # would be an RFPS run under the wrong name
-            raise NotImplementedError(
-                "chain_type='cgaimmd' cannot shoot yet: the C-GAIMMD shooting-"
-                "point source is not part of this version of AIMMD-Lab")
         do_tps = params.chain_type == 'tps'
         states = params.states
         if params.at_least_one_transition_in_pool:
@@ -263,8 +259,29 @@ class WorkerShoot(ABC):
             at_least_one = ''
         t = process_state(target_state, states)
         pool_size = params.selection_pool_size if not sweep else 1
+        # C-GAIMMD: the shooting points of reactive-region chains are
+        # generated (aimmd.cgaimmd.source); internal shooting and sweeps are
+        # unchanged
+        do_cgaimmd = (params.chain_type == 'cgaimmd' and not sweep
+                      and t == states[1])
+        if do_cgaimmd:
+            # imported here, so that RFPS and TPS runs import no C-GAIMMD code
+            from ..cgaimmd import source as cgaimmd_source
+            from ..cgaimmd.restart import check_cgaimmd_restart
+            from ..cgaimmd.sidecar import (write_in_flight, read_in_flight,
+                                           clear_in_flight, write_shot_sidecar,
+                                           reconcile_in_flight,
+                                           unknown_origin_record)
+            # a TPS history cannot continue as C-GAIMMD
+            check_cgaimmd_restart(params, directory)
+        in_flight = {}  # chain folder -> in-flight record of its shot
         # retrieve and process paths
-        if not sweep:
+        if do_cgaimmd:
+            # no transition extraction: end-state frames are valid initial
+            # paths of a C-GAIMMD run (they seed the free simulations), and
+            # C-GAIMMD chains never select from them
+            initial_paths = self.initial_paths
+        elif not sweep:
             initial_paths = get_initial_transitions_for_shooting_chain(
                 self.initial_paths, states)
         else:
@@ -359,14 +376,20 @@ class WorkerShoot(ABC):
                 print(f'\nLoading shooting chain and selection pool {now()}')
                 chain = params.shot_chains(  # weights accounted
                     directory, t, k + chain_id)
-                pool = PathEnsemble(f'{folder}/pool.log')
-                update_selection_pool(
-                    pool, pool_size, chain,
-                    chain_initial_paths, at_least_one=at_least_one,
-                    boundaries=(load_npy(f'{directory}/bins.npy')
-                                if always_select_inside_the_bins
-                                and t == states[1] else None))
-                pool.save(f'{folder}/pool.log')
+                if do_cgaimmd:
+                    # the RFPS selection pool is unused, pool.log untouched;
+                    # a crash may have left an in-flight record
+                    pool = PathEnsemble()
+                    reconcile_in_flight(folder, chain, params)
+                else:
+                    pool = PathEnsemble(f'{folder}/pool.log')
+                    update_selection_pool(
+                        pool, pool_size, chain,
+                        chain_initial_paths, at_least_one=at_least_one,
+                        boundaries=(load_npy(f'{directory}/bins.npy')
+                                    if always_select_inside_the_bins
+                                    and t == states[1] else None))
+                    pool.save(f'{folder}/pool.log')
                 print(f'... currently {len(chain)} path'
                     f'{"s" if len(chain) != 1 else ""} in shooting chain')
                 print(f'... currently {len(pool)} path'
@@ -392,7 +415,14 @@ class WorkerShoot(ABC):
 
         # must have network, bins, and descriptors
         # only if it makes sense
-        if t == states[1] and not sweep and nbins > 1:
+        if do_cgaimmd:
+            # C-GAIMMD: the network only (its workers never wait for bins);
+            # the source checks the network and its generator at start-up
+            source = cgaimmd_source.make_cgaimmd_source(params, self,
+                                                        self._directory)
+            if not source.wait_for_network():
+                return
+        elif t == states[1] and not sweep and nbins > 1:
             print(f'\nWaiting for neural network, bins, densities {now()}')
             while True:
                 try:
@@ -430,7 +460,16 @@ class WorkerShoot(ABC):
                 print(f'\nSelecting shooting point for '
                       f'{self._location}/path{len(chain) + 1:06g} {now()}')
 
-                if not sweep:
+                if do_cgaimmd:
+                    # a generated shooting point; None: must_stop
+                    shooting_point = source.next_shooting_point(
+                        chain=chain, folder=folder,
+                        path_name=f'path{len(chain) + 1:06g}')
+                    if shooting_point is None:
+                        return
+                    in_flight[folder] = shooting_point.record
+
+                elif not sweep:
                     # update selection pool
                     # (add last chain path to pool if not already there)
                     update_selection_pool(
@@ -480,11 +519,18 @@ class WorkerShoot(ABC):
                 # clean
                 remove(f'{folder}/*back*', f'{folder}/*forw*')
 
+                # C-GAIMMD: record the shot before its segments exist, so
+                # that a restart can attach the record to the path
+                if do_cgaimmd:
+                    write_in_flight(folder, in_flight[folder],
+                                    shooting_point.positions)
+
                 # initialize simulation
                 params.initialize_simulation(shooting_point,
                     f'{folder}/back', f'{folder}/forw')
 
-                if not sweep:  # save pool status (removed SP's source)
+                if not sweep and not do_cgaimmd:
+                    # save pool status (removed SP's source)
                     pool.save(f'{folder}/pool.log')
 
             elif sweep and current_frame is None:
@@ -496,6 +542,14 @@ class WorkerShoot(ABC):
                 current_frame = read_sweep_marker(folder)
                 if current_frame is None:
                     current_frame = len(chain) % sweep_size
+
+            elif do_cgaimmd and folder not in in_flight:
+                # resumed mid-shot after a restart: the shooting point is in
+                # the initialized segments and its record in the marker; an
+                # RFPS shot in flight when the run was continued as C-GAIMMD
+                # has none
+                in_flight[folder] = (read_in_flight(folder) or
+                    unknown_origin_record(folder, f'path{len(chain) + 1:06g}'))
 
             try:
                 # update existing paths: backward
@@ -525,16 +579,30 @@ class WorkerShoot(ABC):
                     nframes_forw = (stop_frame or 0) + last_length
                     nframes_forw = min(nframes_forw, max_length - offset)
             except RuntimeError as exc:
-                if (params.retry_with_state_definition_glitches
+                # under C-GAIMMD a generated shooting point that fails the
+                # read-back state check is a candidate rejection
+                cgaimmd_rejection = (
+                    do_cgaimmd
+                    and cgaimmd_source.READBACK_FAILURE_IS_REJECTION)
+                if ((params.retry_with_state_definition_glitches
+                        or cgaimmd_rejection)
                         and 'should be in' in str(exc)):
+                    reason = ('retry_with_state_definition_glitches=True'
+                              if params.retry_with_state_definition_glitches
+                              else "chain_type='cgaimmd': a generated "
+                                   "shooting point failing the read-back "
+                                   "check is a candidate rejection")
                     print(f'WARNING: state-definition glitch in {folder}: '
                           f'{exc}. Deleting back*/forw* and reselecting a '
-                          f'new shooting point '
-                          f'(retry_with_state_definition_glitches=True).')
+                          f'new shooting point ({reason}).')
                     remove(f'{folder}/*back*', f'{folder}/*forw*')
                     # the retry re-creates back/forw under the same names:
                     # drop the deleted files' readers and state arrays too
                     evict_segment_caches(folder)
+                    if do_cgaimmd:
+                        source.note_glitch(folder, exc,
+                                           in_flight.pop(folder, None))
+                        clear_in_flight(folder)
                     back_simulation_completed = False
                     forw_simulation_completed = False
                     back = Path()
@@ -560,6 +628,13 @@ class WorkerShoot(ABC):
                               descriptors_series=getattr(
                                   params, 'descriptors_series',
                                   'descriptors'))
+                if do_cgaimmd:
+                    # the per-shot sidecar, then the marker goes
+                    write_shot_sidecar(path, in_flight.pop(folder, None),
+                                       params=params, states=states,
+                                       target_state=t)
+                    clear_in_flight(folder)
+                    source.note_registered()
                 self.total_steps += 1
                 self.total_frames += path.n_frames
                 
