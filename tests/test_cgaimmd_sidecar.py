@@ -658,7 +658,12 @@ def test_bias_settings(tmp_path):
     params.__dict__.update(gmx_mdrun='gmx mdrun -ntomp 2', path=Path(tmp_path))  # parent: tmp_path
     assert sidecar.bias_settings(params) is None
     plumed = tmp_path / 'opes_static.dat'
-    plumed.write_text('OPES_METAD ... (a test)\n')
+    state = tmp_path / 'STATE_FROZEN'
+    state.write_text('#! FIELDS time sigma_0 height\n0 0.1 1.0\n')
+    plumed.write_text(f'd: DISTANCE ATOMS=1,2\n'
+                      f'opes: OPES_METAD ...\n  ARG=d PACE=1000000000 BARRIER=25 RESTART=YES\n'
+                      f'  STATE_RFILE={state} STATE_WFILE=STATE_OUT\n...\n'
+                      f'PRINT ARG=d,opes.bias FILE=COLVAR STRIDE=1\n')
 
     def bias_function(fname):
         return np.zeros(1)
@@ -670,8 +675,13 @@ def test_bias_settings(tmp_path):
     assert record == {'record_bias': True, 'bias_source': 'file',
                       'bias_function': f'{__name__}.test_bias_settings.<locals>.bias_function',
                       'bias_reactive_threshold': 0.5, 'plumed_file': str(plumed),
-                      'plumed_sha256': file_sha256(plumed), 'preparation_unbiased': True}
+                      'plumed_file_relative': True, 'plumed_sha256': file_sha256(plumed),
+                      'plumed_inputs': [{'keyword': 'STATE_RFILE', 'path': str(state),
+                                         'sha256': file_sha256(state)}],
+                      'preparation_unbiased': True}
     json.dumps(record)
+    params.__dict__['gmx_mdrun'] = f'gmx mdrun -ntomp 2 -plumed {plumed}'
+    assert sidecar.bias_settings(params)['plumed_file_relative'] is False
     plumed.unlink()                                                   # recorded, but unreadable
     assert sidecar.bias_settings(params)['plumed_sha256'] is None
     # a sidecar written for such a run records it

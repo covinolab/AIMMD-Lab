@@ -853,14 +853,6 @@ def software_versions():
     return out
 
 
-def _file_sha256(fname):
-    try:
-        with open(fname, 'rb') as handle:
-            return hashlib.sha256(handle.read()).hexdigest()
-    except OSError:
-        return None
-
-
 def bias_settings(params):
     """The sidecar's ``bias`` block: the PLUMED bias of the run, None without one.
 
@@ -876,36 +868,41 @@ def bias_settings(params):
         ``gmx_mdrun`` has no ``-plumed``. Otherwise ``record_bias``,
         ``bias_source``, ``bias_function`` (its qualified name),
         ``bias_reactive_threshold``, ``plumed_file`` (the ``-plumed`` file of
-        ``gmx_mdrun``, absolute), ``plumed_sha256`` (of that file, None if it
-        cannot be read) and ``preparation_unbiased`` (always True: candidate
-        preparation removes ``-plumed`` from its mdrun commands,
+        ``gmx_mdrun``, absolute; a relative one is resolved against the
+        params folder), ``plumed_file_relative`` (True when ``gmx_mdrun``
+        names it relative: mdrun then looks for it in each chain folder),
+        ``plumed_sha256`` (of that file, None if it cannot be read),
+        ``plumed_inputs`` (the files the PLUMED input reads, e.g. a frozen
+        OPES state's ``STATE_RFILE``: ``keyword``, ``path``, ``sha256``;
+        :func:`aimmd.cgaimmd.plumed.plumed_input_files`) and
+        ``preparation_unbiased`` (always True: candidate preparation removes
+        ``-plumed`` from its mdrun commands,
         :func:`aimmd.cgaimmd.preparation.gromacs.sanitize_mdrun`).
     """
+    from .plumed import plumed_setup
     record_bias = bool(getattr(params, 'record_bias', False))
-    plumed = None
-    if getattr(params, 'engine', None) == 'gromacs':
-        mdrun = getattr(params, 'gmx_mdrun', None)
-        if isinstance(mdrun, str) and '-plumed' in mdrun:
-            from .preparation.gromacs import _option_value
-            plumed = _option_value(mdrun, '-plumed')
-    if not record_bias and plumed is None:
+    setup = plumed_setup(params)
+    if not record_bias and setup is None:
         return None
-    if plumed is not None:
-        base = getattr(params, 'parent', None) or os.getcwd()
-        plumed = os.path.abspath(os.path.join(str(base), os.path.expanduser(plumed)))
     function = getattr(params, 'bias_function', None)
     name = None
     if function is not None:
         name = (f"{getattr(function, '__module__', None) or '?'}."
                 f"{getattr(function, '__qualname__', None) or type(function).__name__}")
     threshold = getattr(params, 'bias_reactive_threshold', None)
+    inputs = None
+    if setup is not None:
+        inputs = [{'keyword': entry['keyword'], 'path': entry['path'] or entry['written'],
+                   'sha256': entry['sha256']} for entry in setup['inputs']]
     return {'record_bias': record_bias, 'bias_source': getattr(params, 'bias_source', None),
             'bias_function': name,
             'bias_reactive_threshold': (threshold if threshold is None
                                         or isinstance(threshold, (int, float))
                                         else list(threshold)),
-            'plumed_file': plumed,
-            'plumed_sha256': None if plumed is None else _file_sha256(plumed),
+            'plumed_file': None if setup is None else setup['path'],
+            'plumed_file_relative': None if setup is None else setup['relative'],
+            'plumed_sha256': None if setup is None else setup['sha256'],
+            'plumed_inputs': inputs,
             'preparation_unbiased': True}
 
 

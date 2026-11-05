@@ -39,9 +39,15 @@ Public names, by module:
 - :mod:`~aimmd.cgaimmd.sidecar` (the per-shot records of a run):
   ``read_shot_sidecar``, ``shot_table``, ``summarise_shots``.
 
+- :mod:`~aimmd.cgaimmd.restart` (continuing a run as C-GAIMMD, post-training
+  on an existing run): ``check_cgaimmd_restart``, ``derive_run``,
+  ``migrate_descriptors``;
+- :mod:`~aimmd.cgaimmd.preflight` (``python -m aimmd.cgaimmd.preflight
+  params.py``, the checks before a job): ``run_preflight``.
+
 The target-committor laws are in :mod:`~aimmd.cgaimmd.lambda_law`, the
 candidate pool and the network watcher in :mod:`~aimmd.cgaimmd.pool`, the
-restart check in :mod:`~aimmd.cgaimmd.restart`.
+PLUMED bias of the shots in :mod:`~aimmd.cgaimmd.plumed`.
 
 The GROMACS tools that turn a generated configuration into a shooting point
 (descriptors, validity checks, the polish, re-solvation, minimization) are in
@@ -77,6 +83,10 @@ _LAZY_NAMES = {
     'read_shot_sidecar': 'sidecar',
     'shot_table': 'sidecar',
     'summarise_shots': 'sidecar',
+    'check_cgaimmd_restart': 'restart',
+    'derive_run': 'restart',
+    'migrate_descriptors': 'restart',
+    'run_preflight': 'preflight',
 }
 
 _OPTIONAL_SUBPACKAGES = ('bioemu2',)
