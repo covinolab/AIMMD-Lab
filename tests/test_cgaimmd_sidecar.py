@@ -712,6 +712,20 @@ def test_archived_flow_sidecar_is_read_with_the_new_names(tmp_path):
     assert sidecar.read_shot_sidecar(fname) == {'schema': 'new'}
 
 
+def test_old_source_of_a_shot_resumed_without_its_record(tmp_path):
+    """The old code's source 'resumed_without_flow_record' is read under its new name."""
+    _legacy._reset()
+    folder = _folder(tmp_path)
+    fname = f'{folder}/path000003.xtc'
+    Path(f'{fname}.flow.json').write_text(json.dumps(
+        {'schema': 'aimmd.flow.shot/1', 'source': 'resumed_without_flow_record',
+         'path_name': 'path000003'}))
+    with pytest.warns(DeprecationWarning):
+        data = sidecar.read_shot_sidecar(fname)
+    assert data['source'] == 'resumed_without_cgaimmd_record'
+    assert data['source'] == sidecar.unknown_origin_record(folder, 'x')['source']
+
+
 def test_archived_in_flight_marker_is_found_translated_and_cleared(tmp_path):
     """The marker a stopped run of the old code left (.flow_shooting_point.json) is read with
     the new names, used by reconcile and the coordinate match, and cleared with the new one."""
@@ -763,7 +777,7 @@ def _listing(root):
     return out
 
 
-def test_shot_table_and_summary(tmp_path):
+def test_shot_table_and_summary(tmp_path, monkeypatch):
     """One row per shot (new sidecars, old sidecars, shots without one); nothing is written."""
     _legacy._reset()
     run = tmp_path / 'run'
@@ -788,8 +802,19 @@ def test_shot_table_and_summary(tmp_path):
     _shot(str(run / 'chainA0'), stem='path000001')                  # internal shooting: not listed
     before = _listing(run)
 
-    rows = sidecar.shot_table(run, params=params)
-    assert _listing(run) == before                              # read only: no lock, cache, offsets
+    # read only: no file lock (older filelock versions leave the lock files of AIMMD's cache
+    # readers behind, as in the archived runs) and no trajectory reader (MDAnalysis writes
+    # offsets files next to the trajectories)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('shot_table must not lock or open trajectories')
+
+    import MDAnalysis
+    import aimmd.cache.npy as npy_cache
+    with monkeypatch.context() as patch:
+        patch.setattr(npy_cache, 'FileLock', forbidden)
+        patch.setattr(MDAnalysis, 'Universe', forbidden)
+        rows = sidecar.shot_table(run, params=params)
+    assert _listing(run) == before                              # nothing written
     assert [set(row) for row in rows] == [set(sidecar.SHOT_TABLE_COLUMNS)] * 3
     by_name = {(row['chain'], row['path']): row for row in rows}
     assert set(by_name) == {('chainR0', 'path000001.xtc'), ('chainR0', 'path000002.xtc'),

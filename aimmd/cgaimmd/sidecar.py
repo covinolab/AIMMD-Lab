@@ -973,8 +973,9 @@ def shot_table(run_dir, *, states='ARB', trajectory_extension='.xtc', params=Non
     -----
     Nothing is written: no trajectory is opened (MDAnalysis would write an
     offsets file), state caches are read with ``numpy.load`` (AIMMD's cache
-    readers create lock files), and the caller decides where to save the
-    table. This is what replaces the per-campaign summary scripts, which
+    readers take file locks, which older filelock versions leave behind as
+    files, as in the archived runs), and the caller decides where to save
+    the table. This is what replaces the per-campaign summary scripts, which
     wrote their CSV into the run folder.
     """
     if params is not None:
