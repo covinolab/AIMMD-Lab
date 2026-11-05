@@ -40,6 +40,7 @@ import sys
 import threading
 import types
 import warnings
+from numbers import Real
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -229,6 +230,13 @@ The keyword is still accepted with the value None, or with a value of
 
 DROPPED_KEYWORD_VALUES = {
     ('pretrain_end_states', 'prior'): ('gaussian',),
+    # the flow branch's defaults of its mixture-prior keywords, which production pretraining calls
+    # passed along with prior='gaussian' (they did nothing there; a mixture call is refused by its
+    # prior or prior_sigma)
+    ('pretrain_end_states', 'prior_bank'): ('holdout',),
+    ('pretrain_end_states', 'prior_bank_max'): (5000,),
+    ('pretrain_end_states', 'prior_pi_null'): (0.5,),
+    ('pretrain_end_states', 'prior_pi_temperature'): (1.0,),
 }
 """(class or function, old keyword) -> values besides None that are accepted with a warning."""
 
@@ -314,6 +322,18 @@ def translate(table, value, what):
     return new
 
 
+def _is_harmless(value, harmless):
+    """Whether `value` is one of `harmless`: equal strings, or equal numbers (no bools)."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        return value in [h for h in harmless if isinstance(h, str)]
+    if isinstance(value, Real):
+        return any(isinstance(h, Real) and not isinstance(h, bool) and value == h
+                   for h in harmless)
+    return False
+
+
 def dropped_keywords(owner, keywords):
     """Check the keywords a constructor did not recognise against :data:`DROPPED_KEYWORDS`.
 
@@ -344,7 +364,7 @@ def dropped_keywords(owner, keywords):
             where = f'{owner}.__init__()' if owner[:1].isupper() else f'{owner}()'
             raise TypeError(f"{where} got an unexpected keyword argument '{name}'")
         harmless = DROPPED_KEYWORD_VALUES.get((owner, name), ())
-        if value is not None and not (isinstance(value, str) and value in harmless):
+        if value is not None and not _is_harmless(value, harmless):
             raise TypeError(f'{owner}({name}=...) is not supported: {reason}')
         warn_renamed(f'{owner}({name}={value!r})', f'{owner}() without {name!r} ({reason})',
                      key=('keyword', owner, name), stacklevel=4)

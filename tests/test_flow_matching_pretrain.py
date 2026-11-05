@@ -167,6 +167,37 @@ def test_the_old_prior_keywords(tmp_path):
     assert ('pretrain_end_states', 'prior') in _legacy.DROPPED_KEYWORDS
 
 
+def test_the_flow_branch_gaussian_pretraining_call(tmp_path):
+    """The production call of the flow branch (Gaussian arm) runs: its mixture-prior keywords are that branch's defaults.
+
+    ``analysis/campaigns/2026-10-02_universal-prior/chignolin/pretrain_end_states.py``
+    passed ``prior='gaussian'`` with ``prior_bank='holdout', prior_bank_max=5000,
+    prior_pi_null=0.5, prior_pi_temperature=1.0``, which did nothing with the
+    Gaussian prior. Other values of those keywords still raise.
+    """
+    old_defaults = dict(prior='gaussian', prior_bank='holdout', prior_bank_max=5000,
+                        prior_pi_null=0.5, prior_pi_temperature=1.0)
+    net = TinyFlowNetwork(n_atoms=3, lambda_clip=10.0)
+    with pytest.warns(DeprecationWarning) as caught:
+        report = pretrain.pretrain_end_states(net, _frames(), tmp_path / 'g', states='ARB',
+                                              steps=1, batch_size=4, device='cpu',
+                                              **old_defaults)
+    assert report['steps_done'] == 1
+    warned = ' '.join(str(w.message) for w in caught)
+    for name in old_defaults:
+        assert f'pretrain_end_states({name}=' in warned
+    pretrain.pretrain_end_states(net, _frames(), tmp_path / 'i', states='ARB', steps=1,
+                                 batch_size=4, device='cpu', prior_pi_temperature=1,
+                                 prior_bank_max=5000.0)                # equal numbers
+    for bad in ({'prior_bank_max': 2000}, {'prior_pi_null': 0.3}, {'prior_pi_temperature': 2.0},
+                {'prior_bank_max': '5000'}, {'prior_pi_temperature': True},
+                {'prior_bank': 'train'}):
+        with pytest.raises(TypeError, match='is not supported: .*not part of C-GAIMMD'):
+            pretrain.pretrain_end_states(net, _frames(), tmp_path / 'bad', states='ARB',
+                                         steps=1, device='cpu', **{**old_defaults, **bad})
+    assert not (tmp_path / 'bad').exists()
+
+
 def test_cosine_spans_the_pretraining_steps(tmp_path, monkeypatch):
     """Pretraining is one round of `steps` steps: more steps than the fit's steps_per_round are fine."""
     trainers = []
