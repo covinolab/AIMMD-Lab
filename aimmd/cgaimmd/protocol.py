@@ -41,7 +41,8 @@ REQUIRED_MEMBERS = ('forward', 'state_dict', 'load_state_dict', 'parameters', 't
 """Callable members every C-GAIMMD network must have (what AIMMD requires of any network).
 
 ``n_atoms`` is required as well (see :func:`check_network_protocol` for its
-one fallback).
+one fallback, kept for the networks of the old code and removed with the old
+names).
 """
 
 OPTIONAL_MEMBERS = ('committor', 'lambda_clip', 'reset_parameters', 'default_generator')
@@ -176,9 +177,11 @@ def check_network_protocol(network):
     Required attribute:
 
     - ``n_atoms``: int ``M`` >= 1, the number of atoms the network generates
-      [:func:`n_atoms_of`]. Its one fallback: a flow-matching network (one
-      with ``sample_prior``) may leave it out, and ``M`` is then read from
-      the shape of a prior sample.
+      [:func:`n_atoms_of`]. Its one fallback, kept for the flow-matching
+      networks of the old code and removed together with the old names
+      (:mod:`aimmd.cgaimmd._legacy`): a network with ``sample_prior`` may
+      leave it out, and ``M`` is then read from the shape of a prior sample.
+      New networks set ``n_atoms``.
 
     Optional members and the fallback C-GAIMMD code uses without them (the
     helper of this module that applies it in brackets):

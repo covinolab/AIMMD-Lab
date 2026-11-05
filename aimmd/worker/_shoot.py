@@ -248,6 +248,13 @@ class WorkerShoot(ABC):
         # progress bar)
         directory = self._directory or '.'
         params = self.params
+        if params.chain_type == 'cgaimmd':
+            # its shooting points come from the generator, through a source
+            # this worker does not have yet; shooting from path frames instead
+            # would be an RFPS run under the wrong name
+            raise NotImplementedError(
+                "chain_type='cgaimmd' cannot shoot yet: the C-GAIMMD shooting-"
+                "point source is not part of this version of AIMMD-Lab")
         do_tps = params.chain_type == 'tps'
         states = params.states
         if params.at_least_one_transition_in_pool:
