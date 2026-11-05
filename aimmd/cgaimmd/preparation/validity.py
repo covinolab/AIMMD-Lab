@@ -4,7 +4,9 @@ aimmd.cgaimmd.preparation.validity
 
 Validity checks of generated samples: the bond graph and the
 relabelling into topology order, chirality with automorphisms, and steric
-clashes. :class:`TopologyValidity` is a ``cgaimmd_validity_function``.
+clashes. :class:`TopologyValidity` is a ``cgaimmd_validity_function``;
+:class:`PolishedValidity` runs it before and after a restrained
+minimization of each raw sample (the polish).
 
 A generator produces points in R^{3M}; nothing constrains them to be the right
 molecule. A malformed structure does not merely give a bad shot, it gives a
@@ -52,7 +54,8 @@ from .. import _once
 from ..types import ValidityResult
 from .descriptors import _BOND_SCALE, _COVALENT_RADII, _covalent_pairs
 
-__all__ = ['TopologyValidity', 'Canonicalizer', 'detect_stereocenters', 'covalent_bond_edges']
+__all__ = ['TopologyValidity', 'PolishedValidity', 'Canonicalizer', 'detect_stereocenters',
+           'covalent_bond_edges']
 
 #: Bondi van der Waals radii (Å) of the clash fallback
 _VDW_RADII = {1: 1.20, 3: 1.82, 5: 1.92, 6: 1.70, 7: 1.55, 8: 1.52, 9: 1.47, 11: 2.27, 12: 1.73,
@@ -631,4 +634,241 @@ class TopologyValidity:
                 reason[n] = 'clash'
                 continue
             ok[n] = True
+        return ValidityResult(positions=out, ok=ok, reason=reason, info=info)
+
+
+# ---------------------------------------------------------------------------
+# the check around a polish
+# ---------------------------------------------------------------------------
+
+class _AtomCount:
+    """What :func:`~aimmd.cgaimmd.preparation.minimize.polish` reads ``n_atoms`` from."""
+
+    def __init__(self, n_atoms):
+        self.n_atoms = int(n_atoms)
+
+
+class PolishedValidity:
+    """``cgaimmd_validity_function``: check the raw sample, polish it, check the polished sample.
+
+    Raw generated samples carry near-contacts that the bond-graph check reads
+    as extra bonds (``'bond_count'`` for about 60 % of the raw BioEmu2
+    chignolin samples, about 0 % after the polish). Every finite sample is
+    therefore minimized alone with its heavy atoms restrained
+    (:func:`~aimmd.cgaimmd.preparation.minimize.polish`), and the polished
+    structure is what is checked and passed on. The check of the raw sample
+    is recorded, not used.
+
+    Parameters
+    ----------
+    validity : callable
+        ``validity(positions, context) -> ValidityResult`` on ``(n, M, 3)``
+        samples, e.g. a :class:`TopologyValidity`. It checks the raw samples
+        and then the polished ones.
+    minimizer : callable
+        ``minimizer(frame, context) -> PreparedFrame`` of the ``M`` atoms
+        alone, e.g. a
+        :class:`~aimmd.cgaimmd.preparation.minimize.GromacsMinimizer`, which
+        then needs ``topology=``: the topology of those atoms (the run's
+        topology is that of the full system).
+    structure : str
+        Structure file of the ``M`` atoms (e.g. a ``.gro``): their names in
+        the GROMACS files of the polish, and the box of the polish.
+    box : array_like, optional
+        ``(6,)`` box of the polish (Å, degrees); default: the box of `structure`.
+    workers : int, optional
+        Minimizations at the same time (threads, each running GROMACS).
+    info_keys : sequence of str, optional
+        Keys of the per-sample ``info`` of `validity` to copy into the
+        result: as ``'raw_<key>'`` from the check of the raw sample, as
+        ``'<key>'`` from the check of the polished one.
+
+    Raises
+    ------
+    TypeError
+        If `validity` or `minimizer` is not callable.
+    ValueError
+        For a :class:`~aimmd.cgaimmd.preparation.minimize.GromacsMinimizer`
+        without ``topology``, a box that is not 6 positive lengths and
+        angles, or ``workers < 1``.
+
+    Notes
+    -----
+    Per call, for the samples ``x`` (``(n, M, 3)``):
+
+    1. ``raw = validity(x, context)``. Its positions (relabelled into
+       topology order where an isomorphism was found) are what is polished.
+    2. Every sample whose raw positions are finite is polished in
+       ``{context.scratch}/polish``, the ``k``-th of them with the seed
+       ``context.seed + k``. Where the minimizer has no grompp or mdrun
+       command of its own, it uses those of ``context.params``
+       (``gmx_grompp`` without its topology and index file, ``gmx_mdrun``).
+    3. ``validity`` checks the polished samples. Their positions, ok flags
+       and reasons are the result.
+
+    Reasons: ``'polish: not finite'`` (not polished), ``'polish: <the
+    minimizer's reason>'`` (the minimization failed), else the reason of the
+    check of the polished sample. ``info[n]`` holds ``raw_ok`` and
+    ``raw_reason`` for every sample, and ``polish_ok`` and
+    ``heavy_rms_displacement_A`` (from the minimizer's record) for every
+    polished one. A sample that is not polished, or whose polish failed,
+    keeps its raw positions.
+
+    This is the validity hook that the BioEmu2 production params of October
+    2026 wrote out by hand around ``aimmd.flow.validate._polish``. With the
+    default ``info_keys=()`` the result is the same as that of the chignolin
+    hook (a test checks it against a recording of the hand-written hook). A
+    system-specific check, such as the Ca2+ site check of the trypsin
+    params, goes into `validity`: a function that runs
+    :class:`TopologyValidity` and the extra check and returns one
+    :class:`~aimmd.cgaimmd.types.ValidityResult`, whose own info keys
+    `info_keys` can then copy.
+
+    ``settings`` records the settings of the polish, and those of
+    `validity` and the minimizer where they have ``settings``.
+
+    Examples
+    --------
+    The minimizer below takes the run's grompp command (``gmx_grompp``) and
+    its own mdrun command, one thread per minimization; as in every command
+    a spawned worker runs, the executable is given by its full path.
+
+    >>> _validity = PolishedValidity(                                              # doctest: +SKIP
+    ...     TopologyValidity('protein.top',
+    ...                      GeneratorDescriptors('protein.gro', GeneratorAtoms(166)),
+    ...                      clash_reference=['free_md_protein.xtc']),
+    ...     GromacsMinimizer(em_mdp='em.mdp', topology='protein.top',
+    ...                      mdrun='/path/to/gmx mdrun -ntmpi 1 -ntomp 1 -nb cpu -pin off'),
+    ...     'protein.gro', workers=8)
+    >>> def cgaimmd_validity_function(positions, context):                         # doctest: +SKIP
+    ...     return _validity(positions, context)
+    """
+
+    def __init__(self, validity, minimizer, structure, *, box=None, workers=1, info_keys=()):
+        import warnings
+
+        import MDAnalysis as mda
+
+        from .minimize import GromacsMinimizer
+
+        if not callable(validity):
+            raise TypeError(f'validity must be callable, got {type(validity).__name__}')
+        if not callable(minimizer):
+            raise TypeError(f'minimizer must be callable, got {type(minimizer).__name__}')
+        if isinstance(minimizer, GromacsMinimizer) and minimizer.topology is None:
+            raise ValueError('the GromacsMinimizer of the polish needs topology=: the topology '
+                             'of the generator atoms alone (the run\'s topology is that of the '
+                             'full system)')
+        if int(workers) < 1:
+            raise ValueError(f'workers must be >= 1, got {workers!r}')
+        self.validity = validity
+        self.minimizer = minimizer
+        self.structure = os.path.abspath(str(structure))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            self._universe = mda.Universe(self.structure)
+        self.n_atoms = int(len(self._universe.atoms))
+        box = self._universe.dimensions if box is None else box
+        box = np.asarray(box if box is not None else [], dtype=float).reshape(-1)
+        if (box.shape != (6,) or not np.all(np.isfinite(box)) or np.any(box[:3] <= 0)
+                or np.any(box[3:] <= 0)):
+            raise ValueError(f'the polish box must be 6 positive numbers (A, degrees), got '
+                             f'{box.tolist()} (give box= when {self.structure} has none)')
+        self.box = box
+        self.workers = int(workers)
+        self.info_keys = tuple(str(key) for key in info_keys)
+        self.settings = {
+            'function': 'aimmd.cgaimmd.preparation.validity.PolishedValidity',
+            'structure': self.structure, 'n_atoms': self.n_atoms, 'box': self.box.tolist(),
+            'workers': self.workers, 'info_keys': list(self.info_keys),
+            'validity': getattr(validity, 'settings', None),
+            'minimizer': getattr(minimizer, 'settings', None)}
+
+    def _polish_params(self, params):
+        """What the minimizer of the polish reads as params (see the class Notes)."""
+        from types import SimpleNamespace
+
+        from .gromacs import _grompp_command
+
+        out = SimpleNamespace(universe=self._universe, parent=os.path.dirname(self.structure))
+        grompp = getattr(params, 'gmx_grompp', None)
+        if grompp:
+            out.gmx_grompp = _grompp_command(str(grompp), index=False)
+        mdrun = getattr(params, 'gmx_mdrun', None)
+        if mdrun:
+            out.gmx_mdrun = str(mdrun)
+        return out
+
+    def __call__(self, positions, context):
+        """Check, polish and check again a batch of raw samples.
+
+        Parameters
+        ----------
+        positions : numpy.ndarray
+            ``(n, M, 3)`` (or ``(M, 3)``) Å raw generator output.
+        context : aimmd.cgaimmd.types.CandidateContext
+            The hook context (``scratch``, ``seed``, ``params``, ``must_stop``, ``settings``).
+
+        Returns
+        -------
+        ValidityResult
+            See the class Notes.
+
+        Raises
+        ------
+        ValueError
+            For samples with another atom count than `structure`.
+        """
+        from .minimize import polish
+
+        x = np.asarray(positions, dtype=np.float64)
+        if x.ndim == 2:
+            x = x[None]
+        if x.ndim != 3 or x.shape[1:] != (self.n_atoms, 3):
+            raise ValueError(f'expected (n, {self.n_atoms}, 3) samples (the atoms of '
+                             f'{self.structure}), got {x.shape}')
+        n = len(x)
+        raw = self.validity(x, context)
+        raw_positions = np.asarray(raw.positions, dtype=np.float64)
+        raw_info = list(raw.info) if raw.info is not None else [{}] * n
+        finite = np.isfinite(raw_positions).reshape(n, -1).all(axis=1)
+        out = raw_positions.copy()
+        ok = np.zeros(n, dtype=bool)
+        reason = np.array(['polish: not finite'] * n, dtype=object)
+        info = []
+        for i in range(n):
+            record = dict(raw_ok=bool(raw.ok[i]), raw_reason=str(raw.reason[i]))
+            record.update({f'raw_{key}': (raw_info[i] or {}).get(key) for key in self.info_keys})
+            info.append(record)
+        polished_ones = np.flatnonzero(finite)
+        if not len(polished_ones):
+            return ValidityResult(positions=out, ok=ok, reason=reason, info=info)
+        scratch = os.path.join(context.scratch, 'polish')
+        os.makedirs(scratch, exist_ok=True)
+        settings = getattr(context, 'settings', None) or {}
+        results = polish(raw_positions[polished_ones], self.minimizer, _AtomCount(self.n_atoms),
+                         self._polish_params(getattr(context, 'params', None)), self.box,
+                         scratch, self.workers, int(context.seed),
+                         must_stop=getattr(context, 'must_stop', None),
+                         keep_scratch=bool(settings.get('keep_scratch')))
+        done = np.array([result.ok for result in results], dtype=bool)
+        for j, result in enumerate(results):
+            i = polished_ones[j]
+            info[i].update(polish_ok=bool(result.ok),
+                           heavy_rms_displacement_A=(result.record or {}).get(
+                               'heavy_rms_displacement_A'))
+            if not result.ok:
+                reason[i] = f'polish: {result.reason}'
+        if done.any():
+            polished = np.stack([results[j].positions for j in np.flatnonzero(done)])
+            again = self.validity(polished, context)
+            checked = polished_ones[done]
+            out[checked] = np.asarray(again.positions, dtype=np.float64)
+            ok[checked] = np.asarray(again.ok, dtype=bool)
+            reason[checked] = np.asarray(again.reason, dtype=object)
+            if self.info_keys:
+                again_info = list(again.info) if again.info is not None else [{}] * len(checked)
+                for j, i in enumerate(checked):
+                    info[i].update({key: (again_info[j] or {}).get(key)
+                                    for key in self.info_keys})
         return ValidityResult(positions=out, ok=ok, reason=reason, info=info)

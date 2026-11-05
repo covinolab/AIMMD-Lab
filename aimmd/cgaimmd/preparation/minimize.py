@@ -8,7 +8,8 @@ Restrained GROMACS energy minimization of generated candidates.
   solute-only systems: it minimizes the prepared candidate that is shot.
 - :func:`polish` minimizes raw generated structures alone (no solvent) before
   their validity is checked, so that the near-contacts of raw samples are not
-  read as extra bonds.
+  read as extra bonds. :class:`aimmd.cgaimmd.preparation.validity.PolishedValidity`
+  is the ready-made validity hook built on it.
 
 Why its own grompp/mdrun pipeline and not ``Params.minimize_energy``: the
 position restraints must hold the generated geometry (the candidate itself
@@ -294,7 +295,8 @@ def polish(positions, minimizer, network, params, box, scratch, workers=1, seed=
     The polish of raw generated samples: each structure is minimized on its
     own (no solvent), with its heavy atoms restrained (as the minimizer is
     configured), so that the near-contacts of a raw sample relax before its
-    bond graph is read.
+    bond graph is read. :class:`~aimmd.cgaimmd.preparation.validity.PolishedValidity`
+    wraps it into a ``cgaimmd_validity_function``.
 
     Parameters
     ----------
@@ -353,7 +355,8 @@ def polish(positions, minimizer, network, params, box, scratch, workers=1, seed=
     Examples
     --------
     >>> results = polish(samples, GromacsMinimizer(topology='solute.top', em_mdp='em.mdp',  # doctest: +SKIP
-    ...                                            grompp='gmx grompp', mdrun='gmx mdrun'),
+    ...                                            grompp='/path/to/gmx grompp',
+    ...                                            mdrun='/path/to/gmx mdrun -ntomp 1'),
     ...                  network, SimpleNamespace(universe=universe, parent='.'),
     ...                  universe.dimensions, 'scratch/polish', workers=4)
     >>> polished = [r.positions for r in results if r.ok]                       # doctest: +SKIP

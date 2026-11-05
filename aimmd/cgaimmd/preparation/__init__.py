@@ -13,7 +13,10 @@ The params file of a run wraps them in its hooks:
   the solute, and optionally a cluster of waters chosen by
   :class:`~.descriptors.ClusterSelection`);
 - ``cgaimmd_validity_function``: :class:`~.validity.TopologyValidity` (bond
-  graph, relabelling into topology order, chirality, clashes);
+  graph, relabelling into topology order, chirality, clashes), or
+  :class:`~.validity.PolishedValidity`, which checks each raw sample, polishes it
+  with a restrained minimization (:func:`~.minimize.polish`) and checks the
+  polished sample;
 - ``cgaimmd_prepare_function``: :class:`~.solvate.GromacsSolvator`, which puts a
   solute-only or cluster candidate back into the run's periodic system
   (solvate, ions, restrained EM, optional restrained NVT stages,
@@ -45,6 +48,7 @@ _LAZY_NAMES = {
     'GeneratorDescriptors': 'descriptors',
     'ClusterSelection': 'descriptors',
     'TopologyValidity': 'validity',
+    'PolishedValidity': 'validity',
     'GromacsMinimizer': 'minimize',
     'polish': 'minimize',
     'GromacsSolvator': 'solvate',
