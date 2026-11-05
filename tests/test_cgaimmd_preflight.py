@@ -35,6 +35,16 @@ TESTS = Path(__file__).resolve().parent
 NANMA = TESTS / 'cgaimmd_nanma'
 
 
+@pytest.fixture(autouse=True)
+def _restore_sys_path(monkeypatch):
+    """``Params.load`` leaves the params file's folder in ``sys.path``; take it out after the test.
+
+    Otherwise a later ``import params`` (``tests/test_retinal.py`` imports its
+    ``params.py`` by name) finds a ``params.py`` of this module's runs first.
+    """
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+
+
 def statuses(report):
     return {check.name: check.status for check in report.checks}
 

@@ -13,6 +13,7 @@ the real trainer and a fake fit.
 
 import json
 import os
+import sys
 import types
 
 import numpy as np
@@ -24,6 +25,16 @@ from aimmd.cgaimmd.restart import (check_cgaimmd_restart, check_descriptor_cache
                                    check_descriptor_record, derive_run, migrate_descriptors)
 from aimmd.path.utils import get_cache_fname
 from tests._cgaimmd_helpers import build_cgaimmd_run_dir, cgaimmd_params_namespace
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_path(monkeypatch):
+    """``Params.load`` leaves the params file's folder in ``sys.path``; take it out after the test.
+
+    Otherwise a later ``import params`` (``tests/test_retinal.py`` imports its
+    ``params.py`` by name) finds a ``params.py`` of this module's runs first.
+    """
+    monkeypatch.setattr(sys, 'path', list(sys.path))
 
 
 def snapshot(folder):

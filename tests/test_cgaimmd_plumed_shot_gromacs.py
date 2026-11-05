@@ -20,6 +20,7 @@ PLUMED (the conda GROMACS of CI is not); the test skips otherwise.
 import glob
 import json
 import os
+import sys
 import shutil
 import subprocess
 from pathlib import Path
@@ -38,6 +39,16 @@ from tests._cgaimmd_helpers import mdrun_thread_options
 pytestmark = pytest.mark.gromacs
 
 NANMA = Path(__file__).resolve().parent / 'cgaimmd_nanma'
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_path(monkeypatch):
+    """``Params.load`` leaves the params file's folder in ``sys.path``; take it out after the test.
+
+    Otherwise a later ``import params`` (``tests/test_retinal.py`` imports its
+    ``params.py`` by name) finds a ``params.py`` of this module's runs first.
+    """
+    monkeypatch.setattr(sys, 'path', list(sys.path))
 
 PLUMED = '''phi: TORSION ATOMS=5,7,9,15
 psi: TORSION ATOMS=7,9,15,17

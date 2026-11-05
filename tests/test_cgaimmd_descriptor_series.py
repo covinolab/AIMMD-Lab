@@ -22,6 +22,7 @@ included. The tests cover
 """
 
 import os
+import sys
 import shutil
 from pathlib import Path
 
@@ -45,6 +46,16 @@ from tests._cgaimmd_helpers import build_cgaimmd_run_dir, cgaimmd_params_namespa
 TESTS = Path(__file__).resolve().parent
 NANMA = TESTS / 'cgaimmd_nanma' / 'conf.gro'
 NANMA_WATER = TESTS / 'cgaimmd_nanma_water' / 'conf.gro'
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_path(monkeypatch):
+    """``Params.load`` leaves the params file's folder in ``sys.path``; take it out after the test.
+
+    Otherwise a later ``import params`` (``tests/test_retinal.py`` imports its
+    ``params.py`` by name) finds a ``params.py`` of this module's runs first.
+    """
+    monkeypatch.setattr(sys, 'path', list(sys.path))
 
 _DESCRIPTORS = None
 """The module-level object the wrapper below calls (the params-file pattern)."""
