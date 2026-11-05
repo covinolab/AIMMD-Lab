@@ -188,6 +188,9 @@ class WorkerFree(ABC):
         # get/process params
         k = int(k)
         total = int(total)
+        # `Worker.run` has changed into the params folder: the run directory
+        # is `_directory` from here on (`directory` is relative to the folder
+        # the worker was started from, and only labels the progress bar)
         directory = self.directory or '.'
         _directory = self._directory or '.'
         params = self.params
@@ -248,9 +251,9 @@ class WorkerFree(ABC):
             while True:
                 try:
                     params.update_network(
-                        directory, timeout=0, raise_if_failure=True)
+                        _directory, timeout=0, raise_if_failure=True)
                     bins, densities = params.load_bins_and_densities(
-                        directory, timeout=0, raise_if_failure=True)
+                        _directory, timeout=0, raise_if_failure=True)
                     break
                 except:
                     if self.termination_signal:
@@ -318,7 +321,7 @@ class WorkerFree(ABC):
 
                     # take initial_frames from a sampled transition
                     if restart_with_transition:
-                        chains = params.shot_chains(directory, r, old=chains)
+                        chains = params.shot_chains(_directory, r, old=chains)
                         transitions = assemble_pathensemble(chains).extract(
                             states, states[::-1])
                         if transitions:

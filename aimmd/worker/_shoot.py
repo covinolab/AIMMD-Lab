@@ -242,7 +242,11 @@ class WorkerShoot(ABC):
         k = int(k)
         nchains_per_worker = int(nchains_per_worker)
         mode = 'shoot'
-        directory = self.directory
+        # `Worker.run` has changed into the params folder: the run directory
+        # is `self._directory` from here on (`self.directory` is relative to
+        # the folder the worker was started from, and only labels the
+        # progress bar)
+        directory = self._directory or '.'
         params = self.params
         do_tps = params.chain_type == 'tps'
         states = params.states
