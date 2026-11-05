@@ -129,34 +129,44 @@ def test_cluster_ranking_rules(tmp_path):
     np.testing.assert_array_equal(descriptors.select(frame, BOX), out)
 
 
-def test_cluster_whole_near_center(tmp_path):
-    """Solute and waters are whole and translated next to the center, even across the box."""
+def test_cluster_whole_next_to_its_references(tmp_path):
+    """Solute and waters are whole; each water's oxygen is next to its ranking reference.
+
+    The default rule ranks by the nearest solute heavy atom, so in the cluster
+    the distance from every oxygen to the nearest heavy atom is the
+    minimum-image distance of the frame, even for a solute split across the box.
+    """
     solute = np.array([[0.4, 15.0, 15.0], [-1.1, 15.0, 15.0], [-1.6, 15.9, 15.0]])  # split
     path, frame = _solvated(tmp_path, solute=solute)
     descriptors = GeneratorDescriptors(str(path), GeneratorAtoms(3, ClusterSelection(n_waters=8)))
     out = descriptors.select(frame, BOX)
     np.testing.assert_allclose(np.linalg.norm(out[1] - out[0]), 1.5, atol=0.02)   # .gro precision
     np.testing.assert_allclose(np.linalg.norm(out[2] - out[1]), np.hypot(0.5, 0.9), atol=0.02)
-    masses = np.array([12.011, 12.011, 1.008])
-    center = (out[:3] * masses[:, None]).sum(0) / masses.sum()
+    oxygens = frame[3::3]
+    ranked = np.linalg.norm(_mi(oxygens[:, None] - frame[None, :2]), axis=-1).min(1)
     for k in range(8):
         water = out[3 + 3 * k: 6 + 3 * k]
         np.testing.assert_allclose(np.linalg.norm(water[1] - water[0]), 0.96, atol=0.02)
         np.testing.assert_allclose(np.linalg.norm(water[2] - water[0]), np.hypot(0.24, 0.93),
                                    atol=0.02)
-        offset = water[0] - center
-        np.testing.assert_allclose(offset, _mi(offset), atol=1e-9)          # nearest image
-    # the center of another selection
+        in_cluster = np.linalg.norm(water[0] - out[:2], axis=-1).min()     # no periodic images
+        assert in_cluster == pytest.approx(np.sort(ranked)[k], abs=1e-9)
+    # one solute molecule: center_selection moves nothing
     centered = GeneratorDescriptors(str(path), GeneratorAtoms(3, ClusterSelection(
         n_waters=8, center_selection='name C1')))
-    out2 = centered.select(frame, BOX)
-    for k in range(8):
-        offset = out2[3 + 3 * k] - out2[0]
-        np.testing.assert_allclose(offset, _mi(offset), atol=1e-9)
+    np.testing.assert_allclose(centered.select(frame, BOX), out, atol=1e-12)
 
 
-def test_center_selection_places_waters(tmp_path):
-    """A water is placed next to the center_selection atoms, not next to the solute's COM."""
+def test_center_selection_places_molecules_not_waters(tmp_path):
+    """A water stays next to its ranking reference, wherever center_selection is.
+
+    The chain C1..C20 spans 26.6 A of the 30 A box; the water's oxygen is 2.4 A
+    from C20 and 2.8 A from C1 (through the box face). The default rule ranks
+    it by C20, so it is placed next to C20 (x = 29), also with
+    ``center_selection='name C1'``: the port in the development branch moved
+    it next to C1 (x = -1), where its distance to the reference it was ranked
+    by is not the ranking distance.
+    """
     chain = np.stack([np.arange(20) * 1.4 + 1.0, np.full(20, 15.0), np.full(20, 15.0)], 1)
     oxygen = np.array([29.0, 15.0, 17.0])
     positions = np.concatenate([chain, [oxygen, oxygen + [0.96, 0.0, 0.0],
@@ -164,20 +174,98 @@ def test_center_selection_places_waters(tmp_path):
     names = [f'C{i + 1}' for i in range(20)] + ['OW', 'HW1', 'HW2']
     _write_gro(tmp_path / 'chain_w.gro', names, ['CHN'] * 20 + ['SOL'] * 3, [1] * 20 + [2] * 3,
                positions % L, BOX)
-    near_c1 = GeneratorDescriptors(str(tmp_path / 'chain_w.gro'), GeneratorAtoms(20, ClusterSelection(
+    structure = str(tmp_path / 'chain_w.gro')
+    near_c1 = GeneratorDescriptors(structure, GeneratorAtoms(20, ClusterSelection(
         n_waters=1, center_selection='name C1')))
-    default = GeneratorDescriptors(str(tmp_path / 'chain_w.gro'), GeneratorAtoms(20, ClusterSelection(
-        n_waters=1)))
+    default = GeneratorDescriptors(structure, GeneratorAtoms(20, ClusterSelection(n_waters=1)))
     frame = positions % L
-    assert near_c1.select(frame, BOX)[20, 0] == pytest.approx(-1.0, abs=1e-3)
+    assert near_c1.select(frame, BOX)[20, 0] == pytest.approx(29.0, abs=1e-3)
     assert default.select(frame, BOX)[20, 0] == pytest.approx(29.0, abs=1e-3)
-    # a selection that extends over more than half the box (C1 and C20, 26.6 A apart): its
-    # center is that of the whole chain (x = 14.3), not of C20 folded next to C1 (x = -0.7)
-    ends = GeneratorDescriptors(str(tmp_path / 'chain_w.gro'), GeneratorAtoms(20, ClusterSelection(
+    # a selection that extends over more than half the box (C1 and C20, 26.6 A apart)
+    ends = GeneratorDescriptors(structure, GeneratorAtoms(20, ClusterSelection(
         n_waters=1, center_selection='name C1 or name C20')))
     assert ends.select(frame, BOX)[20, 0] == pytest.approx(29.0, abs=1e-3)
     shifted = ends.select((frame + [10.0, 0.0, 0.0]) % L, BOX)          # C1 at 11, O at 9
     assert shifted[20, 0] - shifted[0, 0] == pytest.approx(28.0, abs=1e-3)
+    # a rule ranked by C1 places the same water next to C1
+    by_c1 = GeneratorDescriptors(structure, GeneratorAtoms(20, ClusterSelection(
+        n_waters=1, ranking=({'reference': 'name C1', 'n': -1},))))
+    assert by_c1.select(frame, BOX)[20, 0] == pytest.approx(-1.0, abs=1e-3)
+
+
+def _unbound_host_guest(tmp_path, shift=(0.0, 0.0, 0.0)):
+    """A host (C1, BR1, BR2) and a guest (C3-C4) 14.9 A apart, waters, one straddling the box edge.
+
+    The heavy host keeps the solute's center of mass 16.1 A from the oxygen
+    of water 0 (x = 29.8), which is 2.75 A from the guest atom C4 and whose
+    hydrogen HW1 is written across the x = 30 face (x = 0.76). Water 1 sits
+    next to the host, the others are far from both. Returns the structure,
+    the frame (shifted by `shift` and wrapped into the box, as MD writes it)
+    and the masses.
+    """
+    solute = np.array([[11.0, 15.0, 15.0], [12.9, 15.0, 15.0], [11.0, 16.9, 15.0],   # host
+                       [26.0, 15.0, 15.0], [27.5, 15.0, 15.0]])                      # guest
+    names = ['C1', 'BR1', 'BR2', 'C3', 'C4']
+    resnames, resids = ['HST'] * 3 + ['GST'] * 2, [1, 1, 1, 2, 2]
+    masses = [12.011, 79.904, 79.904, 12.011, 12.011]
+    oxygens = [[29.8, 15.0, 16.5], [9.0, 15.0, 17.0], [20.0, 4.0, 4.0], [5.0, 25.0, 25.0],
+               [20.0, 26.0, 6.0]]
+    positions = list(solute)
+    for k, o in enumerate(np.asarray(oxygens)):
+        positions += [o, o + [0.96, 0.0, 0.0], o + [-0.24, 0.93, 0.0]]
+        names += ['OW', 'HW1', 'HW2']
+        resnames += ['SOL'] * 3
+        resids += [3 + k] * 3
+        masses += [15.999, 1.008, 1.008]
+    frame = (np.asarray(positions) + np.asarray(shift)) % L
+    _write_gro(tmp_path / 'unbound.gro', names, resnames, resids, frame, BOX)
+    import MDAnalysis as mda
+    stored = mda.Universe(str(tmp_path / 'unbound.gro')).atoms.positions.astype(np.float64)
+    return tmp_path / 'unbound.gro', stored, np.asarray(masses)
+
+
+@pytest.mark.parametrize('shift', [(0.0, 0.0, 0.0), (7.3, -12.1, 3.0)])
+def test_water_straddling_the_box_edge_in_an_unbound_frame(tmp_path, shift):
+    """A water ranked by a guest far from its host comes out whole and next to the guest.
+
+    The bug of the development branch: every water went to the image nearest
+    the solute's center of mass, which in this unbound frame is 16.1 A from
+    the guest's water, more than half the box, so the water landed one box
+    away from the guest. Each water is now next to the reference of the rule
+    that ranked it, whole across the box face.
+    """
+    path, frame, masses = _unbound_host_guest(tmp_path, shift)
+    ranking = ({'reference': 'resname GST', 'n': 1}, {'reference': 'resname HST', 'n': -1})
+    descriptors = GeneratorDescriptors(str(path), GeneratorAtoms(5, ClusterSelection(
+        n_waters=2, ranking=ranking)), masses=masses)
+    assert len(descriptors._walk) == 2                                  # host and guest
+    out = descriptors.select(frame, BOX)
+    guest, host = out[3:5], out[0:3]
+    guest_water, host_water = out[5:8], out[8:11]
+    for water in (guest_water, host_water):                            # whole
+        assert np.linalg.norm(water[1] - water[0]) == pytest.approx(0.96, abs=0.02)
+        assert np.linalg.norm(water[2] - water[0]) == pytest.approx(np.hypot(0.24, 0.93),
+                                                                    abs=0.02)
+    # the guest's water next to the guest, at the frame's minimum-image distance
+    o_frame, guest_frame = frame[5], frame[3:5]
+    ranked = np.linalg.norm(_mi(o_frame - guest_frame), axis=-1).min()
+    assert ranked == pytest.approx(np.hypot(2.3, 1.5), abs=0.01)
+    assert np.linalg.norm(guest_water[0] - guest, axis=-1).min() == pytest.approx(ranked,
+                                                                                  abs=1e-9)
+    # the host's water next to the host
+    ranked_host = np.linalg.norm(_mi(frame[8] - frame[:3]), axis=-1).min()
+    assert np.linalg.norm(host_water[0] - host, axis=-1).min() == pytest.approx(ranked_host,
+                                                                                abs=1e-9)
+    # the guest stays 14.9 A from the host; the guest's water is more than half a box from
+    # the solute's center of mass (where the development branch put it one box away)
+    center = (out[:5] * masses[:5, None]).sum(0) / masses[:5].sum()
+    assert np.linalg.norm(guest_water[0] - center) > L / 2
+    # the radii of the rules on the cluster alone are the ranking distances of the frame,
+    # which the solvator's selection consistency relies on
+    assert descriptors.cluster_radii(out) == pytest.approx([ranked, ranked_host], abs=1e-9)
+    # without a shift: the cluster sits where the frame has it, HW1 unwrapped to x = 30.76
+    if not any(shift):
+        np.testing.assert_allclose(guest_water[:, 0], [29.8, 30.76, 29.56], atol=2e-3)
 
 
 def test_com_rule_is_mass_weighted(tmp_path):

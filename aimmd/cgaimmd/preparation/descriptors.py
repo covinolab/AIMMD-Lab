@@ -26,14 +26,23 @@ are placed in two passes: every molecule after the first is translated by the
 lattice vector that brings its center of mass nearest that of the first
 molecule, then every molecule (the first included) by the lattice vector that
 brings its center of mass nearest the center (the solute's center of mass, or
-that of ``center_selection``, after the first pass). Every chosen water is
-made whole around its oxygen and translated so that its oxygen is nearest the
-center. The cluster is then whole and contiguous in Cartesian space and needs
+that of ``center_selection``, after the first pass).
+
+Every chosen water is made whole around its oxygen and translated by the
+lattice vector that brings its oxygen nearest the reference of the ranking
+rule that chose it: the nearest of the rule's reference atoms
+(``'min_distance'``) or their center of mass (``'com'``). Every distance a
+rule ranked by is then the same in the cluster as in the frame, and a water
+next to a solute molecule far from the rest of the solute (a guest that has
+left its host) stays next to that molecule. The cluster is whole and needs
 no periodic images.
 
 Port of ``cfaimmd.solvation.EnvironmentSelector`` and
 ``cfaimmd.geometry.make_whole`` (the prototype of C-GAIMMD) without the
-variable-count environment block (a generator needs a fixed atom count).
+variable-count environment block (a generator needs a fixed atom count). The
+water placement differs from the port in the development branch, which
+moved every water next to the center: in unbound frames that put the waters
+ranked by a guest one box away from it.
 Standard library and numpy at import; MDAnalysis inside the constructor.
 """
 
@@ -116,7 +125,7 @@ class ClusterSelection:
     """Ranking rules, dicts (or :class:`RankingRule`) with ``'reference'`` (an MDAnalysis selection of solute atoms, or None for the solute heavy atoms), ``'mode'`` and ``'n'``, stored as :class:`RankingRule`; see Notes of :class:`GeneratorDescriptors`."""
 
     center_selection: Optional[str] = None
-    """MDAnalysis selection of solute atoms whose center of mass the cluster is made whole around; None means the solute."""
+    """MDAnalysis selection of solute atoms whose center of mass several solute molecules are placed around (see the module docstring); None means the solute. The waters are placed next to the reference of their ranking rule."""
 
     def __post_init__(self):
         if int(self.n_waters) < 1:
@@ -306,7 +315,7 @@ class GeneratorDescriptors:
     generator_atoms : GeneratorAtoms
         The generator atoms.
     whole : bool, optional
-        Make molecules whole and place the cluster next to its center (False: coordinates as stored).
+        Make molecules whole, place them around the center and each cluster water next to the reference of its ranking rule (False: coordinates as stored).
     masses : array_like, optional
         ``(N,)`` masses (u) of the system instead of the structure's, e.g. ``aimmd.cgaimmd.preparation.topology.read_masses(top)``.
 
@@ -338,7 +347,9 @@ class GeneratorDescriptors:
     PDB with ``CONECT`` records for a ligand only) thus falls back to the
     covalent rule. Several solute molecules are placed in two passes (see
     the module docstring): next to the first molecule, then next to the
-    center. The center is computed on the whole-made solute.
+    center. The center is computed on the whole-made solute. Each water goes
+    next to the reference of its rule (the module docstring), so the
+    distances in the cluster are the ranking distances.
 
     Masses are those of the structure's MDAnalysis Universe, exact for a
     ``.tpr`` but guessed from atom names otherwise (NANMA's CHARMM carbons
@@ -595,6 +606,21 @@ class GeneratorDescriptors:
             out[r] = d
         return out
 
+    def _rule_anchor(self, r, oxygen, solute, lengths):
+        """The point a water ranked by rule `r` is placed next to (Å).
+
+        The reference atom of the rule nearest to the oxygen (minimum image;
+        ties keep the lower index) for ``'min_distance'``, the center of mass
+        of the reference atoms for ``'com'``: the point the rule measured the
+        oxygen's distance to (:meth:`_rule_distances`).
+        """
+        rule = self._rules[r]
+        reference = solute[rule['indices']]
+        if rule['mode'] == 'com':
+            return _com(reference, self._solute_masses[rule['indices']])
+        d = np.linalg.norm(_min_image(oxygen[None, :] - reference, lengths), axis=-1)
+        return reference[int(np.argmin(d))]
+
     def _whole_solute(self, solute, lengths):
         """Each molecule whole by the bond walk; molecules placed in the two passes of the module docstring."""
         x = solute.copy()
@@ -631,24 +657,26 @@ class GeneratorDescriptors:
         cluster = self.generator_atoms.cluster
         out = np.empty((self.n_atoms, 3))
         lengths = _box_lengths(dimensions)
-        if self.whole and lengths is not None:
-            solute, center = self._whole_solute(x[:S], lengths)
-        else:
-            solute = x[:S]
-            center = None                       # waters are placed only when whole
+        place = self.whole and lengths is not None
+        solute = self._whole_solute(x[:S], lengths)[0] if place else x[:S]
         out[:S] = solute
         if cluster is None:
             return out
         apw = cluster.atoms_per_water
         oxygens = x[self._water_atoms[:, 0]]
         distances = self._rule_distances(oxygens, solute, lengths)
-        chosen = [int(i) for pick in self._rank(distances) for i in pick]
-        for slot, water in enumerate(chosen):
-            block = x[self._water_atoms[water]]
-            if self.whole and lengths is not None:
-                block = block[0] + _min_image(block - block[0], lengths)
-                block = block + (_min_image(block[0] - center, lengths) - (block[0] - center))
-            out[S + slot * apw: S + (slot + 1) * apw] = block
+        slot = 0
+        for r, pick in enumerate(self._rank(distances)):
+            for water in pick:
+                block = x[self._water_atoms[int(water)]]
+                if place:
+                    # whole around the oxygen, then the oxygen next to what rule r ranked it by
+                    block = block[0] + _min_image(block - block[0], lengths)
+                    anchor = self._rule_anchor(r, block[0], solute, lengths)
+                    block = block + (_min_image(block[0] - anchor, lengths)
+                                     - (block[0] - anchor))
+                out[S + slot * apw: S + (slot + 1) * apw] = block
+                slot += 1
         return out
 
 
