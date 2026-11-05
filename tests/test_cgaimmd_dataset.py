@@ -208,6 +208,25 @@ def test_dataset_keeps_one_copy_of_the_rows(tmp_path):
                                                                             fresh.sp_rows)
 
 
+def test_reused_shooting_points_outside_the_training_frames(tmp_path):
+    """shot_stride=2 leaves the shooting frame (index 3) out of the training frames: its row is
+    taken from the previous round's shooting points, and the result equals a fresh extraction."""
+    s = _setup(tmp_path, n_chains=2, n_shots=3, n_free=1, n_atoms=2, n_parts=2)
+    assert s.rd.shooting_index % 2 == 1
+    settings = dict(states='ARB', n_atoms=2, shot_stride=2, free_stride=3)
+    first = ds.extract_dataset(s.pe, **settings)
+    shots = first.fr_group >= 0
+    assert shots.any() and (first.fr_loc[shots] % 2 == 0).all()
+    assert len(first.sp_rows) == 6
+    again = ds.extract_dataset(s.pe, previous=first, **settings)
+    assert again.notes['reused_files'] == again.notes['n_files'] == first.notes['n_files']
+    fresh = ds.extract_dataset(s.pe, **settings)
+    for name in ('sp_rows', 'sp_r_first', 'sp_r_last', 'sp_group', 'fr_rows', 'fr_state',
+                 'fr_w', 'fr_group', 'fr_loc', 'fr_trajectory', 'fr_frame'):
+        assert np.array_equal(getattr(again, name), getattr(fresh, name)), name
+    assert list(again.sp_fname) == list(fresh.sp_fname)
+
+
 def test_internal_shooting_chains_are_not_held_out(tmp_path):
     """Groups are reactive-chain numbers: chain<A>0 frames are group -1, never held out with chainR0.
 
@@ -436,6 +455,23 @@ def test_trajectory_ids_join_part_files(tmp_path):
     assert again.trajectories == data.trajectories
     assert np.array_equal(again.fr_frame, data.fr_frame)
     assert np.array_equal(again.fr_trajectory, data.fr_trajectory)
+
+
+def test_frame_index_starts_at_the_first_frame_a_path_holds(tmp_path):
+    """No path holds the first frames of the trajectory: its frame index still starts at 0."""
+    rd = build_cgaimmd_run_dir(tmp_path, n_chains=1, n_shots=2, n_free=0, n_atoms=2)
+    parts, whole = _crossing_trajectory(rd.run)
+    order = {(str(f), int(loc)): i for i, (f, loc) in enumerate(zip(whole.filenames,
+                                                                    whole.locs))}
+    # frames 5-14 (part files 1 and 2) and 20-23 (only part file 3, so a trajectory of its own)
+    pe = assemble_pathensemble(PathEnsemble(whole[5:15]), PathEnsemble(whole[20:24]))
+    data = ds.extract_dataset(pe, states='ARB', n_atoms=2, free_stride=1)
+    assert data.trajectories == [tuple(parts[:2]), (parts[2],)]
+    joined = data.fr_trajectory == 0
+    assert data.fr_frame[joined].tolist() == [
+        order[(f, int(loc))] - 5 for f, loc in zip(data.fr_fname[joined], data.fr_loc[joined])]
+    assert sorted(data.fr_frame[joined].tolist()) == list(range(10))
+    assert sorted(data.fr_frame[~joined].tolist()) == list(range(4))
 
 
 def test_trajectory_of_paths_that_run_backwards(tmp_path):
