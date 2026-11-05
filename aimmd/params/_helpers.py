@@ -766,9 +766,13 @@ class ParamsHelpers(ABC):
         when the GROMACS topology grompp uses is missing, unreadable or has
         another atom count than ``topology``. Runs when all fields are
         processed or one it depends on was assigned; a no-op for the default
-        ``masses_from_topology = False``.
+        ``masses_from_topology = False`` and for engines other than GROMACS,
+        which keep the guessed masses (so that the default of the field can
+        be flipped without touching toy-engine runs, spec K.2).
         """
         if not getattr(self, 'masses_from_topology', False):
+            return
+        if getattr(self, 'engine', 'gromacs') != 'gromacs':
             return
         if fields and not {'masses_from_topology', 'topology', 'gmx_grompp',
                            'engine', 'multi_system', 'system_ids'} & set(fields):

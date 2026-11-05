@@ -661,10 +661,11 @@ velocities are drawn at a third of the intended temperature.
 True: they are read from the GROMACS topology that grompp uses (the `-p` file
 of `gmx_grompp`, else 'topol.top' next to the params file; force-field
 includes are looked up in GROMACS' share directory: GMXLIB, GMXDATA, or the
-installation of the grompp executable). That file must then be readable and
-have as many atoms as `topology`, which is checked when the params are loaded.
-Whenever both sets of masses are available and differ, a warning naming the
-atoms is printed once."""
+installation of the grompp executable). That file must then be readable, have
+as many atoms as `topology` and no massless atoms (virtual sites), which is
+checked when the params are loaded. Only for engine='gromacs': other engines
+keep the guessed masses. Whenever both sets of masses are available and
+differ, a warning naming the atoms is printed once."""
                  })
 
     # ------------------------------------------------------------------

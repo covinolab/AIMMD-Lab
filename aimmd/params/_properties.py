@@ -182,11 +182,13 @@ class ParamsProperties(ABC):
         -----
         With ``masses_from_topology`` False (the default) the masses are
         guessed via `guess_masses(self._universe.atoms)` (MDAnalysis' guess
-        from the atom names); with True they are read from the GROMACS
-        topology grompp uses (the ``-p`` of ``gmx_grompp``, else
-        ``topol.top`` in ``params.parent``). The topology is read once per
-        file version and cached; when both sets of masses are available and
-        differ, a warning is printed once.
+        from the atom names); with True and ``engine = 'gromacs'`` they are
+        read from the GROMACS topology grompp uses (the ``-p`` of
+        ``gmx_grompp``, else ``topol.top`` in ``params.parent``). Other
+        engines have no such topology and keep the guess whatever
+        ``masses_from_topology`` says. The topology is read once per file
+        version and cached; when both sets of masses are available and
+        differ, a warning is printed once per file version.
         """
         if self._universe is None:
             return
@@ -195,18 +197,18 @@ class ParamsProperties(ABC):
     def _masses_of_universe(self, universe, gmx_grompp):
         """Guessed or topology masses of `universe` (see ``masses``)."""
         guessed = guess_masses(universe.atoms)
-        strict = bool(getattr(self, 'masses_from_topology', False))
-        if not strict and getattr(self, 'engine', 'gromacs') != 'gromacs':
-            return guessed                      # no GROMACS topology to compare with
+        if getattr(self, 'engine', 'gromacs') != 'gromacs':
+            return guessed                      # no topology grompp reads
         if not isinstance(gmx_grompp, str):     # multi-system, not bound to a system
             return guessed
+        strict = bool(getattr(self, 'masses_from_topology', False))
         topology = self._topology_masses(len(universe.atoms), gmx_grompp, strict=strict)
         if topology is None:
             return guessed
-        key = ('warned', self._topology_masses_key(gmx_grompp))
-        cache = self.__dict__.setdefault('_topology_masses_cache', {})
-        if key not in cache:
-            cache[key] = True
+        key = self._topology_masses_key(gmx_grompp)
+        warned = self.__dict__.setdefault('_topology_masses_warned', set())
+        if key not in warned:
+            warned.add(key)
             try:
                 names = [str(name) for name in universe.atoms.names]
             except Exception:                   # noqa: BLE001  (no names)
@@ -227,6 +229,7 @@ class ParamsProperties(ABC):
         return topology if strict else guessed
 
     def _topology_masses_key(self, gmx_grompp):
+        """``(absolute topology file, (mtime_ns, size) or None)``: the cache key of one file version."""
         top = os.path.abspath(gromacs_topology_file(gmx_grompp, self.parent))
         try:
             stat = os.stat(top)
