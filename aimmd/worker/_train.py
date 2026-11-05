@@ -71,7 +71,9 @@ from math import inf, nan
 
 # aimmd imports
 from .utils import (rescale_bins, get_initial_frames_for_training,
-                    reweight_parameters_with_bins)
+                    reweight_parameters_with_bins, save_network_atomically,
+                    write_initial_network, network_metadata_fname,
+                    load_network_weights)
 from .._config import NPY_CACHE, MDA_CACHE, print
 from ..cache.npy import save_npy
 from ..core.utils import now, replace_in_cache, accepts_system_id
@@ -134,8 +136,31 @@ from ..network.rescale_utils import find_knots_and_values, rescale
 from ..network import shm_cache
 from ..path.utils import get_cache_fname
 
+
+def _release_flow_matching_trainer(state_dir):
+    """Forget the flow-matching fit's in-process trainer of `state_dir`, if that fit was imported.
+
+    The flow-matching fit (:mod:`aimmd.cgaimmd.flow_matching.fit`) keeps one
+    trainer per fit-state folder in its process; a fit that was never
+    imported has none to release (the BioEmu2 fit and AIMMD's own fit keep
+    no such registry).
+    """
+    module = sys.modules.get('aimmd.cgaimmd.flow_matching.fit')
+    release = getattr(module, 'release_trainer', None)
+    if release is not None:
+        release(state_dir)
+
+
 # WorkerTrain mixin class
 class WorkerTrain(ABC):
+
+    kinetics_convergence_state_dir = None
+    """The fit-state folder of the current fraction of a C-GAIMMD kinetics convergence, else None.
+
+    A fit that keeps state on disk between calls (the flow-matching fit's
+    ``flow_fit<states>/``) reads it, so that the fractions never share a
+    folder with each other or with the run.
+    """
 
     def _cache_bias_files(self, pathensemble, bias_function, system_id=None):
         """Cache per-file bias arrays (file-mode bias tracking).
@@ -283,6 +308,29 @@ class WorkerTrain(ABC):
 
         Multi-system runs (``params.multi_system``) are dispatched to
         :meth:`_train_multi_system`; single-system behaviour below is unchanged.
+
+        Before anything is computed, a run folder that cannot continue as
+        ``chain_type='cgaimmd'`` is refused
+        (:func:`aimmd.cgaimmd.restart.check_cgaimmd_restart`: TPS history,
+        descriptor caches of other settings), and an ``initial_network``
+        (any chain type) becomes the run's network
+        (:func:`aimmd.worker.utils.write_initial_network`).
+
+        A fit may return ``(losses, info)`` with ``info`` a dict (the C-GAIMMD
+        fits do): its ``reason`` is printed when a round is skipped, and its
+        ``network_metadata`` (round, trained shots, seed, settings) is
+        written to ``network{states}.json`` before the network file
+        (:func:`aimmd.worker.utils.save_network_atomically`); the json also
+        gets ``total_steps``, ``sha256`` and ``saved``. The default fit's
+        tuple has a list there: then no json is written, as before.
+
+        A trainer that stops (a stop condition or a signal) during a fit, or
+        right after it, does not save that round's network as
+        ``network{states}.h5`` (the file keeps the previous round's network).
+        When the fit trained (it returned losses and is not a fit's no-op),
+        that round's network is saved as ``network{states}.final.h5``
+        instead, with its metadata in ``network{states}.final.json``
+        (:meth:`_save_final_network`).
         """
         if getattr(self.params, 'multi_system', False):
             return self._train_multi_system(nrounds, keep_running, **kwargs)
@@ -329,11 +377,24 @@ class WorkerTrain(ABC):
         
         # update kwargs to fit function
         kwargs['worker'] = self
-        
+
+        # C-GAIMMD: refuse a run folder that cannot continue as 'cgaimmd' (TPS
+        # history, descriptor caches of other settings) before anything is
+        # written or computed: the descriptor pass below fills only missing
+        # rows, so it would keep caches of other settings
+        if params.chain_type == 'cgaimmd':
+            from ..cgaimmd.restart import check_cgaimmd_restart
+            check_cgaimmd_restart(params, directory, descriptors=True)
+
+        # a pretrained initial network (any chain type) becomes the run's
+        # network before the first round
+        write_initial_network(params, directory)
+
         # load the network and bins if it is already possible
         print(f'\nLoading pre-existing network parameters {now()}')
         network_fname = f'{directory}/network{states}.h5'
         params.update_network(directory, timeout=0, raise_if_failure=False)
+        network_metadata = None   # of the last trained round (fits that give it)
         try:
             bins = NPY_CACHE.load(f'{directory}/bins{states}.h5')
         except:
@@ -493,40 +554,62 @@ class WorkerTrain(ABC):
                 # fit function
                 print(f'\nTraining the network '
                       f'(round {rounds_done + 1}, {now()})')
-                losses, *_ = fit(params, pathensemble + margins, **kwargs)
+                # a fit may return (losses, info), info a dict (the C-GAIMMD
+                # fits); the default fit's tuple has a list there
+                losses, *extra = fit(params, pathensemble + margins, **kwargs)
+                info = (extra[0] if extra and isinstance(extra[0], dict)
+                        else None)
                 if len(losses):
                     source = 'new'
                     print(f'*** training completed {now()}')
+                    network_metadata = (info or {}).get('network_metadata')
 
                     # periodically enforce
                     if self.termination_signal:
+                        self._save_final_network(network_fname,
+                                                 network_metadata, info)
                         break
 
                     rounds_done += 1
 
                 else:
-                    print(f'!!! training failed, reloading {now()}')
+                    if info and info.get('reason'):
+                        print(f'!!! training skipped: {info["reason"]} {now()}')
+                    else:
+                        print(f'!!! training failed, reloading {now()}')
                     params.update_network(
                         directory, timeout=0, raise_if_failure=False)
                     source = 'values'
 
                 # update current path ensemble and check stop condition
                 if must_stop():
+                    if source == 'new':
+                        self._save_final_network(network_fname,
+                                                 network_metadata, info)
                     return
 
                 # Persist the freshly trained network immediately, before the
                 # (potentially long) value pass + reweighting below. A crash or
                 # walltime kill during that downstream work then still leaves the
                 # trained model — and its step backup — on disk.
+                # Atomic, and with the fit's metadata written to
+                # network{states}.json first.
                 if source == 'new':
                     print(f'\nSaving network parameters to '
                           f'{network_fname} {now()}')
-                    torch.save(network.state_dict(), network_fname)
+                    save_network_atomically(
+                        network.state_dict(), network_fname,
+                        self._network_save_metadata(network_metadata))
                     n = (self.total_steps // save_interval) * save_interval
                     backup = f'{network_fname[:-3]}.step{n:06g}.h5'
                     if self.total_steps and not os.path.exists(backup):
                         shutil.copyfile(network_fname, backup)
                         print(f'*** copied {network_fname!r} to {backup!r}')
+                        metadata_fname = network_metadata_fname(network_fname)
+                        if (network_metadata is not None
+                                and os.path.exists(metadata_fname)):
+                            shutil.copyfile(metadata_fname,
+                                            network_metadata_fname(backup))
 
                 # rebuild the eval subsample (frames may have grown during fit)
                 eval_pe = (pathensemble.subsample(caps, states) if caps
@@ -657,7 +740,9 @@ class WorkerTrain(ABC):
                 # above predates this adjustment).
                 print(f'\nRe-saving rescaled network parameters to '
                       f'{network_fname} {now()}')
-                torch.save(network.state_dict(), network_fname)
+                save_network_atomically(
+                    network.state_dict(), network_fname,
+                    self._network_save_metadata(network_metadata))
 
             # check mid-cycle
             if self.termination_signal:
@@ -694,6 +779,115 @@ class WorkerTrain(ABC):
                 print(f'\nSaving bins and densities {now()}')
                 save_npy(f'{directory}/bins{states}.npy', bins)
                 save_npy(f'{directory}/densities{states}.npy', densities)
+
+    def _network_save_metadata(self, network_metadata):
+        """The ``network{s}.json`` record of a save, or None without fit metadata."""
+        if network_metadata is None:
+            return None
+        return {**network_metadata, 'total_steps': self.total_steps}
+
+    def _save_final_network(self, network_fname, network_metadata, info):
+        """
+        Save the network of a round whose fit a stop interrupted, beside the main file.
+
+        Parameters
+        ----------
+        network_fname : str
+            The run's ``network{states}.h5``; it is not touched.
+        network_metadata : dict or None
+            The fit's ``network_metadata`` of this round, or None.
+        info : dict or None
+            The fit's info dict (``status``, ``reason``), or None for fits
+            that give none.
+
+        Returns
+        -------
+        str or None
+            The file written, ``network{states}.final.h5``; None for a fit's
+            no-op round.
+
+        Notes
+        -----
+        The trainer does not save the network of a round whose fit a stop
+        condition interrupted (or after which it fired) as
+        ``network{states}.h5``, so that file's behaviour is unchanged. That
+        round's network is written to ``network{states}.final.h5`` with
+        :func:`~aimmd.worker.utils.save_network_atomically`, its json
+        ``network{states}.final.json`` first: the fit's metadata,
+        ``total_steps``, ``final`` (True), ``fit_status`` and ``fit_reason``
+        (the fit's ``status`` and ``reason``, None without an info dict),
+        ``sha256`` and ``saved``. No step backup is made, and a fit's no-op
+        round (``status == 'no-op'``: its network is unchanged) writes
+        nothing. An existing final file is replaced; one left by an earlier
+        session can be older than ``network{states}.h5`` (compare the
+        ``round`` of the two jsons).
+        """
+        info = info if isinstance(info, dict) else {}
+        if info.get('status') == 'no-op':
+            return None
+        final_fname = f'{network_fname[:-len(".h5")]}.final.h5'
+        metadata = {**(network_metadata or {}), 'total_steps': self.total_steps,
+                    'final': True, 'fit_status': info.get('status'),
+                    'fit_reason': info.get('reason')}
+        print(f'\nSaving the network of the stopped last round to '
+              f'{final_fname} ({network_fname} is unchanged) {now()}')
+        save_network_atomically(self.params.network.state_dict(), final_fname, metadata)
+        return final_fname
+
+    def _kinetics_convergence_cgaimmd_start(self, directory, states, fraction,
+                                            initial_network):
+        """
+        Start a fraction of a C-GAIMMD kinetics convergence.
+
+        Parameters
+        ----------
+        directory : str
+            The run directory.
+        states : str
+            ``params.sorted_states``.
+        fraction : float
+            The data fraction.
+        initial_network : str
+            The file of ``params.initial_network``.
+
+        Returns
+        -------
+        str
+            The fraction's fit-state folder,
+            ``{directory}/flow_fit{states}.kcv{fraction_pct:03d}``.
+
+        Notes
+        -----
+        Removes the side checkpoint and round records an earlier call left in
+        that folder (``state.pt``, ``state.pt.prev``, ``rounds.jsonl``) and
+        the trainer the flow-matching fit keeps for it in this process (when
+        that fit was imported), loads ``initial_network`` into
+        ``params.network`` (strict, ``weights_only``) and sets
+        :attr:`kinetics_convergence_state_dir`. Every fraction therefore
+        starts from the initial network, never from the run's network or
+        another fraction's.
+        """
+        state_dir = (f'{directory}/flow_fit{states}'
+                     f'.kcv{round(fraction * 100):03d}')
+        _release_flow_matching_trainer(state_dir)
+        removed = []
+        for name in ('state.pt', 'state.pt.prev', 'rounds.jsonl'):
+            fname = os.path.join(state_dir, name)
+            if os.path.exists(fname):
+                os.remove(fname)
+                removed.append(name)
+        if removed:
+            print(f'... removed the fit state of an earlier call in {state_dir} '
+                  f'({", ".join(removed)})')
+        load_network_weights(self.params.network, initial_network)
+        print(f'... C-GAIMMD: the fraction starts from initial_network '
+              f'{initial_network}, fit state in {state_dir}')
+        self.kinetics_convergence_state_dir = state_dir
+        return state_dir
+
+    def _kinetics_convergence_cgaimmd_end(self, state_dir):
+        """Release the flow-matching fit's trainer of a finished fraction (its state stays on disk)."""
+        _release_flow_matching_trainer(state_dir)
 
     def _multi_system_layout(self):
         """Resolve the (subdirectory, system_id) list this trainer serves.
@@ -1165,6 +1359,18 @@ class WorkerTrain(ABC):
         * The current network state is saved before the analysis and restored
           afterwards, leaving the worker in the same state it was in before
           the call.
+        * Under ``chain_type='cgaimmd'`` every fraction starts from
+          ``params.initial_network`` (required; ``ValueError`` without it),
+          the starting point of every C-GAIMMD training round, and keeps its
+          fit state in a folder of its own,
+          ``{directory}/flow_fit{states}.kcv{fraction_pct:03d}`` (emptied at
+          the start of the fraction; :attr:`kinetics_convergence_state_dir`
+          names it while the fraction trains). The run's
+          ``network{states}.h5`` and ``flow_fit{states}/`` are never read or
+          written by these fits. Missing committor values of the full
+          ensemble are computed with the run's network before the first
+          fraction, so every fraction's fit reweights its frames with the
+          run's committor values, as the run's trainer does.
         * Temporary ``*.kcv.npy`` cache files are written to disk during value
           computation and removed again before the method returns.
         * When ``params.record_bias`` is ``True``, the per-frame bias cache
@@ -1233,7 +1439,25 @@ class WorkerTrain(ABC):
         -------
         numpy.ndarray
             Structured array with fields ``fraction``, ``k12``, ``k21``.
+
+        Raises
+        ------
+        ValueError
+            Under ``chain_type='cgaimmd'`` without ``initial_network``.
         """
+        # C-GAIMMD: every fraction starts from the run's initial network, with
+        # a fit state of its own
+        cgaimmd = getattr(self.params, 'chain_type', None) == 'cgaimmd'
+        if cgaimmd:
+            initial_network = self.params._initial_network_fname()
+            if initial_network is None:
+                raise ValueError(
+                    "kinetics_convergence under chain_type='cgaimmd' trains every "
+                    "data fraction from params.initial_network (a C-GAIMMD round "
+                    "never continues from the run's network or another "
+                    "fraction's): set initial_network, e.g. the pretrained "
+                    "end-state network")
+
         if getattr(self.params, 'multi_system', False):
             return self._kinetics_convergence_multi_system(
                 fractions, save_file, network_save_pattern, **kwargs)
@@ -1292,6 +1516,20 @@ class WorkerTrain(ABC):
 
         # ── build margins from initial paths (same as _train) ─────────────
         margins = get_initial_frames_for_training(self.initial_paths, states)
+
+        # ── C-GAIMMD: the run's committor values first ─────────────────────
+        # A fraction's fit fills missing values with the network being
+        # trained; fill them here, once, with the run's network, so that no
+        # fraction writes its committor into the run's values caches.
+        if cgaimmd:
+            params.update_network(directory, timeout=0, raise_if_failure=False)
+            full = assemble_pathensemble(self._shot_chains,
+                                         self._free_trajectories)
+            if params.compute_descriptors_args is not None:
+                full.compute(*params.compute_descriptors_args)
+            n = full.compute(**_compute_kwargs('values'))
+            if n:
+                print(f"... computed {n} missing values with the run's network")
 
         # ── pre-compute sizes for fraction arithmetic ──────────────────────
         chain_lengths = [len(c) for c in self._shot_chains]
@@ -1352,10 +1590,20 @@ class WorkerTrain(ABC):
             if self.termination_signal:
                 break
 
+            # C-GAIMMD: start from the initial network with the fraction's own
+            # fit state; the default fit resets the network itself
+            if cgaimmd:
+                state_dir = self._kinetics_convergence_cgaimmd_start(
+                    directory, states, fraction, initial_network)
+
             # train network from scratch on the sub-sampled ensemble
             print(f'Training network on {fraction*100:.0f}% of data '
                   f'{now()}')
-            losses, *_ = fit(params, pathensemble + margins, **kwargs)
+            try:
+                losses, *_ = fit(params, pathensemble + margins, **kwargs)
+            finally:
+                if cgaimmd:
+                    self._kinetics_convergence_cgaimmd_end(state_dir)
 
             if not len(losses):
                 print(f'!!! training failed for fraction {fraction:.2f}')
@@ -1463,6 +1711,7 @@ class WorkerTrain(ABC):
                         pass
 
         # ── restore original trained network ──────────────────────────────
+        self.kinetics_convergence_state_dir = None
         print(f'\nRestoring original network state {now()}')
         _buf = io.BytesIO(_saved_state)
         network.load_state_dict(torch.load(_buf, map_location=device,

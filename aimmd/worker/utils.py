@@ -300,9 +300,27 @@ def _seed_couple(untrimmed, target_state, states, position, rng):
     return untrimmed[seed_loc - 1:seed_loc + 1]
 
 
+def _usable_for_free_seed(path, target_state, reactive_state, at_boundary,
+                          untrimmed_paths, states):
+    """Whether a couple for `target_state` can be extracted from `path` (``skip_unusable``).
+
+    At the boundary an end frame must be in the target state; elsewhere the
+    untrimmed path must hold a transition block (see :func:`_seed_couple`).
+    The reactive state takes the first or last two frames of any path.
+    """
+    if target_state == reactive_state:
+        return len(path) >= 2
+    if at_boundary:
+        return (len(path) >= 2
+                and target_state in (path.initial('states'), path.final('states')))
+    return transition_block(_match_untrimmed(untrimmed_paths, path, states),
+                            states) is not None
+
+
 def get_initial_frames_for_free_simulations(
         initial_paths, target_state, reactive_state,
-        position=1.0, untrimmed_paths=None, states=None, rng=None):
+        position=1.0, untrimmed_paths=None, states=None, rng=None,
+        skip_unusable=False):
     """
     Given an `aimmd.path.PathEnsemble` instance, extract two consecutive frames
     from each path for the purporse of launching free simulations. The first
@@ -336,12 +354,21 @@ def get_initial_frames_for_free_simulations(
     rng : numpy.random.Generator, optional
         Source of randomness for ``position='random'``. Defaults to NumPy's
         global RNG, like the rest of the worker layer.
+    skip_unusable : bool, optional
+        If True, paths from which no couple can be extracted for
+        `target_state` are skipped (with a note) instead of raising: at the
+        boundary, paths with no end frame in the state; at other positions,
+        paths whose untrimmed version holds no transition. ``RuntimeError``
+        is raised only when no path remains. The free worker passes True
+        under ``chain_type='cgaimmd'``, whose initial paths are typically one
+        end-state file per basin. Default False: the old behaviour.
 
     Returns
     -------
     initial_frames : aimmd.path.PathEnsemble
-        `PathEnsemble` with the same length of `initial_paths`, where each
-        element contains the frame couples extracted from the paths.
+        `PathEnsemble` with the same length of `initial_paths` (fewer with
+        `skip_unusable`), where each element contains the frame couples
+        extracted from the paths.
 
     Notes
     -----
@@ -362,7 +389,13 @@ def get_initial_frames_for_free_simulations(
             f'locate the transition block inside the untrimmed initial path')
 
     # extract frames for each path
+    skipped = []
     for path in initial_paths:
+        if skip_unusable and not _usable_for_free_seed(
+                path, target_state, reactive_state, at_boundary,
+                untrimmed_paths, states):
+            skipped.append(path.fname)
+            continue
         if target_state == reactive_state:
             # the reactive state has no in-state run to place a seed in
             if np.random.random() > .5:
@@ -387,6 +420,15 @@ def get_initial_frames_for_free_simulations(
                 and couple_states[1] != target_state):
             raise RuntimeError(f'{path.fname} must allow to extract a'
                             f'"{reactive_state}{target_state}" segment')
+    if skipped:
+        where = 'an end frame' if at_boundary else 'a transition'
+        if not initial_frames:
+            raise RuntimeError(
+                f'no initial path has {where} in state {target_state!r} to '
+                f'seed free simulations from (skipped: {", ".join(skipped)})')
+        print(f'... free simulations of {target_state!r}: skipped the '
+              f'initial paths without {where} in the state: '
+              f'{", ".join(skipped)}')
     return initial_frames
 
 
@@ -1192,6 +1234,202 @@ def evict_segment_caches(folder):
                 keys.append(fname)
     forget(*keys)
     return len(keys)
+
+
+def network_metadata_fname(network_fname):
+    """The metadata file of a network file: ``network{s}.json`` for ``network{s}.h5``."""
+    return f'{os.path.splitext(os.fspath(network_fname))[0]}.json'
+
+
+def save_network_atomically(state_dict, network_fname, metadata=None):
+    """
+    Write a network's state dict atomically, with its metadata first.
+
+    Parameters
+    ----------
+    state_dict : dict
+        ``network.state_dict()`` (tensors only).
+    network_fname : str
+        The network file, ``network{s}.h5`` (or a step backup's name).
+    metadata : dict, optional
+        Written to ``network{s}.json`` together with ``sha256`` and
+        ``saved``; None writes no json.
+
+    Returns
+    -------
+    str
+        The sha256 of the bytes written to `network_fname`.
+
+    Notes
+    -----
+    The state dict is serialized with ``torch.save`` into memory and its
+    sha256 computed. With `metadata`, ``network{s}.json`` =
+    ``{**metadata, 'sha256': <sha>, 'saved': <ISO time>}`` is written
+    atomically *first* and the ``.h5`` replaced atomically after it, so a
+    reader that matches metadata to weights by sha256 (the C-GAIMMD network
+    watcher, :mod:`aimmd.cgaimmd.pool`) never needs a lock: a json that does
+    not match the weights it loaded describes the next file. Without
+    metadata only the ``.h5`` is written, atomically (a temporary file,
+    ``fsync``, then ``os.replace``), and an existing json is left alone (it
+    no longer matches the new sha256).
+    """
+    import io
+    import hashlib
+    import datetime
+    # imported here: `import aimmd` loads no aimmd.cgaimmd submodule
+    from ..cgaimmd.io import atomic_write_bytes, atomic_write_json
+    buffer = io.BytesIO()
+    torch.save(state_dict, buffer)
+    data = buffer.getvalue()
+    sha = hashlib.sha256(data).hexdigest()
+    if metadata is not None:
+        record = {**metadata, 'sha256': sha,
+                  'saved': datetime.datetime.now(datetime.timezone.utc).isoformat(
+                      timespec='seconds')}
+        atomic_write_json(network_metadata_fname(network_fname), record)
+    atomic_write_bytes(network_fname, data)
+    return sha
+
+
+def load_network_weights(network, fname):
+    """Load a tensors-only state dict (``weights_only=True``) into `network`, strictly."""
+    state_dict = torch.load(fname, map_location='cpu', weights_only=True)
+    network.load_state_dict(state_dict)
+
+
+def _replaced_names(network_fname):
+    """The smallest free ``network{s}.replaced{k}.h5``, its json and ``flow_fit{s}.replaced{k}``."""
+    stem = os.path.splitext(os.fspath(network_fname))[0]
+    folder, name = os.path.split(stem)
+    fit_dir = os.path.join(folder, 'flow_fit' + name[len('network'):])
+    k = 0
+    while True:
+        names = (f'{stem}.replaced{k}.h5', f'{stem}.replaced{k}.json',
+                 f'{fit_dir}.replaced{k}')
+        if not any(os.path.lexists(n) for n in names):
+            return names, fit_dir
+        k += 1
+
+
+def write_initial_network(params, directory):
+    """
+    Write ``params.initial_network`` as the run's network before round 1.
+
+    Parameters
+    ----------
+    params : aimmd.Params
+        Whose ``initial_network`` (a tensors-only state dict) is loaded into
+        ``params.network``.
+    directory : str
+        The run directory (``network{s}.h5`` lives there).
+
+    Returns
+    -------
+    str
+        ``'unset'`` (no initial_network), ``'kept'`` (the existing network
+        loads) or ``'written'``.
+
+    Raises
+    ------
+    NotImplementedError
+        With ``multi_system``.
+    RuntimeError
+        Under ``chain_type='cgaimmd'`` without ``initial_network`` when the
+        existing network does not load into ``params.network``; and when
+        ``initial_network`` itself does not load.
+    OSError
+        When the existing network cannot be read (nothing is moved or
+        written).
+
+    Notes
+    -----
+    Called by the trainer before its first ``update_network`` and by the
+    Launcher before it starts any worker, under every chain type:
+
+    1. ``initial_network`` is None: ``'unset'`` (the old behaviour); under
+       ``chain_type='cgaimmd'`` an existing ``network{s}.h5`` that does not
+       load into ``params.network`` raises ``RuntimeError`` naming the field
+       (an RFPS network left in a folder that continues as C-GAIMMD).
+    2. ``network{s}.h5`` exists and loads into ``params.network`` (strict):
+       ``'kept'``; the file is not touched.
+    3. It exists but does not load: it is moved to
+       ``network{s}.replaced{k}.h5`` (smallest free ``k``), its json to
+       ``network{s}.replaced{k}.json`` and the flow-matching fit state
+       ``flow_fit{s}/`` to ``flow_fit{s}.replaced{k}/``, never overwritten,
+       with a WARNING; then 4.
+    4. ``initial_network`` (loaded with ``weights_only=True``, strict,
+       before anything is moved: one that does not load raises
+       ``RuntimeError`` and leaves the run folder as it was) is written with
+       :func:`save_network_atomically` and the metadata
+       ``{'round': 0, 'n_trained_shots': 0, 'source': 'initial_network',
+       'initial_network': <absolute path>}``: ``'written'``.
+
+    ``params.network`` holds the weights of the file afterwards (except for
+    ``'unset'``). A relative ``initial_network`` is relative to the params
+    file's folder. An ``OSError`` (or ``MemoryError``) while reading the
+    existing ``network{s}.h5`` propagates: only a file that is read but does
+    not deserialize or load counts as case 3.
+
+    The trainer never continues from the previous round's weights because of
+    this file: the C-GAIMMD fits start every round from ``initial_network``
+    or from reset weights (no warm start).
+    """
+    initial_network = getattr(params, 'initial_network', None)
+    if initial_network is not None and getattr(params, 'multi_system', False):
+        raise NotImplementedError(
+            'initial_network is not supported with multi_system')
+    network = params.network
+    network_fname = f'{directory}/network{params.sorted_states}.h5'
+    exists = os.path.isfile(network_fname)
+    is_cgaimmd = getattr(params, 'chain_type', None) == 'cgaimmd'
+    error = None
+    if exists and (initial_network is not None or is_cgaimmd):
+        try:
+            load_network_weights(network, network_fname)
+        except (OSError, MemoryError):
+            # not "does not load": a transient read error (stale NFS handle,
+            # permissions) must not send a trained network down the replace path
+            raise
+        except Exception as exception:                        # noqa: BLE001
+            # state-dict mismatches and deserialization failures (RuntimeError,
+            # KeyError, TypeError, pickle.UnpicklingError, EOFError, ...)
+            error = exception
+    if initial_network is None:
+        if error is not None:
+            raise RuntimeError(
+                f"{network_fname} does not load into params.network ({error}); "
+                f"chain_type='cgaimmd' needs initial_network to replace it (the "
+                f"old file is then kept as network<states>.replaced<k>.h5)")
+        return 'unset'
+    if exists and error is None:
+        return 'kept'
+    fname = params._initial_network_fname()
+    # load it first: a bad initial_network must not cost the existing file
+    try:
+        load_network_weights(network, fname)
+    except Exception as exception:                            # noqa: BLE001
+        raise RuntimeError(f'initial_network {fname} does not load into '
+                           f'params.network: {exception}') from exception
+    if exists:
+        (h5, json_name, fit_moved), fit_dir = _replaced_names(network_fname)
+        os.replace(network_fname, h5)
+        metadata_fname = network_metadata_fname(network_fname)
+        if os.path.exists(metadata_fname):
+            os.replace(metadata_fname, json_name)
+        fit_note = ''
+        if os.path.isdir(fit_dir):
+            os.replace(fit_dir, fit_moved)
+            fit_note = f' (and its fit state to {fit_moved})'
+        print(f'WARNING: {network_fname} does not load into params.network '
+              f'({error}); moved to {h5}{fit_note} and replaced by '
+              f'initial_network {fname}')
+    print(f'Writing initial network {fname} to {network_fname}')
+    os.makedirs(os.fspath(directory) or '.', exist_ok=True)
+    save_network_atomically(
+        network.state_dict(), network_fname,
+        metadata={'round': 0, 'n_trained_shots': 0, 'source': 'initial_network',
+                  'initial_network': os.path.abspath(fname)})
+    return 'written'
 
 
 def reweight_parameters_with_bins(reweight_parameters, bins):

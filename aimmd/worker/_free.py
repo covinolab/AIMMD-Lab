@@ -213,7 +213,9 @@ class WorkerFree(ABC):
                                  else params.untrimmed_initial_paths()),
                 states=params.states,
                 rng=(np.random.default_rng(k)
-                     if seeding_position == 'random' else None))
+                     if seeding_position == 'random' else None),
+                # C-GAIMMD runs seed from one end-state file per basin
+                skip_unusable=params.chain_type == 'cgaimmd')
         if not at_boundary:
             locs = initial_paths[k % len(initial_paths)].locs
             print(f'\nFirst free simulation of {t!r} is seeded at position '
