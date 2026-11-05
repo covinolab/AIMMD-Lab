@@ -15,11 +15,15 @@ a broken install skips them as a missing one does.
   (CLN025, 10 residues) and ``tests/data/cgaimmd_bioemu2_protein_ligand``
   (20 trypsin residues + benzamidinium; core = the 20 CA atoms, as the
   goldens' old constants). Tests must not change them.
+- ``golden`` (session): the goldens of the old code
+  (``tests/data/cgaimmd_bioemu2_goldens.npz``); :func:`golden_state` reads a
+  module's state dict out of them.
 """
 
+import numpy as np
 import pytest
 
-from ._cgaimmd_bioemu2_golden import PEPTIDE, PROTEIN_LIGAND, write_tiny_checkpoint
+from ._cgaimmd_bioemu2_golden import GOLDEN, PEPTIDE, PROTEIN_LIGAND, write_tiny_checkpoint
 
 LIGAND_CORE_RESIDUES = tuple(range(1, 21))
 """The core of the protein-ligand system: the CA atoms of its 20 residues (as the goldens' old constants)."""
@@ -53,3 +57,15 @@ def tiny_peptide_system(tiny_bioemu2_checkpoint, tmp_path_factory):
 def tiny_protein_ligand_system(tiny_bioemu2_checkpoint, tmp_path_factory):
     return _build(tmp_path_factory.mktemp('protein_ligand_system') / 'system', PROTEIN_LIGAND,
                   tiny_bioemu2_checkpoint, core_residues=LIGAND_CORE_RESIDUES)
+
+
+@pytest.fixture(scope='session')
+def golden():
+    return np.load(GOLDEN)
+
+
+def golden_state(golden, prefix):
+    """``{name: tensor}`` of the golden arrays ``{prefix}.{name}`` (a recorded state dict)."""
+    import torch
+    return {key[len(prefix) + 1:]: torch.as_tensor(golden[key]) for key in golden.files
+            if key.startswith(prefix + '.')}

@@ -17,8 +17,9 @@ What it holds:
   data-level check of the ligand atom order, below), so that a canary job can
   run newer versions;
 - the public BioEmu2 calls the adaptor uses (``load_model``, ``System``,
-  ``MSA``, ``TrunkEmbeddings``, ``InferenceModel.embed`` /
-  ``compute_static_context`` / ``denoise`` / ``edm_schedule``);
+  ``MSA``, ``TrunkEmbeddings``, ``EDMSampler`` (:func:`edm_sample`),
+  ``InferenceModel.embed`` / ``compute_static_context`` / ``denoise`` /
+  ``edm_schedule``);
 - the internal touch points, each in one function (DESIGN section 5.2):
   ``prepare_sampling_inputs`` (:func:`sampling_inputs`); the forward pre-hook
   on ``score_model.structure_module.readout`` that reads the token features
@@ -58,7 +59,7 @@ try:
     import torch
 
     import bioemu2
-    from bioemu2 import MSA, System, TrunkEmbeddings
+    from bioemu2 import MSA, EDMSampler, System, TrunkEmbeddings
     from bioemu2.denoising.rigid_align import weighted_rigid_align
     from bioemu2.model import load_model as _load_model
     from bioemu2.structure.preparation import prepare_sampling_inputs
@@ -72,8 +73,8 @@ __all__ = ['INSTALL_HINT', 'SUPPORTED_VERSION', 'bioemu2', 'Chem', 'MSA', 'Syste
            'make_system', 'system_to_dict', 'polymer_sequences', 'ligand_chains', 'query_only_msa', 'read_msa',
            'embed', 'save_trunk', 'load_trunk', 'sampling_inputs', 'topology_atoms', 'topology_bonds',
            'token_feature_width', 'ReadoutCapture', 'static_context_with_grad', 'expand_batch',
-           'ligand_signature', 'check_ligand_order', 'LigandOrderError', 'element_graph', 'graph_matches',
-           'symmetry_classes']
+           'edm_sample', 'ligand_signature', 'check_ligand_order', 'LigandOrderError', 'element_graph',
+           'graph_matches', 'symmetry_classes']
 
 POLYMER_ENTITY_TYPES = ('protein',)
 """Entity types mapped residue by residue (atom names); nucleic acids and branched entities are not yet."""
@@ -311,6 +312,17 @@ def static_context_with_grad(model, batch, trunk):
     the denoiser only through the static context).
     """
     return model.score_model.compute_static_context(batch, trunk)
+
+
+def edm_sample(score_model, batch, trunk, n, num_steps):
+    """``(n, n_pad, 3)``: BioEmu2's public ``EDMSampler`` (default churn and scales) on one system, `n` samples.
+
+    `score_model` is any object with BioEmu2's ``InferenceModel`` protocol
+    (the conditioned :class:`~aimmd.cgaimmd.bioemu2.sampling.GuidedModel`);
+    the noise comes from torch's default random stream of the batch's device.
+    """
+    sampler = EDMSampler(num_steps=int(num_steps))
+    return sampler(batch=batch, score_model=score_model, trunk_embeddings=trunk, batch_size=int(n)).coords
 
 
 def expand_batch(batch, k):

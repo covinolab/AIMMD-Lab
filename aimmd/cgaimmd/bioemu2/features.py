@@ -37,11 +37,10 @@ import numpy as np
 import torch
 
 from . import _api
+from .head import SIGMA_REF
 
 __all__ = ['BioEmu2Features', 'SIGMA_REF', 'READOUTS', 'POOLS', 'canonical_pose']
 
-SIGMA_REF = 0.05
-"""Noise level (Ångström) of the features of a clean structure (both production campaigns)."""
 READOUTS = ('flat', 'pooled')
 POOLS = ('ligand', 'pocket', 'protein')
 """Order of the token pools in the pooled readout."""

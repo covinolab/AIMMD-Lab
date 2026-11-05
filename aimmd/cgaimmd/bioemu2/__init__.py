@@ -24,7 +24,19 @@ Public names, by module:
 - :mod:`~aimmd.cgaimmd.bioemu2.build`: ``build_system``, ``read_md_atoms``
   (also ``python -m aimmd.cgaimmd.bioemu2 build-system``);
 - :mod:`~aimmd.cgaimmd.bioemu2.features`: ``BioEmu2Features`` (the frozen
-  BioEmu2 features of the committor head), ``SIGMA_REF``.
+  BioEmu2 features of the committor head);
+- :mod:`~aimmd.cgaimmd.bioemu2.head`: ``CommittorHead``, ``FeatureMLP``,
+  ``fit_scaler``, ``SIGMA_REF``, ``LAMBDA_CLIP``;
+- :mod:`~aimmd.cgaimmd.bioemu2.adapters`: ``TrunkAdapter``,
+  ``ConditionedDenoiser``, ``GuidanceSchedule``, ``parse_guidance_schedule``;
+- :mod:`~aimmd.cgaimmd.bioemu2.network`: ``BioEmu2Network`` (the committor
+  network of a run; default generator ``'bioemu2_edm'``),
+  ``load_archived_network``;
+- :mod:`~aimmd.cgaimmd.bioemu2.sampling`: ``BioEmu2Generator``, the
+  generation method ``'bioemu2_edm'``.
+
+The network, its head and adapters import without bioemu2 (a run can be loaded and analysed elsewhere); the features,
+the sampling and every BioEmu2 pass need it.
 """
 
 import importlib as _importlib
@@ -35,7 +47,18 @@ _LAZY_NAMES = {
     'build_system': 'build',
     'read_md_atoms': 'build',
     'BioEmu2Features': 'features',
-    'SIGMA_REF': 'features',
+    'SIGMA_REF': 'head',
+    'LAMBDA_CLIP': 'head',
+    'CommittorHead': 'head',
+    'FeatureMLP': 'head',
+    'fit_scaler': 'head',
+    'TrunkAdapter': 'adapters',
+    'ConditionedDenoiser': 'adapters',
+    'GuidanceSchedule': 'adapters',
+    'parse_guidance_schedule': 'adapters',
+    'BioEmu2Network': 'network',
+    'load_archived_network': 'network',
+    'BioEmu2Generator': 'sampling',
 }
 
 __all__ = sorted(_LAZY_NAMES)

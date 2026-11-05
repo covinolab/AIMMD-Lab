@@ -4,7 +4,11 @@
   need bioemu2 raise one ImportError on first use that says how to install it
   (and names the 'bioemu2' extra for the generator registry);
 - the system maps (``BioEmu2System``, ``MDAtoms``), the build step's MD
-  reader and the command line import without bioemu2;
+  reader, the command line and the network with its head and adapters
+  import without bioemu2; a network is built from a
+  system folder and loads its weights without bioemu2, and its first BioEmu2
+  pass says how to install it; the generator ``'bioemu2_edm'`` names the
+  'bioemu2' extra;
 - inside the adaptor, only ``_api.py`` imports the bioemu2 stack.
 
 The subprocess tests block the bioemu2 stack, so they run with and without
@@ -19,7 +23,11 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 import aimmd
+
+from ._bioemu2_fixtures import tiny_bioemu2_checkpoint, tiny_peptide_system  # noqa: F401
 
 ROOT = Path(aimmd.__file__).resolve().parents[1]
 ADAPTOR = ROOT / 'aimmd' / 'cgaimmd' / 'bioemu2'
@@ -57,11 +65,18 @@ def test_without_bioemu2_the_first_real_use_says_how_to_install_it():
         result = {{'all': adaptor.__all__}}
         from aimmd.cgaimmd.bioemu2 import BioEmu2System, MDAtoms, read_md_atoms
         import aimmd.cgaimmd.bioemu2.__main__
+        from aimmd.cgaimmd.bioemu2 import BioEmu2Network, CommittorHead, TrunkAdapter, load_archived_network
         errors = {{}}
+        for name in ('BioEmu2Features', 'BioEmu2Generator'):
+            try:
+                getattr(adaptor, name)
+            except ImportError as exc:
+                errors[name] = [str(exc), exc.name, type(exc.__cause__).__name__]
+        from aimmd.cgaimmd.generation import make_generator
         try:
-            adaptor.BioEmu2Features
+            make_generator('bioemu2_edm')
         except ImportError as exc:
-            errors['BioEmu2Features'] = [str(exc), exc.name, type(exc.__cause__).__name__]
+            result['generator'] = str(exc)
         for name, call in (('build_system', lambda: adaptor.build_system('s.yaml', 'md.gro', 'md.top', 'out')),
                            ('BioEmu2System.build', lambda: BioEmu2System.build({{'entities': []}}, None))):
             try:
@@ -72,11 +87,15 @@ def test_without_bioemu2_the_first_real_use_says_how_to_install_it():
         result['loaded'] = sorted(n for n in sys.modules if n.split('.')[0] in BLOCKED)
         print(json.dumps(result))
     ''')
-    assert out['all'] == ['BioEmu2Features', 'BioEmu2System', 'MDAtoms', 'SIGMA_REF', 'build_system',
-                          'read_md_atoms']
-    assert set(out['errors']) == {'BioEmu2Features', 'build_system', 'BioEmu2System.build'}
+    assert out['all'] == ['BioEmu2Features', 'BioEmu2Generator', 'BioEmu2Network', 'BioEmu2System',
+                          'CommittorHead', 'ConditionedDenoiser', 'FeatureMLP', 'GuidanceSchedule', 'LAMBDA_CLIP',
+                          'MDAtoms', 'SIGMA_REF', 'TrunkAdapter', 'build_system', 'fit_scaler',
+                          'load_archived_network', 'parse_guidance_schedule', 'read_md_atoms']
+    assert set(out['errors']) == {'BioEmu2Features', 'BioEmu2Generator', 'build_system', 'BioEmu2System.build'}
     for message, name, cause in out['errors'].values():
         assert message.startswith(HINT) and name == 'bioemu2' and cause == 'ModuleNotFoundError'
+    assert "generation method 'bioemu2_edm'" in out['generator']
+    assert "it needs the 'bioemu2' extra (pip install 'aimmd-lab[bioemu2]')" in out['generator']
     assert out['loaded'] == []
 
 
@@ -96,3 +115,41 @@ def test_only_the_api_module_imports_the_bioemu2_stack():
                       for module in modules if module.split('.')[0] in BIOEMU2_ONLY]
     assert found == []
     assert (ADAPTOR / '_api.py').exists()
+
+
+@pytest.mark.bioemu2
+def test_without_bioemu2_a_network_loads_and_its_first_pass_says_how_to_install(tiny_peptide_system, tmp_path):
+    """Analysis elsewhere: the params file builds the network from its folder and loads the weights."""
+    import torch
+    from aimmd.cgaimmd.bioemu2 import BioEmu2Network
+    weights = tmp_path / 'networkARB.h5'
+    torch.save(BioEmu2Network(tiny_peptide_system, hidden=(16,)).state_dict(), weights)
+    out = _run(f'''
+        import json, sys
+        BLOCKED = {BIOEMU2_ONLY!r}
+
+        class Block:
+            def find_spec(self, name, path=None, target=None):
+                if name.split('.')[0] in BLOCKED:
+                    raise ModuleNotFoundError(f'No module named {{name!r}} (blocked)', name=name)
+                return None
+
+        import aimmd
+        for name in [n for n in sys.modules if n.split('.')[0] in BLOCKED]:
+            del sys.modules[name]
+        sys.meta_path.insert(0, Block())
+        import torch
+        from aimmd.cgaimmd.bioemu2 import BioEmu2Network
+        network = BioEmu2Network({str(tiny_peptide_system.folder)!r}, hidden=(16,))
+        network.load_state_dict(torch.load({str(weights)!r}, weights_only=True))
+        result = {{'n_atoms': network.n_atoms, 'generator': network.default_generator()}}
+        try:
+            network(torch.zeros(1, 3 * network.n_atoms))
+        except ImportError as exc:
+            result['error'] = [str(exc), exc.name]
+        result['loaded'] = sorted(n for n in sys.modules if n.split('.')[0] in BLOCKED)
+        print(json.dumps(result))
+    ''')
+    assert out['n_atoms'] == 166 and out['generator'] == {'method': 'bioemu2_edm'}
+    assert out['error'][0].startswith(HINT) and out['error'][1] == 'bioemu2'
+    assert out['loaded'] == []
