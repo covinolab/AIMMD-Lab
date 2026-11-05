@@ -30,6 +30,7 @@ Public names, by module:
   ``check_network_numerics``, ``is_cgaimmd_network``;
 - :mod:`~aimmd.cgaimmd.values`: ``ProtocolValuesFunction``,
   ``protocol_values_function``;
+- :mod:`~aimmd.cgaimmd.dataset`: ``TrainingDataset``, ``extract_dataset``;
 - :mod:`~aimmd.cgaimmd.types`: ``CandidateContext``, ``ValidityResult``,
   ``PreparedFrame``, ``ShootingPoint``, ``NetworkInfo``.
 """
@@ -48,6 +49,8 @@ _LAZY_NAMES = {
     'is_cgaimmd_network': 'protocol',
     'ProtocolValuesFunction': 'values',
     'protocol_values_function': 'values',
+    'TrainingDataset': 'dataset',
+    'extract_dataset': 'dataset',
     'CandidateContext': 'types',
     'ValidityResult': 'types',
     'PreparedFrame': 'types',

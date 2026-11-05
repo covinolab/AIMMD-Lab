@@ -214,7 +214,7 @@ def _shot_positions(n_atoms, x):
 
 
 def build_cgaimmd_run_dir(tmp_path, n_chains=2, n_shots=3, n_free=1, n_atoms=1, *,
-                          states='ARB', ext='.xtc'):
+                          states='ARB', ext='.xtc', n_parts=1):
     """A run folder with C-GAIMMD-style shooting chains and free trajectories.
 
     Parameters
@@ -236,15 +236,21 @@ def build_cgaimmd_run_dir(tmp_path, n_chains=2, n_shots=3, n_free=1, n_atoms=1, 
         Atoms per frame; atom ``i`` sits at ``y = 1.5 i`` and shares atom 0's
         x, which alone decides the state (x <= -0.5 first state, x >= 0.5
         last, see :func:`x_states_function`).
+    n_parts : int, optional
+        Part files per free trajectory, ``.part0001`` to ``.part{n_parts:04d}``,
+        10 frames each. Every later part starts with the frame (and time) its
+        predecessor ended with, as the parts of a restarted ``gmx mdrun`` do,
+        so the trajectory has ``9 n_parts + 1`` frames.
 
     Returns
     -------
     types.SimpleNamespace
         ``run`` (str), ``chains`` (list of lists of :class:`aimmd.Path`, each
         with ``shooting_index``), ``shots`` (flat list), ``free`` (list of
-        :class:`aimmd.Path`), ``states``, ``shooting_index``. Every file has
-        ``.states``, ``.descriptors`` (flat Å, float32) and ``.values`` (x of
-        atom 0) caches.
+        :class:`aimmd.Path`, the part files joined with
+        ``remove_overlapping_frames=True``), ``states``, ``shooting_index``.
+        Every file has ``.states``, ``.descriptors`` (flat Å, float32) and
+        ``.values`` (x of atom 0) caches.
     """
     run = Path(tmp_path) / 'run'
     run.mkdir(parents=True, exist_ok=True)
@@ -273,9 +279,16 @@ def build_cgaimmd_run_dir(tmp_path, n_chains=2, n_shots=3, n_free=1, n_atoms=1, 
     for state, center in ((first, -1.5), (last, 1.5)):
         for n in range(1, n_free + 1):
             x = center + 0.1 * rng.standard_normal(10)
-            fname = _write_with_caches(run / f'free{state}' / f'traj{n:06g}.part0001{ext}',
-                                       _shot_positions(n_atoms, x),
-                                       np.arange(10, dtype=float), states=states)
-            free.append(aimmd.Path(fname))
+            times = np.arange(10, dtype=float)
+            fnames = []
+            for part in range(1, n_parts + 1):
+                if part > 1:                     # a restart repeats the last frame written
+                    x = np.concatenate([x[-1:], center + 0.1 * rng.standard_normal(9)])
+                    times = times[-1] + np.arange(10, dtype=float)
+                fnames.append(_write_with_caches(
+                    run / f'free{state}' / f'traj{n:06g}.part{part:04d}{ext}',
+                    _shot_positions(n_atoms, x), times, states=states))
+            free.append(aimmd.Path(fnames[0]) if n_parts == 1
+                        else aimmd.Path(fnames, remove_overlapping_frames=True))
     return SimpleNamespace(run=str(run), chains=chains, shots=shots, free=free, states=states,
                            shooting_index=shooting_index)
