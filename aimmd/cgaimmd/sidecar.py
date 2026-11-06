@@ -746,9 +746,12 @@ def git_provenance():
     -----
     1. ``git ls-files --error-unmatch __init__.py`` in the package directory
        says whether a git repository tracks the package; then ``git
-       rev-parse HEAD`` gives the commit and ``git status --porcelain -- .``
-       the dirty flag (changed, staged and untracked files of the package
-       directory; files elsewhere in the repository do not count).
+       rev-parse HEAD`` gives the commit and ``git status --porcelain
+       --untracked-files=all -- . ':(exclude)*.pyc'`` the dirty flag
+       (changed, staged and untracked files of the package directory; files
+       elsewhere in the repository do not count, and neither does the
+       bytecode Python writes into ``__pycache__/``, which AIMMD-Lab does not
+       ignore in a committed ``.gitignore``).
     2. When git does not answer (no executable on PATH, a repository it
        refuses, a time-out), the commit is read from the ``.git`` files of
        the folder that holds the package (a clone of AIMMD-Lab); the dirty
@@ -776,7 +779,8 @@ def git_provenance():
         commit = (head or '').strip()
         if head is not None and _is_commit(commit):
             out.update(git_commit=commit, git_source='git')
-            status, why = _git(package, 'status', '--porcelain', '--', '.')
+            status, why = _git(package, 'status', '--porcelain', '--untracked-files=all',
+                               '--', '.', ':(exclude)*.pyc')
             if status is None:
                 out['git_reason'] = f'the dirty flag is unknown: {why}'
             else:

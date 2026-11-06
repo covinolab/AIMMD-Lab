@@ -600,6 +600,18 @@ def test_git_provenance_of_untracked_install(tmp_path, monkeypatch, fresh_git_pr
     sidecar.git_provenance.cache_clear()
     assert sidecar.aimmd_git_commit() == git('rev-parse', 'HEAD').strip()
     assert sidecar.aimmd_git_dirty() is False
+    # the bytecode an import writes is not a change (AIMMD-Lab commits no .gitignore, so a
+    # fresh clone does not ignore __pycache__/)
+    for folder in (package / '__pycache__', package / 'sub' / '__pycache__'):
+        folder.mkdir(parents=True)
+        (folder / 'module.cpython-313.pyc').write_bytes(b'bytecode')
+    assert git('status', '--porcelain', '--', 'env')                  # git itself lists them
+    sidecar.git_provenance.cache_clear()
+    assert sidecar.aimmd_git_dirty() is False
+    (package / 'sub' / 'new_module.py').write_text('')        # beside bytecode: still found
+    sidecar.git_provenance.cache_clear()
+    assert sidecar.aimmd_git_dirty() is True
+    (package / 'sub' / 'new_module.py').unlink()
     (package / '__init__.py').write_text('changed = True\n')
     (tmp_path / 'README').write_text('elsewhere\n')              # outside the package: ignored
     sidecar.git_provenance.cache_clear()
