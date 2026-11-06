@@ -93,3 +93,61 @@ def test_build_system_from_the_command_line(tiny_bioemu2_checkpoint, tmp_path):
     assert main(args + ['--overwrite']) == 0
     assert (out / 'trunk_embeddings.pt').stat().st_mtime_ns != before
     assert BioEmu2System.load(out).data['bioemu2_to_md'] == system.data['bioemu2_to_md']
+
+
+def test_a_folder_reproduces_an_earlier_trunk_and_an_exact_reference(tiny_bioemu2_checkpoint, tmp_path):
+    """The archived choices of an earlier campaign: its saved trunk embeddings and its reference pose, exactly.
+
+    The archived trypsin campaign used trunk embeddings saved by another tool
+    (bf16 autocast), and its canonical pose came from crystal coordinates kept
+    as float32 arrays. A folder must be able to take both as they were: the
+    trunk file is copied, not recomputed, and the reference may be given as
+    coordinates (MD order, Ångström) instead of a structure file, which
+    MDAnalysis would read in float32.
+    """
+    import torch
+    from aimmd.cgaimmd.bioemu2 import _api, build_system
+    from aimmd.cgaimmd.bioemu2.__main__ import main
+    model = _api.load_model(checkpoint_path=tiny_bioemu2_checkpoint, device='cpu')
+    first = build_system(PEPTIDE / 'bioemu2_system.yaml', PEPTIDE / 'md.gro', PEPTIDE / 'md.top', tmp_path / 'first',
+                         model=model)
+    earlier = _api.load_trunk(first.trunk_path, 'cpu')
+    changed = _api.TrunkEmbeddings(s_inputs=earlier.s_inputs, single=earlier.single + 1.0,
+                                   pair=earlier.pair.to(torch.bfloat16),
+                                   relative_position_encoding=earlier.relative_position_encoding,
+                                   distogram=earlier.distogram.to(torch.bfloat16))
+    saved = tmp_path / 'earlier' / 'embeddings.pt'
+    saved.parent.mkdir()
+    _api.save_trunk(changed, saved)
+    md = read_md_atoms(PEPTIDE / 'md.gro', PEPTIDE / 'md.top')
+    reference = np.asarray(md.positions, np.float64) + 1e-3 * np.arange(md.n_atoms)[:, None]  # not float32-exact
+    system = build_system(PEPTIDE / 'bioemu2_system.yaml', PEPTIDE / 'md.gro', PEPTIDE / 'md.top', tmp_path / 'second',
+                          model=model, trunk_embeddings=saved, reference_structure=reference)
+    assert (tmp_path / 'second' / 'trunk_embeddings.pt').read_bytes() == saved.read_bytes()
+    record = system.data['trunk']
+    assert record['imported_from'] == str(saved) and record['imported_md5'] == record['md5']
+    assert record['msa'] == 'imported' and record['dtypes']['pair'] == 'torch.bfloat16'
+    assert record['parameter_checksum'] == first.data['trunk']['parameter_checksum']
+    assert system.data['sources']['reference_structure'] == 'coordinates'
+    np.testing.assert_array_equal(system.reference, reference[system.bioemu2_to_md])
+    loaded = _api.load_trunk(system.trunk_path, 'cpu')
+    torch.testing.assert_close(loaded.single, earlier.single + 1.0, rtol=0, atol=0)
+    # the command line takes the trunk file too
+    args = ['build-system', '--bioemu2-system', str(PEPTIDE / 'bioemu2_system.yaml'), '--md-structure',
+            str(PEPTIDE / 'md.gro'), '--topology', str(PEPTIDE / 'md.top'), '--out', str(tmp_path / 'third'),
+            '--checkpoint-path', str(tiny_bioemu2_checkpoint), '--device', 'cpu', '--trunk-embeddings', str(saved)]
+    assert main(args) == 0
+    assert (tmp_path / 'third' / 'trunk_embeddings.pt').read_bytes() == saved.read_bytes()
+    # a trunk of another system is refused
+    other = tmp_path / 'other' / 'embeddings.pt'
+    other.parent.mkdir()
+    _api.save_trunk(_api.TrunkEmbeddings(s_inputs=earlier.s_inputs[:, :5], single=earlier.single[:, :5],
+                                         pair=earlier.pair[:, :5, :5],
+                                         relative_position_encoding=earlier.relative_position_encoding[:, :5, :5],
+                                         distogram=earlier.distogram[:, :5, :5]), other)
+    with pytest.raises(ValueError, match='5 tokens, the system 10'):
+        build_system(PEPTIDE / 'bioemu2_system.yaml', PEPTIDE / 'md.gro', PEPTIDE / 'md.top', tmp_path / 'fourth',
+                     model=model, trunk_embeddings=other)
+    with pytest.raises(ValueError, match=r'reference coordinates must be \(166, 3\)'):
+        build_system(PEPTIDE / 'bioemu2_system.yaml', PEPTIDE / 'md.gro', PEPTIDE / 'md.top', tmp_path / 'fifth',
+                     model=model, reference_structure=reference[:10])

@@ -33,6 +33,7 @@ MDAnalysis reads the MD files (any topology it reads with bonds; a GROMACS
 import hashlib
 import json
 import os
+import shutil
 import warnings
 from pathlib import Path
 
@@ -158,7 +159,8 @@ def core_atoms_of_residues(system, residues):
 def build_system(bioemu2_system, md_structure, topology, out, *, n_atoms=None, reference_structure=None,
                  core_residues=None, pocket_cutoff=6.0, ion_cutoff=3.0, placement_references=None,
                  msa=MSA_QUERY_ONLY, mode='equilibrium', model=None, checkpoint='bioemu2-preview',
-                 checkpoint_path=None, device=None, include_dir=None, overwrite=False, verbose=False):
+                 checkpoint_path=None, device=None, include_dir=None, trunk_embeddings=None, overwrite=False,
+                 verbose=False):
     """Write a BioEmu2 system folder and return its checked :class:`BioEmu2System`.
 
     Parameters
@@ -173,10 +175,12 @@ def build_system(bioemu2_system, md_structure, topology, out, *, n_atoms=None, r
         The system folder (created).
     n_atoms : int, optional
         The generator atoms are the first `n_atoms` MD atoms (default all).
-    reference_structure : str or Path, optional
+    reference_structure : str or Path or array_like, optional
         A structure of the same MD system for the canonical pose and the
         pocket (default `md_structure`), e.g. a crystal-based one with the
-        ligand bound.
+        ligand bound; or its coordinates, ``(n_atoms, 3)`` Ångström in MD
+        order (generator atoms), taken as they are (a structure file is read
+        by MDAnalysis in float32).
     core_residues : sequence, optional
         Protein residues whose CA atoms are fitted onto the reference pose
         (:func:`core_atoms_of_residues`); default every BioEmu2 atom.
@@ -189,6 +193,14 @@ def build_system(bioemu2_system, md_structure, topology, out, *, n_atoms=None, r
     model : InferenceModel, optional
         A loaded model (else :func:`._api.load_model` with `checkpoint` /
         `checkpoint_path` on `device`).
+    trunk_embeddings : str or Path, optional
+        A saved ``TrunkEmbeddings`` file of this system to use instead of
+        computing the trunk, for example the embeddings an earlier campaign
+        used (the archived trypsin campaign's came from a sampling run with
+        bf16 autocast and an alignment). The file is copied unchanged; its
+        token count must be the system's. The record says ``msa='imported'``
+        with the file and its md5, because how it was made is not known here.
+        Default: computed with `model`, `msa` and `mode`.
     overwrite : bool, optional
         Replace an existing folder's files.
     """
@@ -199,14 +211,20 @@ def build_system(bioemu2_system, md_structure, topology, out, *, n_atoms=None, r
     system = _api.make_system(bioemu2_system)
     md = read_md_atoms(md_structure, topology, n_atoms=n_atoms, include_dir=include_dir)
     reference = None
-    if reference_structure is not None:
+    if isinstance(reference_structure, (str, os.PathLike)):
         ref = read_md_atoms(reference_structure, topology, n_atoms=md.n_atoms, include_dir=include_dir)
         reference = ref.positions
+    elif reference_structure is not None:
+        reference = np.asarray(reference_structure, dtype=np.float64)
+        if reference.shape != (md.n_atoms, 3) or not np.isfinite(reference).all():
+            raise ValueError(f'the reference coordinates must be ({md.n_atoms}, 3) finite Angstrom values of the '
+                             f'generator atoms in MD order, got shape {reference.shape}')
     core = None if core_residues is None else core_atoms_of_residues(system, core_residues)
     sources = dict(bioemu2_system=None if isinstance(bioemu2_system, (dict, _api.System)) else str(bioemu2_system),
                    md_structure=str(md_structure), md_structure_md5=_md5(md_structure),
                    topology=str(topology), topology_md5=_md5(topology),
-                   reference_structure=None if reference_structure is None else str(reference_structure),
+                   reference_structure=(None if reference_structure is None else str(reference_structure)
+                                        if isinstance(reference_structure, (str, os.PathLike)) else 'coordinates'),
                    core_residues=None if core_residues is None else [list(r) if isinstance(r, (tuple, list))
                                                                      else int(r) for r in core_residues])
     built = BioEmu2System.build(system, md, reference=reference, core=core, pocket_cutoff=pocket_cutoff,
@@ -214,23 +232,35 @@ def build_system(bioemu2_system, md_structure, topology, out, *, n_atoms=None, r
                                 sources=sources)
     if model is None:
         model = _api.load_model(checkpoint, checkpoint_path=checkpoint_path, device=device)
-    if msa == MSA_QUERY_ONLY:
+    imported = None
+    if trunk_embeddings is not None:
+        imported = Path(trunk_embeddings)
+        trunk = _api.TrunkEmbeddings.load(imported, device=_api.torch.device('cpu'))
+        msa_record = 'imported'
+        if int(trunk.single.shape[1]) != built.n_tokens:
+            raise ValueError(f'the trunk embeddings {imported} have {trunk.single.shape[1]} tokens, the system '
+                             f'{built.n_tokens}: they belong to another system')
+    elif msa == MSA_QUERY_ONLY:
         alignment, msa_record = _api.query_only_msa(system), MSA_QUERY_ONLY
     elif isinstance(msa, dict):
         alignment = _api.read_msa(msa)
         msa_record = {chain: dict(file=str(path), md5=_md5(path)) for chain, path in msa.items()}
     else:
         raise ValueError(f"msa must be {MSA_QUERY_ONLY!r} or {{chain: a3m file}}, got {msa!r}")
-    trunk = _api.embed(model, system, alignment, mode)
+    if imported is None:
+        trunk = _api.embed(model, system, alignment, mode)
     if int(trunk.single.shape[1]) != built.n_tokens:
         raise RuntimeError(f'the trunk embeddings have {trunk.single.shape[1]} tokens, the system {built.n_tokens}')
     out.mkdir(parents=True, exist_ok=True)
     for name in (SYSTEM_FILE, TRUNK_FILE):
         if (out / name).exists():
             os.remove(out / name)                       # overwrite: system.json goes first, so a half-written
-    _api.save_trunk(trunk, out / TRUNK_FILE)            # folder never looks complete
+    if imported is None:                                # folder never looks complete
+        _api.save_trunk(trunk, out / TRUNK_FILE)
+    else:
+        shutil.copyfile(imported, out / TRUNK_FILE)
     built.data['trunk'] = dict(
-        file=TRUNK_FILE, msa=msa_record, mode=str(mode),
+        file=TRUNK_FILE, msa=msa_record, mode=str(mode) if imported is None else 'imported',
         checkpoint=None if checkpoint_path is not None else checkpoint,
         checkpoint_path=None if checkpoint_path is None else str(checkpoint_path),
         parameter_checksum=_api.parameter_checksum(model),
@@ -240,6 +270,8 @@ def build_system(bioemu2_system, md_structure, topology, out, *, n_atoms=None, r
         dtypes={name: str(getattr(trunk, name).dtype) for name in ('s_inputs', 'single', 'pair',
                                                                    'relative_position_encoding', 'distogram')},
         md5=_md5(out / TRUNK_FILE))
+    if imported is not None:
+        built.data['trunk'].update(imported_from=str(imported), imported_md5=_md5(imported))
     yaml_path = out / 'bioemu2_system.yaml'
     if yaml_path.exists():
         os.remove(yaml_path)

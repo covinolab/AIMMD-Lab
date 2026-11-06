@@ -9,6 +9,7 @@
             [--msa query-only | --msa A=chain_A.a3m ...] [--pocket-cutoff 6.0] \\
             [--core-residues 16-245 | A:16-30 A:40] [--reference-structure crystal.gro] \\
             [--checkpoint bioemu2-preview | --checkpoint-path model.ckpt] [--device cuda]
+            [--trunk-embeddings embeddings.pt]
 """
 
 import argparse
@@ -70,6 +71,9 @@ def main(argv=None):
     build.add_argument('--checkpoint-path', default=None, help='a local checkpoint file (config.yaml next to it)')
     build.add_argument('--device', default=None, help='default: cuda if available, else cpu')
     build.add_argument('--include-dir', default=None, help="folder of a .top's #include files")
+    build.add_argument('--trunk-embeddings', default=None,
+                       help='a saved TrunkEmbeddings file of this system to copy instead of computing the trunk '
+                            '(e.g. the embeddings an earlier campaign used)')
     build.add_argument('--overwrite', action='store_true', help='rebuild an existing folder')
     args = parser.parse_args(argv)
     if args.command == 'build-system':
@@ -79,7 +83,8 @@ def main(argv=None):
                               core_residues=None if args.core_residues is None else _residues(args.core_residues),
                               pocket_cutoff=args.pocket_cutoff, ion_cutoff=args.ion_cutoff, msa=_msa(args.msa),
                               mode=args.mode, checkpoint=args.checkpoint, checkpoint_path=args.checkpoint_path,
-                              device=args.device, include_dir=args.include_dir, overwrite=args.overwrite)
+                              device=args.device, include_dir=args.include_dir,
+                              trunk_embeddings=args.trunk_embeddings, overwrite=args.overwrite)
         print(json.dumps(system.summary(), indent=1))
     return 0
 
