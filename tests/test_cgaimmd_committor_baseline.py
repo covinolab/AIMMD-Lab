@@ -4,8 +4,7 @@ The pair distances and their scaler, the network (shape, invariance, the
 selection, the scaler in the saved weights, reset), and AIMMD's own fit on a
 toy run whose committor is a known function of one distance: two atoms,
 shooting points spread over that distance, each half committed with that
-committor. Nothing is written into the run folder (AIMMD's cache readers may
-leave their hidden lock files, as for any reader of a run).
+committor. Nothing is written into the run folder, hidden files included.
 """
 
 import os
@@ -158,14 +157,14 @@ def _toy_run(tmp_path, n_shots=160, seed=0, bias_in_a=None):
 
 
 def _data_files(root):
-    """{file: (size, mtime)} of the files that are not hidden (lock files are AIMMD's readers')."""
+    """{file: (size, mtime, inode)} of every file under `root`, hidden files (locks, frame
+    indices) included."""
     out = {}
     for directory, _, files in os.walk(root):
         for name in files:
-            if not name.startswith('.'):
-                stat = os.stat(os.path.join(directory, name))
-                out[os.path.relpath(os.path.join(directory, name), root)] = (stat.st_size,
-                                                                           stat.st_mtime_ns)
+            stat = os.stat(os.path.join(directory, name))
+            out[os.path.relpath(os.path.join(directory, name), root)] = (
+                stat.st_size, stat.st_mtime_ns, stat.st_ino)
     return out
 
 
@@ -210,6 +209,9 @@ def test_a_run_with_a_bias_is_refused_unless_allowed(tmp_path):
 def test_train_on_the_shots_of_a_run(tmp_path):
     """AIMMD's fit on the run's own shots learns the committor of the toy (a function of the distance)."""
     run, params = _toy_run(tmp_path)
+    from aimmd import _config
+    for cache in (_config.MDA_CACHE, _config.NPY_CACHE):
+        cache.clear()                                           # every file is opened afresh
     before = _data_files(run)
     scaler = baseline.run_distance_scaler(params, run, [0, 1])
     torch.manual_seed(0)

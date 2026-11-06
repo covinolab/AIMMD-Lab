@@ -70,6 +70,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from ...analysis._data_access import without_writing
 from ...network.rescalable import Rescalable
 
 __all__ = ['DistanceMLP', 'pair_distances', 'distance_scaler', 'run_distance_scaler',
@@ -225,6 +226,7 @@ class DistanceMLP(Rescalable):
                 'activation': 'SiLU'}
 
 
+@without_writing
 def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias='auto',
                         series=None, min_std=MIN_STD, allow_biased_frames=False):
     """The distance scaler from the free simulations of a run.
@@ -316,6 +318,7 @@ def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias
             'bias_applied': applied, 'series': series}
 
 
+@without_writing
 def train_on_run(params, run_dir, network, *, chains=None, descriptor_transform=None,
                  allow_biased_frames=False, **fit_kwargs):
     """Train a network on the shooting data of a run with AIMMD's own fit, after the run.
@@ -360,7 +363,9 @@ def train_on_run(params, run_dir, network, *, chains=None, descriptor_transform=
     builds its training set from the shooting outcomes (and, with
     ``augment``, from the free simulations), reading the run's descriptor
     caches. Only `network` changes; save its weights where the analysis keeps
-    its results.
+    its results. The trajectories and caches are read without leaving index
+    or lock files next to them, except that AIMMD's fit takes a cache file's
+    lock in the rare case that it cannot read the rows it needs without it.
     """
     from ...analysis._data_access import refuse_biased_frames
     from ...network.fit import fit

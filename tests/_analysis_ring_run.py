@@ -281,20 +281,39 @@ def train_once(folder):
 
 
 def snapshot(folder):
-    """``{relative path: (size, mtime_ns)}`` of every file under `folder`.
-
-    Two kinds of hidden files are left out, because AIMMD's reading machinery
-    writes them, not the code under test: the file locks of its caches
-    (``.<cache>.lock``), and MDAnalysis's frame index of a trajectory
-    (``.<trajectory>_offsets.npz``), which AIMMD's reader cache deletes and
-    rebuilds whenever it opens a trajectory (``aimmd.cache.mda``).
-    """
+    """``{relative path: (size, mtime_ns, inode)}`` of every file under `folder`, hidden ones
+    included (the file locks of AIMMD's caches and MDAnalysis's frame-index files, which
+    AIMMD's own readers create and rebuild, must not be touched by the analysis tools either)."""
     out = {}
     for directory, _, files in os.walk(folder):
         for name in files:
-            if name.endswith('.lock') or (name.startswith('.') and name.endswith('_offsets.npz')):
-                continue
             fname = os.path.join(directory, name)
             stat = os.stat(fname)
-            out[os.path.relpath(fname, folder)] = (stat.st_size, stat.st_mtime_ns)
+            out[os.path.relpath(fname, folder)] = (stat.st_size, stat.st_mtime_ns, stat.st_ino)
     return out
+
+
+def forget_open_files():
+    """Empty AIMMD's reader caches, so that the next reader opens every file again."""
+    from aimmd import _config
+    for cache in (_config.MDA_CACHE, _config.NPY_CACHE):
+        cache.clear()
+
+
+@contextlib.contextmanager
+def read_only(folder):
+    """`folder` with every file and subfolder read-only (as an archive) inside the block."""
+    import stat
+    entries = [(directory, files) for directory, _, files in os.walk(folder)]
+    try:
+        for directory, files in entries:
+            for name in files:
+                os.chmod(os.path.join(directory, name), stat.S_IRUSR | stat.S_IRGRP)
+        for directory, _ in reversed(entries):
+            os.chmod(directory, stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP)
+        yield folder
+    finally:
+        for directory, files in entries:
+            os.chmod(directory, stat.S_IRWXU)
+            for name in files:
+                os.chmod(os.path.join(directory, name), stat.S_IRUSR | stat.S_IWUSR)

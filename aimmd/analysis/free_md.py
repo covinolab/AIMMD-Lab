@@ -65,6 +65,7 @@ from typing import Optional
 
 import numpy as np
 
+from ._data_access import without_writing
 from .reweighting import cache_rows
 
 
@@ -247,6 +248,7 @@ def _warn_restart_source(source):
             UserWarning, stacklevel=3)
 
 
+@without_writing
 def free_md_rates(params, run_dir, *, bias='auto', confidence=0.95, system_id=None):
     """Rates counted directly in the free simulations of a run, with exact Poisson limits.
 
@@ -373,6 +375,7 @@ class FreeMDReference:
         return int(len(self.n_last))
 
 
+@without_writing
 def free_md_reference(params, run_dir, *, stride=1, descriptors=False, system_id=None,
                       name='free_md', allow_biased_frames=False):
     """The reactive frames of a run's free simulations with the end state each reached next.

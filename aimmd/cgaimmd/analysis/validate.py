@@ -113,6 +113,7 @@ from typing import Optional
 
 import numpy as np
 
+from ...analysis._data_access import without_writing
 from ._stats import (json_float, jsonable, level_seed, logit as _logit, sigmoid as _sigmoid,
                      spearman as _spearman)
 
@@ -831,6 +832,7 @@ def params_committor(params, *, network=None, descriptor_transform='params', bat
     return committor
 
 
+@without_writing
 def heldout_chain_reference(params, run_dir, chains, *, n_atoms=None, exclude_frames=None,
                             name=None, allow_biased_frames=False):
     """The two-way shots of held-out reactive chains of a run folder, as a reference for M2.

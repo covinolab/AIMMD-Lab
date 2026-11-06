@@ -26,8 +26,9 @@ from aimmd.analysis.reweighting import (FreeEnergy, check_output_outside, frame_
                                         free_energy, free_energy_convergence,
                                         free_energy_difference, populations, reweight_run,
                                         trainer_rate_estimates)
-from tests._analysis_ring_run import (build_ring_run, expected_free_energy, metropolis,
-                                      ring_states, snapshot, train_once, write_frames)
+from tests._analysis_ring_run import (build_ring_run, expected_free_energy, forget_open_files,
+                                      metropolis, read_only, ring_states, snapshot, train_once,
+                                      write_frames)
 
 FES_TOLERANCE = 0.4
 """kT; the largest deviation over ten bins from the exact free energy (see the module docstring)."""
@@ -378,7 +379,10 @@ def test_exp_bias_weights_recover_unbiased_populations_of_a_markov_chain():
 # ════════════════════════════════════════════════════════════════════════════
 
 def test_nothing_is_written_into_the_run_folder(ring, ring_reweighting, tmp_path):
+    """Not a data file, a cache, a lock or a frame index: every file is opened afresh and the
+    snapshot covers hidden files too."""
     from aimmd.analysis.free_md import free_md_rates, free_md_reference
+    forget_open_files()
     before = snapshot(ring['run'])
     result = reweight_run(ring['params'], ring['run'], fractions=(0.5,))
     table = frame_table(result, cv={'x': x_of})
@@ -399,6 +403,23 @@ def test_nothing_is_written_into_the_run_folder(ring, ring_reweighting, tmp_path
     check_output_outside(tmp_path / 'elsewhere', ring['run'])
     with pytest.raises(ValueError):
         check_output_outside(ring['run'], ring['run'])
+
+
+def test_a_read_only_run_folder_gives_the_same_numbers(ring, ring_reweighting, tmp_path):
+    """An archived run (files and folders read-only, with the hidden lock and index files the
+    trainer left) is read as it is: the same rates, weights and populations, no error."""
+    from aimmd.analysis.free_md import free_md_rates
+    copy = tmp_path / 'run'
+    shutil.copytree(ring['run'], copy, symlinks=True)
+    assert any(name.endswith('.lock') for _, _, files in os.walk(copy) for name in files)
+    with read_only(copy):
+        result = reweight_run(ring['params'], str(copy))
+        table = frame_table(result, cv={'x': x_of})
+        rates = free_md_rates(ring['params'], str(copy))
+    assert (result.k12, result.k21) == (ring_reweighting.k12, ring_reweighting.k21)
+    np.testing.assert_array_equal(result.weights_forward, ring_reweighting.weights_forward)
+    assert table.populations() == frame_table(ring_reweighting).populations()
+    assert rates == free_md_rates(ring['params'], ring['run'])
 
 
 def test_frames_without_values_are_left_out(ring, ring_reweighting, tmp_path):

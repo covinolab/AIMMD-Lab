@@ -69,12 +69,16 @@ Reading only
 ------------
 Nothing here writes into the run folder: values are recomputed in memory,
 results are returned as objects, and their ``save`` methods refuse a target
-inside the run folder. Reading goes through AIMMD's own machinery, which
-keeps two kinds of hidden files next to the data, as it does for the workers
-and the trainer: a file lock next to each cache file (``.<cache>.lock``), and
-MDAnalysis's frame index of each trajectory (``.<trajectory>_offsets.npz``),
-which AIMMD's reader cache deletes and rebuilds whenever it opens a
-trajectory (:mod:`aimmd.cache.mda`). No data file and no cache is changed.
+inside the run folder. Reading goes through AIMMD's own path and cache
+classes, switched for the duration of each call to readers that leave no
+file behind: the hidden file locks of the caches (``.<cache>.lock``) are not
+taken, and MDAnalysis's frame index of each trajectory
+(``.<trajectory>_offsets.npz``) is kept in memory instead of being deleted
+and rebuilt next to the trajectory. A run folder on a read-only file system
+or in an archive is therefore read as it is, and gives the same numbers as a
+writable one. Analyse a finished run (or a copy): while the trainer's value
+pass is updating a cache, a read without the lock can mix old and new values
+of that file.
 
 Values written after the trainer's last pass
 --------------------------------------------
@@ -109,6 +113,8 @@ from math import inf, nan
 from typing import Optional
 
 import numpy as np
+
+from ._data_access import without_writing
 
 
 __all__ = ['RunReweighting', 'reweight_run', 'FrameTable', 'frame_table', 'populations',
@@ -651,6 +657,7 @@ def _subset(chains, free, fraction, by):
     return chains_subset, free_subset, registered_until
 
 
+@without_writing
 def reweight_run(params, run_dir, *, values='cached', network=None, bias='auto',
                  until_values=True, fractions=(), fraction_by='shots', system_id=None,
                  batch_size=None, verbose=False):
@@ -979,6 +986,7 @@ def _file_columns(fname, cv, cv_source, cache):
     return out
 
 
+@without_writing
 def frame_table(reweighting, *, cv=None, cv_source='reader', include_zero_weight=False,
                 cv_cache=None):
     """One row per counted frame of a reweighted ensemble: weight, state, history, value, CVs.
