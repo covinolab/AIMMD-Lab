@@ -43,8 +43,9 @@ source and generator labels are translated to the new names, each with one
 ``DeprecationWarning``. Only new names are written.
 
 :func:`shot_table` and :func:`summarise_shots` turn the sidecars and state
-caches of a run folder into one row per shot and a summary; they only read
-(no cache, lock or offsets file is created in the run folder).
+caches of a run folder into one row per shot and a summary, optionally with
+collective variables of every shooting point; they only read (no cache, lock
+or offsets file is created in the run folder).
 
 Imports only the standard library, numpy and light C-GAIMMD modules at module
 level (``aimmd.worker._shoot`` imports it for every C-GAIMMD run).
@@ -1087,7 +1088,68 @@ def _mtime_iso(fname):
         timespec='seconds')
 
 
-def shot_table(run_dir, *, states='ARB', trajectory_extension='.xtc', params=None):
+def _cv_specs(cv):
+    """``{name: cache name or callable}`` from None, a cache name, a callable or a dict."""
+    if cv is None:
+        return {}
+    if isinstance(cv, dict):
+        specs = dict(cv)
+    elif isinstance(cv, str):
+        specs = {cv: cv}
+    elif callable(cv):
+        specs = {getattr(cv, '__name__', 'cv'): cv}
+    else:
+        raise TypeError(f'cv must be None, a cache name, a callable or a dict of them, got {cv!r}')
+    clash = sorted(set(specs) & set(SHOT_TABLE_COLUMNS))
+    if clash:
+        raise ValueError(f'collective-variable names {clash} are column names of the shot '
+                         f'table; name them differently')
+    return specs
+
+
+def _cache_row(fname, name, index):
+    """Row `index` of the per-frame cache `name` of `fname`, read without a lock (None if missing)."""
+    from ..path.utils import get_cache_fname
+    try:
+        data = np.load(get_cache_fname(fname, name), mmap_mode='r', allow_pickle=False)
+    except (OSError, ValueError):
+        return None
+    if index >= len(data):
+        return None
+    return np.asarray(data[index], dtype=float).reshape(1, -1)
+
+
+def _cv_value(values):
+    values = np.asarray(values, dtype=float).reshape(-1)
+    if len(values) == 1:
+        return float(values[0])
+    return [float(v) for v in values]
+
+
+def _shooting_frame_cvs(fname, index, specs, cv_source):
+    """The collective variables of frame `index` of `fname` (``{name: value}``)."""
+    from .analysis._trajectory import frames_reader, read_frames
+    out = {}
+    source = None
+    for name, spec in specs.items():
+        if isinstance(spec, str):
+            row = _cache_row(fname, spec, index)
+            out[name] = None if row is None else _cv_value(row)
+            continue
+        if source is None:
+            if cv_source == 'reader':
+                positions, dimensions, _ = read_frames(fname, [index])
+                source = frames_reader(positions, None if dimensions is None else dimensions[0])
+            else:
+                source = _cache_row(fname, cv_source, index)
+                if source is None:
+                    source = False
+        out[name] = None if source is False else _cv_value(np.asarray(spec(source), dtype=float))
+    return out
+
+
+def shot_table(run_dir, *, states='ARB', trajectory_extension='.xtc', params=None, cv=None,
+               cv_source='reader', round_shooting_index=False):
     """One row per registered shot of the reactive chains of a run folder.
 
     Parameters
@@ -1100,34 +1162,70 @@ def shot_table(run_dir, *, states='ARB', trajectory_extension='.xtc', params=Non
     trajectory_extension : str, optional
         ``params.trajectory_extension``.
     params : aimmd.Params, optional
-        When given, its ``states`` and ``trajectory_extension`` are used.
+        When given, its ``states``, ``trajectory_extension`` and
+        ``round_shooting_index`` are used.
+    cv : None, str, callable or dict, optional
+        Collective variables of each shooting point, added as columns (the
+        run progression of a paper figure: which configuration was generated
+        at which requested committor, and where it went):
+
+        - a string names a per-frame cache of the run (``'values'``,
+          ``'descriptors'``, a named descriptor series, ``'bias'``): its row
+          at the shooting frame;
+        - a callable gets the shooting frame as `cv_source` gives it and
+          returns its value (or values);
+        - a dict ``{name: str or callable}`` gives several columns.
+
+        A column holds a float, or a list for several values; None where the
+        frame has no value (a missing cache row). A callable written for
+        :func:`aimmd.analysis.reweighting.frame_table` works here unchanged.
+    cv_source : str, optional
+        What the callables get: ``'reader'`` (default: a reader over the one
+        shooting frame, the reader type AIMMD hands to states and descriptors
+        functions) or the name of a per-frame cache (its row at the shooting
+        frame, ``(1, D)``; faster, no trajectory is opened).
+    round_shooting_index : bool, optional
+        Without `params`: how the shooting frame of a shot without a record
+        is found from the times (``Params.round_shooting_index``).
 
     Returns
     -------
     list of dict
-        Rows with the keys of :data:`SHOT_TABLE_COLUMNS`, sorted by
-        registration time (then chain and path), ``shot_index`` counting from
-        0 in that order. ``first_state``/``last_state``/``n_frames`` come from
-        the path's states cache (else the sidecar's registration record);
-        ``reactive`` is True when the path runs from one end state to the
-        other; ``registered`` is the sidecar's time, else the path file's
-        modification time (UTC). The sidecar columns (new and old sidecars;
-        :func:`read_shot_sidecar`) are None for a shot without one (an RFPS
-        shot of a continued run); ``candidates_rejected`` and
-        ``stage1_rejected`` are dicts ``{reason: count}``.
+        Rows with the keys of :data:`SHOT_TABLE_COLUMNS` (and one per
+        collective variable), sorted by registration time (then chain and
+        path), ``shot_index`` counting from 0 in that order.
+        ``first_state``/``last_state``/``n_frames`` come from the path's
+        states cache (else the sidecar's registration record): a registered
+        path holds the backward half reversed, then the forward half, so
+        ``first_state`` is where the backward half ended and ``last_state``
+        where the forward half ended; ``reactive`` is True when the path runs
+        from one end state to the other; ``registered`` is the sidecar's time,
+        else the path file's modification time (UTC); ``shooting_index`` is
+        the shooting frame in the path file (from the record; for a shot
+        without one only with `cv`, found from the times as AIMMD finds it).
+        The sidecar columns (new and old sidecars; :func:`read_shot_sidecar`)
+        are None for a shot without one (an RFPS shot of a continued run);
+        ``candidates_rejected`` and ``stage1_rejected`` are dicts
+        ``{reason: count}``.
 
     Notes
     -----
-    Nothing is written: no trajectory is opened (MDAnalysis would write an
-    offsets file), state caches are read with ``numpy.load`` (AIMMD's cache
+    Nothing is written: trajectories are opened only for collective
+    variables on the reader, with MDAnalysis's low-level XTC/TRR file objects
+    (its readers would write an offsets file next to the trajectory); state
+    caches and other caches are read with ``numpy.load`` (AIMMD's cache
     readers take file locks, which older filelock versions leave behind as
-    files, as in the archived runs), and the caller decides where to save
-    the table. This is what replaces the per-campaign summary scripts, which
+    files, as in the archived runs); the caller decides where to save the
+    table. This is what replaces the per-campaign summary scripts, which
     wrote their CSV into the run folder.
     """
     if params is not None:
         states = params.states
         trajectory_extension = params.trajectory_extension
+        round_shooting_index = bool(getattr(params, 'round_shooting_index', False))
+    specs = _cv_specs(cv)
+    if specs and not isinstance(cv_source, str):
+        raise TypeError(f"cv_source must be 'reader' or a cache name, got {cv_source!r}")
     run_dir = os.fspath(run_dir)
     ends = (states[0], states[2])
     rows = []
@@ -1169,6 +1267,16 @@ def shot_table(run_dir, *, states='ARB', trajectory_extension='.xtc', params=Non
                 **{f'seconds_{key}': cost.get(key) for key in (
                     'generate', 'validity', 'raw_lambda', 'prepare', 'minimize', 'final_check',
                     'total')})
+            if specs:
+                if row['shooting_index'] is None:
+                    from .analysis._trajectory import (count_frames, read_frames,
+                                                       shooting_index_from_times)
+                    n = count_frames(fname)
+                    _, _, times = read_frames(fname, [0, 1] if n > 1 else [0])
+                    row['shooting_index'] = shooting_index_from_times(
+                        times, n, nearest=round_shooting_index)
+                row.update(_shooting_frame_cvs(fname, int(row['shooting_index']), specs,
+                                               cv_source))
             rows.append(row)
     rows.sort(key=lambda row: (row['registered'], row['chain'], row['path']))
     for index, row in enumerate(rows):

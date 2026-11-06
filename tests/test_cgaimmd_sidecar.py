@@ -1019,3 +1019,66 @@ def test_shot_table_and_summary(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='window'):
         sidecar.summarise_shots(rows, window=0)
     assert sidecar.shot_table(tmp_path / 'nothing') == []
+
+
+def test_shot_table_with_collective_variables_of_the_shooting_points(tmp_path, monkeypatch):
+    """shot_table(cv=...): cache rows, callables on the shooting frame (as frame_table takes them),
+    shooting frames of shots without a record found from the times; still nothing written."""
+    from aimmd.cgaimmd.analysis._trajectory import read_frames
+    from tests._helpers_unit import write_trajectory
+    _legacy._reset()
+    run = tmp_path / 'run'
+    params = _params()
+    folder = _folder(tmp_path, 'chainR0')
+    shot1 = _shot(folder, stem='path000001')                      # shooting index 2, a sidecar
+    sidecar.write_shot_sidecar(shot1, _record(lambda_target=0.5), params=params, states='ARB',
+                               target_state='R')
+    # an RFPS shot without a record: the backward half reversed, times 3, 2, 1, 0, 1
+    rfps = _folder(tmp_path, 'chainR1')
+    positions = SHOT.copy()
+    positions[:, 0, 0] = [-1.0, -0.2, 0.0, 0.2, 1.0]
+    fname = write_trajectory(rfps, stem='path000001', positions=positions,
+                             times=[3.0, 2.0, 1.0, 0.0, 1.0])
+    from aimmd.cache.npy import save_npy
+    from aimmd.path.utils import get_cache_fname
+    save_npy(get_cache_fname(fname, 'states'), np.array(list('ARRRB'), dtype='<U1'))
+    save_npy(get_cache_fname(fname, 'descriptors'), positions[:, :, 0].astype(float))
+    before = _listing(run)
+
+    def x_of_atom_0(reader):                 # a frame_table callable: one value per frame
+        return [ts.positions[0, 0] for ts in reader]
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('shot_table must not lock files or open MDAnalysis universes')
+
+    import MDAnalysis
+    import aimmd.cache.npy as npy_cache
+    with monkeypatch.context() as patch:
+        patch.setattr(npy_cache, 'FileLock', forbidden)
+        patch.setattr(MDAnalysis, 'Universe', forbidden)
+        rows = sidecar.shot_table(run, params=params,
+                                  cv={'x': x_of_atom_0, 'descriptor_row': 'descriptors',
+                                      'value': 'values'})
+        by_cache = sidecar.shot_table(run, params=params, cv=lambda row: row[:, 0] * 2,
+                                      cv_source='descriptors')
+    assert _listing(run) == before                                  # nothing written
+    by_chain = {row['chain']: row for row in rows}
+    generated, plain = by_chain['chainR0'], by_chain['chainR1']
+    assert generated['shooting_index'] == SHOOTING_INDEX and plain['shooting_index'] == 3
+    stored = read_frames(shot1.fname)[0]
+    assert generated['x'] == pytest.approx(float(stored[SHOOTING_INDEX, 0, 0]))
+    assert plain['x'] == pytest.approx(0.2, abs=1e-6)              # the frame at time 0
+    assert generated['descriptor_row'] == pytest.approx(
+        np.load(get_cache_fname(shot1.fname, 'descriptors'))[SHOOTING_INDEX].tolist())
+    assert generated['value'] == pytest.approx(float(stored[SHOOTING_INDEX, 0, 0]))
+    assert plain['value'] is None                                  # no values cache
+    assert generated['lambda_target'] == 0.5 and plain['lambda_target'] is None
+    assert {row['chain']: row['<lambda>'] for row in by_cache} == pytest.approx(
+        {'chainR0': 2 * generated['descriptor_row'][0], 'chainR1': 0.4})
+    # without collective variables a shot without a record keeps no shooting index
+    assert {row['chain']: row['shooting_index'] for row in sidecar.shot_table(run, params=params)} \
+        == {'chainR0': SHOOTING_INDEX, 'chainR1': None}
+    with pytest.raises(ValueError, match='column names'):
+        sidecar.shot_table(run, params=params, cv={'chain': 'values'})
+    with pytest.raises(TypeError, match='cv must be'):
+        sidecar.shot_table(run, params=params, cv=3)
