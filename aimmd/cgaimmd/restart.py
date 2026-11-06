@@ -418,7 +418,21 @@ def _descriptor_caches(run_dir, extensions=TRAJECTORY_EXTENSIONS, series=DEFAULT
     return caches
 
 
-def check_descriptor_caches(params, run_dir, *, n_files=8, n_frames=2, atol=1e-3, seed=0):
+CACHE_CHECK_ATOL = 0.01
+"""Default tolerance (Å) of :func:`check_descriptor_caches`: one quantum of AIMMD's XTC files.
+
+A registered shooting path is written by AIMMD at the XTC writer's default
+precision (0.001 nm = 0.01 Å), while its cached rows were computed from the
+segments ``back``/``forw``, which mdrun may write more precisely
+(``compressed-x-precision``; 10000 in the NANMA test system). A cached row
+can then differ from the one recomputed from the path file by half a quantum,
+0.005 Å. Descriptors of another network or another settings differ by much
+more.
+"""
+
+
+def check_descriptor_caches(params, run_dir, *, n_files=8, n_frames=2, atol=CACHE_CHECK_ATOL,
+                            seed=0):
     """Check the descriptor caches of a run against ``params.descriptors_function``.
 
     Parameters
@@ -432,7 +446,9 @@ def check_descriptor_caches(params, run_dir, *, n_files=8, n_frames=2, atol=1e-3
     n_frames : int, optional
         Frames sampled per file, among the rows the cache holds.
     atol : float, optional
-        Largest absolute difference accepted between cached and recomputed descriptors (Å).
+        Largest absolute difference accepted between cached and recomputed descriptors (Å);
+        default :data:`CACHE_CHECK_ATOL`, one XTC quantum (the path files AIMMD writes are
+        rounded to it, the segments their rows came from may not be).
     seed : int, optional
         Seed of the sample.
 

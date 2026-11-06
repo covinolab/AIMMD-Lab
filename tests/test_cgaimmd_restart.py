@@ -335,6 +335,28 @@ def test_check_descriptor_caches_value_mismatch(tmp_path):
     assert 'differ' in str(info.value)
 
 
+def test_check_descriptor_caches_accepts_the_rounding_of_a_registered_path(tmp_path):
+    """Rows half an XTC quantum away from the path file pass; a tenth of an Angstrom does not.
+
+    A registered path is written at the XTC writer's precision (0.01 Å) while
+    its rows come from segments mdrun may write more precisely (the NANMA
+    test system: compressed-x-precision 10000), so a row can differ from the
+    recomputed one by 0.005 Å (found by the GROMACS PaiNN run test: the
+    trainer refused its own run folder at its second start).
+    """
+    from aimmd.cgaimmd.restart import CACHE_CHECK_ATOL
+    assert CACHE_CHECK_ATOL == 0.01
+    layout = build_cgaimmd_run_dir(tmp_path, n_chains=1, n_shots=1, n_free=0)
+    fname = get_cache_fname(layout.shots[0].fname, 'descriptors')
+    rows = np.load(fname)
+    save_npy(fname, rows + np.float32(0.0055))
+    report = check_descriptor_caches(cgaimmd_params_namespace(), layout.run, n_frames=100)
+    assert report['n_frames'] == len(rows) and 0.005 < report['max_abs_diff'] < 0.006
+    save_npy(fname, rows + np.float32(0.1))
+    with pytest.raises(ValueError, match='migrate_descriptors'):
+        check_descriptor_caches(cgaimmd_params_namespace(), layout.run, n_frames=100)
+
+
 def test_check_descriptor_caches_skips_uncomputed_rows(tmp_path):
     """Rows the trainer has not filled yet (NaN) and frames past the cache end are skipped."""
     layout = build_cgaimmd_run_dir(tmp_path, n_chains=1, n_shots=1, n_free=0)
