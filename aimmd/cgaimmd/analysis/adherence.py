@@ -20,12 +20,11 @@ The dial
 --------
 - **Resolution** (the lead number). Fit ``lambda = a + b lambda*`` by least
   squares; ``b`` is the *slope* (1 for a perfect dial, 0 for a generator that
-  ignores the request). The residual spread, measured robustly
-  (:func:`robust spread <aimmd.cgaimmd.analysis._stats.robust_sd>`: 1.4826
-  times the median absolute deviation, the standard deviation for normal
-  residuals), divided by the slope, is the resolution in request units: how far
-  apart two requests must be before their samples can be told apart. Smaller
-  is better; a flat dial (slope at or below 1e-3) has an infinite resolution.
+  ignores the request). The residual spread, measured robustly (1.4826
+  times the median absolute deviation, which is the standard deviation for
+  normal residuals and is not pulled up by a few wild samples), divided by
+  the slope, is the resolution in request units: how far apart two requests
+  must be before their samples can be told apart. Smaller is better; a flat dial (slope at or below 1e-3) has an infinite resolution.
   It is reported over all requests, inside the *band* ``|lambda*| <= 2`` (the
   transition region) and over the *wings* ``|lambda*| > 2``. The wings get one
   shared slope and a separate intercept per wing, so that a jump between the
