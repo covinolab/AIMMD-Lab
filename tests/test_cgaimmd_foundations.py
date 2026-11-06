@@ -304,18 +304,18 @@ def test_conftest_fixture_resets_process_state(request):
     name = 'aimmd.cgaimmd.flow_matching.fit'
     fit = sys.modules.get(name)
     inserted = fit is None
-    if inserted:                                    # the trainer module of a later stream
+    if inserted:                                    # the fit module, if not imported yet
         fit = types.ModuleType(name)
-        fit._TRAINERS = {}
+        fit._RUNS = {}
         sys.modules[name] = fit
     try:
-        fit._TRAINERS['/some/state_dir'] = object()
+        fit._RUNS['/some/state_dir'] = object()
         config.WORKER_TASK = 'train'
         _once.once('some flag')
         with pytest.warns(DeprecationWarning):
             assert _legacy.warn_renamed('old', 'new', key='some old name')
         reset_cgaimmd_process_state()
-        assert fit._TRAINERS == {}
+        assert fit._RUNS == {}
         assert config.WORKER_TASK is None
         assert _once.once('some flag') is True
         with pytest.warns(DeprecationWarning):                           # warns again

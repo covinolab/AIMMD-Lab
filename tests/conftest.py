@@ -180,8 +180,8 @@ def reset_cgaimmd_process_state():
     """Clear all process-global memory of C-GAIMMD code.
 
     That is the warn/log-once flags of ``aimmd.cgaimmd._once``, the old names
-    already warned about by ``aimmd.cgaimmd._legacy``, the flow-matching fit's
-    trainer registry ``aimmd.cgaimmd.flow_matching.fit._TRAINERS`` and
+    already warned about by ``aimmd.cgaimmd._legacy``, what the flow-matching
+    fit keeps between rounds (``aimmd.cgaimmd.flow_matching.fit._RUNS``) and
     ``aimmd._config.WORKER_TASK``. Only modules that are already imported are
     touched, so this imports nothing (and works before the modules of later
     streams exist). The compatibility modules of the old names
@@ -195,9 +195,9 @@ def reset_cgaimmd_process_state():
     if legacy is not None:
         legacy._reset()
     fit = sys.modules.get('aimmd.cgaimmd.flow_matching.fit')
-    trainers = getattr(fit, '_TRAINERS', None)
-    if trainers is not None:
-        trainers.clear()
+    runs = getattr(fit, '_RUNS', None)
+    if runs is not None:
+        runs.clear()
     config = sys.modules.get('aimmd._config')
     if config is not None:
         config.WORKER_TASK = None
@@ -207,9 +207,9 @@ def reset_cgaimmd_process_state():
 def _reset_cgaimmd_process_state():
     """Keep C-GAIMMD process state from leaking between tests.
 
-    Warn-once flags, the trainer registry and the worker task are
-    process-global by design (a process warns once, keeps its trainer across
-    rounds and runs one task at a time). Under pytest many tests share one
+    Warn-once flags, the fit's memory between rounds and the worker task are
+    process-global by design (a process warns once, keeps its dataset and
+    bookkeeping across rounds and runs one task at a time). Under pytest many tests share one
     process, so they are cleared before and after every test and no result
     depends on collection order. The generator registry
     (``aimmd.cgaimmd.generation``) is restored after each test, so that a
