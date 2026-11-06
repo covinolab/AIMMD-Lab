@@ -22,8 +22,8 @@ import pytest
 
 import aimmd
 from aimmd.cache.npy import save_npy
-from aimmd.cgaimmd.sidecar import (in_flight_fname, in_flight_positions_fname, read_shot_sidecar,
-                                write_in_flight)
+from aimmd.cgaimmd.sidecar import (REGISTRATION_KEYS, in_flight_fname, in_flight_positions_fname,
+                                read_shot_sidecar, write_in_flight)
 from aimmd.cgaimmd.types import ShootingPoint
 from aimmd.path.utils import get_cache_fname
 from aimmd.worker import _shoot
@@ -335,6 +335,76 @@ def test_resume_without_record(tmp_path, monkeypatch):
     sidecar = read_shot_sidecar(harness.registered[0])
     assert sidecar['source'] == 'resumed_without_cgaimmd_record'
     assert sidecar['path_name'] == 'path000001'
+
+
+class NetworkLoadedAtWait:
+    """A values function that scores like the params file's network until the source's
+    ``wait_for_network`` has run, and like the run's network file after it.
+
+    The params file's network gives 0 everywhere (an untrained head); the run's network gives
+    ``10 x``. ``calls`` records which network scored each call.
+    """
+
+    def __init__(self, monkeypatch):
+        self.loaded = False
+        self.calls = []
+        real_wait = ScriptedShootingPointSource.wait_for_network
+        harness_values = self
+
+        def wait_for_network(source):
+            result = real_wait(source)
+            harness_values.loaded = result
+            return result
+        monkeypatch.setattr(ScriptedShootingPointSource, 'wait_for_network', wait_for_network)
+
+    def __call__(self, descriptors):
+        self.calls.append('run network' if self.loaded else 'params-file network')
+        x = np.asarray(descriptors, dtype=float).reshape(len(descriptors), -1)[:, 0]
+        return 10.0 * x if self.loaded else np.zeros_like(x)
+
+
+def crash_before_the_sidecar(tmp_path, monkeypatch):
+    """One registered shot whose sidecar was not written: its in-flight marker is still there
+    (the crash window between ``register_path`` and the sidecar write). Returns the path file
+    and its shooting frame's x."""
+    first = Harness(tmp_path, monkeypatch, points=[point(0.1)])
+    first.shoot()
+    fname = first.registered[0]
+    sidecar = read_shot_sidecar(fname)
+    os.remove(f'{fname}.cgaimmd.json')
+    record = {key: value for key, value in sidecar.items() if key not in REGISTRATION_KEYS}
+    path = aimmd.Path(fname, shooting_index=sidecar['registration']['shooting_index'])
+    write_in_flight(first.folder, record, np.asarray(path.positions[path.shooting_index]))
+    return fname, float(path.positions[path.shooting_index][0, 0])
+
+
+def test_recovered_sidecar_scored_with_the_run_network(tmp_path, monkeypatch):
+    """A sidecar recovered at a restart gets lambda_registered from network<s>.h5, which the
+    source loads in wait_for_network; not from the network the params file builds."""
+    fname, x = crash_before_the_sidecar(tmp_path, monkeypatch)
+    values = NetworkLoadedAtWait(monkeypatch)
+    harness = Harness(tmp_path, monkeypatch, points=[], values_function=values)
+    harness.shoot()                          # recovers, then finds no shooting point and stops
+    assert harness.registered == []
+    recovered = read_shot_sidecar(fname)
+    assert recovered['recovered_after_restart'] is True
+    assert recovered['note'] == 'ScriptedShootingPointSource'          # the record is attached
+    assert recovered['registration']['lambda_registered_missing'] is None
+    assert recovered['lambda_registered'] == pytest.approx(10.0 * x)   # not the untrained 0
+    assert x != 0.0 and values.calls == ['run network']
+    assert not os.path.exists(in_flight_fname(harness.folder))
+
+
+def test_recovery_waits_for_the_network(tmp_path, monkeypatch):
+    """A worker that must stop before any network file exists leaves the in-flight record for
+    the next start, which recovers the sidecar with the network."""
+    fname, _ = crash_before_the_sidecar(tmp_path, monkeypatch)
+    values = NetworkLoadedAtWait(monkeypatch)
+    harness = Harness(tmp_path, monkeypatch, points=[], values_function=values,
+                      wait_result=False)
+    harness.shoot()
+    assert read_shot_sidecar(fname) is None and values.calls == []
+    assert os.path.exists(in_flight_fname(harness.folder))
 
 
 def test_glitch_clears_in_flight(tmp_path, monkeypatch, capsys):

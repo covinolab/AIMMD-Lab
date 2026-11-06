@@ -378,9 +378,8 @@ class WorkerShoot(ABC):
                     directory, t, k + chain_id)
                 if do_cgaimmd:
                     # the RFPS selection pool is unused, pool.log untouched;
-                    # a crash may have left an in-flight record
+                    # in-flight records are reconciled once the network is in
                     pool = PathEnsemble()
-                    reconcile_in_flight(folder, chain, params)
                 else:
                     pool = PathEnsemble(f'{folder}/pool.log')
                     update_selection_pool(
@@ -422,6 +421,12 @@ class WorkerShoot(ABC):
                                                         self._directory)
             if not source.wait_for_network():
                 return
+            # a crash may have left an in-flight record; reconciled only now,
+            # so that a sidecar recovered from it scores lambda_registered
+            # with the run's network (network<s>.h5), not with the network
+            # the params file builds
+            for chain_id, chain in enumerate(chains):
+                reconcile_in_flight(activate_chain(chain_id), chain, params)
         elif t == states[1] and not sweep and nbins > 1:
             print(f'\nWaiting for neural network, bins, densities {now()}')
             while True:

@@ -566,7 +566,7 @@ def _chain_path(chain, fname):
 
 
 def reconcile_in_flight(folder, chain, params):
-    """Bring the in-flight marker of `folder` in line with the chain at chain load.
+    """Bring the in-flight marker of `folder` in line with the chain when a shooting worker starts.
 
     Parameters
     ----------
@@ -575,7 +575,13 @@ def reconcile_in_flight(folder, chain, params):
     chain : aimmd.PathEnsemble
         The loaded chain (``params.shot_chains(...)``), for a recovered path's shooting index.
     params : aimmd.Params
-        Provides ``trajectory_extension``, ``states``, ``check_if_initialized``, the values function.
+        Provides ``trajectory_extension``, ``states``, ``check_if_initialized``, the values
+        function. ``params.network`` must hold the run's network: the shooting
+        worker calls this only after its source has loaded ``network<s>.h5``
+        (``wait_for_network``), because a recovered sidecar's
+        ``lambda_registered`` is that network's committor of the shooting frame.
+        Before the load, ``params.network`` is the network the params file
+        builds (untrained), whose value would be recorded as if it were valid.
 
     Returns
     -------
@@ -591,7 +597,10 @@ def reconcile_in_flight(folder, chain, params):
     - ``'recovered'``: the marker's path (``f'{folder}/{path_name}{ext}'``) is
       registered without a sidecar (a crash between ``register_path`` and the
       sidecar write): the sidecar is written (same attach rule,
-      ``recovered_after_restart=True``) and the marker cleared.
+      ``recovered_after_restart=True``) and the marker cleared. Its
+      ``lambda_registered`` comes from the network loaded at the restart,
+      which is newer than the one a normal registration would have used if
+      the trainer published a network in between.
     - ``'cleared'``: the marker's path is registered with a sidecar (a crash
       before the marker was cleared), or the segments are not both
       initialized (nothing, or one half, e.g. a crash between the two grompp
