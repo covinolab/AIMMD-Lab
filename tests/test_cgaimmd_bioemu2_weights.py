@@ -43,7 +43,7 @@ pytestmark = [pytest.mark.bioemu2_weights, pytest.mark.gpu]
 
 ZERO_ADAPTER_ATOL = 1e-4
 """Ångström: identity adapters against plain BioEmu2, one denoiser pass (DESIGN 6.1; production measured 4.8e-5;
-here 8.6e-6 chignolin, 2.0e-5 trypsin fragment)."""
+here 8.6e-6 chignolin, 2.0e-5 the trypsin fragment, 2.7e-5 the whole trypsin system)."""
 PLAIN_SAMPLE_ATOL = 1e-3
 """Ångström: the generator with identity adapters against BioEmu2's own sampler, same seed, 200 steps (2.1e-4)."""
 
@@ -221,7 +221,7 @@ def test_the_checkpoint_widths_checksum_and_provenance(real_model, chignolin_sys
 
 
 # ---------------------------------------------------------------------------------------------- identity adapters
-@pytest.mark.parametrize('which', ['chignolin', 'trypsin_fragment'])
+@pytest.mark.parametrize('which', ['chignolin', 'trypsin_fragment', 'trypsin'])
 def test_identity_adapters_denoise_as_plain_bioemu2(which, request, real_model):
     import torch
     from aimmd.cgaimmd.bioemu2 import BioEmu2Network
