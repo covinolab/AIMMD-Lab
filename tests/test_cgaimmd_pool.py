@@ -324,7 +324,7 @@ def test_seed_streams_independent():
     prep_children = np.random.SeedSequence(seed).spawn(4)[2].spawn(8)
     for index in (0, 5, 7):
         child = prep_children[index]
-        assert prep[index] == int(child.generate_state(1, np.uint64)[0] >> 1)
+        assert prep[index] == int(child.generate_state(1, np.uint64)[0] >> np.uint64(1))
         np.testing.assert_array_equal(preparation_stream(seed, index).random(4),
                                       np.random.default_rng(child).random(4))
         assert stream_seed(preparation_stream(seed, index)) == prep[index]

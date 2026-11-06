@@ -93,3 +93,13 @@ def test_full_conda_env():
 
 def test_gitignore_keeps_the_build_record_out_of_the_source_tree():
     assert 'aimmd/_build_record.json' in (ROOT / '.gitignore').read_text().splitlines()
+
+
+def test_python_floor_and_classifiers():
+    """requires-python and the version classifiers say the same (3.10 or later)."""
+    with open(ROOT / 'pyproject.toml', 'rb') as file:
+        project = tomllib.load(file)['project']
+    assert project['requires-python'] == '>=3.10'
+    versions = sorted(c.rsplit(':: ', 1)[1] for c in project['classifiers']
+                      if re.fullmatch(r'Programming Language :: Python :: 3\.\d+', c))
+    assert versions[0] == '3.10' and '3.9' not in versions
