@@ -89,8 +89,10 @@ SIDECAR_SUFFIXES = {'.flow.json': '.cgaimmd.json'}
 SIDECAR_SCHEMAS = {'aimmd.flow.shot/1': 'aimmd.cgaimmd.shot/1'}
 """The ``schema`` of a per-shot sidecar: old -> new."""
 
-SIDECAR_SOURCES = {'flow': 'cgaimmd'}
-"""The ``source`` field of a per-shot sidecar: old -> new."""
+SIDECAR_SOURCES = {'flow': 'cgaimmd',
+                   'resumed_without_flow_record': 'resumed_without_cgaimmd_record'}
+"""The ``source`` field of a per-shot sidecar: old -> new (a generated shot, and a shot that
+resumed after a restart without its in-flight record)."""
 
 GENERATOR_LABELS = {'network.generate': 'bioemu2_edm', 'aimmd sampler': 'ode',
                     'aimmd.flow.sampler.generate': 'ode'}

@@ -37,6 +37,18 @@ next to a solute molecule far from the rest of the solute (a guest that has
 left its host) stays next to that molecule. The cluster is whole and needs
 no periodic images.
 
+The descriptor series: the rows are cached in ``params.descriptors_series``,
+``'descriptors'`` by default (the archived runs resume without a refill).
+:attr:`GeneratorDescriptors.series` is a series of its own, opt-in
+(``descriptors_series = DESCRIPTORS.series``): ``'descriptors-cg'`` and 10 hex
+characters of a SHA-256 over :meth:`GeneratorDescriptors.spec`, i.e. over
+everything the rows depend on, the version of the water placement of a
+cluster (:data:`WATER_PLACEMENT`) included. A change of any of it starts a
+new series, which :mod:`aimmd.core.series` refills (``refill=True``) or
+refuses before a job does any work, so rows of other settings are never
+mixed in. :func:`aimmd.cgaimmd.restart.check_descriptor_record` gives the
+default series the same protection through a record in the run folder.
+
 Port of ``cfaimmd.solvation.EnvironmentSelector`` and
 ``cfaimmd.geometry.make_whole`` (the prototype of C-GAIMMD) without the
 variable-count environment block (a generator needs a fixed atom count). The
@@ -46,7 +58,12 @@ ranked by a guest one box away from it.
 Standard library and numpy at import; MDAnalysis inside the constructor.
 """
 
+import functools
+import hashlib
+import json
 import os
+import re
+import types
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -55,7 +72,26 @@ from typing import Optional
 import numpy as np
 
 __all__ = ['RankingRule', 'ClusterSelection', 'GeneratorAtoms', 'GeneratorDescriptors',
-           'coordinates_descriptors', 'make_whole']
+           'GeneratorDescriptorsRefiller', 'coordinates_descriptors', 'make_whole',
+           'find_generator_descriptors', 'generator_descriptors_near', 'DESCRIPTOR_LAYOUT',
+           'WATER_PLACEMENT', 'SERIES_PREFIX']
+
+DESCRIPTOR_LAYOUT = 1
+"""Version of the row layout: the flat Å coordinates of the generator atoms, in their order."""
+
+WATER_PLACEMENT = 2
+"""Version of the placement of the cluster waters.
+
+1: the development branch's placement (every chosen water at the image
+nearest the solute's centre of mass; in unbound frames the waters ranked by a
+guest ended up one box away from it). 2: each water at the image nearest the
+reference of the ranking rule that chose it (this module). Part of
+:meth:`GeneratorDescriptors.spec` for a cluster, so the series name changes
+with it.
+"""
+
+SERIES_PREFIX = 'descriptors-cg'
+"""Prefix of every fingerprinted series of :class:`GeneratorDescriptors` (10 hex characters follow)."""
 
 _MODES = ('min_distance', 'com')
 _RULE_KEYS = ('reference', 'mode', 'n')
@@ -363,14 +399,34 @@ class GeneratorDescriptors:
     the ``(M, 3)`` generator atoms of each frame (AIMMD passes batches of up to
     4096 full-system frames). Deterministic; creates no CUDA context.
 
+    **Series.** :attr:`series` is ``'descriptors-cg'`` and 10 hex characters
+    of the SHA-256 of :meth:`spec`: the layout, the generator atoms (with the
+    water placement :data:`WATER_PLACEMENT` of a cluster), ``whole`` and the
+    structure's atom count, names, residue names and masses (not its path or
+    its coordinates, which the rows do not depend on). Using it is opt-in:
+    ``descriptors_series = DESCRIPTORS.series``. The object registers its
+    series with :func:`aimmd.core.series.register_series` when it is built,
+    with ``refill`` and a :class:`GeneratorDescriptorsRefiller`, so that the
+    Launcher and every worker find trajectories of a run without the series
+    before any MD: ``refill=False`` stops the job with the ways out,
+    ``refill=True`` lets one process of the run featurize them first. A
+    second object of the same series registered with ``refill=False`` (a
+    params file that also builds descriptors for its validity check) does
+    not undo an earlier ``refill=True``. Bound methods of this object are
+    refused as params functions (``_params_requires_wrapper``): params store
+    functions, not objects, so use a module-level wrapper.
+
     Examples
     --------
     >>> descriptors = GeneratorDescriptors('conf.gro', GeneratorAtoms(n_solute=22))  # doctest: +SKIP
     >>> def descriptors_function(trajectory):                              # doctest: +SKIP
     ...     return descriptors(trajectory)
+    >>> descriptors_series = descriptors.series     # opt-in: a series of its own  # doctest: +SKIP
     """
 
-    def __init__(self, structure, generator_atoms, *, whole=True, masses=None):
+    _params_requires_wrapper = True
+
+    def __init__(self, structure, generator_atoms, *, whole=True, masses=None, refill=False):
         import MDAnalysis as mda
 
         if not isinstance(generator_atoms, GeneratorAtoms):
@@ -378,6 +434,7 @@ class GeneratorDescriptors:
         self.structure = os.path.abspath(str(structure))
         self.generator_atoms = generator_atoms
         self.whole = bool(whole)
+        self.refill = bool(refill)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             universe = mda.Universe(self.structure)
@@ -442,7 +499,46 @@ class GeneratorDescriptors:
                                      f'solute atoms (the first {S})')
                 self._center = np.asarray(center, dtype=int)
 
+        # identity of the rows: the series name, registered for the series checks
+        digest = hashlib.sha256()
+        for attribute in ('names', 'resnames'):
+            try:
+                values = getattr(atoms, attribute)
+            except Exception:                                     # noqa: BLE001
+                values = ()                                       # a structure without them
+            digest.update(f'{attribute}:'.encode())
+            digest.update('\0'.join(map(str, values)).encode())
+        digest.update(np.round(np.asarray(masses, dtype=np.float64), 3).tobytes())
+        self._topology_sha256 = digest.hexdigest()
+        self._spec = self._make_spec()
+        self._fingerprint = hashlib.sha256(
+            json.dumps(self._spec, sort_keys=True).encode()).hexdigest()
+        self._register_series()
+
     # -- construction helpers -------------------------------------------------
+
+    def _make_spec(self):
+        atoms = self.generator_atoms
+        cluster = atoms.cluster
+        cluster_spec = None
+        if cluster is not None:
+            cluster_spec = {'n_waters': cluster.n_waters, 'water_resname': cluster.water_resname,
+                            'atoms_per_water': cluster.atoms_per_water,
+                            'ranking': [dict(rule) for rule in cluster.ranking],
+                            'center_selection': cluster.center_selection,
+                            'water_placement': WATER_PLACEMENT}
+        return {'layout': DESCRIPTOR_LAYOUT,
+                'generator_atoms': {'n_solute': atoms.n_solute, 'cluster': cluster_spec},
+                'whole': self.whole,
+                'n_atoms_structure': self._n_total,
+                'topology': self._topology_sha256}
+
+    def _register_series(self):
+        """Register :attr:`series` (never downgrading an earlier ``refill=True`` of the same series)."""
+        from ...core.series import register_series, series_policy
+        if self.refill or not series_policy(self.series).refill:
+            register_series(self.series, refill=self.refill,
+                            refiller=GeneratorDescriptorsRefiller(self))
 
     @staticmethod
     def _solute_bonds(universe, positions, masses, box):
@@ -461,6 +557,37 @@ class GeneratorDescriptors:
         return covalent
 
     # -- public ---------------------------------------------------------------
+
+    def spec(self):
+        """Everything the rows depend on, as a JSON-able dict.
+
+        Returns
+        -------
+        dict
+            ``layout`` (:data:`DESCRIPTOR_LAYOUT`), ``generator_atoms``
+            (``n_solute`` and the cluster's settings with its
+            ``water_placement``, :data:`WATER_PLACEMENT`; None without a
+            cluster), ``whole``, ``n_atoms_structure`` and ``topology`` (a
+            SHA-256 over the structure's atom names, residue names and masses
+            rounded to 0.001 u).
+        """
+        return json.loads(json.dumps(self._spec))
+
+    @property
+    def fingerprint(self):
+        """str: SHA-256 (hex) of :meth:`spec`."""
+        return self._fingerprint
+
+    @property
+    def series(self):
+        """str: the descriptor series of these rows, ``'descriptors-cg'`` and the first 10 hex characters of :attr:`fingerprint`."""
+        return SERIES_PREFIX + self._fingerprint[:10]
+
+    def __repr__(self):
+        fingerprint = getattr(self, '_fingerprint', None)          # None while being built
+        series = None if fingerprint is None else self.series
+        return (f'{type(self).__name__}(series={series!r}, n_atoms={self.n_atoms}, '
+                f'structure={self.structure!r})')
 
     @property
     def flow_atoms(self):
@@ -724,3 +851,164 @@ def coordinates_descriptors(trajectory):
             n_atoms = getattr(getattr(trajectory, 'trajectory', None), 'n_atoms', None)
         return np.zeros((0, 3 * int(n_atoms or 0)), dtype=np.float32)
     return np.stack(rows)
+
+
+# ---------------------------------------------------------------------------
+# the series: finding the object behind a descriptors function, and refilling
+# ---------------------------------------------------------------------------
+
+FOLLOWED_CALL_LEVELS = 2
+"""How many levels of module-level helper functions :func:`find_generator_descriptors` follows
+below a descriptors function (``wrapper -> helper -> helper``)."""
+
+
+def _referenced(function):
+    """The objects a Python function names: its globals (by name) and its closure cells."""
+    code = getattr(function, '__code__', None)
+    names = getattr(function, '__globals__', None)
+    if code is None or names is None:
+        return []
+    out = [names[name] for name in code.co_names if name in names]
+    for cell in getattr(function, '__closure__', None) or ():
+        try:
+            out.append(cell.cell_contents)
+        except ValueError:                                  # an empty cell
+            pass
+    return out
+
+
+def _descriptors_behind(function, level, seen):
+    """``{id: GeneratorDescriptors}`` that `function` is, is bound to, or calls."""
+    if function is None or id(function) in seen:
+        return {}
+    seen.add(id(function))
+    if isinstance(function, GeneratorDescriptors):
+        return {id(function): function}
+    owner = getattr(function, '__self__', None)
+    if isinstance(owner, GeneratorDescriptors):
+        return {id(owner): owner}
+    found = {}
+    if isinstance(function, functools.partial):
+        for item in (function.func, *function.args, *function.keywords.values()):
+            found.update(_descriptors_behind(item, level, seen))
+        return found
+    for item in _referenced(function):
+        if isinstance(item, GeneratorDescriptors):
+            found[id(item)] = item
+        elif level < FOLLOWED_CALL_LEVELS and isinstance(item, (types.FunctionType,
+                                                                functools.partial)):
+            found.update(_descriptors_behind(item, level + 1, seen))
+    return found
+
+
+def find_generator_descriptors(function):
+    """The :class:`GeneratorDescriptors` behind a ``descriptors_function``, or None.
+
+    Parameters
+    ----------
+    function : callable or None
+        ``params.descriptors_function``.
+
+    Returns
+    -------
+    GeneratorDescriptors or None
+        The object itself, the object of a bound method, or the one object of
+        this class that a wrapper calls: by a global name (the params-file
+        pattern ``def descriptors_function(trajectory): return
+        DESCRIPTORS(trajectory)``), through a closure, through
+        ``functools.partial``, or through module-level helper functions it
+        calls by a global name (:data:`FOLLOWED_CALL_LEVELS` levels deep).
+        None when there is none, or more than one.
+    """
+    found = _descriptors_behind(function, 0, set())
+    return next(iter(found.values())) if len(found) == 1 else None
+
+
+def generator_descriptors_near(function):
+    """Every :class:`GeneratorDescriptors` behind `function` or among its module's globals.
+
+    Used to tell whether a descriptors function for which
+    :func:`find_generator_descriptors` finds no unique object may still use
+    one (a params file that builds a ``GeneratorDescriptors`` and calls it in
+    a way the finder does not follow, or calls two of them).
+    """
+    found = _descriptors_behind(function, 0, set())
+    target = function.func if isinstance(function, functools.partial) else function
+    target = getattr(target, '__func__', target)            # a bound method's function
+    if not hasattr(target, '__globals__'):                  # a callable object: its __call__
+        target = getattr(type(target), '__call__', None)
+    for item in (getattr(target, '__globals__', None) or {}).values():
+        if isinstance(item, GeneratorDescriptors):
+            found[id(item)] = item
+    return list(found.values())
+
+
+_SERIES_PATTERN = re.compile(re.escape(SERIES_PREFIX) + r'[0-9a-f]{10}')
+
+
+class GeneratorDescriptorsRefiller:
+    """The refill callable of a :class:`GeneratorDescriptors` series (see :mod:`aimmd.core.series`).
+
+    Parameters
+    ----------
+    descriptors : GeneratorDescriptors
+        The descriptors whose series it refills.
+
+    Notes
+    -----
+    It featurizes every frame of each trajectory without the series, one
+    trajectory after the other in the calling process (``jobs`` is not used:
+    the descriptors are cheap next to the MD), with
+    ``aimmd.Path(trajectory).compute(descriptors, series)``, the reader and
+    cache route of AIMMD's own descriptor pass. It polls ``stop`` between
+    trajectories and leaves the files it completed.
+    """
+
+    label = 'C-GAIMMD descriptor'
+    legacy_note = ("the run's caches are the default series, written without a series of "
+                   "their own (possibly by other settings or, with a cluster, by an older "
+                   "water placement)")
+
+    def __init__(self, descriptors):
+        self.descriptors = descriptors
+
+    def __repr__(self):
+        return f'{type(self).__name__}({self.descriptors!r})'
+
+    def claims(self, series):
+        """Whether `series` is a C-GAIMMD descriptor series name (``'descriptors-cg'`` and 10 hex digits)."""
+        return bool(_SERIES_PATTERN.fullmatch(str(series)))
+
+    def route(self, coverage, workdir=None):
+        """How the refill goes, as text."""
+        return (f'featurizing every frame of {len(coverage.missing)} trajectories with '
+                f'GeneratorDescriptors in this process')
+
+    def __call__(self, coverage, *, params_file=None, workdir=None, jobs=None, log=print,
+                 progress=None, stop=None):
+        """Write ``{trajectory}.{series}.npy`` for the trajectories of ``coverage.missing``.
+
+        Returns
+        -------
+        dict
+            ``route`` (``'featurize'``), ``trajectories`` and ``frames`` written.
+
+        Raises
+        ------
+        aimmd.core.series.RefillStopped
+            When ``stop()`` returns true between two trajectories.
+        """
+        from ...core.series import RefillStopped
+        from ...path import Path
+        series = coverage.series
+        frames = 0
+        for done, (trajectory, _system_id) in enumerate(coverage.missing):
+            if stop is not None and stop():
+                raise RefillStopped(f'stopped after {done} of {len(coverage.missing)} '
+                                    f'trajectories')
+            frames += int(Path(trajectory).compute(self.descriptors, series))
+            if progress is not None:
+                progress(done + 1, frames)
+        log(f'featurized {frames} frames of {len(coverage.missing)} trajectories into the '
+            f'series {series!r}')
+        return {'route': 'featurize', 'trajectories': len(coverage.missing), 'frames': frames}

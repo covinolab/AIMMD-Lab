@@ -184,7 +184,10 @@ class LauncherMethods(ABC):
         state1_mode : {'free', 'shoot'} or iterable, optional
             Mode for state-1 replicas. Default is ``'free'``.
         state2_mode : {'free', 'shoot'} or iterable, optional
-            Mode for state-2 replicas. Default is ``'free'``.
+            Mode for state-2 replicas. Default is ``'free'``. With
+            ``chain_type='cgaimmd'``, ``'shoot'`` (for either state) needs a
+            transition in every initial path, which internal shooting
+            chains extract; per-basin initial files need ``'free'``.
         nchains_per_worker : int, optional, default = 1
             If > 1, the worker will manage more than one chain. A higher value
             of `nchains_per_worker` tends to regularize the training set and

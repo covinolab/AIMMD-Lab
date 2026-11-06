@@ -152,6 +152,9 @@ class WorkerRun(ABC):
           :data:`~aimmd._config.NPY_CACHE`.
         - Resets per-task counters (:attr:`_t0`, :attr:`_total_steps`,
           :attr:`_total_frames`).
+        - Under ``chain_type='cgaimmd'``, checks or writes the record of the
+          descriptor settings (:func:`aimmd.cgaimmd.restart.check_descriptor_record`)
+          before the task.
         - Publishes `task` in ``aimmd._config.WORKER_TASK`` while it runs
           (None afterwards, also after an exception), for code that may only
           claim per-task resources, such as devices, inside a worker task.
@@ -197,6 +200,13 @@ class WorkerRun(ABC):
                     role=self._series_role(task, args), log=print,
                     stop=lambda: self.termination_signal):
                 return None     # asked to stop while waiting
+
+            # C-GAIMMD with the default descriptor series: the settings its
+            # caches are written with are recorded (or checked) before any
+            # task writes a cache (aimmd.cgaimmd.restart.check_descriptor_record)
+            if getattr(self.params, 'chain_type', None) == 'cgaimmd':
+                from ..cgaimmd.restart import check_descriptor_record
+                check_descriptor_record(self.params, self._directory)
 
             # bind resources
             self._bind_resources()

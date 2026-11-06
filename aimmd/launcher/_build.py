@@ -31,6 +31,17 @@ multiple processes that would write into the same output location. This is a
 pragmatic guard against conflicting writers, which would corrupt trajectories,
 caches, or logs.
 
+C-GAIMMD runs and initial networks
+----------------------------------
+Before any process is planned, every run that will start is checked by
+:meth:`LauncherBuild._prepare_run_folder`: under ``chain_type='cgaimmd'``
+the restart check (TPS history, descriptor caches of other settings), the
+transition requirement of internal shooting chains and the missing-network
+check of a sampling-only launch with a C-GAIMMD shooter; under every chain
+type an ``initial_network`` is written as the run's network. The lazy build
+of ``Worker.initial_paths`` inside a worker task skips all of it (the
+trainer and the C-GAIMMD shooting worker run their own checks).
+
 Stop conditions
 ---------------
 Each worker is passed stop-condition budgets as positional arguments:
@@ -72,6 +83,7 @@ from pathlib import Path as PosixPath
 from itertools import islice
 
 # aimmd imports
+from .. import _config
 from ..cache.npy import save_npy
 from ..core.utils import remove, unique_path
 from ..path.utils import get_cache_fname
@@ -126,6 +138,11 @@ class LauncherBuild(ABC):
         if num_processes == 0:
             raise RuntimeError('no processes to run')
 
+        # run-folder checks and initial networks, for every run that starts,
+        # before any process is built or any file written
+        for run_id in range(len(self)):
+            self._prepare_run_folder(run_id)
+
         # initialize worker id
         i = 0
 
@@ -163,12 +180,11 @@ class LauncherBuild(ABC):
                 n_sys = self._per_system_counts(n, n_systems)
                 n1_sys = self._per_system_counts(n1, n_systems)
                 n2_sys = self._per_system_counts(n2, n_systems)
-                total_workers = int(n_sys.sum() + n1_sys.sum() + n2_sys.sum())
                 subtasks = [(f'{directory}/{sid}', sidx, sid)
                             for sidx, sid in enumerate(params.system_ids)]
             else:
-                total_workers = int(n) + int(n1) + int(n2)
                 subtasks = [(directory, None, None)]
+            total_workers = self._total_workers(run_id)
 
             if nrounds:
                 conditions = (inf, inf, inf)
@@ -372,3 +388,76 @@ class LauncherBuild(ABC):
 
         # combine
         return args, descriptions
+
+    def _total_workers(self, run_id):
+        """The shooting and free workers of run `run_id` (summed over the systems of a multi-system run)."""
+        params = self._params[run_id]
+        n, n1, n2 = self._n[run_id], self._n1[run_id], self._n2[run_id]
+        if getattr(params, 'multi_system', False):
+            n_systems = len(params.system_ids)
+            return int(sum(self._per_system_counts(count, n_systems).sum()
+                           for count in (n, n1, n2)))
+        return int(n) + int(n1) + int(n2)
+
+    def _runs_anything(self, run_id):
+        """Whether run `run_id` starts a process (the skip rule of :meth:`_build`)."""
+        return bool(self._nrounds[run_id]) or self._total_workers(run_id) > 0
+
+    def _prepare_run_folder(self, run_id):
+        """The launch-time checks of a run folder and the ``initial_network`` write.
+
+        Under ``chain_type='cgaimmd'``:
+        :func:`aimmd.cgaimmd.restart.check_cgaimmd_restart` with the
+        descriptor check (TPS history, descriptor caches of other settings),
+        a transition in every initial path when a state is shot internally
+        (``state1_mode`` or ``state2_mode == 'shoot'``: its chains extract one
+        from each), the initial network, and ``RuntimeError`` when a
+        sampling-only launch (``nrounds == 0``) starts a C-GAIMMD shooter
+        (``n > 0`` with ``reactive_region_mode='chain'``) and there is no
+        network. Under every chain type an ``initial_network`` is written
+        with :func:`aimmd.worker.utils.write_initial_network`. Runs that
+        start no process are left alone, and so is every run when the build
+        happens inside a worker task (``aimmd._config.WORKER_TASK`` set):
+        that is the lazy build of ``Worker.initial_paths``, which writes a
+        missing ``initial<s>/``, while the trainer and the C-GAIMMD shooting
+        worker run their own checks; concurrent workers therefore never move
+        the same network aside.
+        """
+        if _config.WORKER_TASK is not None or not self._runs_anything(run_id):
+            return
+        params = self._params[run_id]
+        directory = self._directories[run_id] or '.'
+        cgaimmd = getattr(params, 'chain_type', None) == 'cgaimmd'
+        if cgaimmd:
+            from ..cgaimmd.restart import check_cgaimmd_restart
+            from ..worker.utils import transition_block
+            check_cgaimmd_restart(params, directory, descriptors=True)
+            shot_states = [mode for mode, value in (
+                ('state1_mode', self._state1_mode[run_id]),
+                ('state2_mode', self._state2_mode[run_id])) if value == 'shoot']
+            if shot_states:
+                missing = [str(path.fname) for path in params.initial_paths
+                           if transition_block(path, params.states) is None]
+                if missing:
+                    modes = ' and '.join(f"{mode}='shoot'" for mode in shot_states)
+                    raise TypeError(
+                        f"{modes} needs a {params.states!r} transition in every initial "
+                        f"path (internal shooting chains extract one from each), "
+                        f"but these have none: {', '.join(missing)}")
+        if cgaimmd or getattr(params, 'initial_network', None) is not None:
+            from ..worker.utils import write_initial_network
+            write_initial_network(params, directory)
+        if not cgaimmd or self._nrounds[run_id]:
+            return
+        # a C-GAIMMD shooter waits for the network; sweeps, free workers and
+        # internal shooting chains do not. C-GAIMMD runs are single-system,
+        # so `n` is one count here, not a per-system list.
+        shooter = (int(self._n[run_id]) > 0
+                   and self._reactive_region_mode[run_id] == 'chain')
+        network_fname = f'{directory}/network{params.sorted_states}.h5'
+        if shooter and not os.path.isfile(network_fname):
+            raise RuntimeError(
+                f"chain_type='cgaimmd' with nrounds=0 needs "
+                f"network{params.sorted_states}.h5 or initial_network: no trainer "
+                f"publishes a network, and the C-GAIMMD shooting workers would wait "
+                f"for {network_fname} forever")

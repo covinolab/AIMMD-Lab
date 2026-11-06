@@ -143,7 +143,10 @@ class LauncherRun(ABC):
         state1_mode : {'free', 'shoot'} or iterable, optional
             Mode for state-1 replicas. Default is ``'free'``.
         state2_mode : {'free', 'shoot'} or iterable, optional
-            Mode for state-2 replicas. Default is ``'free'``.
+            Mode for state-2 replicas. Default is ``'free'``. With
+            ``chain_type='cgaimmd'``, ``'shoot'`` (for either state) needs a
+            transition in every initial path, which internal shooting
+            chains extract; per-basin initial files need ``'free'``.
         nsteps : float or iterable of float, optional
             Maximum number of simulated independent trajectories (worker stop
             condition). Default is ``inf``. Attention! If "train" runs, then

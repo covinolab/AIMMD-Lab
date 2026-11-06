@@ -316,3 +316,39 @@ def test_a_params_file_with_the_network_and_its_default_generator(tiny_peptide_s
         "cgaimmd_generator = {'method': 'bioemu2_edm', 'n_steps': 50, 'cfg_scale': 2.0}"))), save=False)
     assert make_generator(params.cgaimmd_generator, params.network).settings() == {
         'n_steps': 50, 'cfg_scale': 2.0, 'cfg_schedule': None, 'chunk': 16}
+
+
+def test_provenance_names_the_frozen_model(tiny_peptide_system):
+    """provenance(): the checkpoint, its snapshot and the checksum of the frozen model (JSON)."""
+    import json
+    from aimmd.cgaimmd.bioemu2 import BioEmu2Network, _api
+    from aimmd.cgaimmd.protocol import check_network_protocol
+    network = BioEmu2Network(tiny_peptide_system.folder)
+    check_network_protocol(network)
+    record = network.provenance()
+    json.dumps(record)
+    model = network.engine().model
+    assert record['parameter_checksum'] == _api.parameter_checksum(model)
+    assert record['parameter_checksum'] == _api.model_parameter_checksum(model)   # cached
+    assert record['n_parameters'] == sum(p.numel() for p in model.parameters())
+    assert record['bioemu2_version'] == _api.bioemu2_version()
+    assert record['checkpoint'] is None and record['checkpoint_path'] == str(network.checkpoint_path)
+    assert record['hf_snapshot'] is None                    # a test checkpoint outside the cache
+    assert record['system'] == str(tiny_peptide_system.folder)
+    assert record['readout'] == network.readout
+
+
+def test_checkpoint_snapshot_reads_the_cache_without_downloading(tmp_path):
+    """The snapshot of a named checkpoint in a cache folder, and of a checkpoint file in it."""
+    from aimmd.cgaimmd.bioemu2 import _api
+    files = (tmp_path / 'models--microsoft--bioemu2' / 'snapshots' / 'c0ffee12'
+             / 'checkpoints' / 'bioemu2-preview')
+    assert _api.checkpoint_snapshot('bioemu2-preview', cache_dir=tmp_path) is None   # empty
+    files.mkdir(parents=True)
+    (files / 'checkpoint.ckpt').write_bytes(b'')
+    assert _api.checkpoint_snapshot('bioemu2-preview', cache_dir=tmp_path) is None   # no config
+    (files / 'config.yaml').write_text('')
+    assert _api.checkpoint_snapshot('bioemu2-preview', cache_dir=tmp_path) == 'c0ffee12'
+    assert _api.checkpoint_snapshot('another', cache_dir=tmp_path) is None
+    assert _api.checkpoint_snapshot(checkpoint_path=files / 'checkpoint.ckpt') == 'c0ffee12'
+    assert _api.checkpoint_snapshot(checkpoint_path=tmp_path / 'model.ckpt') is None

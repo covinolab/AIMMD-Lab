@@ -13,8 +13,10 @@ What AIMMD sees:
   ``(B, 1)``, of the EMA head on the frozen BioEmu2 features of the structures
   (descriptors = the flat Ångström coordinates of the system's generator
   atoms, ``(B, 3 N)``);
-- ``n_atoms`` (the generator atoms ``N``), ``lambda_clip``, ``reset_parameters``
-  and ``default_generator()`` -> ``{'method': 'bioemu2_edm'}``;
+- ``n_atoms`` (the generator atoms ``N``), ``lambda_clip``, ``reset_parameters``,
+  ``default_generator()`` -> ``{'method': 'bioemu2_edm'}`` and ``provenance()``
+  (the checkpoint, its Hugging Face snapshot and the parameter checksum of the
+  frozen model, which every sidecar records);
 - ``state_dict()``: the head, its EMA copy and the adapters. Frozen BioEmu2 is
   never saved: every process loads it once (offline on compute nodes), from
   the checkpoint the system folder records unless another is named.
@@ -229,6 +231,36 @@ class BioEmu2Network(nn.Module):
     def default_generator(self):
         """The generation method of this network: ``{'method': 'bioemu2_edm'}`` (:mod:`.sampling`)."""
         return {'method': 'bioemu2_edm'}
+
+    def provenance(self):
+        """What this network's values and samples depend on besides its weights (for the sidecars).
+
+        Returns
+        -------
+        dict
+            ``bioemu2_version``; ``checkpoint`` (the checkpoint name, None for a checkpoint
+            file) and ``checkpoint_path``; ``hf_snapshot``, the Hugging Face snapshot the
+            checkpoint comes from (None when it cannot be told, e.g. a checkpoint file outside
+            the cache); ``parameter_checksum`` of the loaded BioEmu2 model (sha1 over its
+            parameters and buffers, computed once per model); ``n_parameters``; the
+            ``system`` folder and its ``trunk`` record; ``readout`` and ``sigma_ref``.
+
+        Notes
+        -----
+        BioEmu2 is loaded if it is not yet (the shooting worker calls this once at start-up,
+        after its numerical checks have used the model).
+        """
+        from . import _api
+        model = self.engine().model
+        return {'bioemu2_version': _api.bioemu2_version(),
+                'checkpoint': None if self.checkpoint_path is not None else self.checkpoint,
+                'checkpoint_path': None if self.checkpoint_path is None else str(self.checkpoint_path),
+                'hf_snapshot': _api.checkpoint_snapshot(self.checkpoint, self.checkpoint_path),
+                'parameter_checksum': _api.model_parameter_checksum(model),
+                'n_parameters': int(sum(p.numel() for p in model.parameters())),
+                'system': None if self.system.folder is None else str(self.system.folder),
+                'trunk': self.system.data.get('trunk'), 'readout': self.readout,
+                'sigma_ref': float(self.sigma_ref)}
 
     def __getstate__(self):
         # copies and pickles never carry BioEmu2 (it is loaded again on first use)

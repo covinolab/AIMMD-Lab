@@ -1,0 +1,240 @@
+{
+ "acceptance": {
+  "enforced": true,
+  "n_trained_shots": 1017,
+  "rule": "target",
+  "tolerance": 1.0,
+  "window": [
+   -3.2795300483703613,
+   9.407269477844238
+  ],
+  "window_after_trained_shots": 1000
+ },
+ "aimmd": {
+  "git_commit": null,
+  "git_dirty": null,
+  "version": "0.1.0"
+ },
+ "candidates": {
+  "rejected": {
+   "state_B": 4
+  },
+  "tried": 5
+ },
+ "chain": "chainR1",
+ "cost_seconds": {
+  "final_check": 0.08212535816710442,
+  "generate": 29.75990008492954,
+  "minimize": 9.819470296031795,
+  "prepare": 51.4384311028989,
+  "raw_lambda": 0.06188666098751128,
+  "total": 61.349806117941625,
+  "validity": 28.038533546961844
+ },
+ "created": "2026-10-28T12:59:05+00:00",
+ "device": {
+  "generation": "cuda:0",
+  "values": "cuda:0"
+ },
+ "generator": {
+  "chunk": 64,
+  "method": "network.generate",
+  "ode_sampler": "midpoint",
+  "ode_steps": 16
+ },
+ "lambda_final": -0.7354855537414551,
+ "lambda_law": {
+  "name": "uniform",
+  "window": [
+   -3.2795300483703613,
+   9.407269477844238
+  ],
+  "window_source": "bins"
+ },
+ "lambda_raw": -0.5531152486801147,
+ "lambda_target": -0.541433220524798,
+ "minimize": {
+  "function": "params_chignolin_faimmd_equilibrium_free.flow_minimize_function",
+  "ok": true,
+  "reason": "",
+  "record": {
+   "commands": {
+    "em_mdp": "em_flow.mdp",
+    "grompp": "gmx grompp -maxwarn 5",
+    "mdrun": "gmx mdrun -ntmpi 1 -ntomp 12 -pin off",
+    "topology": "topol.top"
+   },
+   "converged": false,
+   "directory": "run/chainR1/flow_scratch/em_0000",
+   "epot_after": -100408.34,
+   "epot_before": -80070.9,
+   "fmax": 446.94949,
+   "heavy_rms_displacement_A": 0.08412631957389824,
+   "max_displacement_A": 0.2159792990048994,
+   "seconds": 2.5308098793029785,
+   "settings": {
+    "em_mdp": "em_flow.mdp",
+    "emtol": 100.0,
+    "function": "aimmd.flow.minimize.GromacsMinimizer",
+    "grompp": "gmx grompp",
+    "max_displacement": null,
+    "maxwarn": 5,
+    "mdrun": "gmx mdrun -ntmpi 1 -ntomp 12 -pin off",
+    "nsteps": 1000,
+    "restrain": "flow_heavy",
+    "restraint_k": 10000.0,
+    "timeout": 600.0,
+    "topology": null
+   },
+   "steps": 1001
+  },
+  "seconds": 2.533064363989979
+ },
+ "network": {
+  "file": "run/networkARB.h5",
+  "metadata_matched": true,
+  "n_trained_shots": 1017,
+  "round": 333,
+  "sha256": "7eed54a5bad4e483524d51d7ced575d9ba2a853460f8137ccf306f8bd2784e1e"
+ },
+ "note": null,
+ "path_name": "path000204",
+ "pool": {
+  "candidate": 8,
+  "candidates_per_target": 2,
+  "n_targets": 16,
+  "passed_stage1": 30,
+  "pool_left_after_pop": 11,
+  "refill": 61,
+  "refill_network_sha256": "7eed54a5bad4e483524d51d7ced575d9ba2a853460f8137ccf306f8bd2784e1e",
+  "refill_size": 32,
+  "reset_count": 61,
+  "stale_refill_pop": false
+ },
+ "positions_sha256": "d4a805dff344402e855f8bf73770949b950bd2a91cc22ee6f48fedc858fb24af",
+ "prepare": {
+  "function": "params_chignolin_faimmd_equilibrium_free.flow_prepare_function",
+  "ok": true,
+  "placement": null,
+  "reason": "",
+  "record": {
+   "build": {
+    "deleted_by_consistency": 0,
+    "deleted_by_trim": 110,
+    "ion_min_solute_distance_A": 16.986,
+    "ion_seed": 1620221607,
+    "solvate_scale": 0.57,
+    "waters_added": 2219
+   },
+   "commands": {
+    "gmx": "gmx",
+    "grompp": "gmx grompp -maxwarn 5",
+    "grompp_genion": "gmx grompp -maxwarn 5",
+    "mdrun": "gmx mdrun -ntmpi 1 -ntomp 12 -pin off",
+    "mdrun_em": "gmx mdrun -ntmpi 1 -ntomp 12 -pin off",
+    "topology": "topol.top"
+   },
+   "directory": "run/chainR1/flow_scratch/solvate_0000",
+   "displacement": {
+    "heavy_max_A": 0.4786146020056413,
+    "heavy_rms_A": 0.15324324371741951,
+    "max_A": 1.588070708225105
+   },
+   "em": {
+    "converged": true,
+    "epot": -102824.05,
+    "epot_start": -21441.8,
+    "fmax": 95.256805,
+    "steps": 4679
+   },
+   "nvt": [
+    {
+     "dt": 0.0005,
+     "gen_seed": 1620221608,
+     "gen_temp": 340.0,
+     "ld_seed": 1620221608,
+     "mdp": "relax_flow.mdp",
+     "nsteps": 40000,
+     "ps": 20.0,
+     "seconds": 4.291850566864014,
+     "start": "em.trr"
+    }
+   ],
+   "seconds": {
+    "em": 3.8862102031707764,
+    "ions": 0.364337682723999,
+    "nvt0": 4.291850566864014,
+    "solvate": 0.19200587272644043,
+    "total": 8.818338394165039
+   },
+   "settings": {
+    "box_margin": 0.5,
+    "descriptors": {
+     "n_solute": 166,
+     "n_waters": 0,
+     "structure": "run.gro"
+    },
+    "em_mdp": "em_flow.mdp",
+    "em_nsteps": 50000,
+    "flat_bottom_k": 10000.0,
+    "function": "aimmd.flow.solvate.GromacsSolvator",
+    "grompp": "gmx grompp",
+    "ion_exclusion": null,
+    "ion_min_solute_distance": 5.0,
+    "ion_rmin_nm": 0.6,
+    "max_displacement": null,
+    "maxwarn": 5,
+    "mdrun": "gmx mdrun -ntmpi 1 -ntomp 12 -pin off",
+    "moved_atom_tolerance": 0.01,
+    "nvt_stages": [
+     {
+      "gen_vel": true,
+      "mdp": "relax_flow.mdp",
+      "overrides": {},
+      "ps": 20.0
+     }
+    ],
+    "restrain": "flow_heavy",
+    "restraint_k": 10000.0,
+    "selection_consistency": true,
+    "solvate_scales": [
+     0.57,
+     0.55,
+     0.53,
+     0.51,
+     0.49
+    ],
+    "timeout": 3600.0,
+    "topology": "topol.top",
+    "trim_min_distance": 6.0,
+    "water_box": "spc216.gro",
+    "water_exclusion": null
+   }
+  },
+  "seconds": 8.825203206972219
+ },
+ "schema": "aimmd.flow.shot/1",
+ "seed": {
+  "base": 1,
+  "candidate_index": 8,
+  "prep": 4036295331196634166,
+  "refill": 3530549018875688926,
+  "refill_index": 0,
+  "refill_path": "path000203"
+ },
+ "source": "flow",
+ "stage1_rejected": {
+  "non_finite": 2
+ },
+ "stale_record": null,
+ "state_final": "R",
+ "validity": {
+  "function": "params_chignolin_faimmd_equilibrium_free.flow_validity_function",
+  "info": {
+   "heavy_rms_displacement_A": 0.11076142702202361,
+   "polish_ok": true,
+   "raw_ok": false,
+   "raw_reason": "bond_count"
+  }
+ }
+}
