@@ -18,8 +18,8 @@ wraps :func:`flow_matching_fit` in the four-argument ``fit`` AIMMD calls::
         return flow_matching_fit(params, pathensemble, verbose=verbose, worker=worker,
                                  steps_per_round=4000, relabel_every=1000)
 
-**Every round starts from the same weights** (PI ruling of 26 Oct 2026: never
-warm-start a round from the previous one). The start is
+**Every round starts from the same weights**: a round never continues from
+the previous round's weights. The start is
 ``params.initial_network`` (typically the end-state pretraining of
 :mod:`~aimmd.cgaimmd.flow_matching.pretrain`) when it is set, else
 ``network.reset_parameters()`` under the run's seed. The optimizer, the
@@ -33,7 +33,7 @@ come from the round's own EMA. What is carried between rounds is bookkeeping
 (the round counter, the held-out chains, the first-round no-op; in
 ``flow_fit{states}/state.json``) and, in memory, the extracted dataset.
 
-One step minimizes the single loss of the committor-flow prototype:
+One step minimizes a single loss:
 
 .. math::
 
@@ -72,15 +72,15 @@ their density weight), ``holdout_every`` with
 ``early_stopping_patience`` (early stopping on the held-out chains' shooting
 likelihood), ``split_backward`` (two backward passes per step, for a small
 GPU) and ``graphs`` (graph mode).
-
-Ported from ``aimmd/network/flow_fit.py`` of the flow branch (``FlowTrainer``,
-``LossNormalizer``, ``committor_nll``, ``flow_fit``); the warm start (the
-round continued the previous round's live weights, optimizer and EMA), the
-side checkpoint of those weights and its reconciliation with the network
-file, and the flow-matching labels read from the values caches (the previous
-round's network) were dropped. ``split_backward`` comes from the run-local
-patch of the Goethe-dataset campaign (16 Oct 2026).
 """
+
+# Provenance: Ported from ``aimmd/network/flow_fit.py`` of the flow branch (``FlowTrainer``,
+# ``LossNormalizer``, ``committor_nll``, ``flow_fit``); the warm start (the
+# round continued the previous round's live weights, optimizer and EMA), the
+# side checkpoint of those weights and its reconciliation with the network
+# file, and the flow-matching labels read from the values caches (the previous
+# round's network) were dropped. ``split_backward`` comes from the run-local
+# patch of the Goethe-dataset campaign (16 Oct 2026).
 
 import copy
 import json
@@ -97,14 +97,16 @@ from .. import protocol
 from .._once import once
 from ..dataset import (DEFAULT_SERIES, extract_dataset, is_initial_path, path_weights,
                        resolve_exclusions)
-from ..fitting import fit_seed, previous_round, run_directory
+from ..fitting import (FitSettings, fit_seed, previous_round, run_directory,
+                       settings_only_active)
 from ..io import atomic_write_json, file_sha256
 from . import flowmath
 from .sampler import flow_matching_problems, pair, to_flow
 
 
 __all__ = ['flow_matching_fit', 'FlowTrainer', 'LossNormalizer', 'committor_nll',
-           'release_trainer', 'FLOW_FIT_DEFAULTS', 'BASIN_DRAWS', 'STATE_SCHEMA', 'FIT_NAME']
+           'release_trainer', 'FLOW_FIT_DEFAULTS', 'BASIN_DRAWS', 'STATE_SCHEMA', 'FIT_NAME',
+           'labels_from_start_problem']
 
 FLOW_FIT_DEFAULTS = {
     'graphs': False,
@@ -163,8 +165,7 @@ FLOW_FIT_DEFAULTS = {
 ``lr_schedule='cosine'`` decays to 0 at ``total_steps`` (None: the round's
 ``steps_per_round``); the schedule and the warm-up restart with every round,
 so ``total_steps`` larger than ``steps_per_round`` is refused (the cosine
-would never reach 0; the flow branch's templates set it to "rounds x steps
-per round" for warm-started rounds).
+would never reach 0).
 ``trainer_seed`` None takes the run's seed (:func:`aimmd.cgaimmd.fitting.fit_seed`).
 ``steps_per_round`` 4,000 and ``relabel_every`` 1,000 are the online recipe
 of the PaiNN evidence (4,000 steps gave the best held-out committor on
@@ -180,7 +181,7 @@ STATE_SCHEMA = 'aimmd.flow_fit/2'
 """The ``schema`` entry of ``flow_fit{states}/state.json`` (the fit's bookkeeping between rounds)."""
 
 OLD_CHECKPOINT_SCHEMA = 'aimmd.flow_fit/1'
-"""The schema of the warm-start side checkpoint ``state.pt`` of the flow branch (bookkeeping read, weights not)."""
+"""The schema of the side checkpoint ``state.pt`` of earlier versions (bookkeeping read, weights not)."""
 
 FIT_NAME = 'aimmd.cgaimmd.flow_matching.fit'
 """The ``fit`` entry of the network metadata."""
@@ -1212,6 +1213,12 @@ def flow_matching_fit(params, pathensemble, verbose=False, worker=None, **kwargs
     it), at most ``round_oom_retries`` times, ``round_oom_wait_s`` apart; an
     error while the round record is written repeats only that part.
 
+    Inside :func:`aimmd.cgaimmd.fitting.settings_only` (the preflight) a
+    call stops after step 1's refusals and the keyword checks and raises
+    :class:`aimmd.cgaimmd.fitting.FitSettings` with the settings, and with
+    :func:`labels_from_start_problem` as a problem; nothing is read or
+    trained.
+
     In the ``kinetics_convergence`` task the trainer fits data fractions:
     the fit then uses ``worker.kinetics_convergence_state_dir`` as its state
     folder when the trainer sets one, else it keeps nothing between calls;
@@ -1233,6 +1240,12 @@ def flow_matching_fit(params, pathensemble, verbose=False, worker=None, **kwargs
         raise TypeError(f'flow_matching_fit: {type(network).__name__} is not a flow-matching '
                         f'network: ' + '; '.join(problems))
     start_kind = _check_start(params, network)
+    if settings_only_active():
+        # the preflight: the keywords and the start are checked, nothing is read or trained
+        problem = labels_from_start_problem(settings)
+        raise FitSettings(FIT_NAME, settings, keywords=kwargs,
+                          problems=[problem] if problem else [],
+                          notes=[f'every round starts from {start_kind}'])
     states = params.sorted_states
     lambda_clip = protocol.lambda_clip_of(network, _cgaimmd_settings(params))
     from ..devices import device_for
@@ -1414,6 +1427,40 @@ def _relabel(context, data):
         pool = np.sort(trainer.rng.choice(pool, s['relabel_max_frames'], replace=False))
     lam = trainer.committor_of_rows(trainer.network, data.fr_rows[pool])
     trainer.set_fm_targets(pool, lam)
+
+
+def labels_from_start_problem(settings):
+    """Why `settings` would condition the generator on the start network only, or None.
+
+    Every round starts again from ``initial_network`` (or reset weights), and
+    the flow-matching labels of the reactive frames are the committor of the
+    round's EMA, taken at the start of the round and then every
+    ``relabel_every`` steps. With ``relabel_every`` 0, or not below
+    ``steps_per_round``, they stay the start network's for the whole round
+    and the generator never learns from the shooting points. None when the
+    labels are refreshed within the round, or when the flow-matching term
+    uses no reactive frames (``fm_weight`` 0, ``n_fm`` 0 or
+    ``instate_fm_share`` 1).
+
+    Parameters
+    ----------
+    settings : dict
+        :data:`FLOW_FIT_DEFAULTS` updated with the fit's keywords.
+
+    Returns
+    -------
+    str or None
+    """
+    s = settings
+    if s['fm_weight'] == 0 or s['n_fm'] == 0 or s['instate_fm_share'] >= 1:
+        return None
+    if s['relabel_every'] and s['relabel_every'] < s['steps_per_round']:
+        return None
+    return (f'relabel_every={s["relabel_every"]} with steps_per_round={s["steps_per_round"]}: '
+            f'every round starts again from the same network, so the flow-matching labels of '
+            f'the reactive frames would stay that start network\'s committor for the whole '
+            f'round and the generator would never learn from the shooting points; set '
+            f'relabel_every between 1 and steps_per_round - 1 (default 1000 of 4000)')
 
 
 def _warn_labels_from_start(context):

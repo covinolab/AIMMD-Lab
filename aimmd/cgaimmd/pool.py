@@ -10,9 +10,8 @@ A C-GAIMMD shooting worker generates candidates in batches (a *refill*, stage
 :class:`CandidatePool`; each shot pops one of them and prepares it (stage 2).
 The pool holds the candidates of *one* network: the worker calls
 :meth:`NetworkWatcher.refresh` before every pop, and a network file with a new
-sha256 resets the pool (the PI's ruling: the pool resets with any network
-update; since the PI's answer of 2 Oct a refill outdated before its first pop
-serves one pop first, :data:`aimmd.cgaimmd.source.STALE_REFILL_POPS`).
+sha256 resets the pool (a refill outdated before its first pop serves one
+pop first, :data:`aimmd.cgaimmd.source.STALE_REFILL_POPS`).
 Candidates are i.i.d. given the network, and pops are uniformly random (not
 target by target), so consecutive shots rarely share a target level: with
 ``candidates_per_target=2`` the other candidate of the last target is popped

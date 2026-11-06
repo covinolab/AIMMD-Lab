@@ -183,6 +183,10 @@ where :math:`w_i` and :math:`L_i` are the reweight and length of path :math:`i`
 and :math:`\gamma_i` is its mean bias factor. Enable it with ``record_bias=True``
 and a ``bias_function`` (see :ref:`bias-recording` for the parameter details).
 
+A C-GAIMMD run uses the same machinery; what that means for its generated
+shooting points (candidate preparation runs without the bias, the zero point
+checked by the preflight) is described in :doc:`cgaimmd`.
+
 In a **multi-system** run the bias enters GROMACS through the per-system
 ``gmx_mdrun`` string, which is already list-valued, so each system gets its own
 PLUMED input:

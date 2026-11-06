@@ -30,10 +30,10 @@ Typical use, in a script next to the params file:
 >>> scale = estimate_coord_scale(frames['coordinates'])       # pass it to the network
 >>> report = pretrain_end_states(network, frames, 'pretrained', states='ARB', steps=30000)
 
-Ported from ``aimmd/flow/pretrain.py`` of the flow branch. Pretraining
-keeps the network's own prior; the keywords of the flow branch's other priors
-are refused with the reason (:data:`aimmd.cgaimmd._legacy.DROPPED_KEYWORDS`),
-except the values that did nothing with the Gaussian prior (one warning).
+Pretraining keeps the network's own prior; the keywords of the priors of
+earlier versions are refused with the reason
+(:data:`aimmd.cgaimmd._legacy.DROPPED_KEYWORDS`), except the values that did
+nothing with the Gaussian prior (one warning).
 """
 
 import json
@@ -270,9 +270,9 @@ def pretrain_end_states(network, frames, out_dir, *, states, steps, batch_size=6
         The conditioning range ``L`` for a network without a ``lambda_clip`` member (as
         ``cgaimmd_parameters['lambda_clip']``).
     **dropped_keywords
-        Old keywords of the flow branch's other priors (``prior``,
+        Old keywords of the priors of earlier versions (``prior``,
         ``prior_sigma``, ``prior_bank``, ...): None, ``prior='gaussian'`` and
-        the flow branch's defaults of the bank keywords
+        the old defaults of the bank keywords
         (``prior_bank='holdout'``, ``prior_bank_max=5000``,
         ``prior_pi_null=0.5``, ``prior_pi_temperature=1.0``) are accepted
         with one ``DeprecationWarning``; any other value raises ``TypeError``

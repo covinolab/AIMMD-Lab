@@ -49,14 +49,15 @@ refuses before a job does any work, so rows of other settings are never
 mixed in. :func:`aimmd.cgaimmd.restart.check_descriptor_record` gives the
 default series the same protection through a record in the run folder.
 
-Port of ``cfaimmd.solvation.EnvironmentSelector`` and
-``cfaimmd.geometry.make_whole`` (the prototype of C-GAIMMD) without the
-variable-count environment block (a generator needs a fixed atom count). The
-water placement differs from the port in the development branch, which
-moved every water next to the center: in unbound frames that put the waters
-ranked by a guest one box away from it.
 Standard library and numpy at import; MDAnalysis inside the constructor.
 """
+
+# Provenance: Port of ``cfaimmd.solvation.EnvironmentSelector`` and
+# ``cfaimmd.geometry.make_whole`` (the prototype of C-GAIMMD) without the
+# variable-count environment block (a generator needs a fixed atom count). The
+# water placement differs from the port in the development branch, which
+# moved every water next to the center: in unbound frames that put the waters
+# ranked by a guest one box away from it.
 
 import functools
 import hashlib
@@ -82,7 +83,7 @@ DESCRIPTOR_LAYOUT = 1
 WATER_PLACEMENT = 2
 """Version of the placement of the cluster waters.
 
-1: the development branch's placement (every chosen water at the image
+1: the placement of earlier versions (every chosen water at the image
 nearest the solute's centre of mass; in unbound frames the waters ranked by a
 guest ended up one box away from it). 2: each water at the image nearest the
 reference of the ranking rule that chose it (this module). Part of
@@ -235,7 +236,7 @@ def make_whole(positions, box=None, reference_atom=0):
     -----
     GROMACS runs vacuum systems in a large periodic box and writes coordinates
     inside it, so a molecule that drifts across a face is written split in two
-    (12.7 % of the NANMA frames of the C-GAIMMD development project). The minimum
+    (12.7 % of the frames of a NANMA test run in vacuum). The minimum
     image against one atom is exact for any molecule smaller than half the
     box; :class:`GeneratorDescriptors` walks along bonds instead, which is exact
     for longer molecules too.

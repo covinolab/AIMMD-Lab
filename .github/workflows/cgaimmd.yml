@@ -1,0 +1,87 @@
+name: cgaimmd
+
+# The optional parts of AIMMD-Lab that the core job (pytest.yml) cannot run:
+#
+# - full: conda-forge Python 3.13 with CPU PyTorch 2.13, PyG and GROMACS, and
+#   bioemu2 from pip (devtools/conda-envs/cgaimmd_env.yaml); runs the graph,
+#   BioEmu2 (tiny random model, no download) and GROMACS tests.
+# - bioemu2-py312: pip only, Python 3.12 and the CPU build of torch 2.11, the
+#   lowest Python bioemu2 supports and the torch of the JUPITER production
+#   environment; runs the BioEmu2 tests and the import-isolation tests.
+#
+# The real BioEmu2 weights are never used here: their tests run off GitHub,
+# on a GPU (devtools/run_weights_tests.sh).
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # CPU-only runners: no CUDA probing, a fixed thread count so that float32
+  # reductions do not depend on the runner, and no Hugging Face download
+  # (a test that tried to fetch the 2 GB checkpoint fails at once)
+  CUDA_VISIBLE_DEVICES: ""
+  OMP_NUM_THREADS: 2
+  HF_HUB_OFFLINE: 1
+
+jobs:
+  full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        # conda setup requires this special shell
+        shell: bash -l {0}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        miniforge-version: latest
+        environment-file: devtools/conda-envs/cgaimmd_env.yaml
+        activate-environment: cgaimmd
+        channels: conda-forge
+        conda-remove-defaults: true
+        auto-update-conda: false
+        auto-activate-base: false
+        show-channel-urls: true
+    - name: Install AIMMD-Lab with every extra
+      run: |
+        pip install -e ".[cgaimmd,bioemu2,graphs,tests]" -c devtools/constraints-bioemu2.txt
+    - name: Check imports and versions
+      run: |
+        python -c "import torch, torch_geometric, torch_cluster, bioemu2, aimmd; import aimmd.cgaimmd.bioemu2._api as api; print('torch', torch.__version__, 'torch_geometric', torch_geometric.__version__, 'bioemu2', api.bioemu2_version())"
+        gmx --version | head -n 15
+    - name: Graph, BioEmu2 and GROMACS tests
+      run: |
+        pytest -v --color=yes --durations=25 --rungraph -m "graph or bioemu2 or gromacs" tests/
+
+  bioemu2-py312:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          devtools/constraints-bioemu2.txt
+    - name: Install torch 2.11 for the CPU first (PyPI's torch would bring the CUDA libraries)
+      run: |
+        python -m pip install --upgrade pip
+        pip install "torch==2.11.*" --index-url https://download.pytorch.org/whl/cpu
+        # the triton that the CUDA builds of torch 2.11 pin (bioemu2 asks for one on Linux)
+        pip install "triton==3.6.0"
+    - name: Install AIMMD-Lab with the bioemu2 extra
+      run: |
+        pip install -e ".[cgaimmd,bioemu2,tests]" -c devtools/constraints-bioemu2.txt
+        python -c "import torch, aimmd; import aimmd.cgaimmd.bioemu2._api as api; print('torch', torch.__version__, 'bioemu2', api.bioemu2_version())"
+    - name: BioEmu2 tests (tiny random model)
+      run: |
+        pytest -v --color=yes --durations=25 -m bioemu2 tests/
+    - name: Import isolation (the optional stacks stay optional)
+      run: |
+        pytest -v --color=yes tests/test_cgaimmd_foundations.py tests/test_cgaimmd_bioemu2_import.py

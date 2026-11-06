@@ -5,8 +5,7 @@ aimmd.cgaimmd.bioemu2.build
 Building a BioEmu2 system folder: ``python -m aimmd.cgaimmd.bioemu2 build-system``.
 
 A system folder holds everything about a system that a BioEmu2 C-GAIMMD run
-needs besides the params file, and replaces the scattered artefacts of the
-first campaigns:
+needs besides the params file:
 
 ``system.json``
     The :class:`~aimmd.cgaimmd.bioemu2.system.BioEmu2System`: the BioEmu2
@@ -24,8 +23,7 @@ first campaigns:
 
 The params file names the folder; nothing is read from environment variables.
 The trunk is computed once here, so every process of a run uses the same
-embeddings (the chignolin campaign computed them at every engine start, the
-trypsin campaign loaded saved ones).
+embeddings.
 
 MDAnalysis reads the MD files (any topology it reads with bonds; a GROMACS
 ``.top`` is read with its ``#include`` files from the topology's folder or
@@ -137,7 +135,7 @@ def core_atoms_of_residues(system, residues):
 
     Parameters
     ----------
-    system : bioemu2.System or dict or path
+    system : bioemu2.System or dict or path-like
     residues : sequence
         ``(chain, residue number)`` pairs, or residue numbers of the first
         protein chain; numbers count from 1 along each chain (BioEmu2's).

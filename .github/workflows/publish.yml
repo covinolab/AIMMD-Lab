@@ -21,7 +21,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          # aimmd-lab requires-python >=3.9; a recent Python builds the
+          # aimmd-lab requires-python >=3.10; a recent Python builds the
           # pure-Python (py3-none-any) wheel just fine.
           python-version: "3.12"
 

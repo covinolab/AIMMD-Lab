@@ -22,9 +22,8 @@ The trunk is a pure-torch PaiNN (Schütt, Unke, Gastegger, 2021) with FiLM
 conditioning on flow time and committor level, optional bond-edge features
 and an optional parity-breaking cross-product term (ITO), which makes the
 network SE(3)- instead of E(3)-equivariant, so that it tells a structure from
-its mirror image. Module and buffer names are those of the flow branch
-(``aimmd.network.joint_painn`` of ``dev/committor-flow``), so its checkpoints
-load unchanged.
+its mirror image. Module and buffer names are those of earlier versions
+(``aimmd.network.joint_painn``), so their checkpoints load unchanged.
 
 Two optional topology features, both off by default, let the network see the
 bonded structure at every flow time, in particular early in the flow, where a
@@ -39,8 +38,8 @@ prior sample puts bonded atoms farther apart than the cutoff:
   return probabilities of the bond graph, added to the atoms' embedding.
 
 The model needs only torch; graphs of coordinates are built on the fly by
-:func:`aimmd.cgaimmd.flow_matching.graph_batch.radius_edges` (PyG when
-``torch_cluster`` is installed, else pure torch), and graph-mode inputs
+:func:`aimmd.cgaimmd.flow_matching.graph_batch.radius_edges` (PyG where its
+``radius_graph`` runs, else pure torch), and graph-mode inputs
 (:class:`aimmd.cgaimmd.flow_matching.graphs.FlowGraphTransform`) are used as
 they come.
 
@@ -556,8 +555,8 @@ class CommittorHead(nn.Module):
     -----
     The last layer starts with weights N(0, 1e-6) and bias 0, so an
     untrained model has ``lambda ~ 0`` (committor 1/2) everywhere. Kept as
-    ``heads.0`` of a ``ModuleList``, the key names of the flow branch's
-    checkpoints (an ensemble of heads is not supported).
+    ``heads.0`` of a ``ModuleList``, the key names of the checkpoints of
+    earlier versions (an ensemble of heads is not supported).
     """
 
     def __init__(self, n_scalar, hidden):
@@ -746,8 +745,8 @@ class JointPaiNN(nn.Module):
     -----
     Every architecture hyperparameter is required, so a params file that
     leaves one out fails at construction instead of silently getting another
-    system's architecture. The NANMA values of the flow branch's campaigns
-    (an example, not defaults) are ``n_channels=128, n_layers=4, n_basis=20,
+    system's architecture. The values used for NANMA (an example, not
+    defaults) are ``n_channels=128, n_layers=4, n_basis=20,
     cutoff=5.0, cond_dim=64, lambda_embedding_scale=4.0,
     committor_hidden=(128,), velocity_hidden=128, velocity_radial=32,
     velocity_min_distance=0.7, lambda_clip=10.0`` with
@@ -1171,7 +1170,7 @@ class JointPaiNN(nn.Module):
         Parameters
         ----------
         state_dict : mapping
-            A state dict of this class (also one of the flow branch, whose keys are the same).
+            A state dict of this class (also one of earlier versions, whose keys are the same).
         strict : bool, optional
             As for torch.
         assign : bool, optional
@@ -1186,14 +1185,14 @@ class JointPaiNN(nn.Module):
         ------
         ValueError
             If the checkpoint's atom count differs from the model's, or (with
-            `strict`) if it holds a prior of the flow branch (``prior.*``
+            `strict`) if it holds a prior of earlier versions (``prior.*``
             entries), which this network does not have.
         RuntimeError
             For torch's key mismatches.
 
         Notes
         -----
-        A checkpoint of the flow branch with another prior than the Gaussian
+        A checkpoint of earlier versions with another prior than the Gaussian
         (``prior.*`` buffers) is refused with the reason; ``strict=False``
         loads the rest of it (trunk and heads) with a warning. Its committor
         head is usable, but its velocity was trained from another prior, so
@@ -1322,8 +1321,8 @@ class JointPaiNN(nn.Module):
 
         The SE(3) network with element tokens and topology edges
         (``embedding='element', topology_edges=True, parity_breaking=True``)
-        generated the most valid chignolin structures of the flow branch's
-        campaigns; the default embedding is the flow branch's.
+        generated the most valid chignolin structures in our tests; the
+        default embedding is that of earlier versions.
         """
         missing = [key for key in ARCHITECTURE_KEYS if key not in architecture]
         if missing:

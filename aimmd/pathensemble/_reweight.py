@@ -190,9 +190,11 @@ class PathEnsembleReweight(ABC):
             State specification. Interpreted as a string and converted to upper
             case. If at least three characters are provided, the first three are
             used as:
-                s = states[0]  (initial state)
-                r = states[1]  (reactive region)
-                o = states[2]  (final state)
+
+            - s = states[0]  (initial state)
+            - r = states[1]  (reactive region)
+            - o = states[2]  (final state)
+
             If fewer than three characters are provided, only `r` is used and
             `s` and `o` are set to the empty string. In that mode, the method
             returns diagnostic factors without performing directional reweighting

@@ -27,8 +27,8 @@ generator registry imports it on first use). It is the default generator of a
 How it samples: :class:`GuidedModel` wraps the frozen model, the network's
 adapters, the requested logits and the guidance schedule as a BioEmu2
 ``InferenceModel``, and BioEmu2's public ``EDMSampler`` samples with it, one
-system copy per requested logit. Every chunk starts from ``torch.manual_seed(seed
-+ chunk start)`` on a forked random stream (the global stream is left as it
+system copy per requested logit. Every chunk starts from
+``torch.manual_seed(seed + chunk start)`` on a forked random stream (the global stream is left as it
 was), with ``seed`` drawn from the ``torch.Generator`` the caller passes, so a
 generation is reproducible and its chunks never share their noise.
 
@@ -37,11 +37,9 @@ generator atoms (:meth:`.system.BioEmu2System.complete`: hydrogens, ions and
 other atoms BioEmu2 does not model, from the template). A sample with
 non-finite coordinates comes back as NaN, which every validity check rejects.
 
-Port: the archived campaigns sampled with ``bioemu2_committor/guided_sampler.py``,
-a copy of bioemu2's ``edm_sampler`` (upstream commit e0b9903) with a denoise
-hook. The wrapper route reproduces it: the old sampler's samples on the tiny
-test model are reproduced by this module (``tests/test_cgaimmd_bioemu2_sampling.py``),
-so no copy of bioemu2 code is kept (DESIGN 5.5).
+No copy of bioemu2 code is kept: the samples of the copy of bioemu2's
+``edm_sampler`` with a denoise hook that earlier runs used are reproduced by
+this module (``tests/test_cgaimmd_bioemu2_sampling.py``).
 """
 
 from dataclasses import dataclass

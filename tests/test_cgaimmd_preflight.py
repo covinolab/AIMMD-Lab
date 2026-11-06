@@ -105,6 +105,80 @@ def test_initial_network_that_does_not_load_fails(tmp_path):
     assert not report.ok
 
 
+# ---------------------------------------------------------------------------
+# the fit keywords (checked by the fit, without training)
+# ---------------------------------------------------------------------------
+
+FLOW_MATCHING_FIT = '''
+
+from aimmd.cgaimmd.flow_matching.fit import flow_matching_fit
+
+
+def fit(params, pathensemble, verbose=False, worker=None):
+    return flow_matching_fit(params, pathensemble, verbose=verbose, worker=worker, {keywords})
+'''
+
+
+def fit_campaign(tmp_path, keywords):
+    """The toy campaign whose params-file ``fit`` wraps the flow-matching fit with `keywords`."""
+    folder = make_campaign(tmp_path / 'toy')
+    with open(folder / 'params.py', 'a') as handle:
+        handle.write(FLOW_MATCHING_FIT.format(keywords=keywords))
+    return folder
+
+
+def fit_report(folder):
+    import aimmd
+    params = aimmd.Params.load(str(folder / 'params.py'), save=False)
+    report = PreflightReport(str(folder / 'params.py'))
+    with preflight._in_folder(str(folder)):
+        preflight._check_fit(report, params)
+    return report
+
+
+def test_fit_keywords_pass(tmp_path):
+    report = fit_report(fit_campaign(tmp_path, 'steps_per_round=5, relabel_every=2'))
+    assert statuses(report) == {'fit': OK}
+    text = detail(report, 'fit')
+    assert 'the flow-matching fit with steps_per_round=5, relabel_every=2' in text
+    assert 'every round starts from initial_network' in text
+
+
+@pytest.mark.parametrize('keywords', ['relabel_every=0', 'steps_per_round=5, relabel_every=5'])
+def test_labels_of_the_start_network_fail(tmp_path, keywords):
+    """Every round starts from initial_network: without relabelling within the round the
+    generator would stay conditioned on the start network's committor (S4 defaults: relabel
+    every 1,000 of 4,000 steps)."""
+    report = fit_report(fit_campaign(tmp_path, keywords))
+    assert statuses(report) == {'fit': FAIL}
+    text = detail(report, 'fit')
+    assert 'relabel_every=' in text and 'never learn from the shooting points' in text
+
+
+@pytest.mark.parametrize('keywords, expected', [
+    ('steps_per_rnd=5', "unexpected keyword argument(s) 'steps_per_rnd'"),
+    ('lr=-1.0', 'lr must be a number > 0'),
+    ("lr_schedule='cosine', total_steps=8000", 'total_steps=8000 is larger than steps_per_round'),
+])
+def test_bad_fit_keywords_fail_before_the_job(tmp_path, keywords, expected):
+    """A bad keyword fails here, not at the trainer's first fit call inside the job."""
+    report = fit_report(fit_campaign(tmp_path, keywords))
+    assert statuses(report) == {'fit': FAIL}
+    assert expected in detail(report, 'fit')
+
+
+def test_other_fits_are_not_checked(tmp_path):
+    report = fit_report(make_campaign(tmp_path / 'toy'))      # AIMMD's own fit
+    assert statuses(report) == {'fit': SKIPPED}
+
+
+def test_fit_check_in_a_whole_preflight(tmp_path):
+    report = run_preflight(str(fit_campaign(tmp_path, 'relabel_every=0') / 'params.py'),
+                           generate=False)
+    assert statuses(report)['fit'] == FAIL and not report.ok
+    assert statuses(report)['generator'] == OK              # the other checks still run
+
+
 TOY_BIAS = '''
 
 record_bias = True

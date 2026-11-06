@@ -27,7 +27,10 @@ def test_nchains_per_worker_is_last_launcher_arg(method):
     keep binding nsteps/nframes/walltime/... exactly as before.
     """
     sig = inspect.signature(getattr(aimmd.Launcher, method))
-    names = [p for p in sig.parameters if p != "self"]
+    # later additions (create_job's preamble, preflight, guard_run_folders)
+    # are keyword-only, so they cannot change what a positional call binds
+    names = [name for name, p in sig.parameters.items()
+             if name != "self" and p.kind is not inspect.Parameter.KEYWORD_ONLY]
     assert names[-1] == "nchains_per_worker", (
         f"{method}: nchains_per_worker must stay last, got {names}")
     assert sig.parameters["nchains_per_worker"].default == 1

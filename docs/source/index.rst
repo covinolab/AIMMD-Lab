@@ -22,6 +22,9 @@ Highlights
 - **Multi-system / multi-ligand runs** with one shared committor network.
 - **Biased dynamics** (OPES/PLUMED) with Tiwary-Parrinello rate reweighting.
 - **Graph-neural-network** committor models (optional).
+- **Committor-conditioned Generative AIMMD (C-GAIMMD)**: shooting points
+  generated at chosen committor values by a flow-matching PaiNN network or by
+  BioEmu2 (optional).
 - **Local or HPC** execution from the same parameter file.
 
 .. grid:: 1 2 2 2
@@ -37,13 +40,20 @@ Highlights
       :link: tutorials/index
       :link-type: doc
 
-      Executable notebooks: a 1-D toy system and a multi-ligand run.
+      Executable notebooks: a 1-D toy system, a multi-ligand run and C-GAIMMD.
 
    .. grid-item-card:: Concepts
       :link: concepts
       :link-type: doc
 
       The method and the objects that implement it.
+
+   .. grid-item-card:: C-GAIMMD
+      :link: cgaimmd
+      :link-type: doc
+
+      Shooting points generated at chosen committor values, with PaiNN or
+      BioEmu2: the user guide, production campaigns, troubleshooting.
 
    .. grid-item-card:: API Reference
       :link: api/index
@@ -76,6 +86,19 @@ License.
    parameters
    advanced
    graph_networks
+
+.. toctree::
+   :hidden:
+   :caption: C-GAIMMD
+
+   cgaimmd
+   cgaimmd_production
+   cgaimmd_troubleshooting
+   cgaimmd_internals
+
+.. The page "Analysis and estimators" (which rate estimators are valid for
+   C-GAIMMD, and why) joins the C-GAIMMD toctree above, after
+   cgaimmd_troubleshooting, once the analysis tools are part of the package.
 
 .. toctree::
    :hidden:

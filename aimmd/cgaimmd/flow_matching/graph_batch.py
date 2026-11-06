@@ -17,9 +17,13 @@ the ``'torch'`` backend needs nothing beyond torch (a per-sample distance
 matrix).
 
 ``torch_geometric`` and ``torch_cluster`` are imported only inside the
-functions that need them.
+functions that need them. The ``'auto'`` backend uses PyG only where its
+``radius_graph`` runs: torch-geometric 2.8 and later build radius graphs with
+pyg-lib instead of torch-cluster and fail without it, and ``'auto'`` then
+falls back to the torch backend instead of failing.
 """
 
+import functools
 import importlib.util
 import warnings
 from numbers import Integral
@@ -33,12 +37,58 @@ BACKENDS = ('auto', 'pyg', 'torch')
 """The edge backends, ``'pyg'`` (``torch_geometric.nn.radius_graph``), ``'torch'`` (pure torch) and ``'auto'``."""
 
 
+PYG_HINT = ('torch-geometric 2.8 and later need pyg-lib for radius_graph, earlier versions need '
+            'torch-cluster: install the one that matches your torch-geometric (wheels at '
+            'https://data.pyg.org/whl/), or torch-geometric<2.8 with torch-cluster (the graphs '
+            'extra), or use the torch edge backend')
+"""What to do when ``torch_geometric``'s ``radius_graph`` cannot run."""
+
+
+@functools.lru_cache(maxsize=1)
+def pyg_radius_graph_problem():
+    """Why ``torch_geometric.nn.radius_graph`` cannot run here, or None if it can.
+
+    Checked once per process by building the radius graph of two points on
+    the CPU. ``torch_geometric`` itself is imported only when it is
+    installed.
+
+    Returns
+    -------
+    str or None
+        None when PyG's ``radius_graph`` works; otherwise the reason
+        (``torch_geometric`` not installed, or the error of the call: e.g.
+        torch-geometric 2.8 without pyg-lib, or a torch-cluster built for
+        another torch).
+    """
+    if importlib.util.find_spec('torch_geometric') is None:
+        return 'torch_geometric is not installed'
+    try:
+        from torch_geometric.nn import radius_graph
+        radius_graph(torch.zeros(2, 3), r=1.0, loop=False)
+    except Exception as exc:                                  # noqa: BLE001 - any failure means "no"
+        return f'{type(exc).__name__}: {exc}'
+    return None
+
+
 def _resolve_backend(backend):
-    """``'auto'`` -> ``'pyg'`` if ``torch_cluster`` can be imported, else ``'torch'``."""
+    """``'auto'`` -> ``'pyg'`` if PyG's ``radius_graph`` runs here, else ``'torch'``.
+
+    Where ``torch_geometric`` is installed but its ``radius_graph`` fails, a
+    ``RuntimeWarning`` says why, once per process.
+    """
     if backend not in BACKENDS:
         raise ValueError(f'unknown edge backend {backend!r}; expected one of {BACKENDS}')
     if backend == 'auto':
-        return 'pyg' if importlib.util.find_spec('torch_cluster') is not None else 'torch'
+        problem = pyg_radius_graph_problem()
+        if problem is None:
+            return 'pyg'
+        if importlib.util.find_spec('torch_geometric') is not None \
+                and _once.once('radius_edges auto backend falls back to torch'):
+            warnings.warn(f"edge backend 'auto': torch_geometric is installed, but its "
+                          f"radius_graph cannot run ({problem}); the torch backend builds the "
+                          f"edges instead (the same edges below the neighbour cap). {PYG_HINT}",
+                          RuntimeWarning, stacklevel=3)
+        return 'torch'
     return backend
 
 
@@ -50,9 +100,13 @@ def _check_cap(max_num_neighbors):
 
 
 def _pyg_edges(pos, batch, cutoff, max_num_neighbors):
-    from torch_geometric.nn import radius_graph
-    return radius_graph(x=pos, r=float(cutoff), batch=batch, loop=False,
-                        max_num_neighbors=max_num_neighbors)
+    try:
+        from torch_geometric.nn import radius_graph
+        return radius_graph(x=pos, r=float(cutoff), batch=batch, loop=False,
+                            max_num_neighbors=max_num_neighbors)
+    except ImportError as exc:
+        raise ImportError(f"edge backend 'pyg': torch_geometric's radius_graph cannot run "
+                          f"({exc}). {PYG_HINT}", name=exc.name) from exc
 
 
 def _cap_rows(mask, d, max_num_neighbors):
@@ -109,7 +163,7 @@ def radius_edges(pos, batch, cutoff, *, max_num_neighbors=128, backend='auto'):
     max_num_neighbors : int, optional
         At most this many sources per target atom (the cap ``graph_utils`` applies).
     backend : {'auto', 'pyg', 'torch'}, optional
-        ``'pyg'``: ``torch_geometric.nn.radius_graph``; ``'torch'``: per-sample distance matrices; ``'auto'``: ``'pyg'`` if ``torch_cluster`` is importable.
+        ``'pyg'``: ``torch_geometric.nn.radius_graph``; ``'torch'``: per-sample distance matrices; ``'auto'``: ``'pyg'`` where PyG's ``radius_graph`` runs (:func:`pyg_radius_graph_problem`), else ``'torch'``.
 
     Returns
     -------
@@ -120,6 +174,8 @@ def radius_edges(pos, batch, cutoff, *, max_num_neighbors=128, backend='auto'):
     ------
     ValueError
         For an unknown backend or a bad `max_num_neighbors`.
+    ImportError
+        For ``backend='pyg'`` where PyG's ``radius_graph`` cannot run.
 
     Notes
     -----
@@ -127,7 +183,7 @@ def radius_edges(pos, batch, cutoff, *, max_num_neighbors=128, backend='auto'):
     ``'pyg'`` backend is ``radius_graph(x=pos, r=cutoff, batch=batch,
     loop=False, max_num_neighbors=max_num_neighbors)``, the call
     ``graph_utils.get_graphs_pyg`` makes per frame; the ``'torch'`` backend is
-    the prototype's ``build_edges`` (a ``(B, k, k)`` distance tensor when every
+    a dense distance computation (a ``(B, k, k)`` distance tensor when every
     sample has ``k`` atoms in order, else one masked matrix). Both give the
     same edge set as long as no atom reaches the cap; at the cap PyG keeps
     arbitrary neighbours and the torch backend the nearest. A

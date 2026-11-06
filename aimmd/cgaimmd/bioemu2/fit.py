@@ -46,10 +46,11 @@ One round (:func:`sequential_round`):
 5. **Label probe** (logged, decides nothing): the trained adapters' loss on
    fixed pool frames with their own labels, shuffled labels and none.
 
-The weights are reset every round (PI, 26 Oct 2026: never warm-start); the
-round counter and the dataset are the only state carried between rounds.
+The weights are reset every round (a round never continues the previous
+round's weights); the round counter and the dataset are the only state
+carried between rounds.
 
-Options (all off by default; DESIGN 4.8):
+Options (all off by default):
 
 ``label_time_window_ps``
     The labels of the reactive frames become the logit of the mean committor
@@ -79,17 +80,18 @@ a run restarted in the same folder reproduces its seeds. A run that is moved
 (local disk, archive, cluster) gets other seeds after the move unless
 ``generation_seed`` is set. The seed and every setting go into the round's
 metadata.
-
-Ported from ``bioemu2_committor/aimmd_flow_fit.py`` (``sequential_round``,
-``bioemu2_fit_sequential``, ``fresh_head``, ``fresh_adapter``,
-``_rotations``, ``_previous_round``) and ``aimmd_flow_holo_fit.py``
-(``holo_sequential_round``, ``holo_fit_sequential``, ``_label_probe``),
-merged; the warm-start fit, the density-weighted pool and the patch of AIMMD's
-reweighting were dropped, and the round counter reads ``round`` where AIMMD
-stores it.
 """
 
+# Provenance: Ported from ``bioemu2_committor/aimmd_flow_fit.py`` (``sequential_round``,
+# ``bioemu2_fit_sequential``, ``fresh_head``, ``fresh_adapter``,
+# ``_rotations``, ``_previous_round``) and ``aimmd_flow_holo_fit.py``
+# (``holo_sequential_round``, ``holo_fit_sequential``, ``_label_probe``),
+# merged; the warm-start fit, the density-weighted pool and the patch of AIMMD's
+# reweighting were dropped, and the round counter reads ``round`` where AIMMD
+# stores it.
+
 import copy
+import inspect
 import json
 import math
 import os
@@ -253,6 +255,23 @@ def _averaged_labels(data, pool_index, pool_labels, labels_of, window_ps, frame_
     return labels[pool_index], info
 
 
+def _check_round_settings(**settings):
+    """ValueError for a value of :func:`sequential_round` that cannot work (TypeError for an unknown name)."""
+    known = inspect.signature(sequential_round).parameters
+    fixed = ('network', 'data', 'round_index', 'seed', 'verbose')
+    unknown = sorted(name for name in settings if name not in known or name in fixed)
+    if unknown:
+        raise TypeError(f'sequential_fit() got unexpected round setting(s) '
+                        f'{", ".join(repr(name) for name in unknown)}; the round settings are '
+                        f'the keywords of aimmd.cgaimmd.bioemu2.fit.sequential_round')
+    schedule = settings.get('adapter_lr_schedule', 'cosine')
+    if schedule not in ('cosine', 'constant'):
+        raise ValueError(f"adapter_lr_schedule must be 'cosine' or 'constant', got {schedule!r}")
+    p_uncond = settings.get('p_uncond', 0.0)
+    if not 0.0 <= float(p_uncond) < 1.0:
+        raise ValueError(f'p_uncond must be in [0, 1), got {p_uncond!r}')
+
+
 def sequential_round(network, data, round_index=0, *, seed=0, verbose=False, batch_sp=64, batch_anchor=64,
                      batch_den=16, micro_batch=8, n_anchor_max=20000, pool=20000, min_shots_for_generator=100,
                      min_frames_for_generator=0, noisy_copies=4, lr_head=3e-4, wd_head=1e-4, ema=0.999,
@@ -294,10 +313,7 @@ def sequential_round(network, data, round_index=0, *, seed=0, verbose=False, bat
         there was nothing to train on) and the round's record.
     """
     from . import _api
-    if adapter_lr_schedule not in ('cosine', 'constant'):
-        raise ValueError(f"adapter_lr_schedule must be 'cosine' or 'constant', got {adapter_lr_schedule!r}")
-    if not 0.0 <= float(p_uncond) < 1.0:
-        raise ValueError(f'p_uncond must be in [0, 1), got {p_uncond!r}')
+    _check_round_settings(adapter_lr_schedule=adapter_lr_schedule, p_uncond=p_uncond)
     if bin_min is not None and not bin_min >= 0:
         raise ValueError(f'bin_min must be >= 0 or None, got {bin_min!r}')
     if label_time_window_ps is not None and not (math.isfinite(label_time_window_ps) and label_time_window_ps >= 0):
@@ -617,8 +633,27 @@ def sequential_fit(params, pathensemble, verbose=False, worker=None, *, seed=Non
         ``network_metadata`` (``round``, ``n_trained_shots``, ``fit``,
         ``seed``, ``seed_source``, ``settings``) is what AIMMD stores next to
         the network.
+
+    Notes
+    -----
+    Inside :func:`aimmd.cgaimmd.fitting.settings_only` (the preflight) the
+    round settings are checked (names and values that cannot work) and
+    :class:`aimmd.cgaimmd.fitting.FitSettings` is raised with them; nothing
+    is read or trained.
     """
     from ..devices import device_for
+    from ..fitting import FitSettings, settings_only_active
+    if settings_only_active():
+        # the preflight: the keywords are checked, nothing is read or trained
+        _check_round_settings(**round_settings)
+        settings = dict(round_settings, seed=seed, free_stride=free_stride,
+                        shot_stride=shot_stride, shot_stride_min_frames=shot_stride_min_frames)
+        defaults = {'seed': None, 'free_stride': 5, 'shot_stride': 1, 'shot_stride_min_frames': 0}
+        raise FitSettings('aimmd.cgaimmd.bioemu2.fit', settings,
+                          keywords={key: value for key, value in settings.items()
+                                    if key in round_settings or defaults.get(key) != value},
+                          notes=['every round trains the committor head and the adapters '
+                                 'again from reset weights'])
     network = params.network
     device = device_for('training', params)
     if device is not None and network.device != device:

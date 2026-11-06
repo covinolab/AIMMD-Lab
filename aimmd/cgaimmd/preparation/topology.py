@@ -29,10 +29,10 @@ and trans distances of a dihedral), looked up on the interaction lines or by
 bonded type in ``[ bondtypes ]``, ``[ constrainttypes ]`` and
 ``[ angletypes ]``. :func:`random_walk_encoding` gives the random-walk
 positional encodings of the bond graph.
-
-Port of ``cfaimmd.topology`` (the prototype of C-GAIMMD) with the config
-coupling removed. Standard library and numpy only.
 """
+
+# Provenance: Port of ``cfaimmd.topology`` (the prototype of C-GAIMMD) with the config
+# coupling removed. Standard library and numpy only.
 
 import math
 import os

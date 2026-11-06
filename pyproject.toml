@@ -7,7 +7,12 @@ name = "aimmd-lab"
 version = "0.1.0"
 description = "AI-guided path sampling for data generation and analysis of molecular systems characterized by rare-event transitions."
 readme = "README.md"
-requires-python = ">=3.9"
+# Python 3.10 or later. Checked on 6 Nov 2026: the package imports and runs
+# on 3.9 and 3.10 (no newer syntax or standard-library use), but 3.9 is past
+# its end of life and its newest MDAnalysis (2.7) cannot read the run inputs
+# of GROMACS 2024 and later; the test suite needs 3.10. The bioemu2 extras
+# need 3.12. CI runs 3.12 and 3.13.
+requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -31,7 +36,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -50,19 +54,45 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Graph descriptors (node tables, graph networks) and the PyG edge backend of
+# the C-GAIMMD PaiNN network. torch-cluster has no wheels on PyPI: install the
+# wheel built for your torch from https://data.pyg.org/whl/ first (see the
+# installation docs). torch-geometric stays below 2.8: from 2.8 on, its
+# radius_graph needs pyg-lib (not on PyPI) instead of torch-cluster.
 graphs = [
-    "torch-geometric",
+    "torch-geometric<2.8",
     "torch-cluster",
     "lz4",
 ]
+# C-GAIMMD (committor-conditioned Generative AIMMD) with the PaiNN
+# flow-matching generator and the GROMACS candidate preparation.
 cgaimmd = [
     "networkx",
 ]
+# C-GAIMMD with the BioEmu2 generator, on the CPU or any GPU. bioemu2 needs
+# Python 3.12 or later and torch >= 2.11, < 2.14; install torch first from the
+# PyTorch index that matches your CUDA, and use the constraints file
+# devtools/constraints-bioemu2.txt for the versions the tests ran with.
+bioemu2 = [
+    "aimmd-lab[cgaimmd]",
+    "bioemu2==0.1.0rc0; python_version >= '3.12'",
+]
+# The same with the cuEquivariance kernels of the production BioEmu2 model
+# (Linux, CUDA 13).
+bioemu2-cuda = [
+    "aimmd-lab[bioemu2]",
+    "bioemu2[cuda]==0.1.0rc0; python_version >= '3.12' and sys_platform == 'linux'",
+]
+# nbformat, nbclient and ipykernel run the CPU tutorial notebook in the slow
+# lane (tests/test_tutorial_notebooks.py); the test skips without them.
 tests = [
     "pytest",
     "pytest-cov",
     "pytest-timeout",
     "networkx",
+    "nbformat",
+    "nbclient",
+    "ipykernel",
 ]
 docs = [
     "sphinx",

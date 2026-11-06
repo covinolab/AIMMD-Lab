@@ -13,12 +13,17 @@ defaults:
     # conda setup requires this special shell
     shell: bash -l {0}
 
+# The core job: AIMMD-Lab as a plain `pip install -e .` user has it (no PyG,
+# no bioemu2), with the default test lane. The tests of the optional parts
+# (graphs, BioEmu2, GROMACS runs) skip themselves here and run in the jobs of
+# cgaimmd.yml and nightly.yml; the import-isolation tests check that the
+# optional stacks stay optional.
 jobs:
-  build-linux:
+  core:
     runs-on: ubuntu-latest
     # GitHub's default limit is 360 min, and two runs have hung that long.
-    # pytest takes about 13 min here; every test also has a 900 s limit
-    # (pytest-timeout, pyproject.toml).
+    # The default lane takes about 16 min on 4 local cores; every test also
+    # has a 900 s limit (pytest-timeout, pyproject.toml).
     timeout-minutes: 60
     strategy:
       max-parallel: 5
@@ -32,11 +37,15 @@ jobs:
     - uses: actions/checkout@v4
     - uses: conda-incubator/setup-miniconda@v3
       with:
+        # Miniforge and conda-forge only: Miniconda's "defaults" channel asks
+        # for its terms of service, which a CI job cannot accept
+        miniforge-version: latest
         python-version: 3.13
         environment-file: devtools/conda-envs/test_env.yaml
-        channels: conda-forge,defaults
+        channels: conda-forge
+        conda-remove-defaults: true
         activate-environment: test
-        auto-update-conda: true
+        auto-update-conda: false
         auto-activate-base: false
         show-channel-urls: true
     - name: Install build tools

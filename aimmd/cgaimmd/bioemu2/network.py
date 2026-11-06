@@ -40,11 +40,11 @@ reads their architecture from the weights. A :class:`BioEmu2Network` of the
 same architecture also loads their state dicts directly (AIMMD's
 ``Params.update_network`` on an archived run folder): the old name of the
 single adapter is read for one release, with one ``DeprecationWarning``.
-
-Ported from ``bioemu2_committor/aimmd_flow.py`` (``BioEmu2FlowNetwork``) and
-``aimmd_flow_holo.py`` (``HoloFlowNetwork``), merged; the probability-flow
-``velocity`` / ``sample_prior`` and ``generate`` were dropped (DESIGN 8.3).
 """
+
+# Provenance: Ported from ``bioemu2_committor/aimmd_flow.py`` (``BioEmu2FlowNetwork``) and
+# ``aimmd_flow_holo.py`` (``HoloFlowNetwork``), merged; the probability-flow
+# ``velocity`` / ``sample_prior`` and ``generate`` were dropped (DESIGN 8.3).
 
 import weakref
 from pathlib import Path
@@ -355,10 +355,10 @@ ARCHIVED_KEY_MAP = {'head': 'head', 'head_ema': 'head_ema', 'adapter': 'single_a
                     'pair_adapter': 'pair_adapter'}
 """First component of a parameter name in the archived networks -> in :class:`BioEmu2Network`.
 
-The archived campaigns saved ``BioEmu2FlowNetwork`` (chignolin, 27 Oct 2026:
-``head``, ``head_ema``, ``adapter``) and ``HoloFlowNetwork`` (trypsin, 28-30
-Oct 2026: also ``pair_adapter``). The head (``CommittorHead``, the old
-``JointHead``) and the adapters keep their old parameter names.
+Earlier BioEmu2 C-GAIMMD runs saved ``BioEmu2FlowNetwork`` (``head``,
+``head_ema``, ``adapter``) and ``HoloFlowNetwork`` (also ``pair_adapter``).
+The head (``CommittorHead``, the old ``JointHead``) and the adapters keep
+their old parameter names.
 """
 
 

@@ -4,7 +4,9 @@ Installation
 Recommended Environment
 -----------------------
 
-It is recommended to install AIMMD in a clean conda environment. Python 3.13 is tested and supported, but other versions may work as well. Create a new environment with:
+It is recommended to install AIMMD in a clean conda environment. AIMMD needs
+Python 3.10 or later; 3.12 and 3.13 are tested, and the BioEmu2 extras of
+C-GAIMMD need 3.12 or later. Create a new environment with:
 
 .. code-block:: bash
 
@@ -81,6 +83,32 @@ your own setup:
 
 These packages matter only if you use the optional graph utilities in
 ``aimmd.network.graph_utils`` or graph-based descriptor pipelines.
+
+C-GAIMMD Extras
+---------------
+
+Committor-conditioned Generative AIMMD (:doc:`cgaimmd`) needs one of these
+extras, installed from a clone of the repository:
+
+.. code-block:: bash
+
+   git clone https://github.com/covinolab/AIMMD-Lab.git
+   cd AIMMD-Lab
+
+   # C-GAIMMD with the PaiNN flow-matching generator and GROMACS candidate preparation
+   pip install -e ".[cgaimmd]"
+
+   # C-GAIMMD with BioEmu2 (Python 3.12 or later); install torch 2.11 to 2.13 first,
+   # from the PyTorch index of your CUDA, then:
+   pip install -e ".[bioemu2-cuda]" -c devtools/constraints-bioemu2.txt   # NVIDIA GPUs, CUDA 13
+   pip install -e ".[bioemu2]" -c devtools/constraints-bioemu2.txt        # CPU or other GPUs
+
+The constraints file of the repository pins the versions the tests ran with for
+the packages that matter to the BioEmu2 adaptor. BioEmu2 downloads its weights
+on first use; compute nodes without internet need them in the Hugging Face cache
+beforehand. :doc:`cgaimmd_production` describes the installs on a workstation and
+on clusters, and a CPU conda environment for development
+(``devtools/conda-envs/cgaimmd_env.yaml``).
 
 Verifying the Installation
 --------------------------

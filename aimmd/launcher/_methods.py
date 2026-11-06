@@ -66,6 +66,23 @@ passing the string ``'skip'`` for ``cpus_per_task`` / ``gpus_per_task`` to the
 worker. This allows the scheduler/runtime to manage placement without the worker
 pinning resources itself.
 
+Environment, run-folder guard and preflight
+-------------------------------------------
+Between the SLURM header and the workers, the script can hold three more
+blocks, in this order:
+
+- ``preamble``: lines written as they are (``module load ...``, ``source
+  .../activate``, ``export HF_HUB_OFFLINE=1``). Workers started by ``srun``
+  inherit the environment these lines set.
+- the run-folder guard (``guard_run_folders=True``, the default): a job
+  claims each of its run folders by writing its SLURM job id to
+  ``<run>/aimmd_job.txt``, and does not start while another job that
+  claimed one of them is still running (``squeue``). Two jobs in one run
+  folder would write the same chains, caches and network files.
+- the preflight (``preflight=True``): ``python -m aimmd.cgaimmd.preflight``
+  on the params file of every C-GAIMMD run before any worker starts; the job
+  stops there when a check fails (:mod:`aimmd.cgaimmd.preflight`).
+
 Notes
 -----
 - ``create_job`` uses :data:`aimmd._config.PYTHON` and :data:`aimmd._config.WORKER`
@@ -75,12 +92,81 @@ Notes
 
 # external
 import math
+import shlex
 from abc import ABC
 from math import inf
 from numpy import bool_
 
 # aimmd imports
 from .._config import PYTHON, WORKER, require_gromacs
+
+
+RUN_FOLDER_RECORD = 'aimmd_job.txt'
+"""The file in a run folder that names the SLURM job using it (see ``guard_run_folders``)."""
+
+PREFLIGHT_MODULE = 'aimmd.cgaimmd.preflight'
+"""The module a job script runs as its preflight (``python -m``)."""
+
+# A job claims each run folder by writing its job id into it; another job
+# that claimed the folder and is still running stops this one. The re-read
+# after two seconds settles two jobs that start at the same moment: the last
+# writer keeps the folder, the other stops.
+_GUARD_FUNCTION = r"""claim_run_folder() {
+    local folder="$1" record="$1/%(record)s" other=""
+    mkdir -p "${folder}"
+    if [[ -f "${record}" ]]; then
+        other=$(head -n 1 "${record}" | cut -d ' ' -f 1)
+    fi
+    if [[ -n "${other}" && "${other}" != "${SLURM_JOB_ID}" ]] && \
+            squeue -h -j "${other}" -t RUNNING,COMPLETING,CONFIGURING,SUSPENDED -o %%i \
+            2>/dev/null | grep -qx "${other}"; then
+        echo "job ${other} is still running in the run folder ${folder}:" \
+             "this job (${SLURM_JOB_ID}) does not start" >&2
+        exit 1
+    fi
+    echo "${SLURM_JOB_ID} $(hostname) $(date -Iseconds)" > "${record}"
+}
+confirm_run_folder() {
+    local folder="$1" owner=""
+    owner=$(head -n 1 "${folder}/%(record)s" | cut -d ' ' -f 1)
+    if [[ "${owner}" != "${SLURM_JOB_ID}" ]]; then
+        echo "job ${owner} claimed the run folder ${folder} at the same time:" \
+             "this job (${SLURM_JOB_ID}) does not start" >&2
+        exit 1
+    fi
+}
+if ! command -v squeue > /dev/null; then
+    echo "warning: squeue not found; the run-folder guard cannot see other jobs" >&2
+fi
+""" % {'record': RUN_FOLDER_RECORD}
+
+
+def _preamble_lines(preamble):
+    """The lines of `preamble` (None, a str or an iterable of str)."""
+    if preamble is None:
+        return []
+    if isinstance(preamble, str):
+        lines = preamble.splitlines()
+    else:
+        lines = []
+        for item in preamble:
+            if not isinstance(item, str):
+                raise TypeError(f'preamble must be a str or an iterable of str, got an item '
+                                f'{item!r}')
+            lines.extend(item.splitlines())
+    return [line.rstrip() for line in lines]
+
+
+def _preflight_arguments(preflight):
+    """None (no preflight) or the extra command-line arguments of the preflight."""
+    if preflight is None or preflight is False:
+        return None
+    if preflight is True:
+        return []
+    if isinstance(preflight, str):
+        return shlex.split(preflight)
+    raise TypeError(f"preflight must be False, True or a str of extra arguments for "
+                    f"'python -m {PREFLIGHT_MODULE}', got {preflight!r}")
 
 
 class LauncherMethods(ABC):
@@ -141,13 +227,38 @@ class LauncherMethods(ABC):
         self._params.pop(i)
         self._directories.pop(i)
 
+    def _preflight_runs(self, built_args):
+        """``[(params file, run folder)]`` of the C-GAIMMD runs that start, for the preflight.
+
+        The params file is the one the run's workers are started with (the
+        first element of their argument tuples, see :meth:`_build`).
+        """
+        runs = []
+        for run_id, params in enumerate(self.params):
+            if getattr(params, 'chain_type', None) != 'cgaimmd' \
+                    or not self._runs_anything(run_id):
+                continue
+            folder = self._directories[run_id] or '.'
+            if getattr(params, 'multi_system', False):
+                raise ValueError(f'preflight: the run {folder!r} is a multi-system run; the '
+                                 f'C-GAIMMD preflight checks single systems')
+            prefix = folder.rstrip('/') + '/'
+            params_path = next(args[0] for args in built_args
+                               if args[1] == folder or str(args[1]).startswith(prefix))
+            runs.append((params_path, folder))
+        if not runs:
+            raise ValueError("preflight: no run of this job has chain_type='cgaimmd'; the "
+                             "preflight checks C-GAIMMD params files")
+        return runs
+
     def create_job(self, filename, n=1, n1=0, n2=0,
                    reactive_region_mode='chain',
                    state1_mode='free', state2_mode='free',
                    nsteps=inf, nframes=inf, nrounds=inf,
                    walltime=24*3600, cpus_per_task=1, gpus_per_task=0,
                    ntasks_per_node=1, skip_binding=True,
-                   nchains_per_worker=1):
+                   nchains_per_worker=1, *, preamble=None, preflight=False,
+                   guard_run_folders=True):
         """
         Create a SLURM job script that launches AIMMD workers via ``srun``.
 
@@ -155,6 +266,9 @@ class LauncherMethods(ABC):
 
         - writes the SLURM header derived from ``params.slurm_header`` and from
           the provided defaults (if missing),
+        - writes the ``preamble`` lines (the job's environment), if any,
+        - claims the run folders for this job (``guard_run_folders``),
+        - runs the C-GAIMMD preflight of every C-GAIMMD run (``preflight``),
         - sets shell job control (``set -m``),
         - launches each planned worker as a background process using
           ``srun --exclusive ... &``,
@@ -239,6 +353,27 @@ class LauncherMethods(ABC):
         skip_binding : bool, optional
             If ``True``, pass ``'skip'`` to the worker for CPU/GPU binding so
             that workers do not explicitly bind resources. Default is ``True``.
+        preamble : str or iterable of str, optional, keyword only
+            Shell lines written after the SLURM header, before anything else
+            runs: the job's environment, e.g. ``['module load
+            GROMACS/2025.4-CUDA-13', 'source /path/to/venv/bin/activate',
+            'export HF_HUB_OFFLINE=1']``. Written as they are. Default: none.
+        preflight : bool or str, optional, keyword only
+            ``True``: before any worker starts, run ``"${PYTHON}" -m
+            aimmd.cgaimmd.preflight <params file> --run <run folder>`` for
+            every run with ``chain_type='cgaimmd'`` (one generated candidate
+            through the whole preparation, the GROMACS executables, the
+            PLUMED bias); the job stops when a check fails, before compute
+            time is spent. A str adds arguments to that command (e.g.
+            ``'--candidates 2'`` or ``'--no-generate'``). Default ``False``.
+        guard_run_folders : bool, optional, keyword only
+            ``True`` (default): the job writes its SLURM job id into
+            ``<run folder>/aimmd_job.txt`` for each of its run folders, and
+            stops before any worker starts when another job that wrote one of
+            these files is still running (``squeue``), or when two jobs claim
+            a folder at the same moment (the later claim wins). Two jobs in
+            one run folder would write the same chains, caches and network
+            files. ``False`` writes no guard.
 
         Returns
         -------
@@ -249,7 +384,12 @@ class LauncherMethods(ABC):
         OSError
             If ``filename`` cannot be written.
         TypeError
-            If the launcher cannot be configured with the requested modes.
+            If the launcher cannot be configured with the requested modes, or
+            for a `preamble` or `preflight` of the wrong type.
+        ValueError
+            For ``preflight`` when no run of the job has
+            ``chain_type='cgaimmd'``, or a multi-system C-GAIMMD run (the
+            preflight checks single systems).
         aimmd.core.series.SeriesCoverageError
             If trajectories of a run have no file of the params' descriptor
             series and its featurizer does not refill it (no job is
@@ -264,7 +404,13 @@ class LauncherMethods(ABC):
           and written as ``#SBATCH --nodes=...``.
         - The script uses ``srun --exclusive --nodes=1 --ntasks=1`` for each
           worker to ensure processes do not share a task allocation.
+        - Paths in the script (params files, run folders) are relative to
+          the folder ``create_job`` runs in; submit the job from there (SLURM
+          starts a batch script in the submission folder).
         """
+        preamble_lines = _preamble_lines(preamble)
+        preflight_arguments = _preflight_arguments(preflight)
+
         # A GROMACS-engine job script only makes sense if `gmx` is available to
         # the workers it launches; require it at generation time. Toy-engine job
         # scripts need no GROMACS.
@@ -336,6 +482,17 @@ class LauncherMethods(ABC):
         slurm_header += \
             f'\n#SBATCH --time={hours:02g}:{minutes:02g}:{seconds:02g}'
 
+        # the worker commands (this also prepares the run folders); the
+        # preflight needs their params files
+        built_args, built_descriptions = self._build()
+        preflight_runs = (self._preflight_runs(built_args)
+                          if preflight_arguments is not None else [])
+        run_folders = []
+        for run_id in range(len(self)):
+            folder = self._directories[run_id] or '.'
+            if self._runs_anything(run_id) and folder not in run_folders:
+                run_folders.append(folder)
+
         # write job script
         with open(filename, 'w') as file:
 
@@ -344,17 +501,47 @@ class LauncherMethods(ABC):
             file.write(f'#SBATCH --job-name={self.params[0].name}\n')
             file.write(f'{slurm_header}\n\n')
 
+            # the job's environment
+            if preamble_lines:
+                file.write('# environment\n')
+                file.write('\n'.join(preamble_lines) + '\n\n')
+
             # default names
             file.write('# default names\n')
             file.write(f'PYTHON="{PYTHON}"\n')
             file.write(f'WORKER="{WORKER}"\n\n')
+
+            # one job per run folder
+            if guard_run_folders and run_folders:
+                file.write('# one job per run folder: claim the run folders, or stop if another\n'
+                           '# job that is still running claimed one of them\n')
+                file.write(_GUARD_FUNCTION)
+                for folder in run_folders:
+                    file.write(f'claim_run_folder {shlex.quote(folder)}\n')
+                file.write('sleep 2\n')
+                for folder in run_folders:
+                    file.write(f'confirm_run_folder {shlex.quote(folder)}\n')
+                file.write('\n')
+
+            # preflight of the C-GAIMMD runs
+            if preflight_runs:
+                file.write('# preflight: check every C-GAIMMD run before any worker starts\n')
+                for params_path, folder in preflight_runs:
+                    command = ['-m', PREFLIGHT_MODULE, params_path, '--run', folder,
+                               *preflight_arguments]
+                    file.write('"${PYTHON}" ' + ' '.join(shlex.quote(word) for word in command)
+                               + ' || {\n')
+                    file.write(f'    echo "preflight of {params_path} failed: no worker '
+                               f'started" >&2\n')
+                    file.write('    exit 1\n')
+                    file.write('}\n')
+                file.write('\n')
 
             # enable job control
             file.write('# enable job control\n')
             file.write('set -m\n')
 
             # launch commands
-            built_args, built_descriptions = self._build()
             file.write('\n# workers')
             for i, (args, description) in enumerate(
                     zip(built_args, built_descriptions)):

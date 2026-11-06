@@ -35,10 +35,10 @@ run shares one topology):
 Frames of the restrained stages are never registered or used as data; the
 shooting point gets fresh Maxwell-Boltzmann velocities and the production
 topology has no restraints. Preparation cost appears in the sidecar only.
-
-Generalized from the calixarene re-solvation brute-force committor script and
-the chignolin commitment-test preparation of the C-GAIMMD development project.
 """
+
+# Provenance: Generalized from the calixarene re-solvation brute-force committor script and
+# the chignolin commitment-test preparation of the C-GAIMMD development project.
 
 import os
 import re

@@ -144,8 +144,10 @@ class WorkerRun(ABC):
             Re-raises any exception thrown by task execution after optional
             traceback reporting.
 
-        Side Effects
-        ------------
+        Notes
+        -----
+        Side effects:
+
         - Changes the current working directory to :attr:`params.parent` for the
           duration of the task.
         - Clears global caches :data:`~aimmd._config.MDA_CACHE` and

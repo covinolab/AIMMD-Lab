@@ -1,0 +1,52 @@
+name: nightly
+
+# Every test, slow ones included (the launched toy campaigns, the GROMACS
+# runs, the wheel build), in the full environment of the "full" job
+# (cgaimmd.yml): pytest --runslow --rungraph.
+#
+# GitHub starts scheduled workflows only from the default branch: the
+# schedule takes effect once this file is on main. Until then, start the job
+# by hand on a branch (Actions -> nightly -> Run workflow).
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CUDA_VISIBLE_DEVICES: ""
+  OMP_NUM_THREADS: 2
+  HF_HUB_OFFLINE: 1
+
+jobs:
+  slow-gromacs:
+    runs-on: ubuntu-latest
+    # the default lane takes about 16 min, the slow lane about 8 min on 4
+    # local cores; GitHub's runners are slower
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash -l {0}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        miniforge-version: latest
+        environment-file: devtools/conda-envs/cgaimmd_env.yaml
+        activate-environment: cgaimmd
+        channels: conda-forge
+        conda-remove-defaults: true
+        auto-update-conda: false
+        auto-activate-base: false
+        show-channel-urls: true
+    - name: Install AIMMD-Lab with every extra
+      run: |
+        pip install -e ".[cgaimmd,bioemu2,graphs,tests]" -c devtools/constraints-bioemu2.txt
+        gmx --version | head -n 15
+    - name: Every test, slow ones included
+      run: |
+        pytest -v --color=yes --durations=50 --runslow --rungraph tests/

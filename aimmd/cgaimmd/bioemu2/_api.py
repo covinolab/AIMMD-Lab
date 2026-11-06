@@ -20,7 +20,7 @@ What it holds:
   ``MSA``, ``TrunkEmbeddings``, ``EDMSampler`` (:func:`edm_sample`),
   ``InferenceModel.embed`` / ``compute_static_context`` / ``denoise`` /
   ``edm_schedule``);
-- the internal touch points, each in one function (DESIGN section 5.2):
+- the internal touch points, each in one function:
   ``prepare_sampling_inputs`` (:func:`sampling_inputs`); the forward pre-hook
   on ``score_model.structure_module.readout`` that reads the token features
   ``a`` and atom features ``q`` (:class:`ReadoutCapture`);
@@ -131,7 +131,7 @@ def load_model(checkpoint='bioemu2-preview', *, checkpoint_path=None, device=Non
     -----
     ``precision='32-true'`` and ``matmul_precision=None`` (no TF32), as in
     every production campaign: TF32 matmuls moved the pooled features of two
-    identical poses by up to 1.5 % (smoke test of 23 Oct 2026).
+    identical poses by up to 1.5 %.
     """
     check_version()
     if checkpoint_path is not None:

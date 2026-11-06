@@ -1,0 +1,53 @@
+# Test environment with every optional part of AIMMD-Lab: C-GAIMMD with the
+# PaiNN and the BioEmu2 generators, the graph descriptors and GROMACS. It is
+# the environment of the "full" and "slow-gromacs" CI jobs and a CPU
+# development environment:
+#
+#   conda env create -f devtools/conda-envs/cgaimmd_env.yaml
+#   conda activate cgaimmd
+#   pip install -e ".[cgaimmd,bioemu2,graphs,tests]" -c devtools/constraints-bioemu2.txt
+#
+# conda-forge only. PyTorch is the CPU build of 2.13 (bioemu2 needs >= 2.11,
+# < 2.14, and conda-forge's pytorch_cluster builds 15 and 16 are for 2.13).
+# The GROMACS of conda-forge is a CPU build without PLUMED: enough for the
+# tests; production runs take GROMACS and PLUMED from the cluster's modules.
+# The pip section installs BioEmu2 with the versions of
+# devtools/constraints-bioemu2.txt (conda runs pip in this file's folder).
+name: cgaimmd
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip
+  # PyTorch (CPU) and PyG; torch_geometric < 2.8, whose radius_graph uses
+  # torch_cluster (2.8 needs pyg-lib for it)
+  - pytorch=2.13.*=cpu*
+  - pytorch_cluster=1.6.3
+  - pytorch_geometric<2.8
+  - lz4
+  # AIMMD-Lab
+  - numpy<2.5
+  - scipy
+  - mdanalysis
+  - mdtraj
+  - matplotlib
+  - psutil
+  - dill
+  - tqdm
+  - filelock
+  - networkx
+  # TEMPORARY PIN (as in test_env.yaml): mkl 2026.2.0 breaks `import numpy`
+  # (conda-forge/intel_repack-feedstock#145)
+  - mkl<2026.2
+  # GROMACS for the gromacs-marked tests (CPU, no PLUMED)
+  - gromacs
+  # tests
+  - pytest
+  - pytest-cov
+  - pytest-timeout
+  - pip:
+      - -c ../constraints-bioemu2.txt
+      - bioemu2==0.1.0rc0
+      # bioemu2 asks for triton on Linux; the CPU build of torch pins none, so
+      # take the one bioemu2's lock file pairs with torch 2.13
+      - triton==3.7.1
