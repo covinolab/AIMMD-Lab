@@ -220,7 +220,7 @@ class FlowGraphTransform:
     (``aimmd.network.fit`` and the C-GAIMMD values function accept batch
     dicts). Nothing is written, and ``graph_utils``, ``torch_geometric`` and
     SQLite are not used. With ``edge_backend='pyg'`` (or ``'auto'`` where
-    ``torch_cluster`` is installed) the edges are those of the
+    PyG's ``radius_graph`` runs) the edges are those of the
     ``radius_graph`` call the cache route makes.
 
     **Cache routes.** A call returns the list of PyG ``Data`` of

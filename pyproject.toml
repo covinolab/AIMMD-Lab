@@ -50,8 +50,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Graph descriptors (node tables, graph networks) and the PyG edge backend of
+# the C-GAIMMD PaiNN network. torch-cluster has no wheels on PyPI: install the
+# wheel built for your torch from https://data.pyg.org/whl/ first (see the
+# installation docs). torch-geometric stays below 2.8: from 2.8 on, its
+# radius_graph needs pyg-lib (not on PyPI) instead of torch-cluster.
 graphs = [
-    "torch-geometric",
+    "torch-geometric<2.8",
     "torch-cluster",
     "lz4",
 ]

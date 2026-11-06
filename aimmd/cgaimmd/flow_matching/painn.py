@@ -39,8 +39,8 @@ prior sample puts bonded atoms farther apart than the cutoff:
   return probabilities of the bond graph, added to the atoms' embedding.
 
 The model needs only torch; graphs of coordinates are built on the fly by
-:func:`aimmd.cgaimmd.flow_matching.graph_batch.radius_edges` (PyG when
-``torch_cluster`` is installed, else pure torch), and graph-mode inputs
+:func:`aimmd.cgaimmd.flow_matching.graph_batch.radius_edges` (PyG where its
+``radius_graph`` runs, else pure torch), and graph-mode inputs
 (:class:`aimmd.cgaimmd.flow_matching.graphs.FlowGraphTransform`) are used as
 they come.
 

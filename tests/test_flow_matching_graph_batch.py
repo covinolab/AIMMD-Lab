@@ -96,25 +96,95 @@ def test_max_neighbours_warning():
         graph_batch.radius_edges(pos[0], batch, 2.0, max_num_neighbors=128, backend='torch')
 
 
-def test_pyg_detection_uses_torch_cluster(monkeypatch):
-    """'auto' is the PyG backend exactly when torch_cluster is importable."""
-    import importlib.util
-    real = importlib.util.find_spec
+@pytest.fixture
+def fresh_pyg_check():
+    """The once-per-process check of PyG's radius_graph and the warn-once flags, cleared."""
+    from aimmd.cgaimmd import _once
+    check = graph_batch.pyg_radius_graph_problem              # the cached function (tests replace it)
+    check.cache_clear()
+    _once._reset()
+    yield
+    check.cache_clear()
+    _once._reset()
 
-    def no_cluster(name, *args, **kwargs):
-        return None if name == 'torch_cluster' else real(name, *args, **kwargs)
 
+def test_auto_backend_follows_the_pyg_check(monkeypatch, fresh_pyg_check):
+    """'auto' is the PyG backend exactly when PyG's radius_graph runs; 'pyg' and 'torch' are kept."""
     def boom(*args, **kwargs):
         raise AssertionError('the pyg backend was used')
 
-    monkeypatch.setattr(importlib.util, 'find_spec', no_cluster)
+    monkeypatch.setattr(graph_batch, 'pyg_radius_graph_problem',
+                        lambda: 'torch_geometric is not installed')
     monkeypatch.setattr(graph_batch, '_pyg_edges', boom)
-    assert graph_batch._resolve_backend('auto') == 'torch'
-    pos = torch.randn(6, 3)
-    graph_batch.radius_edges(pos, torch.zeros(6, dtype=torch.long), 3.0)       # torch, no error
-    monkeypatch.setattr(importlib.util, 'find_spec', lambda name, *a, **k: object())
+    import importlib.util
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, 'find_spec',
+                        lambda name, *a, **k: None if name == 'torch_geometric' else real(name, *a, **k))
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')                      # not installed: no warning
+        assert graph_batch._resolve_backend('auto') == 'torch'
+        graph_batch.radius_edges(torch.randn(6, 3), torch.zeros(6, dtype=torch.long), 3.0)
+    monkeypatch.setattr(graph_batch, 'pyg_radius_graph_problem', lambda: None)
     assert graph_batch._resolve_backend('auto') == 'pyg'
     assert graph_batch._resolve_backend('torch') == 'torch'
+    assert graph_batch._resolve_backend('pyg') == 'pyg'
+
+
+def _fake_pyg_without_pyg_lib(monkeypatch):
+    """torch_geometric as 2.8 behaves without pyg-lib: its radius_graph raises ImportError."""
+    import importlib.machinery
+    import importlib.util
+    import sys
+    import types
+
+    def radius_graph(*args, **kwargs):
+        raise ImportError("'radius_graph' requires 'pyg-lib>=0.6.0'")
+
+    package = types.ModuleType('torch_geometric')
+    package.__path__ = []
+    package.__spec__ = importlib.machinery.ModuleSpec('torch_geometric', None, is_package=True)
+    nn = types.ModuleType('torch_geometric.nn')
+    nn.radius_graph = radius_graph
+    package.nn = nn
+    monkeypatch.setitem(sys.modules, 'torch_geometric', package)
+    monkeypatch.setitem(sys.modules, 'torch_geometric.nn', nn)
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, 'find_spec',
+                        lambda name, *a, **k: package.__spec__ if name == 'torch_geometric'
+                        else real(name, *a, **k))
+
+
+def test_auto_backend_falls_back_when_pyg_cannot_build_radius_graphs(monkeypatch,
+                                                                     fresh_pyg_check):
+    """torch-geometric 2.8 without pyg-lib: 'auto' warns once and builds the torch edges.
+
+    Before, 'auto' chose PyG whenever torch_cluster was importable, and every
+    graph then failed with "'radius_graph' requires 'pyg-lib>=0.6.0'". The
+    explicit 'pyg' backend still fails, with what to install.
+    """
+    _fake_pyg_without_pyg_lib(monkeypatch)
+    problem = graph_batch.pyg_radius_graph_problem()
+    assert problem is not None and 'pyg-lib' in problem
+    g = torch.Generator().manual_seed(3)
+    pos = 3.0 * torch.randn(2 * 6, 3, generator=g)
+    batch = torch.arange(2).repeat_interleave(6)
+    with pytest.warns(RuntimeWarning, match='pyg-lib') as record:
+        edges = graph_batch.radius_edges(pos, batch, 4.0)
+    assert sum('torch backend builds the edges' in str(w.message) for w in record) == 1
+    assert _edge_set(edges) == _reference_edges(pos, batch, 4.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')                      # once per process
+        graph_batch.build_graph_batch(pos.reshape(2, 6, 3), 4.0)
+    with pytest.raises(ImportError, match=r"edge backend 'pyg'.*torch-geometric<2.8"):
+        graph_batch.radius_edges(pos, batch, 4.0, backend='pyg')
+
+
+@pytest.mark.graph
+def test_pyg_check_passes_with_the_graphs_extra(fresh_pyg_check):
+    """With torch-geometric < 2.8 and torch-cluster (the graphs extra), PyG's radius_graph runs."""
+    pytest.importorskip('torch_cluster')
+    assert graph_batch.pyg_radius_graph_problem() is None
+    assert graph_batch._resolve_backend('auto') == 'pyg'
 
 
 @pytest.mark.graph
