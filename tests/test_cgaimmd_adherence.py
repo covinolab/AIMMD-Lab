@@ -96,6 +96,24 @@ def test_gap_between_the_wings_is_not_rewarded():
     assert adherence.wing_resolution(np.zeros(3), np.zeros(3)) is None
 
 
+def test_one_request_per_wing_leaves_the_wing_slope_undetermined():
+    """With one request in each wing the two intercepts fit both wings: the gap between them is
+    not a slope. A wing with two requests measures it again, even when the other wing is empty."""
+    rng = np.random.default_rng(5)
+    requested = np.repeat([-3.0, 3.0], 50)
+    judged = np.where(requested < 0, -5.0, 5.0) + rng.normal(0.0, 0.1, len(requested))
+    wings = adherence.wing_resolution(requested, judged)
+    assert math.isnan(wings['slope']) and math.isnan(wings['resolution'])
+    assert wings['intercepts'] == [pytest.approx(-5.0, abs=0.05), pytest.approx(5.0, abs=0.05)]
+    m = adherence.adherence_metrics(requested, judged, n_boot=20)
+    assert math.isnan(m['wings']['resolution'])
+    assert all(math.isnan(v) for v in m['intervals']['resolution_wings'])
+    one_wing = np.repeat([-4.0, -3.0], 50)
+    sloped = adherence.wing_resolution(one_wing, 0.5 * one_wing + rng.normal(0, 0.1, 100))
+    assert sloped['slope'] == pytest.approx(0.5, abs=0.1)
+    assert math.isnan(sloped['intercepts'][1])
+
+
 def test_neighbour_auc_and_missing_values():
     assert adherence.neighbour_auc([0, 1], [2, 3]) == 1.0
     assert adherence.neighbour_auc([0, 1], [0, 1]) == 0.5
@@ -111,6 +129,12 @@ def test_neighbour_auc_and_missing_values():
     assert per[1.0]['n'] == 2 and per[1.0]['median'] == pytest.approx(0.95)
     with pytest.raises(ValueError, match='requests'):
         adherence.adherence_metrics([0.0, 1.0], [0.0])
+    # called directly, the dial functions refuse judged values that are not finite (instead of a
+    # NaN slope with an infinite resolution); the neighbour AUC leaves them out
+    for function in (adherence.affine_fit, adherence.wing_resolution, adherence.median_slopes):
+        with pytest.raises(ValueError, match='not finite'):
+            function([-3.0, 0.0, 3.0], [-3.0, np.nan, 3.0])
+    assert adherence.neighbour_auc([0.0, np.nan], [2.0, np.inf, 3.0]) == 1.0
 
 
 # ---------------------------------------------------------------------------

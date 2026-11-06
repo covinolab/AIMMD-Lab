@@ -116,13 +116,18 @@ FLAT_SLOPE = 1e-3
 # The dial
 # ════════════════════════════════════════════════════════════════════════════
 
-def _pairs(requested, judged):
+def _pairs(requested, judged, *, missing_allowed=False):
+    """Requests and judged values as float arrays; judged values must be finite unless
+    `missing_allowed` (the caller then drops them)."""
     r = np.asarray(requested, dtype=float).reshape(-1)
     j = np.asarray(judged, dtype=float).reshape(-1)
     if r.shape != j.shape:
         raise ValueError(f'{len(r)} requests for {len(j)} judged values')
     if not np.all(np.isfinite(r)):
         raise ValueError('the requests must be finite')
+    if not missing_allowed and not np.all(np.isfinite(j)):
+        raise ValueError(f'{int(np.sum(~np.isfinite(j)))} judged values are not finite; leave '
+                         f'those samples out first (adherence_metrics does)')
     return r, j
 
 
@@ -140,9 +145,11 @@ def neighbour_auc(lower, higher):
         The Mann-Whitney statistic divided by ``len(lower) * len(higher)``:
         0.5 when the two sets cannot be told apart, 1 when every value of
         `higher` lies above every value of `lower`; NaN if a set is empty.
+        Values that are not finite are left out.
     """
     lower = np.asarray(lower, dtype=float).reshape(-1)
     higher = np.asarray(higher, dtype=float).reshape(-1)
+    lower, higher = lower[np.isfinite(lower)], higher[np.isfinite(higher)]
     if not len(lower) or not len(higher):
         return math.nan
     above = (higher[:, None] > lower[None, :]).sum()
@@ -157,7 +164,8 @@ def affine_fit(requested, judged, *, large_miss=LARGE_MISS):
     ----------
     requested, judged : array_like
         ``(n,)`` requested logits ``lambda*`` and judged logits ``lambda``
-        (finite; :func:`adherence_metrics` drops non-finite judged values).
+        (finite: a ValueError otherwise; :func:`adherence_metrics` drops
+        non-finite judged values first).
     large_miss : float, optional
         The large-miss distance in logits.
 
@@ -225,8 +233,11 @@ def wing_resolution(requested, judged, *, band=TRANSITION_BAND):
     -------
     dict or None
         ``n``, ``slope`` (shared by both wings), ``intercepts`` (low wing,
-        high wing) and ``resolution`` (robust residual spread / slope;
-        infinite for a flat dial); None without requests outside the band.
+        high wing; NaN for a wing without requests) and ``resolution``
+        (robust residual spread / slope; infinite for a flat dial); None
+        without requests outside the band. Slope and resolution are NaN when
+        no wing holds two different requests: the slope within a wing is
+        then not measured at all.
 
     Notes
     -----
@@ -234,22 +245,36 @@ def wing_resolution(requested, judged, *, band=TRANSITION_BAND):
     below ``-band`` and ``c_high + b lambda*`` above ``+band``. A generator
     that puts every low request at -5 and every high request at +5 has two
     flat wings: its shared slope is 0 and its wing resolution infinite,
-    although one line through both wings would have a steep slope.
+    although one line through both wings would have a steep slope. With one
+    request per wing the two intercepts already fit both wings exactly, so
+    the slope is left undetermined (NaN) rather than read off the gap.
     """
     r, j = _pairs(requested, judged)
     outside = np.abs(r) > float(band)
     r, j = r[outside], j[outside]
     if not len(r):
         return None
-    low = (r < 0).astype(float)
-    design = np.column_stack([low, 1.0 - low, r])
+    sides = [r < 0, r > 0]
+    present = [bool(side.any()) for side in sides]
+    intercepts = [math.nan, math.nan]
+    if not any(len(np.unique(r[side])) >= 2 for side in sides):
+        for k, side in enumerate(sides):
+            if present[k]:
+                intercepts[k] = float(np.mean(j[side]))
+        return {'n': int(len(r)), 'slope': math.nan, 'intercepts': intercepts,
+                'resolution': math.nan}
+    columns = [side.astype(float) for side, here in zip(sides, present) if here]
+    design = np.column_stack(columns + [r])
     coef, *_ = np.linalg.lstsq(design, j, rcond=None)
-    slope = float(coef[2])
+    slope = float(coef[-1])
     spread = robust_sd(j - design @ coef)
-    resolution = (math.nan if len(np.unique(r)) < 2 else
-                  float(spread / slope) if slope > FLAT_SLOPE else math.inf)
-    return {'n': int(len(r)), 'slope': slope,
-            'intercepts': [float(coef[0]), float(coef[1])], 'resolution': resolution}
+    fitted = iter(coef[:-1])
+    for k in range(2):
+        if present[k]:
+            intercepts[k] = float(next(fitted))
+    resolution = float(spread / slope) if slope > FLAT_SLOPE else math.inf
+    return {'n': int(len(r)), 'slope': slope, 'intercepts': intercepts,
+            'resolution': resolution}
 
 
 def _region_slopes(medians, regions):
@@ -268,7 +293,7 @@ def median_slopes(requested, judged, *, regions=None, n_boot=500, confidence=0.9
     Parameters
     ----------
     requested, judged : array_like
-        ``(n,)`` requested and judged logits (finite).
+        ``(n,)`` requested and judged logits (finite: a ValueError otherwise).
     regions : dict, optional
         ``{name: (low, high)}`` closed intervals of ``lambda*`` (default
         :data:`REGIONS`: core ``-1..+1``, band ``-2..+2`` and the two wings).
@@ -369,7 +394,7 @@ def adherence_metrics(requested, judged, *, band=TRANSITION_BAND, regions=None,
     a resolution is infinite keeps that value, so an interval can reach
     infinity.
     """
-    r, j = _pairs(requested, judged)
+    r, j = _pairs(requested, judged, missing_allowed=True)
     finite = np.isfinite(j)
     n_missing = int((~finite).sum())
     r, j = r[finite], j[finite]
