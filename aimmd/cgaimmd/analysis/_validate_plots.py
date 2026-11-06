@@ -163,9 +163,7 @@ def _parity_axes(ax, reference, lam, colour):
 
 def parity_panels(entries, stem, *, title=None):
     """Side-by-side committor parity of several models; returns ``(png, pdf)`` paths."""
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
 
     from .validate import committor_metrics
     entries = [(str(label), reference, np.asarray(lam, dtype=float).reshape(-1))
@@ -173,7 +171,7 @@ def parity_panels(entries, stem, *, title=None):
     if not entries:
         raise ValueError('parity_figure needs at least one (label, reference, logits) entry')
     n = len(entries)
-    fig = plt.figure(figsize=(4.4 * max(n, 2), 8.6))
+    fig = Figure(figsize=(4.4 * max(n, 2), 8.6))
     gs = fig.add_gridspec(2, max(n, 2), left=0.07, right=0.98, top=0.9, bottom=0.07,
                           wspace=0.3, hspace=0.32)
     for k, (label, reference, lam) in enumerate(entries):
@@ -239,7 +237,6 @@ def parity_panels(entries, stem, *, title=None):
     os.makedirs(os.path.dirname(stem) or '.', exist_ok=True)
     fig.savefig(png, dpi=150)
     fig.savefig(pdf)
-    plt.close(fig)
     return png, pdf
 
 
@@ -451,11 +448,9 @@ def _panel_summary(ax, report):
 
 def model_card(report, data, stem):
     """Draw the one-page model card of a report; returns ``(png, pdf)`` paths."""
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
 
-    fig = plt.figure(figsize=(16.5, 11.0))
+    fig = Figure(figsize=(16.5, 11.0))
     gs = fig.add_gridspec(2, 3, left=0.05, right=0.985, top=0.84, bottom=0.07, wspace=0.32,
                           hspace=0.42)
     axes = [fig.add_subplot(gs[i, j]) for i in range(2) for j in range(3)]
@@ -494,7 +489,6 @@ def model_card(report, data, stem):
     png, pdf = stem + '.png', stem + '.pdf'
     fig.savefig(png, dpi=130)
     fig.savefig(pdf)
-    plt.close(fig)
     return png, pdf
 
 
@@ -504,9 +498,7 @@ def model_card(report, data, stem):
 
 def leaderboard_figure(reports, rows, out, *, title=None):
     """Dot plot of the headline numbers of many reports; returns ``(png, pdf)`` paths."""
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
     from matplotlib.ticker import MaxNLocator
 
     references = []
@@ -545,8 +537,8 @@ def leaderboard_figure(reports, rows, out, *, title=None):
     n = len(rows)
     ncols = min(6, len(panels))
     nrows = -(-len(panels) // ncols)
-    fig, grid = plt.subplots(nrows, ncols, figsize=(2.3 * ncols + 3.2, nrows * (1.75 + 0.45 * n)),
-                             sharey=True, squeeze=False)
+    fig = Figure(figsize=(2.3 * ncols + 3.2, nrows * (1.75 + 0.45 * n)))
+    grid = fig.subplots(nrows, ncols, sharey=True, squeeze=False)
     axes = grid.reshape(-1)
     for ax in axes[len(panels):]:
         ax.set_visible(False)
@@ -588,5 +580,4 @@ def leaderboard_figure(reports, rows, out, *, title=None):
     png, pdf = out + '.png', out + '.pdf'
     fig.savefig(png, dpi=150)
     fig.savefig(pdf)
-    plt.close(fig)
     return png, pdf
