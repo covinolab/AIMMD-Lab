@@ -58,10 +58,12 @@ ranked by a guest one box away from it.
 Standard library and numpy at import; MDAnalysis inside the constructor.
 """
 
+import functools
 import hashlib
 import json
 import os
 import re
+import types
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -71,7 +73,8 @@ import numpy as np
 
 __all__ = ['RankingRule', 'ClusterSelection', 'GeneratorAtoms', 'GeneratorDescriptors',
            'GeneratorDescriptorsRefiller', 'coordinates_descriptors', 'make_whole',
-           'find_generator_descriptors', 'DESCRIPTOR_LAYOUT', 'WATER_PLACEMENT', 'SERIES_PREFIX']
+           'find_generator_descriptors', 'generator_descriptors_near', 'DESCRIPTOR_LAYOUT',
+           'WATER_PLACEMENT', 'SERIES_PREFIX']
 
 DESCRIPTOR_LAYOUT = 1
 """Version of the row layout: the flat Å coordinates of the generator atoms, in their order."""
@@ -854,6 +857,50 @@ def coordinates_descriptors(trajectory):
 # the series: finding the object behind a descriptors function, and refilling
 # ---------------------------------------------------------------------------
 
+FOLLOWED_CALL_LEVELS = 2
+"""How many levels of module-level helper functions :func:`find_generator_descriptors` follows
+below a descriptors function (``wrapper -> helper -> helper``)."""
+
+
+def _referenced(function):
+    """The objects a Python function names: its globals (by name) and its closure cells."""
+    code = getattr(function, '__code__', None)
+    names = getattr(function, '__globals__', None)
+    if code is None or names is None:
+        return []
+    out = [names[name] for name in code.co_names if name in names]
+    for cell in getattr(function, '__closure__', None) or ():
+        try:
+            out.append(cell.cell_contents)
+        except ValueError:                                  # an empty cell
+            pass
+    return out
+
+
+def _descriptors_behind(function, level, seen):
+    """``{id: GeneratorDescriptors}`` that `function` is, is bound to, or calls."""
+    if function is None or id(function) in seen:
+        return {}
+    seen.add(id(function))
+    if isinstance(function, GeneratorDescriptors):
+        return {id(function): function}
+    owner = getattr(function, '__self__', None)
+    if isinstance(owner, GeneratorDescriptors):
+        return {id(owner): owner}
+    found = {}
+    if isinstance(function, functools.partial):
+        for item in (function.func, *function.args, *function.keywords.values()):
+            found.update(_descriptors_behind(item, level, seen))
+        return found
+    for item in _referenced(function):
+        if isinstance(item, GeneratorDescriptors):
+            found[id(item)] = item
+        elif level < FOLLOWED_CALL_LEVELS and isinstance(item, (types.FunctionType,
+                                                                functools.partial)):
+            found.update(_descriptors_behind(item, level + 1, seen))
+    return found
+
+
 def find_generator_descriptors(function):
     """The :class:`GeneratorDescriptors` behind a ``descriptors_function``, or None.
 
@@ -866,24 +913,34 @@ def find_generator_descriptors(function):
     -------
     GeneratorDescriptors or None
         The object itself, the object of a bound method, or the one object of
-        this class that a module-level wrapper calls by a global name (the
-        params-file pattern ``def descriptors_function(trajectory): return
-        DESCRIPTORS(trajectory)``); None when there is none, or more than one.
+        this class that a wrapper calls: by a global name (the params-file
+        pattern ``def descriptors_function(trajectory): return
+        DESCRIPTORS(trajectory)``), through a closure, through
+        ``functools.partial``, or through module-level helper functions it
+        calls by a global name (:data:`FOLLOWED_CALL_LEVELS` levels deep).
+        None when there is none, or more than one.
     """
-    if function is None:
-        return None
-    if isinstance(function, GeneratorDescriptors):
-        return function
-    owner = getattr(function, '__self__', None)
-    if isinstance(owner, GeneratorDescriptors):
-        return owner
-    code = getattr(function, '__code__', None)
-    names = getattr(function, '__globals__', None)
-    if code is None or names is None:
-        return None
-    found = {id(names[name]): names[name] for name in code.co_names
-             if isinstance(names.get(name), GeneratorDescriptors)}
+    found = _descriptors_behind(function, 0, set())
     return next(iter(found.values())) if len(found) == 1 else None
+
+
+def generator_descriptors_near(function):
+    """Every :class:`GeneratorDescriptors` behind `function` or among its module's globals.
+
+    Used to tell whether a descriptors function for which
+    :func:`find_generator_descriptors` finds no unique object may still use
+    one (a params file that builds a ``GeneratorDescriptors`` and calls it in
+    a way the finder does not follow, or calls two of them).
+    """
+    found = _descriptors_behind(function, 0, set())
+    target = function.func if isinstance(function, functools.partial) else function
+    target = getattr(target, '__func__', target)            # a bound method's function
+    if not hasattr(target, '__globals__'):                  # a callable object: its __call__
+        target = getattr(type(target), '__call__', None)
+    for item in (getattr(target, '__globals__', None) or {}).values():
+        if isinstance(item, GeneratorDescriptors):
+            found[id(item)] = item
+    return list(found.values())
 
 
 _SERIES_PATTERN = re.compile(re.escape(SERIES_PREFIX) + r'[0-9a-f]{10}')

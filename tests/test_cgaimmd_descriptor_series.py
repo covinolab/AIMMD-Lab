@@ -239,6 +239,48 @@ def test_find_generator_descriptors(restore_module_descriptors):
     assert find_generator_descriptors(two) is None                # ambiguous: none
 
 
+def _helper_descriptors(trajectory):
+    return _DESCRIPTORS(trajectory)
+
+
+def _indirect_descriptors(trajectory):                    # wrapper -> helper -> DESCRIPTORS
+    return _helper_descriptors(trajectory)
+
+
+def _two_helpers_down(trajectory):                        # wrapper -> helper -> helper
+    return _indirect_descriptors(trajectory)
+
+
+def _three_helpers_down(trajectory):                      # one level more than followed
+    return _two_helpers_down(trajectory)
+
+
+def test_find_generator_descriptors_follows_helpers_closures_and_partials(
+        restore_module_descriptors):
+    """The object is found behind module-level helpers (two levels below the wrapper), a
+    closure and a functools.partial; a third helper level is not followed."""
+    import functools
+    global _DESCRIPTORS
+    descriptors = GeneratorDescriptors(str(NANMA), GeneratorAtoms(n_solute=22))
+    _DESCRIPTORS = descriptors
+    assert find_generator_descriptors(_helper_descriptors) is descriptors
+    assert find_generator_descriptors(_indirect_descriptors) is descriptors
+    assert descriptors_module.FOLLOWED_CALL_LEVELS == 2
+    assert find_generator_descriptors(_two_helpers_down) is descriptors
+    assert find_generator_descriptors(_three_helpers_down) is None
+
+    def closure(trajectory):
+        return descriptors(trajectory)
+
+    def keyword(trajectory, descriptors=None):
+        return descriptors(trajectory)
+
+    assert find_generator_descriptors(closure) is descriptors
+    assert find_generator_descriptors(functools.partial(keyword, descriptors=descriptors)) \
+        is descriptors
+    assert find_generator_descriptors(functools.partial(_indirect_descriptors)) is descriptors
+
+
 def test_atom_count_checked_through_a_wrapper(tmp_path, restore_module_descriptors):
     """The shooting worker's atom-count check finds the descriptors behind the params-file
     wrapper (the production pattern), not only a bare GeneratorDescriptors."""

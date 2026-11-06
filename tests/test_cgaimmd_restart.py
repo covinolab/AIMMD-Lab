@@ -740,6 +740,45 @@ def test_cluster_caches_without_a_record_are_refused(tmp_path, generator_descrip
     assert os.path.isfile(os.path.join(vacuum.run, restart.DESCRIPTOR_RECORD))
 
 
+def _helper_of_the_wrapper(trajectory):
+    return _DESCRIPTORS(trajectory)
+
+
+def indirectly_wrapped_descriptors(trajectory):
+    return _helper_of_the_wrapper(trajectory)
+
+
+class CallableDescriptors:
+    """A callable object that calls the module's GeneratorDescriptors (the finder does not
+    look inside objects)."""
+
+    def __call__(self, trajectory):
+        return _DESCRIPTORS(trajectory)
+
+
+def test_record_kept_through_a_helper_or_warned_about(tmp_path, generator_descriptors, capsys):
+    """A cluster run with pre-record caches is refused also when the wrapper calls the
+    GeneratorDescriptors through a helper function; where the record cannot identify the
+    object, a WARNING says that it is not kept (once per run folder and process)."""
+    from aimmd.cgaimmd.preparation.descriptors import ClusterSelection, GeneratorAtoms
+    layout = build_cgaimmd_run_dir(tmp_path, n_chains=1, n_shots=1)
+    generator_descriptors(GeneratorAtoms(n_solute=22, cluster=ClusterSelection(n_waters=4)))
+    params = cgaimmd_params_namespace(descriptors_function=indirectly_wrapped_descriptors)
+    with pytest.raises(ValueError, match='water placement 1'):
+        check_descriptor_record(params, layout.run)
+    capsys.readouterr()
+    params = cgaimmd_params_namespace(descriptors_function=CallableDescriptors())
+    for _ in range(2):
+        assert check_descriptor_record(params, layout.run) is None
+    out = capsys.readouterr().out
+    assert out.count('WARNING: the settings of the descriptor caches') == 1
+    assert 'descriptors_series = DESCRIPTORS.series' in out
+    assert not os.path.exists(os.path.join(layout.run, restart.DESCRIPTOR_RECORD))
+    # a plain descriptors function with no GeneratorDescriptors in reach: no record, no warning
+    assert check_descriptor_record(cgaimmd_params_namespace(), str(tmp_path / 'plain')) is None
+    assert 'WARNING' not in capsys.readouterr().out
+
+
 def test_migrate_sets_the_record_aside(tmp_path, generator_descriptors):
     from aimmd.cgaimmd.preparation.descriptors import GeneratorAtoms
     layout = build_cgaimmd_run_dir(tmp_path, n_chains=1, n_shots=1)

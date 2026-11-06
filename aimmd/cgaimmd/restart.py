@@ -579,6 +579,31 @@ def _descriptor_record_text(spec):
     return text
 
 
+def _warn_unrecorded_descriptors(function, run_dir):
+    """WARNING (once per run folder and process) when a GeneratorDescriptors may be used unrecorded.
+
+    :func:`check_descriptor_record` can keep a record only of the one
+    :class:`~aimmd.cgaimmd.preparation.descriptors.GeneratorDescriptors` it
+    finds behind the descriptors function. When it finds none, or two, but
+    the descriptors function's module builds one (or the function calls
+    several), the run may well write its caches with such an object; the
+    record that would catch caches of other settings is then not kept.
+    """
+    from ._once import once
+    from .preparation.descriptors import generator_descriptors_near
+    near = generator_descriptors_near(function)
+    if not near or not once(('unrecorded descriptor settings', os.path.abspath(str(run_dir)))):
+        return
+    print(f"WARNING: the settings of the descriptor caches of {str(run_dir)!r} are not recorded "
+          f"({DESCRIPTOR_RECORD}): params.descriptors_function is not, and does not call, "
+          f"exactly one GeneratorDescriptors that the record can identify ({len(near)} in "
+          f"reach or in its module). A resumed run is then not checked against caches written "
+          f"with other settings (e.g. an older water placement). Set descriptors_function to "
+          f"the GeneratorDescriptors object, or to a wrapper that calls it by its global name, "
+          f"or give the params a descriptor series of their own "
+          f"(descriptors_series = DESCRIPTORS.series).")
+
+
 def check_descriptor_record(params, run_dir, *, write=True):
     """Check (and record) the settings a run's ``'descriptors'`` caches were written with.
 
@@ -587,7 +612,10 @@ def check_descriptor_record(params, run_dir, *, write=True):
     params : aimmd.Params
         The params of the start; nothing is done unless their series is the
         default ``'descriptors'`` and their descriptors function is (or wraps)
-        a :class:`~aimmd.cgaimmd.preparation.descriptors.GeneratorDescriptors`.
+        a :class:`~aimmd.cgaimmd.preparation.descriptors.GeneratorDescriptors`
+        (:func:`~aimmd.cgaimmd.preparation.descriptors.find_generator_descriptors`).
+        When none is found but one is in reach (two called, or one built in
+        the function's module), a WARNING says that the record is not kept.
     run_dir : str
         The run folder.
     write : bool, optional
@@ -628,8 +656,10 @@ def check_descriptor_record(params, run_dir, *, write=True):
     from .preparation.descriptors import find_generator_descriptors
     if _series(params) != DEFAULT_SERIES:
         return None
-    descriptors = find_generator_descriptors(getattr(params, 'descriptors_function', None))
+    function = getattr(params, 'descriptors_function', None)
+    descriptors = find_generator_descriptors(function)
     if descriptors is None:
+        _warn_unrecorded_descriptors(function, run_dir)
         return None
     fname = os.path.join(run_dir, DESCRIPTOR_RECORD)
     record = {'schema': DESCRIPTOR_RECORD_SCHEMA, 'series': DEFAULT_SERIES,
