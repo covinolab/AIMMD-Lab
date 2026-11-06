@@ -159,6 +159,38 @@ def check_flow_matching_record(record, run, folder, params):
     assert rounds[-1]['relabels_in_round'] >= 1
 
 
+NAMED_SERIES = 'descriptors-toy'
+
+
+def test_campaign_under_a_named_descriptor_series(tmp_path, monkeypatch, restore_signals,
+                                                  short_sys_path):
+    """With ``descriptors_series`` set, the shooting and free workers, the trainer and the
+    flow-matching fit all use that series: every trajectory has its rows there and none under
+    ``'descriptors'``, the fit's dataset and ``network<s>.json`` name it, and the trained round
+    found both shooting points in it."""
+    folder = make_trained_campaign(tmp_path / 'campaign', 'flow_matching',
+                                   SHORT_WINDOW + f"\ndescriptors_series = {NAMED_SERIES!r}\n")
+    monkeypatch.chdir(folder)
+    np.random.seed(0)
+    torch.manual_seed(0)
+    params = aimmd.Params.load(str(folder / 'params.py'), save=False)
+    assert params.descriptors_series == NAMED_SERIES
+    run = run_campaign(folder, params)
+    trajectories = glob.glob(os.path.join(run, '**', '*.xtc'), recursive=True)
+    assert trajectories
+    for fname in trajectories:
+        assert os.path.isfile(f'{fname}.{NAMED_SERIES}.npy'), fname
+    assert not glob.glob(os.path.join(run, '**', '*.descriptors.npy'), recursive=True)
+    record = network_record(run)
+    assert record['n_trained_shots'] == WINDOW_AFTER, record
+    check_flow_matching_record(record, run, folder, params)       # series == NAMED_SERIES
+    rounds = Path(run, f'flow_fit{STATES}', 'rounds.jsonl').read_text().splitlines()
+    assert json.loads(rounds[-1])['data']['zero_row_shooting_points'] == 0
+    for sidecar in sidecars(run).values():
+        assert math.isfinite(sidecar['lambda_registered'])
+        assert not sidecar['registration'].get('lambda_registered_missing')
+
+
 def test_campaign_launched(tmp_path, monkeypatch, short_sys_path, kind):
     """One Launcher run (shooter, free A, free B, trainer): only invariants, the timing is free."""
     folder = make_trained_campaign(tmp_path / 'launch', kind, SHORT_WINDOW)
