@@ -1,0 +1,21 @@
+# Python bytecode and packaging output
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# The build record of the git commit: written by setup.py into the build
+# folder and into source distributions, never into the source tree.
+aimmd/_build_record.json
+
+# Test and coverage output
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Documentation build (docs/Makefile builds into docs/build)
+docs/build/

@@ -1,0 +1,25 @@
+# Files the test lanes write next to the test data. Each test that writes
+# them removes them again before it runs, so they never change a result;
+# listed here so that a lane leaves `git status` clean.
+
+# MDAnalysis offset indexes of the trajectories read (and their lock files)
+.*_offsets.npz
+.*_offsets.lock
+
+# tests/test_toy_1d.py, tests/test_retinal.py and tests/test_params.py:
+# run folders, equilibrium runs, saved params copies, job scripts and the
+# engine check of Params
+toy_1d/run1/
+toy_1d/run2/
+toy_1d/equilibrium/
+toy_1d/params?.py
+toy_1d/job.sh
+toy_1d/.check_engine*
+toy_1d/..check_engine*
+retinal/run1/
+retinal/run2/
+retinal/equilibrium/
+retinal/params?.py
+retinal/job.sh
+retinal/mdout.mdp
+retinal/.check_engine*
