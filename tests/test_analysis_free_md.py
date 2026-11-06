@@ -17,9 +17,9 @@ import numpy as np
 import pytest
 from scipy.stats import chi2
 
-from aimmd.analysis.free_md import (forward_outcomes, free_md_calibration, free_md_rates,
-                                    free_md_reference, poisson_rate_interval,
-                                    transition_counts)
+from aimmd.analysis.free_md import (NON_EQUILIBRIUM_RESTARTS, forward_outcomes,
+                                    free_md_calibration, free_md_rates, free_md_reference,
+                                    poisson_rate_interval, transition_counts)
 
 N_SITES = 9
 
@@ -327,8 +327,32 @@ def test_crossing_restarts_are_flagged(markov_run):
     with pytest.warns(UserWarning, match='crossing'):
         out = free_md_rates(params, markov_run['run'])
     assert out['free_restart_source'] == 'crossing'
+    assert out['free_restart_sources'] == {'A': 'crossing', 'B': 'crossing'}
     with pytest.warns(UserWarning, match='crossing'):
         free_md_reference(params, markov_run['run'])
+
+
+@pytest.mark.parametrize('setting, flagged', [
+    ({'A': 'equilibrium', 'B': 'crossing'}, {'B': 'crossing'}),
+    ({'B': 'basin'}, {'A': 'crossing'}),                 # a state not named keeps the default
+    ('transitions', {'A': 'transitions', 'B': 'transitions'}),
+    ('seed', {'A': 'seed', 'B': 'seed'}),
+    ('basin', {}),
+])
+def test_every_restart_away_from_equilibrium_is_flagged_per_state(markov_run, setting, flagged):
+    params = load(markov_run['folder'])
+    params.__dict__['free_restart_source'] = setting
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        out = free_md_rates(params, markov_run['run'])
+        reference = free_md_reference(params, markov_run['run'], stride=50)
+    messages = [str(w.message) for w in caught if 'restarted from' in str(w.message)]
+    assert len(messages) == (2 if flagged else 0)
+    for state, source in flagged.items():
+        assert all(f"state {state!r}: {source!r}" in message for message in messages)
+    assert {s: v for s, v in out['free_restart_sources'].items()
+            if v in NON_EQUILIBRIUM_RESTARTS} == flagged
+    assert reference.notes['free_restart_sources'] == out['free_restart_sources']
 
 
 def test_free_md_reference_recovers_the_committor_of_a_markov_chain(markov_run):

@@ -22,11 +22,24 @@ reweighted rates: a reweighted rate far above the upper limit of the free
 simulations' rate, at comparable sampling, points to a problem with the
 reweighting inputs.
 
-It holds only if the free simulations sample the equilibrium dynamics. With
-``free_restart_source='crossing'`` the workers restart a simulation that
-reached the other state from a frame close to the boundary it crossed; the
-time on each side then starts at the boundary instead of deep in the basin,
-and the counted rate is too fast. :func:`free_md_rates` warns in that case.
+It holds only if the free simulations sample the equilibrium dynamics, which
+depends on where the workers restart a free simulation that reached the other
+state (``params.free_restart_source``, which can differ per state):
+
+- ``'equilibrium'`` (a frame drawn from the state's frames with weight
+  ``exp(bias)``) and ``'basin'`` (the same without the weight) restart inside
+  the state from its equilibrium distribution (of the biased dynamics, for
+  ``'basin'`` under a bias, which the boosted time below accounts for);
+- ``'crossing'`` (the last frame before the escape, on the state boundary)
+  and ``'transitions'`` (the end frames of transition paths, also at the
+  boundary) start every observation at the boundary instead of deep in the
+  basin, and the counted rate is too fast;
+- ``'seed'`` restarts every observation from one fixed configuration, which
+  is not a sample of the state's equilibrium distribution either.
+
+:func:`free_md_rates` and :func:`free_md_reference` warn for every end state
+whose free simulations restart in one of the last three ways, and record the
+setting of each state.
 
 With a static bias inside the states (``record_bias``), time on each side is
 the boosted time ``sum exp(bias) dt``: every biased frame stands for
@@ -70,7 +83,8 @@ from .reweighting import cache_rows
 
 
 __all__ = ['poisson_rate_interval', 'transition_counts', 'free_md_rates', 'forward_outcomes',
-           'FreeMDReference', 'free_md_reference', 'free_md_calibration']
+           'FreeMDReference', 'free_md_reference', 'free_md_calibration', 'restart_sources',
+           'NON_EQUILIBRIUM_RESTARTS']
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -239,13 +253,48 @@ def _free_trajectories(params, run_dir, system_id):
     return params, run_dir, params.free_trajectories(run_dir)
 
 
-def _warn_restart_source(source):
-    if source == 'crossing':
+NON_EQUILIBRIUM_RESTARTS = {
+    'crossing': 'from the last frame before the escape, on the state boundary',
+    'transitions': 'from the end frames of transition paths, at the state boundary',
+    'seed': 'from one fixed configuration',
+}
+"""Settings of ``params.free_restart_source`` whose restarts are not drawn from the equilibrium
+inside the state, with what they restart from."""
+
+
+def restart_sources(params):
+    """``{end state: free_restart_source}`` of the two end states of a run.
+
+    Resolves a per-state dict, the default for states not named, and the
+    deprecated ``restart_free_simulations_with_transitions``, as the workers
+    do (:meth:`aimmd.Params.free_restart_source_for`).
+    """
+    states = params.sorted_states
+    resolve = getattr(params, 'free_restart_source_for', None)
+    raw = getattr(params, 'free_restart_source', None)
+    out = {}
+    for state in (states[0], states[2]):
+        if callable(resolve):
+            out[state] = resolve(state)
+        elif isinstance(raw, dict):
+            out[state] = raw.get(state, 'crossing')
+        else:
+            out[state] = raw
+    return out
+
+
+def _warn_restart_source(sources):
+    flagged = {state: source for state, source in sources.items()
+               if source in NON_EQUILIBRIUM_RESTARTS}
+    if flagged:
+        which = '; '.join(f'state {state!r}: {source!r}, {NON_EQUILIBRIUM_RESTARTS[source]}'
+                          for state, source in flagged.items())
         warnings.warn(
-            "params.free_restart_source is 'crossing': free simulations that reached the other "
-            "state were restarted from a frame near the boundary they crossed, so they are not "
-            "equilibrium dynamics and their transition counts overestimate the rates",
-            UserWarning, stacklevel=3)
+            f'free simulations that reached the other state were not restarted from the '
+            f'equilibrium inside their state ({which}): they are not equilibrium dynamics, so '
+            f'their transition counts are biased (too fast for restarts at the boundary) and '
+            f'frames shortly after a restart are not equilibrium samples', UserWarning,
+            stacklevel=4)
 
 
 @without_writing
@@ -277,12 +326,15 @@ def free_md_rates(params, run_dir, *, bias='auto', confidence=0.95, system_id=No
         ``lower``, ``upper`` (1/frame). Also ``confidence``,
         ``bias_applied``, ``n_trajectories``, ``frames_without_state``
         (frames at the ends of trajectories whose state is not known yet,
-        left out), ``frames_without_bias`` and ``free_restart_source``.
+        left out), ``frames_without_bias``, ``free_restart_source`` (the
+        params value) and ``free_restart_sources`` (the setting of each end
+        state).
 
     Warns
     -----
     UserWarning
-        When ``params.free_restart_source`` is ``'crossing'`` (see the module
+        When the free simulations of an end state restart with
+        ``'crossing'``, ``'transitions'`` or ``'seed'`` (see the module
         docstring), and with the bias applied when frames have no row in their
         bias cache.
     """
@@ -296,7 +348,8 @@ def free_md_rates(params, run_dir, *, bias='auto', confidence=0.95, system_id=No
     states = params.sorted_states
     first, last = states[0], states[2]
     source = getattr(params, 'free_restart_source', None)
-    _warn_restart_source(source)
+    sources = restart_sources(params)
+    _warn_restart_source(sources)
     time = {first: 0.0, last: 0.0}
     frames = {first: 0, last: 0}
     transitions = {(first, last): 0, (last, first): 0}
@@ -325,7 +378,7 @@ def free_md_rates(params, run_dir, *, bias='auto', confidence=0.95, system_id=No
     out = {'confidence': confidence, 'bias_applied': bias_applied,
            'n_trajectories': len(free), 'frames_without_state': int(unknown),
            'frames_without_bias': int(without_bias), 'free_restart_source': source,
-           'unit': '1/frame'}
+           'free_restart_sources': sources, 'unit': '1/frame'}
     for s, o in ((first, last), (last, first)):
         rate, lower, upper = poisson_rate_interval(transitions[(s, o)], time[s], confidence)
         out[s + o] = {'transitions': transitions[(s, o)], 'time': time[s], 'frames': frames[s],
@@ -373,7 +426,8 @@ class FreeMDReference:
     """Per frame: the row of the run's descriptors series (when asked for)."""
 
     notes: dict = field(default_factory=dict)
-    """Provenance: run folder, ``free_restart_source``, censored frames, stride."""
+    """Provenance: run folder, ``free_restart_source`` (and ``free_restart_sources``, the setting
+    of each end state), censored frames, stride, whether the run records a bias."""
 
     kind: str = 'free_md_forward'
     """What the counts are: one forward outcome per frame of free dynamics."""
@@ -418,9 +472,10 @@ def free_md_reference(params, run_dir, *, stride=1, descriptors=False, system_id
     Warns
     -----
     UserWarning
-        When ``params.free_restart_source`` is ``'crossing'``: restarts near the
-        boundary make the forward outcomes of the frames right after them
-        unreliable as committor estimates.
+        When the free simulations of an end state restart with
+        ``'crossing'``, ``'transitions'`` or ``'seed'``: the frames right
+        after such a restart are not equilibrium samples, and their forward
+        outcomes are less reliable as committor estimates.
 
     Notes
     -----
@@ -443,7 +498,8 @@ def free_md_reference(params, run_dir, *, stride=1, descriptors=False, system_id
     states = params.sorted_states
     reactive = states[1]
     source = getattr(params, 'free_restart_source', None)
-    _warn_restart_source(source)
+    sources = restart_sources(params)
+    _warn_restart_source(sources)
     series = getattr(params, 'descriptors_series', 'descriptors') or 'descriptors'
     file_index, file_names = {}, []
     columns = {key: [] for key in ('file', 'frame', 'trajectory', 'outcome', 'groups',
@@ -498,7 +554,7 @@ def free_md_reference(params, run_dir, *, stride=1, descriptors=False, system_id
         n_last=(outcome == 1).astype(int), groups=joined['groups'], values=joined['values'],
         states=states, descriptors=descriptor_rows,
         notes={'run_dir': run_dir, 'free_restart_source': source,
-               'censored_frames': censored, 'stride': stride, 'descriptors_series': series,
+               'free_restart_sources': sources, 'censored_frames': censored, 'stride': stride, 'descriptors_series': series,
                'n_trajectories': len(free),
                'record_bias': bool(getattr(params, 'record_bias', False))})
 
