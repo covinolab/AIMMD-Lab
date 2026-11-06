@@ -36,12 +36,29 @@ import importlib as _importlib
 import pkgutil as _pkgutil
 
 _LAZY_NAMES = {
+    'CommittorReference': 'validate',
+    'committor_metrics': 'validate',
+    'calibration_fit': 'validate',
+    'shot_counts': 'validate',
+    'score_committor': 'validate',
+    'network_committor': 'validate',
+    'params_committor': 'validate',
+    'heldout_chain_reference': 'validate',
+    'sweep_reference': 'validate',
+    'parity_figure': 'validate',
     'adherence_metrics': 'adherence',
     'structural_match': 'adherence',
     'sample_quality': 'adherence',
     'label_binned_reference': 'adherence',
     'data_ceiling': 'adherence',
     'pair_distance_features': 'adherence',
+    'level_summary': 'shooting_validation',
+    'dial_slope': 'shooting_validation',
+    'compare_dials': 'shooting_validation',
+    'sweep_outcomes': 'shooting_validation',
+    'validation_rows': 'shooting_validation',
+    'from_shot_table': 'shooting_validation',
+    'write_validation_frames': 'shooting_validation',
 }
 
 _SUBMODULES = sorted(info.name for info in _pkgutil.iter_modules(__path__)
