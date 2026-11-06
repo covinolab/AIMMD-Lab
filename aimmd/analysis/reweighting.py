@@ -227,25 +227,34 @@ def _inside(target, folder):
     return target == folder or target.startswith(folder.rstrip(os.sep) + os.sep)
 
 
-def check_output_outside(target, run_dir):
-    """Refuse an output file inside the run folder.
+def check_output_outside(target, run_dir=None):
+    """Refuse an output file inside a run folder.
 
     Parameters
     ----------
     target : path-like
-        The file the caller wants to write.
-    run_dir : path-like or None
-        The run folder (None: nothing to check).
+        The file (or folder) the caller wants to write.
+    run_dir : path-like, optional
+        The run folder the results come from. Whether it is given or not, a
+        target inside any folder that holds AIMMD's run subfolders (shooting
+        chains, free simulations, sweep chains) is refused as well.
 
     Raises
     ------
     ValueError
-        If `target` lies inside `run_dir`. The analysis tools never write into
-        a run folder: the workers, the trainer and a later restart own it.
+        If `target` lies inside `run_dir` or inside another run folder. The
+        analysis tools never write into a run folder: the workers, the
+        trainer and a later restart own it.
     """
+    from ._data_access import enclosing_run_folder
     if run_dir is not None and _inside(target, run_dir):
         raise ValueError(f'{target!r} is inside the run folder {run_dir!r}: analysis results '
                          f'go to a folder of their own')
+    enclosing = enclosing_run_folder(target)
+    if enclosing is not None:
+        raise ValueError(f'{target!r} is inside the run folder {enclosing!r} (it holds AIMMD '
+                         f'chain, free-simulation or sweep folders): analysis results go to a '
+                         f'folder of their own')
 
 
 def _cache_length(fname, name):

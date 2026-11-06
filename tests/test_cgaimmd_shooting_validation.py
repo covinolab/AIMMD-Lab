@@ -474,6 +474,10 @@ def test_write_validation_frames(tmp_path):
     run.mkdir()
     with pytest.raises(ValueError, match='inside the run folder'):
         sv.write_validation_frames(params, run / 'validation', [0.0], 4, run_dir=run)
+    (run / 'chainR0').mkdir()                                   # recognised without run_dir
+    with pytest.raises(ValueError, match='inside the run folder'):
+        sv.write_validation_frames(params, run / 'validation', [0.0], 4)
+    (run / 'chainR0').rmdir()
     out = tmp_path / 'validation'
     table = sv.write_validation_frames(params, out, [-1.0, 0.0, 1.0], 12, seed=7, run_dir=run)
     # (no preparation folder: the toy params have no preparation or minimization hook)

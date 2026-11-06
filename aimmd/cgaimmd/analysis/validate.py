@@ -1719,8 +1719,8 @@ def validate(network, out, *, label=None, system=None, levels=DEFAULT_LEVELS, n_
         The C-GAIMMD network (weights loaded); used in eval mode on its current device.
     out : str
         Output path stem: ``<out>.json``, ``<out>_samples.npz``,
-        ``<out>_card.png`` and ``.pdf``. It must not lie inside a run folder
-        that is still in use; nothing else is written.
+        ``<out>_card.png`` and ``.pdf``; nothing else is written. A stem
+        inside a run folder is refused.
     label : str, optional
         Descriptive name of the model (default: the stem's name).
     system : str, optional
@@ -1835,8 +1835,11 @@ def validate(network, out, *, label=None, system=None, levels=DEFAULT_LEVELS, n_
     from ..io import atomic_write_json
     from ..protocol import n_atoms_of
 
+    from ...analysis.reweighting import check_output_outside
+
     t0 = time.time()
     out = os.path.abspath(os.fspath(out))
+    check_output_outside(out)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     if minimizer is not None and int(polish_per_level) > 0 and polish_params is None:
         raise ValueError('a minimizer needs polish_params (the params it reads: universe, '
@@ -2144,7 +2147,8 @@ def redraw_card(path, *, stem=None):
     path : str
         The report's ``.json`` file (its ``_samples.npz`` must exist).
     stem : str, optional
-        Output path stem (default: the report's own ``<out>_card``).
+        Output path stem (default: the report's own ``<out>_card``); not
+        inside a run folder.
 
     Returns
     -------
@@ -2176,8 +2180,10 @@ def redraw_card(path, *, stem=None):
                                         'd_train', 'in_guard')}
         data.update(baseline=z['guard_baseline'] if 'guard_baseline' in z.files else None,
                     references=references)
+    from ...analysis.reweighting import check_output_outside
     if stem is None:
         stem = os.path.splitext(os.path.abspath(os.fspath(path)))[0] + '_card'
+    check_output_outside(stem)
     return model_card(report, data, stem)
 
 
@@ -2242,7 +2248,8 @@ def leaderboard(reports, out, *, title=None, figure=True):
     reports : sequence
         Report dicts or paths of report JSON files, in the order of the table.
     out : str
-        Output path stem (``.csv``, ``.md``, ``.json``, ``.png``, ``.pdf``).
+        Output path stem (``.csv``, ``.md``, ``.json``, ``.png``, ``.pdf``);
+        not inside a run folder.
     title : str, optional
         Title of the figure and the Markdown table.
     figure : bool, optional
@@ -2261,8 +2268,10 @@ def leaderboard(reports, out, *, title=None, figure=True):
     ``guard:training:<metric>`` and ``seconds``; a report without a value
     leaves the cell empty.
     """
+    from ...analysis.reweighting import check_output_outside
     from ..io import atomic_write_bytes, atomic_write_json
 
+    check_output_outside(os.path.abspath(os.fspath(out)))
     loaded = [load_report(r) if isinstance(r, (str, os.PathLike)) else r for r in reports]
     rows = [_row(r) for r in loaded]
     columns = []
@@ -2303,7 +2312,7 @@ def parity_figure(entries, stem, *, title=None):
         :class:`CommittorReference` and the model's ``(n,)`` logits on it
         (the second value of :func:`score_committor`).
     stem : str or os.PathLike
-        Output path stem: ``<stem>.png`` and ``<stem>.pdf``.
+        Output path stem: ``<stem>.png`` and ``<stem>.pdf``; not inside a run folder.
     title : str, optional
         Figure title.
 
@@ -2323,5 +2332,8 @@ def parity_figure(entries, stem, *, title=None):
     every entry in one panel (observed fraction against ``p`` in ten equal
     bins), and the distribution of the logits.
     """
+    from ...analysis.reweighting import check_output_outside
     from ._validate_plots import parity_panels
-    return parity_panels(entries, os.path.abspath(os.fspath(stem)), title=title)
+    stem = os.path.abspath(os.fspath(stem))
+    check_output_outside(stem)
+    return parity_panels(entries, stem, title=title)

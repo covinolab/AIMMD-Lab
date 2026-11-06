@@ -462,6 +462,15 @@ def test_parity_figure(tmp_path):
     assert Path(png).stat().st_size > 20_000 and Path(pdf).exists()
     with pytest.raises(ValueError, match='at least one'):
         validate.parity_figure([], tmp_path / 'empty')
+    # a run folder is recognised by its chain and free-simulation folders, also when not named
+    run = tmp_path / 'run'
+    (run / 'chainR0').mkdir(parents=True)
+    (run / 'freeA').mkdir()
+    with pytest.raises(ValueError, match='inside the run folder'):
+        validate.parity_figure([('model', reference, lam_true)], run / 'figures' / 'parity')
+    with pytest.raises(ValueError, match='inside the run folder'):
+        validate.leaderboard([], run / 'leaderboard')
+    assert not (run / 'figures').exists() and sorted(os.listdir(run)) == ['chainR0', 'freeA']
 
 
 # ---------------------------------------------------------------------------

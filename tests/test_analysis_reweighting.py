@@ -498,6 +498,12 @@ def test_nothing_is_written_into_the_run_folder(ring, ring_reweighting, tmp_path
     check_output_outside(tmp_path / 'elsewhere', ring['run'])
     with pytest.raises(ValueError):
         check_output_outside(ring['run'], ring['run'])
+    # without naming the run: its chain and free-simulation folders give it away
+    with pytest.raises(ValueError, match='inside the run folder'):
+        check_output_outside(os.path.join(ring['run'], 'analysis', 'rates.json'))
+    with pytest.raises(ValueError, match='inside the run folder'):
+        check_output_outside(os.path.join(ring['run'], 'chainR0', 'x.npz'))
+    check_output_outside(ring['folder'] / 'analysis' / 'rates.json')     # the campaign folder
 
 
 def test_a_read_only_run_folder_gives_the_same_numbers(ring, ring_reweighting, tmp_path):

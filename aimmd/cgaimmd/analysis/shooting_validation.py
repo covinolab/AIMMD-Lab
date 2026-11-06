@@ -952,7 +952,8 @@ def write_validation_frames(params, out_dir, levels, n_per_level, *, network=Non
         Requests per generator call (default: the generator's ``chunk``
         setting, else all samples of a request at once).
     run_dir : str or os.PathLike, optional
-        The run folder; `out_dir` must not be inside it.
+        The run folder; `out_dir` must not be inside it (nor inside any other
+        folder that holds AIMMD chain, free-simulation or sweep folders).
     write_raw : bool, optional
         Also write the raw samples (``raw_samples.npz``).
 

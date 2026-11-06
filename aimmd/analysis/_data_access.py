@@ -26,6 +26,14 @@ the trainer's value pass updates rows of a cache in place, so a read during
 that pass can mix old and new values of one file. Numbers to report come from
 a finished run (or a copy of one).
 
+Run folders
+-----------
+The analysis tools never write into a run folder: the workers, the trainer
+and a later restart own it. :func:`enclosing_run_folder` recognises one by
+the subfolders AIMMD keeps there (shooting chains ``chainR0``, free
+simulations ``freeA``, sweep chains ``sweepR0``), so an output path inside a
+run folder is refused even when the caller does not name the run.
+
 Frames of biased simulations
 ----------------------------
 A bias changes which configurations a simulation visits and how it moves
@@ -40,6 +48,7 @@ here.
 import contextlib
 import functools
 import os
+import re
 import time
 
 import numpy as np
@@ -179,3 +188,38 @@ def without_writing(function):
         with read_only_access():
             return function(*args, **kwargs)
     return reading
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# run folders
+# ════════════════════════════════════════════════════════════════════════════
+
+_RUN_SUBFOLDER = re.compile(r'^(?:chain[A-Za-z]\d+|free[A-Za-z]|sweep[A-Za-z]\d+)$')
+"""Names of the subfolders AIMMD keeps in a run folder: shooting chains ``chain{state}{k}``,
+free simulations ``free{state}`` and sweep chains ``sweep{state}{k}``."""
+
+
+def looks_like_run_folder(directory):
+    """Whether `directory` holds AIMMD's run subfolders (``chainR0``, ``freeA``, ``sweepR0``, ...)."""
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return False
+    return any(_RUN_SUBFOLDER.match(name) and os.path.isdir(os.path.join(directory, name))
+               for name in names)
+
+
+def enclosing_run_folder(target):
+    """The innermost folder that holds `target` (or is `target`) and :func:`looks_like_run_folder`.
+
+    Returns None when no folder on the way up to the root looks like a run folder.
+    """
+    path = os.path.realpath(os.path.abspath(os.fspath(target)))
+    directory = path if os.path.isdir(path) else os.path.dirname(path)
+    while True:
+        if looks_like_run_folder(directory):
+            return directory
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
