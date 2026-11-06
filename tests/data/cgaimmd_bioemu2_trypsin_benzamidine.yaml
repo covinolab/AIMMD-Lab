@@ -1,0 +1,27 @@
+# Bovine beta-trypsin (223 residues, the MD topology's sequential numbering) + benzamidinium, for BioEmu2: the
+# BioEmu2 system of the archived trypsin-benzamidine campaign of 28 Oct 2026 (copied unchanged below this header).
+# The structural Ca2+ is not a BioEmu2 entity; the atom map's completion places it from the MD structure.
+entities:
+- entity_type: protein
+  asym_ids:
+  - A
+  sequence: IVGGYTCGANTVPYQVSLNSGYHFCGGSLINSQWVVSAAHCYKSGIQVRLGEDNINVVEGNEQFISASKSIVHPSYNSNTLNNDIMLIKLKSAASLNSRVASISLPTSCASAGTQCLISGWGNTKSSGTSYPDVLKCLKAPILSDSSCKSAYPGQITSNMFCAGYLEGGKDSCQGDSGGPVVCSGKLQGIVSWGSGCAQKNKPGVYTKVCNYVSWIKQTIASN
+  mods: []
+- entity_type: ligand
+  asym_ids:
+  - L
+  smiles: NC(=[NH2+])c1ccccc1
+bonds:
+- atom1: {name: SG, res_name: CYS, res_id: 7, asym_id: A}
+  atom2: {name: SG, res_name: CYS, res_id: 137, asym_id: A}
+- atom1: {name: SG, res_name: CYS, res_id: 25, asym_id: A}
+  atom2: {name: SG, res_name: CYS, res_id: 41, asym_id: A}
+- atom1: {name: SG, res_name: CYS, res_id: 109, asym_id: A}
+  atom2: {name: SG, res_name: CYS, res_id: 210, asym_id: A}
+- atom1: {name: SG, res_name: CYS, res_id: 116, asym_id: A}
+  atom2: {name: SG, res_name: CYS, res_id: 183, asym_id: A}
+- atom1: {name: SG, res_name: CYS, res_id: 148, asym_id: A}
+  atom2: {name: SG, res_name: CYS, res_id: 162, asym_id: A}
+- atom1: {name: SG, res_name: CYS, res_id: 173, asym_id: A}
+  atom2: {name: SG, res_name: CYS, res_id: 197, asym_id: A}
+asym_id_to_author_id: {}
