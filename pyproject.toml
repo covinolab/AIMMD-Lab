@@ -60,8 +60,24 @@ graphs = [
     "torch-cluster",
     "lz4",
 ]
+# C-GAIMMD (committor-conditioned Generative AIMMD) with the PaiNN
+# flow-matching generator and the GROMACS candidate preparation.
 cgaimmd = [
     "networkx",
+]
+# C-GAIMMD with the BioEmu2 generator, on the CPU or any GPU. bioemu2 needs
+# Python 3.12 or later and torch >= 2.11, < 2.14; install torch first from the
+# PyTorch index that matches your CUDA, and use the constraints file
+# devtools/constraints-bioemu2.txt for the versions the tests ran with.
+bioemu2 = [
+    "aimmd-lab[cgaimmd]",
+    "bioemu2==0.1.0rc0; python_version >= '3.12'",
+]
+# The same with the cuEquivariance kernels of the production BioEmu2 model
+# (Linux, CUDA 13).
+bioemu2-cuda = [
+    "aimmd-lab[bioemu2]",
+    "bioemu2[cuda]==0.1.0rc0; python_version >= '3.12' and sys_platform == 'linux'",
 ]
 tests = [
     "pytest",
