@@ -10,12 +10,14 @@ test runs with two fits:
   (start from ``initial_network``, metadata with the round and the trained
   shots) without learning, so that the trainer's and the launcher's hooks run
   end to end on this branch;
-- ``flow_matching``: the flow-matching fit of stream S4; skipped until
-  ``aimmd.cgaimmd.flow_matching.fit`` exists, and to be run once S4 is merged.
+- ``flow_matching``: the flow-matching fit
+  (``aimmd.cgaimmd.flow_matching.fit.flow_matching_fit``, five steps per round).
 
 Only the C-GAIMMD contract is asserted (network files and their json, the
 sidecars, the acceptance rule, the restart from ``initial_network``), never a
-fit's internals. The toy engine's trajectories are not reproducible (its stop
+fit's internals; for the flow-matching fit, also that the trainer stores the
+fit's own metadata in ``network<s>.json`` (the seam between the fit and the
+trainer). The toy engine's trajectories are not reproducible (its stop
 is polled by another thread), so no assertion depends on them. Every test
 here is ``slow`` (each one runs a campaign of 30 s to two minutes).
 """
@@ -34,7 +36,8 @@ import aimmd
 from aimmd.cgaimmd import _legacy
 from aimmd.cgaimmd.io import file_sha256
 from aimmd.worker.utils import write_initial_network
-from tests._cgaimmd_toy_campaign import FIT_KINDS, fit_kind, make_trained_campaign
+from tests._cgaimmd_toy_campaign import (FIT_KINDS, FLOW_MATCHING_KEYWORDS, fit_kind,
+                                         make_trained_campaign)
 from tests.test_toy_1d_cgaimmd import (STATES, check_pool_resets, check_shooting_frames,  # noqa: F401
                                        make_campaign, restore_signals, short_sys_path, sidecars)
 
@@ -103,6 +106,8 @@ def test_campaign_in_process(tmp_path, monkeypatch, capfd, restore_signals, shor
     assert record['total_steps'] >= 1
     trained = torch.load(os.path.join(run, f'network{STATES}.h5'), weights_only=True)
     assert not state_dict_equal(trained, initial)
+    if kind == 'flow_matching':
+        check_flow_matching_record(record, run, folder, params)
     assert not os.path.exists(os.path.join(run, f'network{STATES}.final.h5'))
     for state in 'AB':                                    # each free run from its own basin
         assert glob.glob(os.path.join(run, f'free{state}', 'traj000001.part0001.xtc'))
@@ -121,6 +126,37 @@ def test_campaign_in_process(tmp_path, monkeypatch, capfd, restore_signals, shor
         assert os.path.getsize(pool_log) == 0
     text = out + logs_of(run)
     assert NO_SHOT_WARNING not in text and R_FRAME_WARNING not in text
+
+
+def check_flow_matching_record(record, run, folder, params):
+    """``network<s>.json`` holds the flow-matching fit's own metadata of the trained round.
+
+    The fit returns ``network_metadata`` and the trainer stores it next to the
+    network: the round counted from the trainer's json, the start (the
+    run's ``initial_network`` file and its digest), the descriptor series
+    the dataset came from, the seed and its source, the keywords of the
+    params file's fit; ``flow_fit<s>/`` holds the same round, and the
+    round's labels were taken again from its own EMA within the round.
+    """
+    from aimmd.cgaimmd.flow_matching.fit import FIT_NAME
+    assert record['fit'] == FIT_NAME and record['status'] == 'trained', record
+    assert record['steps'] == FLOW_MATCHING_KEYWORDS['steps_per_round']
+    assert record['keywords'] == FLOW_MATCHING_KEYWORDS
+    assert record['settings']['relabel_every'] == FLOW_MATCHING_KEYWORDS['relabel_every']
+    initial = os.path.abspath(folder / 'initial_network.h5')
+    assert record['start'] == {'kind': 'initial_network', 'file': initial,
+                               'sha256': file_sha256(initial)}
+    assert record['series'] == params.descriptors_series
+    assert record['seed_source'] == 'generation_seed'
+    assert record['seed'] == params.cgaimmd_parameters['generation_seed']
+    assert record['network']['n_atoms'] == 1
+    state = json.loads(Path(run, f'flow_fit{STATES}', 'state.json').read_text())
+    rounds = [json.loads(line) for line in
+              Path(run, f'flow_fit{STATES}', 'rounds.jsonl').read_text().splitlines()]
+    assert state['round'] == record['round'] == rounds[-1]['round']
+    assert rounds[-1]['data']['n_sp'] == WINDOW_AFTER
+    assert rounds[-1]['data']['series'] == params.descriptors_series
+    assert rounds[-1]['relabels_in_round'] >= 1
 
 
 def test_campaign_launched(tmp_path, monkeypatch, short_sys_path, kind):

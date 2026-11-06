@@ -11,14 +11,13 @@
   this branch, so the trainer, launcher and restart hooks are tested end to
   end today.
 - ``'flow_matching'``: :data:`FLOW_MATCHING_FIT`, the params-file wrapper of
-  ``aimmd.cgaimmd.flow_matching.fit.flow_matching_fit`` (stream S4), five
-  steps per round. Tests that use it skip without that module
-  (:func:`fit_kind`), and must run once S4 is merged.
+  ``aimmd.cgaimmd.flow_matching.fit.flow_matching_fit``: five steps per
+  round, with the flow-matching labels taken again from the round's own EMA
+  every two steps (the default recipe relabels every 1,000 of 4,000 steps).
 """
 
 from pathlib import Path
 
-import pytest
 
 
 FIT_KINDS = ('round_contract', 'flow_matching')
@@ -80,19 +79,19 @@ from aimmd.cgaimmd.flow_matching.fit import flow_matching_fit
 
 
 def fit(params, pathensemble, verbose=False, worker=None):
-    """The params-file wrapper of the flow-matching fit, five steps per round."""
+    """The params-file wrapper of the flow-matching fit: five steps per round, relabelled every two."""
     return flow_matching_fit(params, pathensemble, verbose=verbose, worker=worker,
-                             steps_per_round=5)
+                             steps_per_round=5, relabel_every=2)
 '''
 
 
+FLOW_MATCHING_KEYWORDS = {'steps_per_round': 5, 'relabel_every': 2}
+"""The keywords :data:`FLOW_MATCHING_FIT` passes (what ``network<s>.json`` records)."""
+
+
 def fit_kind(request):
-    """The fit of a parametrized test; skips the flow-matching fit without stream S4's module."""
-    kind = request.param
-    if kind == 'flow_matching':
-        pytest.importorskip('aimmd.cgaimmd.flow_matching.fit',
-                            reason='the flow-matching fit (stream S4) is not on this branch')
-    return kind
+    """The fit of a parametrized test (one of :data:`FIT_KINDS`)."""
+    return request.param
 
 
 def make_trained_campaign(folder, kind, extra=''):

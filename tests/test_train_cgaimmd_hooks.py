@@ -10,9 +10,8 @@ interrupted as ``network<s>.final.h5``. The fits are faked (functions
 returning ``(losses, info)``, as the C-GAIMMD fits do); the trainer loop is
 real and runs on a stand-in path ensemble (as
 ``tests/test_worker_runtime_unit.py`` does). The round counter of the
-BioEmu2 fit reads the json the trainer writes. The test with the real
-flow-matching fit needs ``aimmd.cgaimmd.flow_matching.fit`` (stream S4) and
-skips without it.
+BioEmu2 fit reads the json the trainer writes. One test runs the real
+flow-matching fit (``aimmd.cgaimmd.flow_matching.fit``) under the real trainer.
 """
 
 import json
@@ -742,7 +741,7 @@ def test_bioemu2_round_counter_reads_the_trainer_json(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# the real flow-matching fit (stream S4)
+# the real flow-matching fit
 # ---------------------------------------------------------------------------
 
 class StoppedDuringFitWorker(WorkerTrain):
@@ -775,8 +774,8 @@ class StoppedDuringFitWorker(WorkerTrain):
 
 def test_last_round_of_the_flow_matching_fit_saved_as_final(tmp_path, monkeypatch):
     """The real trainer and flow-matching fit: a stop after two steps of round 2 keeps round 1's
-    network as network<s>.h5 and writes round 2's as network<s>.final.h5 (needs S4)."""
-    fit_module = pytest.importorskip('aimmd.cgaimmd.flow_matching.fit')
+    network as network<s>.h5 and writes round 2's as network<s>.final.h5."""
+    from aimmd.cgaimmd.flow_matching import fit as fit_module
     from tests._cgaimmd_helpers import build_cgaimmd_run_dir
     rd = build_cgaimmd_run_dir(tmp_path, n_chains=2, n_shots=3)
     torch.manual_seed(0)

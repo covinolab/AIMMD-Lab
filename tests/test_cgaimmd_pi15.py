@@ -23,8 +23,8 @@ through the descriptor checks and their migration.
   refused by every entry point (``TPS_RESTART_AS_CGAIMMD = False``).
 
 Each test with a fit runs with the stand-in ``round_contract`` fit and with the
-flow-matching fit of stream S4 (skipped until it exists;
-``tests/_cgaimmd_toy_campaign.py``). Only the C-GAIMMD contract is asserted.
+flow-matching fit (``tests/_cgaimmd_toy_campaign.py``). Only the C-GAIMMD
+contract is asserted.
 The tests are ``slow`` (the RFPS source takes about half a minute).
 """
 
