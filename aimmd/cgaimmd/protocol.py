@@ -362,15 +362,18 @@ def _batch_dict_on(batch, device):
 def _values_input(rows, device, descriptor_transform):
     """The input AIMMD's values function builds from descriptor rows.
 
-    Dense mode (no transform): the rows as a flattened float32 tensor. With a
-    transform, its output: a batch dict (``Mapping``, e.g. the node-table
-    featurizer's ``batch_dict``) is used as it is with its tensors moved to
-    `device`; a list of PyG ``Data`` is batched with
-    ``Batch.from_data_list(...).to(device).to_dict()``; anything else is
+    Dense mode (no transform): the rows as a flattened float32 tensor (read-only
+    numpy rows, such as a cached path's coordinates, are copied first: torch
+    cannot share their memory). With a transform, its output: a batch dict
+    (``Mapping``, e.g. the node-table featurizer's ``batch_dict``) is used as it
+    is with its tensors moved to `device`; a list of PyG ``Data`` is batched
+    with ``Batch.from_data_list(...).to(device).to_dict()``; anything else is
     turned into a flattened float32 tensor.
     """
     import torch
     if descriptor_transform is None:
+        if isinstance(rows, np.ndarray) and not rows.flags.writeable:
+            rows = np.array(rows, dtype=np.float32)
         x = torch.as_tensor(rows, dtype=torch.float32, device=device)
         return torch.flatten(x, start_dim=1)
     data = descriptor_transform(rows)
