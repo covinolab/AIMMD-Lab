@@ -53,7 +53,8 @@ Highlights
       :link-type: doc
 
       Shooting points generated at chosen committor values, with PaiNN or
-      BioEmu2: the user guide, production campaigns, troubleshooting.
+      BioEmu2: the user guide, production campaigns, troubleshooting, analysis
+      and estimators.
 
    .. grid-item-card:: API Reference
       :link: api/index
@@ -94,11 +95,8 @@ License.
    cgaimmd
    cgaimmd_production
    cgaimmd_troubleshooting
+   cgaimmd_analysis
    cgaimmd_internals
-
-.. The page "Analysis and estimators" (which rate estimators are valid for
-   C-GAIMMD, and why) is still to be written; it joins the C-GAIMMD toctree
-   above, after cgaimmd_troubleshooting.
 
 .. toctree::
    :hidden:

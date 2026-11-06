@@ -473,6 +473,24 @@ def test_parity_figure(tmp_path):
     assert not (run / 'figures').exists() and sorted(os.listdir(run)) == ['chainR0', 'freeA']
 
 
+def test_parity_figure_leaves_the_plotting_session_alone(tmp_path):
+    """The figure is drawn without pyplot: the backend a notebook uses for inline figures stays
+    as it was, and no figure is left open."""
+    import matplotlib
+    import matplotlib.pyplot as plt
+    reference = validate.CommittorReference.from_npz(NANMA_REFERENCE)
+    original = matplotlib.get_backend()
+    plt.switch_backend('svg')
+    try:
+        open_before = plt.get_fignums()
+        png, _ = validate.parity_figure([('model', reference, np.zeros(16))], tmp_path / 'parity')
+        assert matplotlib.get_backend() == 'svg'
+        assert plt.get_fignums() == open_before
+        assert Path(png).stat().st_size > 20_000
+    finally:
+        plt.switch_backend(original)
+
+
 # ---------------------------------------------------------------------------
 # sampling through the generation interface
 # ---------------------------------------------------------------------------

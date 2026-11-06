@@ -31,7 +31,8 @@ C-GAIMMD
 Committor-conditioned Generative AIMMD (:doc:`../cgaimmd`). Tutorial 3 runs on
 a CPU in about a minute. Tutorials 4 to 6 are the production workflows of real
 systems; they need a GPU and GROMACS, and tutorials 5 and 6 the BioEmu2
-weights.
+weights. Tutorial 7, the analysis of a run, runs on a CPU in about four
+minutes.
 
 .. toctree::
    :maxdepth: 1
@@ -40,10 +41,7 @@ weights.
    4_cgaimmd_painn_nanma
    5_cgaimmd_bioemu2_chignolin
    6_cgaimmd_bioemu2_trypsin_benzamidine
-
-.. A tutorial on analysing a C-GAIMMD run (rates and free energies through the
-   reweighting, the shot table, generator adherence, shooting validation of
-   generated structures) is still to be written; it joins this list.
+   7_cgaimmd_analysis
 
 - **C-GAIMMD on the 1-D toy** (:doc:`3_cgaimmd_toy_1d`) — the C-GAIMMD loop on
   the toy engine with the minimal flow-matching network: the params file, the
@@ -71,3 +69,12 @@ weights.
   pooled features and pair adapters, and the ligand weight of the fit.
   *Rendered from a GPU run: until that run is added, the page shows the code
   and the explanations without outputs.*
+- **Analysing a C-GAIMMD run** (:doc:`7_cgaimmd_analysis`) — a two-minute
+  C-GAIMMD run of a particle in a two-channel potential, then every analysis a
+  study of a run needs: the shot table and the run progression; rates from the
+  reweighting, checked against the transitions of the free simulations;
+  free energies with the generated shooting points on top; the convergence of
+  both; the committor against brute-force shooting next to a distance-matrix
+  baseline; generator adherence and sample quality; shooting validation of
+  generated configurations through an AIMMD sweep; and the run card. The
+  reasoning behind the estimators is on :doc:`../cgaimmd_analysis`.

@@ -1399,7 +1399,10 @@ def test_final_check_rejects_an_unknown_acceptance(tmp_path):
 
 
 def test_final_check_rounds_to_xtc_precision(tmp_path):
-    """'auto' rounds to 2 decimals (0.01 A) for .xtc, not for other formats; ints and None too."""
+    """'auto' rounds to 2 decimals (0.01 A) for .xtc frames of ten or more atoms, not for other
+    formats and not for frames of at most nine atoms (XTC stores those as plain floats, as an
+    MDAnalysis round trip shows); ints and None too."""
+    import MDAnalysis as mda
     seen = []
 
     def descriptors(trajectory):
@@ -1407,14 +1410,27 @@ def test_final_check_rounds_to_xtc_precision(tmp_path):
         seen.append(out)
         return out
 
-    frame = PreparedFrame(np.array([[0.123456, 0.0, 0.0]]), None)
-    expected = {('.xtc', 'auto'): (2, 0.12), ('.trr', 'auto'): (None, 0.123456),
-                ('.xtc', 3): (3, 0.123), ('.xtc', None): (None, 0.123456)}
-    for (ext, setting), (decimals, x) in expected.items():
+    for n_atoms, compressed in ((9, False), (10, True)):           # what XTC itself does
+        universe = mda.Universe.empty(n_atoms, trajectory=True)
+        universe.atoms.positions = np.full((n_atoms, 3), 0.123456, dtype=np.float32)
+        fname = str(tmp_path / f'atoms{n_atoms}.xtc')
+        with mda.Writer(fname, n_atoms) as writer:
+            writer.write(universe.atoms)
+        stored = mda.coordinates.XTC.XTCReader(fname)[0].positions[0, 0]
+        assert abs(stored - (0.12 if compressed else 0.123456)) < 1e-6
+
+    large = np.zeros((10, 3))
+    large[0, 0] = 0.123456
+    small = large[:1]
+    expected = {('.xtc', 'auto', 10): (2, 0.12), ('.xtc', 'auto', 1): (None, 0.123456),
+                ('.trr', 'auto', 10): (None, 0.123456), ('.xtc', 3, 10): (3, 0.123),
+                ('.xtc', 3, 1): (3, 0.123), ('.xtc', None, 10): (None, 0.123456)}
+    for (ext, setting, n_atoms), (decimals, x) in expected.items():
+        frame = PreparedFrame(large if n_atoms == 10 else small, None)
         context = _check_context(tmp_path, final_check_round=setting)
         context.params.__dict__.update(trajectory_extension=ext, descriptors_function=descriptors)
         check = final_check(frame, context, 0.0)
-        assert check['decimals'] == decimals
+        assert check['decimals'] == decimals, (ext, setting, n_atoms)
         assert seen[-1].dtype == np.float32
         assert abs(float(seen[-1][0, 0]) - x) < 1e-6
 

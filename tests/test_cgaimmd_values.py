@@ -75,6 +75,22 @@ def test_no_grad_and_inputs_not_modified():
     assert network.scale.grad is None
 
 
+def test_read_only_rows_are_copied_not_shared():
+    """Read-only rows (a cached path's coordinates) become a tensor of their own: torch cannot
+    share read-only memory (it warns once per process when asked to); writable float32 rows
+    are still used without a copy."""
+    from aimmd.cgaimmd.protocol import _values_input
+    rows = np.random.default_rng(1).normal(size=(4, 3)).astype(np.float32)
+    rows.flags.writeable = False
+    x = _values_input(rows, 'cpu', None)
+    assert x.data_ptr() != rows.ctypes.data
+    np.testing.assert_array_equal(x.numpy(), rows)
+    writable = rows.copy()
+    assert _values_input(writable, 'cpu', None).data_ptr() == writable.ctypes.data
+    values = ProtocolValuesFunction(LinearNetwork())(rows)
+    np.testing.assert_allclose(values, 2.0 * rows[:, 0] - 1.0, rtol=1e-6, atol=1e-6)
+
+
 def test_descriptor_transform_dense_output():
     """A transform returning an array is applied before the network, as in AIMMD."""
     network = LinearNetwork()

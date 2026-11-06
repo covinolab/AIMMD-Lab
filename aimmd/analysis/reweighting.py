@@ -714,7 +714,7 @@ TIED_REGISTRATION_SHARE = 0.5
 registration order is reported as unreliable."""
 
 
-def _registration_order(chains):
+def _registration_order(chains, warn=True):
     """``[(time, rank, k, j)]`` of every shot ``j`` of chain ``k``, in registration order.
 
     Within a chain the shots are registered in the order of their path numbers,
@@ -722,8 +722,9 @@ def _registration_order(chains):
     (``rank`` is its place there). Shots registered at the same time (a run
     copied without its file times, or several chains within one second) are
     ordered by their place in their chain, so the chains interleave instead of
-    entering one after the other; a warning is given when more than
-    :data:`TIED_REGISTRATION_SHARE` of the shots tie.
+    entering one after the other; with `warn`, a warning is given when more
+    than :data:`TIED_REGISTRATION_SHARE` of the shots tie (subsets by shot count
+    depend on that order; subsets by time do not).
     """
     order = []
     for k, chain in enumerate(chains):
@@ -736,11 +737,13 @@ def _registration_order(chains):
     if len(times) > 1:
         _, counts = np.unique(times, return_counts=True)
         tied = int(counts[counts > 1].sum())
-        if tied > TIED_REGISTRATION_SHARE * len(times):
+        if warn and tied > TIED_REGISTRATION_SHARE * len(times):
             warnings.warn(
                 f'{tied} of {len(times)} shots share their registration time with another shot '
-                f'(files copied without their modification times?); among them the order '
-                f'follows the path numbers, chain by chain in turn', UserWarning, stacklevel=4)
+                f'(several chains registered shots within one second, the resolution of the '
+                f'recorded times, or the files were copied without their modification times); '
+                f'among them the order follows the path numbers, chain by chain in turn; '
+                f"fraction_by='time' does not depend on that order", UserWarning, stacklevel=4)
     return order
 
 
@@ -955,7 +958,7 @@ def reweight_run(params, run_dir, *, values='cached', network=None, bias='auto',
     result = _reweight(params, directory, system_id, chains, free, values=values,
                        network=network_file, bias_applied=bias_applied, verbose=verbose)
     result.left_out = left_out
-    order = _registration_order(chains) if fractions else None
+    order = _registration_order(chains, warn=fraction_by == 'shots') if fractions else None
     for fraction in fractions:
         chains_subset, free_subset, registered_until = _subset(chains, free, fraction,
                                                                fraction_by, order)

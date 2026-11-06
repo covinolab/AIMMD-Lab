@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import sys
+import warnings
 
 import numpy as np
 import pytest
@@ -233,6 +234,23 @@ def test_registration_order_interleaves_chains_whose_times_tie(ring, tmp_path):
                   for path in subset.pathensemble._paths[:subset.n_shots])
     assert kept == ['chainR0/path000001.xtc', 'chainR0/path000002.xtc',
                     'chainR1/path000001.xtc', 'chainR1/path000002.xtc']
+
+
+def test_tied_registration_times_give_no_warning_for_subsets_by_time(ring, tmp_path):
+    """Subsets by time do not depend on the order among tied shots, so they give no warning;
+    the warning names the parallel chains as a cause next to copied files."""
+    folder = tmp_path / 'campaign'
+    first, second = _two_chains(ring, folder)
+    for chain in (first, second):
+        _set_times(chain, [1.7e9] * 4 + [1.7e9 + 10] * 4)
+    params = _load_params(folder)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', UserWarning)
+        result = reweight_run(params, str(folder / 'run'), fractions=(0.5,), fraction_by='time')
+    (subset,) = result.subsets
+    assert subset.n_shots == 8                                  # the eight shots of the first time
+    with pytest.warns(UserWarning, match='several chains registered shots within one second'):
+        reweight_run(params, str(folder / 'run'), fractions=(0.5,))
 
 
 def test_registration_order_takes_the_sidecar_time_over_the_file_time(ring, tmp_path):

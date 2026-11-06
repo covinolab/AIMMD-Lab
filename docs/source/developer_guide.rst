@@ -153,7 +153,7 @@ The tutorial notebooks live in ``examples/notebooks/`` and are linked into
 re-execute a notebook (for example with ``jupyter nbconvert --to notebook
 --execute --inplace``) after changing it. ``tests/test_tutorial_notebooks.py``
 checks that every notebook is linked, that its code parses, and (``slow``)
-runs tutorial 3 from top to bottom.
+runs tutorials 3 and 7 from top to bottom.
 
 Contributing
 ------------

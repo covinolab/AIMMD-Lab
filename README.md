@@ -184,11 +184,16 @@ params file with `python -m aimmd.cgaimmd.preflight params.py`.
   backups;
 - [Troubleshooting](https://aimmd-lab.readthedocs.io/en/latest/cgaimmd_troubleshooting.html)
   and [internals](https://aimmd-lab.readthedocs.io/en/latest/cgaimmd_internals.html);
+- [Analysis and estimators](https://aimmd-lab.readthedocs.io/en/latest/cgaimmd_analysis.html):
+  which rate estimators apply to a C-GAIMMD run and why, and how to make each
+  analysis of a run;
 - tutorials: [C-GAIMMD on a 1-D toy](https://aimmd-lab.readthedocs.io/en/latest/tutorials/3_cgaimmd_toy_1d.html)
-  (CPU, one minute), and production workflows with
+  (CPU, one minute); production workflows with
   [PaiNN on alanine dipeptide](https://aimmd-lab.readthedocs.io/en/latest/tutorials/4_cgaimmd_painn_nanma.html),
   [BioEmu2 on chignolin](https://aimmd-lab.readthedocs.io/en/latest/tutorials/5_cgaimmd_bioemu2_chignolin.html) and
-  [BioEmu2 on trypsin with benzamidine](https://aimmd-lab.readthedocs.io/en/latest/tutorials/6_cgaimmd_bioemu2_trypsin_benzamidine.html).
+  [BioEmu2 on trypsin with benzamidine](https://aimmd-lab.readthedocs.io/en/latest/tutorials/6_cgaimmd_bioemu2_trypsin_benzamidine.html);
+  and [analysing a run](https://aimmd-lab.readthedocs.io/en/latest/tutorials/7_cgaimmd_analysis.html)
+  (CPU, four minutes).
 
 ## Citation
 
