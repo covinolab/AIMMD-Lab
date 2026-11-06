@@ -729,6 +729,57 @@ def _commit_from_files(package):
     return commit, None
 
 
+DISTRIBUTION = 'aimmd-lab'
+"""The distribution name of AIMMD-Lab (for the install record of a non-editable install)."""
+
+
+def _commit_from_install(package):
+    """``(commit, None)`` from pip's install record of the imported package, or ``(None, why)``.
+
+    A non-editable install (the package copied into ``site-packages`` or a
+    ``--target`` folder) has no ``.git``. When pip installed it from git
+    (``pip install git+...@<ref>``), the distribution's ``direct_url.json``
+    holds the commit it checked out (``vcs_info.commit_id``). Only the
+    distribution whose ``aimmd/__init__.py`` is the imported one is read, so
+    that another installed copy is never credited.
+    """
+    def located(distribution):
+        try:
+            return os.path.realpath(str(distribution.locate_file('aimmd/__init__.py')))
+        except Exception:                                   # noqa: BLE001
+            return None
+
+    try:
+        candidates = list(importlib.metadata.distributions(name=DISTRIBUTION))
+    except Exception as exc:                                # noqa: BLE001
+        return None, f'the {DISTRIBUTION} distributions could not be read ({type(exc).__name__})'
+    if not candidates:
+        return None, f'no {DISTRIBUTION} distribution is installed'
+    imported = os.path.realpath(os.path.join(package, '__init__.py'))
+    distribution = next((d for d in candidates if located(d) == imported), None)
+    if distribution is None:
+        return None, (f'no installed {DISTRIBUTION} distribution holds the imported package '
+                      f'(an editable install, or a copy of the source)')
+    try:
+        text = distribution.read_text('direct_url.json')
+        record = json.loads(text) if text else None
+    except (OSError, ValueError) as exc:
+        return None, f"its direct_url.json could not be read ({type(exc).__name__}: {exc})"
+    if not isinstance(record, dict):
+        return None, (f'{DISTRIBUTION} {distribution.version} was installed without a pip '
+                      f'install record (direct_url.json), e.g. from an index or a wheel file')
+    url = record.get('url')
+    commit = (record.get('vcs_info') or {}).get('commit_id')
+    if isinstance(commit, str) and _is_commit(commit):
+        return commit, None
+    if 'dir_info' in record:
+        return None, (f'{DISTRIBUTION} was installed from the folder {url} (not from git): pip '
+                      f'records no commit for such an install')
+    if 'archive_info' in record:
+        return None, f'{DISTRIBUTION} was installed from the archive {url}, which names no commit'
+    return None, f'the install record of {DISTRIBUTION} ({url}) names no commit'
+
+
 @functools.lru_cache(maxsize=1)
 def git_provenance():
     """The git commit of the imported ``aimmd`` package, or why there is none.
@@ -740,7 +791,8 @@ def git_provenance():
         commit (None if unknown); whether the package directory has
         uncommitted changes (None if unknown); None or the reason why the
         commit or the dirty flag is unknown; ``'git'`` (the executable
-        answered), ``'git files'`` (read from the ``.git`` files) or None.
+        answered), ``'git files'`` (read from the ``.git`` files),
+        ``'direct_url'`` (pip's install record) or None.
 
     Notes
     -----
@@ -759,9 +811,12 @@ def git_provenance():
        sidecars of the old code lacked: they recorded ``git_commit: null``
        with no reason (seen on JUPITER).
     3. A non-editable install (the package copied into ``site-packages``) is
-       not tracked by any repository: the commit is None and the reason says
-       so; :func:`aimmd_provenance` then still identifies the code by
-       ``source_sha256``.
+       not tracked by any repository. Its commit is then read from pip's
+       install record (``direct_url.json``), which names one for an install
+       from git (``pip install git+...``; the dirty flag is unknown); an
+       install from a folder, an archive or an index names none: the commit
+       is None and the reason says so. :func:`aimmd_provenance` then still
+       identifies the code by ``source_sha256``.
 
     Looked up once per process (``functools.lru_cache``).
     """
@@ -771,9 +826,9 @@ def git_provenance():
     if tracked is None and 'did not match' in why:
         # git answered: the package is not tracked (an install inside another
         # project's work tree); that project's commit is not ours
-        out['git_reason'] = (f'the package directory {package} is not tracked by a git '
-                             f'repository (an installed copy, not a checkout)')
-        return out
+        why = (f'the package directory {package} is not tracked by a git repository (an '
+               f'installed copy, not a checkout)')
+        return _from_install(out, package, why)
     if tracked is not None:
         head, why = _git(package, 'rev-parse', 'HEAD')
         commit = (head or '').strip()
@@ -792,7 +847,18 @@ def git_provenance():
         out.update(git_commit=commit, git_source='git files',
                    git_reason=f'read from the .git files, the dirty flag is unknown, because {why}')
         return out
-    out['git_reason'] = f'{why}; {file_why}'
+    return _from_install(out, package, f'{why}; {file_why}')
+
+
+def _from_install(out, package, why):
+    """`out` with the commit of pip's install record, or with `why` and the record's reason."""
+    commit, install_why = _commit_from_install(package)
+    if commit is not None:
+        out.update(git_commit=commit, git_source='direct_url',
+                   git_reason=(f"read from pip's install record (direct_url.json), the dirty "
+                               f"flag is unknown, because {why}"))
+        return out
+    out['git_reason'] = f'{why}; {install_why}'
     return out
 
 

@@ -577,6 +577,84 @@ def test_git_provenance_without_any_git(monkeypatch, fresh_git_provenance, tmp_p
     assert 'has no .git' in provenance['git_reason']
 
 
+class _InstalledDistribution:
+    """An ``importlib.metadata`` distribution stand-in: files under `root`, pip's `record`."""
+
+    def __init__(self, root, record):
+        self.root = Path(root)
+        self.record = record
+        self.version = '0.1.0'
+
+    def locate_file(self, name):
+        return self.root / name
+
+    def read_text(self, name):
+        assert name == 'direct_url.json'
+        return None if self.record is None else json.dumps(self.record)
+
+
+def _site_packages(root):
+    package = root / 'aimmd'
+    package.mkdir(parents=True)
+    (package / '__init__.py').write_text('')
+    return package
+
+
+NOT_TRACKED = (1, '', "error: pathspec '__init__.py' did not match any file(s) known to git\n")
+
+
+@pytest.mark.parametrize('git_answer', [NOT_TRACKED, FileNotFoundError('git')])
+def test_git_provenance_of_an_install_from_git(monkeypatch, fresh_git_provenance, tmp_path,
+                                               git_answer):
+    """A non-editable install from git (pip install git+...@ref): the commit comes from pip's
+    install record (direct_url.json) of the distribution that holds the imported package,
+    whether git says 'not tracked' or cannot run; another installed copy is never credited."""
+    package = _site_packages(tmp_path / 'site-packages')
+    other = _site_packages(tmp_path / 'other-site-packages')
+    from_git = {'url': 'git+file:///clone', 'vcs_info': {
+        'vcs': 'git', 'commit_id': 'ab' * 20, 'requested_revision': 'c1678ac'}}
+    distributions = [_InstalledDistribution(other.parent, {**from_git, 'vcs_info': {
+                         'vcs': 'git', 'commit_id': 'cd' * 20}}),
+                     _InstalledDistribution(package.parent, from_git)]
+    monkeypatch.setattr(sidecar.importlib.metadata, 'distributions',
+                        lambda name=None: list(distributions) if name == 'aimmd-lab' else [])
+    monkeypatch.setattr(sidecar, '_package_dir', lambda: str(package))
+    monkeypatch.setattr(sidecar.subprocess, 'run', _fake_git({'ls-files': git_answer}, []))
+    provenance = sidecar.git_provenance()
+    assert provenance['git_commit'] == 'ab' * 20 and provenance['git_source'] == 'direct_url'
+    assert provenance['git_dirty'] is None
+    assert "pip's install record" in provenance['git_reason']
+    assert 'dirty flag is unknown' in provenance['git_reason']
+
+    # only another copy is installed: no commit, and the reason says why
+    distributions.pop()
+    sidecar.git_provenance.cache_clear()
+    provenance = sidecar.git_provenance()
+    assert provenance['git_commit'] is None and provenance['git_source'] is None
+    assert 'no installed aimmd-lab distribution holds the imported package' in (
+        provenance['git_reason'])
+
+
+@pytest.mark.parametrize('record, reason', [
+    ({'url': 'file:///home/user/AIMMD-Lab', 'dir_info': {}},
+     'installed from the folder file:///home/user/AIMMD-Lab (not from git)'),
+    ({'url': 'file:///wheels/aimmd_lab-0.1.0.tar.gz', 'archive_info': {}},
+     'installed from the archive file:///wheels/aimmd_lab-0.1.0.tar.gz'),
+    (None, 'without a pip install record'),
+])
+def test_git_provenance_of_an_install_without_a_commit(monkeypatch, fresh_git_provenance,
+                                                       tmp_path, record, reason):
+    """Installs from a folder, an archive or an index name no commit: None, with the reason."""
+    package = _site_packages(tmp_path / 'site-packages')
+    monkeypatch.setattr(sidecar.importlib.metadata, 'distributions',
+                        lambda name=None: [_InstalledDistribution(package.parent, record)])
+    monkeypatch.setattr(sidecar, '_package_dir', lambda: str(package))
+    monkeypatch.setattr(sidecar.subprocess, 'run', _fake_git({'ls-files': NOT_TRACKED}, []))
+    provenance = sidecar.git_provenance()
+    assert provenance['git_commit'] is None and provenance['git_source'] is None
+    assert 'not tracked' in provenance['git_reason'] and reason in provenance['git_reason']
+
+
 @pytest.mark.skipif(shutil.which('git') is None, reason='needs git')
 def test_git_provenance_of_untracked_install(tmp_path, monkeypatch, fresh_git_provenance):
     """An install inside another project's work tree records no commit (not the project's)."""
