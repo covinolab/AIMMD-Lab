@@ -349,8 +349,12 @@ The rules checked under ``chain_type='cgaimmd'``:
 8. no ``placement='none'`` together with a prepare function;
 9. the network's class is defined in the params file (also under other chain
    types, for C-GAIMMD networks);
-10. warnings: no ``initial_network``, ``round_shooting_index=False``,
-    ``window_after_trained_shots`` at its default;
+10. warnings: no ``initial_network``, ``round_shooting_index=False``; under
+    ``acceptance`` ``'target'`` or ``'window'``, ``window_after_trained_shots``
+    at its default; under the default ``'transition_region'``,
+    ``lambda_tolerance`` or ``window_after_trained_shots`` given (they have no
+    effect there). ``raw_lambda_tolerance`` with ``'transition_region'`` is an
+    error of ``canonical_cgaimmd_parameters``;
 11. the descriptors of the initial paths have width ``3 M`` in the run's
     descriptor series;
 12. the initial paths hold frames of both end states (C-GAIMMD needs no
@@ -426,7 +430,8 @@ version), and the weights already loaded stay. The trainer writes
 ``network<states>.json`` before the ``.h5``; the watcher takes its ``round``
 and ``n_trained_shots`` only when the json's ``sha256`` matches the loaded
 file (``metadata_matched``), and otherwise keeps the last matched values, so
-a normal hand-off never drops the acceptance rule back to the bootstrap rule.
+a normal hand-off never drops a committor acceptance rule back to the
+bootstrap rule.
 If no json matches a minute after a load, it warns once.
 
 The pool
@@ -459,9 +464,10 @@ When the pool is empty:
    per-sample ``info``. The reason code is the text before the first colon
    (``'clash: O7-N12 1.21 A'`` counts as ``clash``);
 7. the committor of the survivors is computed (``lambda_raw``); non-finite
-   values are rejected (``lambda_nonfinite``). With ``raw_lambda_tolerance``
-   set and the acceptance rule enforced, candidates whose raw value is further
-   than that from their target are rejected (``raw_lambda``);
+   values are rejected (``lambda_nonfinite``). Under a committor acceptance
+   rule (``'target'``, ``'window'``) with ``raw_lambda_tolerance`` set and the
+   rule enforced, candidates whose raw value is further than that from their
+   target are rejected (``raw_lambda``);
 8. the survivors enter the pool; the refill's bookkeeping (size, targets,
    passed, rejections, seconds, batch size, device, network sha256) is kept
    for the sidecars of its candidates, and one log line summarizes it.
@@ -500,17 +506,28 @@ grompp will receive it:
    is ``state_<X>``;
 3. :math:`\lambda` = ``values_function(descriptors_function(reader))``; a
    non-finite value is ``lambda_nonfinite``;
-4. with fewer than ``window_after_trained_shots`` trained shooting points (the
-   watcher's matched ``n_trained_shots``, 0 without metadata) any R frame
-   passes (``bootstrap_any_R``). From then on ``'target'`` requires
-   :math:`\lvert\lambda - \lambda^*\rvert \le` ``lambda_tolerance`` and
-   ``'window'`` requires :math:`\lambda` inside the resolved window; a failure
-   is ``lambda_window``.
+4. the rule ``settings['acceptance']``:
+
+   - ``'transition_region'`` (the default): the frame passes. The committor
+     is recorded and never used to filter; ``enforced`` is False, and
+     ``tolerance`` and ``window_after_trained_shots`` are None;
+   - ``'target'`` and ``'window'``: with fewer than
+     ``window_after_trained_shots`` trained shooting points (the watcher's
+     matched ``n_trained_shots``, 0 without metadata) any R frame passes
+     (``bootstrap_any_R``). From then on ``'target'`` requires
+     :math:`\lvert\lambda - \lambda^*\rvert \le` ``lambda_tolerance`` and
+     ``'window'`` requires :math:`\lambda` inside the resolved window; a
+     failure is ``lambda_window``.
 
 The record holds ``ok``, ``reason``, ``state``, ``lambda``, ``rule``,
-``enforced``, ``tolerance``, ``window``, ``window_after_trained_shots``,
-``n_trained_shots``, ``decimals`` and ``seconds``; the rule, tolerance and
-window are filled for every outcome.
+``enforced`` (whether a committor filter decided), ``tolerance``, ``window``,
+``window_after_trained_shots``, ``n_trained_shots``, ``decimals`` and
+``seconds``; the rule, tolerance and window are filled for every outcome.
+The rules are :data:`~aimmd.params.utils.CGAIMMD_ACCEPTANCE_RULES`; those that
+filter by the committor are
+:data:`~aimmd.params.utils.COMMITTOR_ACCEPTANCE_RULES`. A ``flow_parameters``
+of an old params file without ``'acceptance'`` is read with ``'target'``, the
+rule such a run ran under.
 
 Waiting and failure policy
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -694,7 +711,9 @@ does not apply.
      - ``name``, ``window`` and ``window_source``, and the law's inputs.
    * - ``acceptance``
      - ``rule``, ``enforced``, ``tolerance``, ``window``,
-       ``window_after_trained_shots``, ``n_trained_shots``.
+       ``window_after_trained_shots``, ``n_trained_shots`` (``tolerance`` and
+       ``window_after_trained_shots`` are None under
+       ``'transition_region'``).
    * - ``network``
      - ``file``, ``sha256``, ``round``, ``n_trained_shots``,
        ``metadata_matched``, ``provenance``.

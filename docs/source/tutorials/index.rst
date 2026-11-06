@@ -47,9 +47,10 @@ weights.
 
 - **C-GAIMMD on the 1-D toy** (:doc:`3_cgaimmd_toy_1d`) — the C-GAIMMD loop on
   the toy engine with the minimal flow-matching network: the params file, the
-  ``'ode'`` generator, the target-committor law, the preflight, shots under the
-  bootstrap and the target rule, the final acceptance check, the sidecars and
-  the shot table, and a generator of your own registered in about ten lines.
+  ``'ode'`` generator, the target-committor law, the preflight, shots before
+  and after a training round, the final acceptance check (by default no
+  committor filter), the sidecars and the shot table, and a generator of your
+  own registered in about ten lines.
 - **PaiNN C-GAIMMD on alanine dipeptide** (:doc:`4_cgaimmd_painn_nanma`) — the
   production workflow with GROMACS: generator atoms, unbiased end-state MD,
   the PaiNN network and its end-state pretraining, the params file, the

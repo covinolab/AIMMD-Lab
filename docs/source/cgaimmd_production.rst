@@ -459,8 +459,11 @@ Before a campaign
 - The install passes the weights lane (BioEmu2) on the machine of the job.
 - The end-state frames are unbiased MD, and the initial network was pretrained
   on them.
-- ``window_after_trained_shots``, ``lambda_tolerance`` and ``generation_seed``
-  are set explicitly.
+- ``generation_seed`` is set explicitly (one value per replicate).
+- The acceptance rule is the default ``'transition_region'`` (no committor
+  filter; the preflight's configuration line says so). Only a run that is
+  meant to filter by the committor sets ``'acceptance': 'target'``, and then
+  ``window_after_trained_shots`` and ``lambda_tolerance`` explicitly.
 - The GROMACS executables are given in the params file, with the thread count.
 - The preflight passes on the machine of the job, or the job runs it.
 - The run folder is on a local or scratch disk, with a backup schedule.
