@@ -832,7 +832,7 @@ def params_committor(params, *, network=None, descriptor_transform='params', bat
 
 
 def heldout_chain_reference(params, run_dir, chains, *, n_atoms=None, exclude_frames=None,
-                            name=None):
+                            name=None, allow_biased_frames=False):
     """The two-way shots of held-out reactive chains of a run folder, as a reference for M2.
 
     Parameters
@@ -852,11 +852,22 @@ def heldout_chain_reference(params, run_dir, chains, *, n_atoms=None, exclude_fr
         ``'exclude'``), as the fit's option.
     name : str, optional
         Reference name (default ``'held-out chains <list>'``).
+    allow_biased_frames : bool, optional
+        Use the shots of a run that records a bias (default False: such a run
+        is refused, as frames of biased simulations do not become committor
+        references unless that is decided explicitly; a static bias that is
+        zero in the reactive region leaves the shots' outcomes those of the
+        unbiased system, which can justify it).
 
     Returns
     -------
     CommittorReference
         ``kind='heldout_chains'``; ``groups`` holds the chain of every shooting point.
+
+    Raises
+    ------
+    ValueError
+        For a run that records a bias (``params.record_bias``), unless `allow_biased_frames`.
 
     Notes
     -----
@@ -871,9 +882,11 @@ def heldout_chain_reference(params, run_dir, chains, *, n_atoms=None, exclude_fr
     chain of a large run would otherwise stay resident).
     """
     from ... import _config
+    from ...analysis._data_access import refuse_biased_frames
     from ...pathensemble.utils import assemble_pathensemble
     from ..dataset import extract_dataset, resolve_exclusions
     from ..protocol import n_atoms_of
+    refuse_biased_frames(params, 'a committor reference', allow_biased_frames)
 
     if n_atoms is None:
         n_atoms = n_atoms_of(params.network)
@@ -915,7 +928,7 @@ def heldout_chain_reference(params, run_dir, chains, *, n_atoms=None, exclude_fr
 
 
 def sweep_reference(params, sweep_dir, *, frames=None, atoms=None, name=None,
-                    first_launched=False, tolerance=0.02):
+                    first_launched=False, tolerance=0.02, allow_biased_frames=False):
     """The brute-force committor of the frames of an AIMMD sweep folder.
 
     Parameters
@@ -941,6 +954,9 @@ def sweep_reference(params, sweep_dir, *, frames=None, atoms=None, name=None,
         registered shot, as :meth:`aimmd.PathEnsemble.shooting_results` does).
     tolerance : float, optional
         As for :func:`aimmd.cgaimmd.analysis.shooting_validation.sweep_outcomes`.
+    allow_biased_frames : bool, optional
+        Use a sweep whose params record a bias (default False: refused, as
+        for :func:`heldout_chain_reference`).
 
     Returns
     -------
@@ -960,8 +976,10 @@ def sweep_reference(params, sweep_dir, *, frames=None, atoms=None, name=None,
     """
     import glob
 
+    from ...analysis._data_access import refuse_biased_frames
     from ._trajectory import count_frames, read_frames
     from .shooting_validation import _first_launched, sweep_outcomes
+    refuse_biased_frames(params, 'a committor reference', allow_biased_frames)
     sweep_dir = os.path.abspath(os.fspath(sweep_dir))
     if frames is None:
         frames = sorted(glob.glob(os.path.join(glob.escape(sweep_dir),

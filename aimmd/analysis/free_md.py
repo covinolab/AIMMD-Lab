@@ -47,6 +47,11 @@ committor model that costs no extra simulation. Two cautions:
   frame are distributed as in equilibrium, which holds for equilibrium free
   dynamics but only approximately just after a restart with fresh velocities.
 
+The free simulations of a run that records a bias ran under that bias, and
+frames of biased simulations are not used as a committor reference unless the
+caller decides so (:func:`free_md_reference` refuses such a run unless
+``allow_biased_frames=True``; its notes say when that can be justified).
+
 Frames after the last state visit of a trajectory have no outcome yet
 (censored) and are left out.
 """
@@ -369,7 +374,7 @@ class FreeMDReference:
 
 
 def free_md_reference(params, run_dir, *, stride=1, descriptors=False, system_id=None,
-                      name='free_md'):
+                      name='free_md', allow_biased_frames=False):
     """The reactive frames of a run's free simulations with the end state each reached next.
 
     Parameters
@@ -386,10 +391,19 @@ def free_md_reference(params, run_dir, *, stride=1, descriptors=False, system_id
         The system of a multi-system run.
     name : str, optional
         :attr:`FreeMDReference.name`.
+    allow_biased_frames : bool, optional
+        Use the free simulations of a run that records a bias (default False:
+        such a run is refused; see the Notes).
 
     Returns
     -------
     FreeMDReference
+
+    Raises
+    ------
+    ValueError
+        For a run that records a bias (``params.record_bias``), unless
+        `allow_biased_frames`.
 
     Warns
     -----
@@ -400,14 +414,19 @@ def free_md_reference(params, run_dir, *, stride=1, descriptors=False, system_id
 
     Notes
     -----
-    In a run with a static bias inside the states, the outcomes still estimate
-    the committor of the unbiased system as long as the bias is zero in the
-    reactive region (the trainer checks this every round): the outcome of a
-    reactive frame is decided by the dynamics from that frame until the next
-    entry into a state, which the bias does not touch.
+    Frames of biased simulations are not used as a committor reference by
+    default. What can justify an exception: in a run with a static bias
+    inside the states, the outcomes still estimate the committor of the
+    unbiased system as long as the bias is zero in the reactive region (the
+    trainer checks this every round), because the outcome of a reactive frame
+    is decided by the dynamics from that frame until the next entry into a
+    state, which the bias does not touch. The reference's
+    ``notes['record_bias']`` says whether the run recorded a bias.
     """
+    from ._data_access import refuse_biased_frames
     from .reweighting import _load_cache
     params, run_dir, free = _free_trajectories(params, run_dir, system_id)
+    refuse_biased_frames(params, 'a committor reference', allow_biased_frames)
     stride = int(stride)
     if stride < 1:
         raise ValueError(f'stride must be a positive integer, got {stride}')
@@ -470,7 +489,8 @@ def free_md_reference(params, run_dir, *, stride=1, descriptors=False, system_id
         states=states, descriptors=descriptor_rows,
         notes={'run_dir': run_dir, 'free_restart_source': source,
                'censored_frames': censored, 'stride': stride, 'descriptors_series': series,
-               'n_trajectories': len(free)})
+               'n_trajectories': len(free),
+               'record_bias': bool(getattr(params, 'record_bias', False))})
 
 
 def free_md_calibration(reference, logits=None, *, bins=None):

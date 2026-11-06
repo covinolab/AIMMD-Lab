@@ -371,6 +371,12 @@ def test_sweep_attribution_by_coordinates_and_the_brute_force_reference(tmp_path
     assert reference.dimensions.shape == (3, 6) and reference.notes['n_shots'] == 5
     first_only = validate.sweep_reference(params, run, first_launched=True)
     assert (first_only.n_first + first_only.n_last).sum() <= 10
+    biased = params.copy()
+    biased.__dict__['record_bias'] = True
+    with pytest.raises(ValueError, match='records a bias.*allow_biased_frames'):
+        validate.sweep_reference(biased, run)
+    assert validate.sweep_reference(biased, run, allow_biased_frames=True).n_last.tolist() == \
+        [1.0, 3.0, 0.0]
     # AIMMD's own aggregation of a sweep (on a copy: it writes trajectory index files)
     copy = tmp_path / 'copy'
     shutil.copytree(run, copy)

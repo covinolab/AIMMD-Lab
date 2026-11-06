@@ -298,6 +298,18 @@ def test_free_md_rates_use_boosted_time_under_a_bias(markov_run):
         free_md_rates(load(markov_run['folder']), markov_run['run'], bias=True)
 
 
+def test_a_reference_from_biased_free_simulations_needs_permission(markov_run):
+    """Frames of biased simulations become a committor reference only when the caller allows it."""
+    params = load(markov_run['folder'], 'params_biased.py')
+    with pytest.raises(ValueError, match='records a bias.*allow_biased_frames'):
+        free_md_reference(params, markov_run['run'])
+    reference = free_md_reference(params, markov_run['run'], allow_biased_frames=True)
+    assert reference.notes['record_bias'] is True
+    unbiased = free_md_reference(load(markov_run['folder']), markov_run['run'])
+    assert unbiased.notes['record_bias'] is False
+    np.testing.assert_array_equal(reference.n_last, unbiased.n_last)
+
+
 def test_crossing_restarts_are_flagged(markov_run):
     params = load(markov_run['folder'], 'params_crossing.py')
     with pytest.warns(UserWarning, match='crossing'):

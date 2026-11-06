@@ -260,6 +260,12 @@ def test_heldout_chain_reference(tmp_path):
         exclude_frames={str(rd.chains[1][0].fnames[0]): 'all'})
     assert len(excluded.n_first) == 7
     assert excluded.notes['excluded_shooting_points'] == 1
+    # the shots of a run that records a bias are a reference only when the caller allows it
+    params.__dict__['record_bias'] = True
+    with pytest.raises(ValueError, match='records a bias.*allow_biased_frames'):
+        validate.heldout_chain_reference(params, rd.run, [1])
+    allowed = validate.heldout_chain_reference(params, rd.run, [1], allow_biased_frames=True)
+    np.testing.assert_array_equal(allowed.n_last, reference.n_last)
 
 
 # ---------------------------------------------------------------------------

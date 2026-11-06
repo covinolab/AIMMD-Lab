@@ -169,21 +169,42 @@ def _data_files(root):
     return out
 
 
-def test_scaler_from_the_free_simulations_with_and_without_a_bias(tmp_path):
-    run, params = _toy_run(tmp_path, n_shots=2, bias_in_a=1.0)
-    plain = baseline.run_distance_scaler(params, run, [0, 1], bias=False)
-    assert plain['n_frames'] == 60 and plain['bias_applied'] is False
-    rows = np.concatenate([np.load(get_cache_fname(f, 'descriptors')) for f in plain['files']])
+def test_scaler_from_the_free_simulations(tmp_path):
+    run, params = _toy_run(tmp_path, n_shots=2)
+    scaler = baseline.run_distance_scaler(params, run, [0, 1])
+    assert scaler['n_frames'] == 60 and scaler['bias_applied'] is False
+    rows = np.concatenate([np.load(get_cache_fname(f, 'descriptors')) for f in scaler['files']])
     d = baseline.pair_distances(rows, [0, 1])[:, 0]
-    assert plain['mean'][0] == pytest.approx(d.mean(), rel=1e-6)
-    weighted = baseline.run_distance_scaler(params, run, [0, 1])       # 'auto': the run's bias
-    assert weighted['bias_applied'] is True
-    w = np.where(np.arange(60) < 30, np.e, 1.0)                         # free A first
-    assert weighted['mean'][0] == pytest.approx((w * d).sum() / w.sum(), rel=1e-6)
+    assert scaler['mean'][0] == pytest.approx(d.mean(), rel=1e-6)
     few = baseline.run_distance_scaler(params, run, [0, 1], max_frames=10)
     assert few['n_frames'] == 10
     with pytest.raises(FileNotFoundError, match='no .descriptors-other'):
         baseline.run_distance_scaler(params, run, [0, 1], series='descriptors-other')
+
+
+def test_a_run_with_a_bias_is_refused_unless_allowed(tmp_path):
+    """Frames of biased simulations become neither an input scaler nor training data by default;
+    allowed explicitly, the scaler weights every frame by exp(bias)."""
+    run, params = _toy_run(tmp_path, n_shots=4, bias_in_a=1.0)
+    with pytest.raises(ValueError, match='records a bias.*allow_biased_frames'):
+        baseline.run_distance_scaler(params, run, [0, 1])
+    with pytest.raises(ValueError, match='records a bias.*allow_biased_frames'):
+        baseline.train_on_run(params, run, baseline.DistanceMLP([0, 1], n_atoms=2), epochs=1)
+    plain = baseline.run_distance_scaler(params, run, [0, 1], bias=False,
+                                         allow_biased_frames=True)
+    assert plain['n_frames'] == 60 and plain['bias_applied'] is False
+    rows = np.concatenate([np.load(get_cache_fname(f, 'descriptors')) for f in plain['files']])
+    d = baseline.pair_distances(rows, [0, 1])[:, 0]
+    assert plain['mean'][0] == pytest.approx(d.mean(), rel=1e-6)
+    weighted = baseline.run_distance_scaler(params, run, [0, 1], allow_biased_frames=True)
+    assert weighted['bias_applied'] is True                             # 'auto': the run's bias
+    w = np.where(np.arange(60) < 30, np.e, 1.0)                         # free A first
+    assert weighted['mean'][0] == pytest.approx((w * d).sum() / w.sum(), rel=1e-6)
+    torch.manual_seed(0)
+    result = baseline.train_on_run(params, run, baseline.DistanceMLP([0, 1], n_atoms=2,
+                                                                     hidden=(4,)),
+                                   epochs=2, allow_biased_frames=True)
+    assert result['n_shots'] == 4
 
 
 def test_train_on_the_shots_of_a_run(tmp_path):

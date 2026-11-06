@@ -20,10 +20,9 @@ deliberately simple and system-independent:
   pairs, so the atom selection is an argument). Distances do not change when
   the molecule is moved or rotated, so the model needs no alignment;
 - **scaling**: each distance is shifted and scaled by its mean and standard
-  deviation over unbiased frames of the run (its free simulations,
-  :func:`run_distance_scaler`; under a static bias the frames are weighted by
-  ``exp(bias)``, so that the scale describes the unbiased system). The
-  scaler is stored in the network, so it travels with the saved weights;
+  deviation over the frames of the run's free simulations
+  (:func:`run_distance_scaler`). The scaler is stored in the network, so it
+  travels with the saved weights;
 - **the network**: a stack of linear layers with SiLU activations
   (:class:`DistanceMLP`), an AIMMD network
   (:class:`aimmd.network.Rescalable`) whose ``forward`` gives the committor
@@ -33,6 +32,20 @@ deliberately simple and system-independent:
   AIMMD's ordinary fit (:func:`aimmd.network.fit.fit`) on the run's shots,
   as the trainer would run it (:func:`train_on_run`). Nothing is written into
   the run folder; the caller saves the trained weights where it wants.
+
+Runs with a bias
+----------------
+A run that records a bias (``params.record_bias``, e.g. a static OPES bias
+inside the states) ran its free simulations and shots under that bias. A bias
+changes which configurations are visited and how the system moves between
+them, so frames of biased simulations do not become training data or an input
+scaler unless the caller decides so: :func:`run_distance_scaler` and
+:func:`train_on_run` refuse such a run unless ``allow_biased_frames=True``.
+What can justify it: a static bias that is zero in the reactive region (the
+trainer checks this every round) leaves the dynamics there untouched, so the
+outcome of every shot is that of the unbiased system and AIMMD's own trainer
+trains on the same shots; the scaler then weights every frame by ``exp(bias)``
+so that it describes the unbiased system.
 
 Score it on a brute-force reference with
 :func:`aimmd.cgaimmd.analysis.validate.network_committor` (on the coordinates
@@ -106,12 +119,13 @@ def distance_scaler(coordinates, atom_indices, *, weights=None, min_std=MIN_STD)
     Parameters
     ----------
     coordinates : array_like
-        ``(n, M, 3)`` or ``(n, 3 M)`` Å frames (unbiased frames, or biased
-        frames with their `weights`).
+        ``(n, M, 3)`` or ``(n, 3 M)`` Å frames.
     atom_indices : array_like of int
         The selected atoms.
     weights : array_like, optional
-        ``(n,)`` frame weights (e.g. ``exp(bias)`` of biased frames).
+        ``(n,)`` frame weights (e.g. ``exp(bias)`` of the frames of a
+        simulation under a bias, so that the scale describes the unbiased
+        system).
     min_std : float, optional
         Floor of the standard deviation.
 
@@ -212,8 +226,8 @@ class DistanceMLP(Rescalable):
 
 
 def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias='auto',
-                        series=None, min_std=MIN_STD):
-    """The distance scaler from the free simulations of a run (unbiased frames).
+                        series=None, min_std=MIN_STD, allow_biased_frames=False):
+    """The distance scaler from the free simulations of a run.
 
     Parameters
     ----------
@@ -228,19 +242,27 @@ def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias
         At most this many frames, taken evenly over all free-simulation
         frames.
     bias : {'auto', True, False}, optional
-        Weight the frames by ``exp(bias)`` from the run's bias caches
-        (``'auto'``: when the run records a bias), so that the scale is that
-        of the unbiased system.
+        For a run with a bias (and `allow_biased_frames`): weight the frames
+        by ``exp(bias)`` from the run's bias caches (``'auto'``: when the run
+        records a bias), so that the scale is that of the unbiased system.
     series : str, optional
         The descriptor series (default ``params.descriptors_series``).
     min_std : float, optional
         Floor of the standard deviation.
+    allow_biased_frames : bool, optional
+        Use the free simulations of a run that records a bias (default False:
+        such a run is refused; see "Runs with a bias" in the module docstring).
 
     Returns
     -------
     dict
         ``mean``, ``std`` (one per pair), ``n_frames``, ``files``,
         ``bias_applied``, ``series``.
+
+    Raises
+    ------
+    ValueError
+        For a run that records a bias, unless `allow_biased_frames`.
 
     Notes
     -----
@@ -250,7 +272,9 @@ def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias
     the descriptor caches with numpy (nothing written into the run folder).
     Frames that the bias cache does not cover get weight 1.
     """
+    from ...analysis._data_access import refuse_biased_frames
     from ...path.utils import get_cache_fname
+    refuse_biased_frames(params, 'an input scaler', allow_biased_frames)
     series = series or getattr(params, 'descriptors_series', None) or 'descriptors'
     record_bias = bool(getattr(params, 'record_bias', False))
     applied = record_bias if bias == 'auto' else bool(bias)
@@ -293,7 +317,7 @@ def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias
 
 
 def train_on_run(params, run_dir, network, *, chains=None, descriptor_transform=None,
-                 **fit_kwargs):
+                 allow_biased_frames=False, **fit_kwargs):
     """Train a network on the shooting data of a run with AIMMD's own fit, after the run.
 
     Parameters
@@ -311,6 +335,9 @@ def train_on_run(params, run_dir, network, *, chains=None, descriptor_transform=
     descriptor_transform : callable, optional
         Applied to the descriptor rows before the network (default None: the
         rows themselves, the flat coordinates a :class:`DistanceMLP` reads).
+    allow_biased_frames : bool, optional
+        Train on a run that records a bias (default False: such a run is
+        refused; see "Runs with a bias" in the module docstring).
     **fit_kwargs
         Settings of :func:`aimmd.network.fit.fit` (``epochs``, ``lr``,
         ``batch_size``, ``augment``, early stopping, ...).
@@ -321,6 +348,11 @@ def train_on_run(params, run_dir, network, *, chains=None, descriptor_transform=
         ``losses`` (one per epoch), ``n_shots``, ``n_free_trajectories``,
         ``chains``, ``fit_settings``.
 
+    Raises
+    ------
+    ValueError
+        For a run that records a bias, unless `allow_biased_frames`.
+
     Notes
     -----
     The path ensemble is the trainer's (the shots of the chains and the free
@@ -330,8 +362,10 @@ def train_on_run(params, run_dir, network, *, chains=None, descriptor_transform=
     caches. Only `network` changes; save its weights where the analysis keeps
     its results.
     """
+    from ...analysis._data_access import refuse_biased_frames
     from ...network.fit import fit
     from ...pathensemble.utils import assemble_pathensemble
+    refuse_biased_frames(params, 'training data', allow_biased_frames)
     run_dir = os.fspath(run_dir)
     shot_chains = params.shot_chains(run_dir, None, None if chains is None else list(chains))
     trajectories = params.free_trajectories(run_dir)
