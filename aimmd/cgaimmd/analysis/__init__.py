@@ -59,6 +59,9 @@ _LAZY_NAMES = {
     'validation_rows': 'shooting_validation',
     'from_shot_table': 'shooting_validation',
     'write_validation_frames': 'shooting_validation',
+    'DistanceMLP': 'committor_baseline',
+    'run_distance_scaler': 'committor_baseline',
+    'train_on_run': 'committor_baseline',
 }
 
 _SUBMODULES = sorted(info.name for info in _pkgutil.iter_modules(__path__)

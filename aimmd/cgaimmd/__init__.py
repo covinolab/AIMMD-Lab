@@ -51,7 +51,10 @@ PLUMED bias of the shots in :mod:`~aimmd.cgaimmd.plumed`.
 
 The GROMACS tools that turn a generated configuration into a shooting point
 (descriptors, validity checks, the polish, re-solvation, minimization) are in
-the subpackage :mod:`aimmd.cgaimmd.preparation`.
+the subpackage :mod:`aimmd.cgaimmd.preparation`; the tools that judge a model
+and its generator after a run (committor parity against brute-force sets,
+generator adherence, shooting validation, a distance-matrix committor
+baseline) are in :mod:`aimmd.cgaimmd.analysis`.
 """
 
 import importlib as _importlib
