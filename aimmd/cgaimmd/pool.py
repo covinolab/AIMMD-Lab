@@ -19,8 +19,8 @@ next with a probability of about one over the pool size.
 
 The watcher also reads ``network{s}.json``, the trainer's metadata of the
 network file, for the number of trained shooting points, which decides when
-the final check enforces the acceptance rule
-(``cgaimmd_parameters['window_after_trained_shots']``).
+the final check enforces a committor acceptance rule (``'target'`` or
+``'window'``; ``cgaimmd_parameters['window_after_trained_shots']``).
 
 Seeds are derived, never drawn: :func:`base_seed` (``generation_seed`` or a
 hash of the absolute run directory), :func:`refill_seed` (per chain folder,

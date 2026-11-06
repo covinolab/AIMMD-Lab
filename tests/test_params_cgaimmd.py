@@ -529,7 +529,12 @@ def test_round_shooting_index_warning(tmp_path, capsys):
 def test_window_after_default_warning(tmp_path, capsys):
     load(tmp_path)
     assert 'window_after_trained_shots is at its default' not in printed(capsys)
+    # the default acceptance 'transition_region' never filters by the committor: the
+    # switch-on point does not apply, so its default is not worth a warning
     load(tmp_path / 'default', "cgaimmd_parameters = {'placement': 'none', 'lambda_clip': 10.0}")
+    assert 'window_after_trained_shots' not in printed(capsys)
+    load(tmp_path / 'target', "cgaimmd_parameters = {'placement': 'none', 'lambda_clip': 10.0, "
+                              "'acceptance': 'target'}")
     assert ('WARNING: window_after_trained_shots is at its default 1000; this is highly '
             'system dependent (it was 8000 for the NANMA test system), set it '
             'explicitly') in printed(capsys)
@@ -537,6 +542,24 @@ def test_window_after_default_warning(tmp_path, capsys):
     # worker log (key 'window_after_trained_shots default')
     assert _once.once('window_after_trained_shots default')
     assert not _once.once('params: window_after_trained_shots default')
+
+
+def test_committor_rule_settings_without_a_committor_rule_warn(tmp_path, capsys):
+    """lambda_tolerance / window_after_trained_shots under 'transition_region': a WARNING, once."""
+    load(tmp_path / 'set', "cgaimmd_parameters = {'placement': 'none', 'lambda_clip': 10.0, "
+                           "'window_after_trained_shots': 5, 'lambda_tolerance': 0.5}")
+    assert ("WARNING: cgaimmd_parameters sets 'lambda_tolerance', 'window_after_trained_shots', "
+            "which apply only with acceptance 'target' or 'window'; with acceptance "
+            "'transition_region' (the default) every candidate in the transition region is "
+            "shot, whatever its committor") in printed(capsys)
+    load(tmp_path / 'again', "cgaimmd_parameters = {'placement': 'none', 'lambda_clip': 10.0, "
+                             "'lambda_tolerance': 0.5}")
+    assert 'apply only with acceptance' not in printed(capsys)          # once per process
+    _once._reset()
+    load(tmp_path / 'target', "cgaimmd_parameters = {'placement': 'none', 'lambda_clip': 10.0, "
+                              "'window_after_trained_shots': 5, 'acceptance': 'target'}")
+    load(tmp_path / 'plain', "cgaimmd_parameters = {'placement': 'none', 'lambda_clip': 10.0}")
+    assert 'apply only with acceptance' not in printed(capsys)
 
 
 def test_initial_network_warning(tmp_path, capsys):

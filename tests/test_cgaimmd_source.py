@@ -243,7 +243,8 @@ def test_startup_line(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(network, 'to', lambda device: moved.append(str(device)) or real_to(device))
     monkeypatch.setattr(_config, 'WORKER_TASK', 'shoot')
     setup = _started(tmp_path, monkeypatch, network=network, generation_device='cpu',
-                     values_device='cpu', window_after_trained_shots=7, n_trained_shots=3)
+                     values_device='cpu', window_after_trained_shots=7, n_trained_shots=3,
+                     acceptance='target')
     out = capsys.readouterr().out
     assert _lines(out, 'C-GAIMMD shooting: ') == [
         f"C-GAIMMD shooting: ScriptedNetwork n_atoms=1, generator test_scripted {{'chunk': 128}}, "
@@ -270,8 +271,10 @@ def test_startup_line(tmp_path, monkeypatch, capsys):
     # the window printed is the resolved one: a pair clipped to [-L, L], the bins' cutoffs
     _started(tmp_path / 'c', monkeypatch, network=ScriptedNetwork(lambda_clip=4.0),
              lambda_window=(-6.0, 6.0))
-    assert 'law uniform, window -4.0, 4.0, ' in _lines(capsys.readouterr().out,
-                                                       'C-GAIMMD shooting: ')[0]
+    line = _lines(capsys.readouterr().out, 'C-GAIMMD shooting: ')[0]
+    assert 'law uniform, window -4.0, 4.0, ' in line
+    # the default rule has no switch-on point and no tolerance
+    assert line.endswith(', acceptance transition_region (no committor filter)')
     binned = _setup(tmp_path / 'd', monkeypatch, lambda_window='bins',
                     params_overrides={'reweight_parameters': {'sp_cutoff_max': 2.0}})
     save_npy('run/binsARB.npy', np.array([-np.inf, -3.0, 0.0, 3.0, np.inf]))
@@ -333,8 +336,18 @@ def test_r_frame_warning(tmp_path, monkeypatch, capsys):
 
 
 def test_default_window_after_warning(tmp_path, monkeypatch, capsys):
-    """window_after_trained_shots left at its default: the WARNING, once per process."""
-    setup = _setup(tmp_path, monkeypatch)
+    """window_after_trained_shots left at its default: the WARNING, once per process.
+
+    Only under a committor rule ('target', 'window'): the default 'transition_region' has no
+    switch-on point.
+    """
+    default = _setup(tmp_path / 'default', monkeypatch)
+    default.params.__dict__['cgaimmd_parameters'] = {
+        key: value for key, value in default.params.cgaimmd_parameters.items()
+        if key != 'window_after_trained_shots'}
+    assert default.source.wait_for_network()
+    assert not _lines(capsys.readouterr().out, 'WARNING: window_after')
+    setup = _setup(tmp_path, monkeypatch, acceptance='target')
     setup.params.__dict__['cgaimmd_parameters'] = {
         key: value for key, value in setup.params.cgaimmd_parameters.items()
         if key != 'window_after_trained_shots'}
@@ -349,7 +362,7 @@ def test_default_window_after_warning(tmp_path, monkeypatch, capsys):
     assert cgaimmd_source.WINDOW_AFTER_WARNING_KEY == 'window_after_trained_shots default'
     from aimmd.cgaimmd import _once
     _once._reset()
-    _started(tmp_path / 'b', monkeypatch)                           # the key given: no warning
+    _started(tmp_path / 'b', monkeypatch, acceptance='target')     # the key given: no warning
     assert not _lines(capsys.readouterr().out, 'WARNING: window_after')
 
 
@@ -383,9 +396,10 @@ def test_first_valid_candidate_returned(tmp_path, monkeypatch, capsys):
                               'pool_left_after_pop': 8 - tried, 'reset_count': 0,
                               'stale_refill_pop': False, 'refill_network_sha256': setup.sha}
     assert record['stage1_rejected'] == {}
-    assert record['acceptance'] == {'rule': 'target', 'enforced': True, 'tolerance': 1.0,
-                                    'window': [-4.0, 4.0], 'window_after_trained_shots': 0,
-                                    'n_trained_shots': 0}
+    # the default rule: no committor filter (the settings of the committor rules do not apply)
+    assert record['acceptance'] == {'rule': 'transition_region', 'enforced': False,
+                                    'tolerance': None, 'window': [-4.0, 4.0],
+                                    'window_after_trained_shots': None, 'n_trained_shots': 0}
     assert record['network'] == {'file': 'run/networkARB.h5', 'sha256': setup.sha, 'round': 1,
                                  'n_trained_shots': 0, 'metadata_matched': True,
                                  'provenance': None}       # the network has no provenance()
@@ -418,7 +432,7 @@ def test_first_valid_candidate_returned(tmp_path, monkeypatch, capsys):
     [line] = _lines(out, 'C-GAIMMD shooting point for ')
     assert line.startswith(f'C-GAIMMD shooting point for ./run/chainR0/{PATH}: '
                            f'lambda*={targets[0]:.3f} lambda={record["lambda_final"]:.3f} '
-                           f'(target), 7 candidates tried (state_B: 6), network ')
+                           f'(transition_region), 7 candidates tried (state_B: 6), network ')
     assert f'network {setup.sha[:8]}, ' in line and line.endswith(' s')
 
 
@@ -426,7 +440,7 @@ def test_bootstrap_before_n(tmp_path, monkeypatch):
     """Before window_after_trained_shots, any R configuration is accepted ('bootstrap_any_R')."""
     far = [lambda target: target + 3.0] * 8
     setup = _started(tmp_path, monkeypatch, network=ScriptedNetwork(far), lambda_window=(-4.0, 1.0),
-                     window_after_trained_shots=5, n_trained_shots=4)
+                     window_after_trained_shots=5, n_trained_shots=4, acceptance='target')
     record = _next(setup).record
     assert record['candidates'] == {'tried': 1, 'rejected': {}}
     assert abs(record['lambda_final'] - record['lambda_target'] - 3.0) < 0.06
@@ -439,7 +453,8 @@ def test_target_rule_after_n(tmp_path, monkeypatch):
     """From window_after_trained_shots on, |lambda - lambda*| <= lambda_tolerance ('target')."""
     script = _only(LATE, lambda target: target + 3.0, lambda target: target + 0.2)
     setup = _started(tmp_path, monkeypatch, network=ScriptedNetwork(script),
-                     lambda_window=(-4.0, 1.0), window_after_trained_shots=5, n_trained_shots=5)
+                     lambda_window=(-4.0, 1.0), window_after_trained_shots=5, n_trained_shots=5,
+                     acceptance='target')
     record = _next(setup).record
     assert record['pool']['candidate'] == LATE
     assert record['acceptance']['rule'] == 'target' and record['acceptance']['enforced']
@@ -457,6 +472,52 @@ def test_window_rule(tmp_path, monkeypatch):
     assert record['acceptance']['rule'] == 'window'
     assert record['acceptance']['window'] == [-2.0, 2.0]
     assert record['candidates'] == {'tried': 7, 'rejected': {'lambda_window': 6}}
+
+
+def test_transition_region_rule_is_the_default_and_never_filters(tmp_path, monkeypatch):
+    """The default rule shoots any transition-region candidate, however far its committor is from
+    lambda* and however many shots the network was trained on; the record keeps the committor."""
+    assert cgaimmd_source.DEFAULT_ACCEPTANCE == 'transition_region'
+    far = [lambda target: target + 3.0] * 8
+    setup = _started(tmp_path, monkeypatch, network=ScriptedNetwork(far), lambda_window=(-4.0, 1.0),
+                     n_trained_shots=10 ** 6)
+    assert 'acceptance' not in setup.params.cgaimmd_parameters          # the default
+    record = _next(setup).record
+    assert record['candidates'] == {'tried': 1, 'rejected': {}}
+    assert record['stage1_rejected'] == {}
+    assert abs(record['lambda_final'] - record['lambda_target'] - 3.0) < 0.06
+    assert abs(record['lambda_raw'] - record['lambda_target'] - 3.0) < 1e-4
+    assert record['acceptance'] == {'rule': 'transition_region', 'enforced': False,
+                                    'tolerance': None, 'window': [-4.0, 1.0],
+                                    'window_after_trained_shots': None,
+                                    'n_trained_shots': 10 ** 6}
+    # one pool, two rules: the default shoots the first candidate popped, 'target' the one near
+    script = _only(LATE, lambda target: target + 3.0, lambda target: target + 0.2)
+    default = _started(tmp_path / 'default', monkeypatch, network=ScriptedNetwork(script),
+                       lambda_window=(-4.0, 1.0), n_trained_shots=10 ** 6)
+    record = _next(default).record
+    assert record['candidates'] == {'tried': 1, 'rejected': {}}
+    assert abs(record['lambda_final'] - record['lambda_target'] - 3.0) < 0.06
+    target = _started(tmp_path / 'target', monkeypatch, network=ScriptedNetwork(script),
+                      lambda_window=(-4.0, 1.0), n_trained_shots=10 ** 6, acceptance='target')
+    record = _next(target).record
+    assert record['acceptance']['rule'] == 'target' and record['acceptance']['enforced']
+    assert record['candidates'] == {'tried': 7, 'rejected': {'lambda_window': 6}}
+    assert abs(record['lambda_final'] - record['lambda_target'] - 0.2) < 0.06
+
+
+def test_transition_region_rule_still_checks_state_and_finiteness(tmp_path, monkeypatch):
+    """Under 'transition_region' a frame outside R and a non-finite committor still reject."""
+    in_b, nan, far = (lambda target: 30.0), (lambda target: -4.7), (lambda target: target + 2.5)
+    # pops 7, 5, 2, 6, ...: two frames in B, then the one with a NaN committor (stage 1), then far
+    script = [far, far, nan, far, far, in_b, far, in_b]
+    setup = _started(tmp_path, monkeypatch, network=ScriptedNetwork(script),
+                     lambda_window=(-4.0, 1.0), n_trained_shots=50)
+    record = _next(setup).record
+    assert record['stage1_rejected'] == {'lambda_nonfinite': 1}    # the raw committor of -4.7
+    assert record['candidates'] == {'tried': 3, 'rejected': {'state_B': 2}}
+    assert record['acceptance']['rule'] == 'transition_region'
+    assert abs(record['lambda_final'] - record['lambda_target'] - 2.5) < 0.06
 
 
 def _near(positions, x):
@@ -517,7 +578,7 @@ def test_raw_lambda_prefilter(tmp_path, monkeypatch):
     """raw_lambda_tolerance rejects in stage 1 on |lambda_raw - lambda*| once the rule is enforced."""
     script = [lambda target: target + 2.0] * 7
     setup = _started(tmp_path, monkeypatch, network=ScriptedNetwork(script),
-                     lambda_window=(-4.0, 1.0), raw_lambda_tolerance=0.5)
+                     lambda_window=(-4.0, 1.0), raw_lambda_tolerance=0.5, acceptance='target')
     record = _next(setup).record
     assert record['stage1_rejected'] == {'raw_lambda': 7}
     assert record['pool']['passed_stage1'] == 1 and record['pool']['candidate'] == 7
@@ -526,13 +587,13 @@ def test_raw_lambda_prefilter(tmp_path, monkeypatch):
     # the bootstrap phase (window not enforced yet): no prefilter either
     boot = _started(tmp_path / 'b', monkeypatch, network=ScriptedNetwork(script),
                     lambda_window=(-4.0, 1.0), raw_lambda_tolerance=0.5,
-                    window_after_trained_shots=5, n_trained_shots=4)
+                    window_after_trained_shots=5, n_trained_shots=4, acceptance='target')
     record = _next(boot).record
     assert record['stage1_rejected'] == {} and record['pool']['passed_stage1'] == 8
     assert record['acceptance']['rule'] == 'bootstrap_any_R'
     enforced = _started(tmp_path / 'c', monkeypatch, network=ScriptedNetwork(script),
                         lambda_window=(-4.0, 1.0), raw_lambda_tolerance=0.5,
-                        window_after_trained_shots=5, n_trained_shots=5)
+                        window_after_trained_shots=5, n_trained_shots=5, acceptance='target')
     assert _next(enforced).record['stage1_rejected'] == {'raw_lambda': 7}
 
 
@@ -1342,7 +1403,7 @@ def test_final_check_uses_values_function(tmp_path, monkeypatch):
         calls.append(np.array(descriptors))
         return np.full(len(descriptors), 0.75)
 
-    context = _check_context(tmp_path)
+    context = _check_context(tmp_path, acceptance='target')
     context.params.__dict__['values_function'] = values
 
     def no_forward(*args, **kwargs):
@@ -1369,7 +1430,7 @@ def test_final_check_uses_values_function(tmp_path, monkeypatch):
     context.params.__dict__['values_function'] = lambda d: np.full(len(d), np.nan)
     assert final_check(frame, context, 0.5)['reason'] == 'lambda_nonfinite'
 
-    boot = _check_context(tmp_path / 'b', window_after_trained_shots=5)
+    boot = _check_context(tmp_path / 'b', window_after_trained_shots=5, acceptance='target')
     boot.params.__dict__['values_function'] = values
     boot.network_info = NetworkInfo(file='f', sha256='s', round=1, n_trained_shots=3, metadata={},
                                     metadata_matched=True, loaded_at=0.0)
@@ -1387,9 +1448,31 @@ def test_final_check_uses_values_function(tmp_path, monkeypatch):
     assert (check['ok'], check['reason'], check['window']) == (False, 'lambda_window', [-1.0, 0.5])
 
 
+def test_final_check_transition_region(tmp_path):
+    """'transition_region': R and a finite committor pass whatever lambda*; the committor is kept."""
+    context = _check_context(tmp_path, window_after_trained_shots=5)
+    assert context.settings['acceptance'] == 'transition_region'           # the default
+    context.params.__dict__['values_function'] = lambda d: np.full(len(d), 0.75)
+    context.network_info = NetworkInfo(file='f', sha256='s', round=9, n_trained_shots=10 ** 5,
+                                       metadata={}, metadata_matched=True, loaded_at=0.0)
+    frame = PreparedFrame(np.array([[0.1, 0.0, 0.0]]), None)
+    for target in (-9.0, 0.75, 9.0):
+        check = final_check(frame, context, target)
+        assert (check['ok'], check['reason'], check['lambda']) == (True, '', 0.75)
+        assert check['rule'] == 'transition_region' and check['enforced'] is False
+        assert check['tolerance'] is None and check['window_after_trained_shots'] is None
+        assert check['n_trained_shots'] == 10 ** 5 and check['window'] == [-6.0, 6.0]
+    in_b = final_check(PreparedFrame(np.array([[0.7, 0.0, 0.0]]), None), context, 0.5)
+    assert (in_b['ok'], in_b['reason'], in_b['lambda']) == (False, 'state_B', None)
+    context.params.__dict__['values_function'] = lambda d: np.full(len(d), np.nan)
+    nan = final_check(frame, context, 0.5)
+    assert (nan['ok'], nan['reason'], nan['lambda']) == (False, 'lambda_nonfinite', None)
+    assert nan['rule'] == 'transition_region'
+
+
 def test_final_check_rejects_an_unknown_acceptance(tmp_path):
     """An acceptance rule outside ACCEPTANCE_RULES raises, enforced or not (it never passes all R)."""
-    assert cgaimmd_source.ACCEPTANCE_RULES == ('target', 'window')
+    assert cgaimmd_source.ACCEPTANCE_RULES == ('transition_region', 'target', 'window')
     frame = PreparedFrame(np.array([[0.0, 0.0, 0.0]]), None)
     for after in (0, 5):                                     # enforced, bootstrap phase
         context = _check_context(tmp_path, window_after_trained_shots=after)
@@ -1669,7 +1752,7 @@ def test_prepare_candidate_is_the_workers_stage_2(tmp_path, monkeypatch):
 def test_prepare_candidate_outside_a_worker(tmp_path, monkeypatch):
     """candidate_context + prepare_candidate: a validation tool prepares a generated structure as
     a run would (hooks that use the seed give the same frame), and every outcome is reported."""
-    setup = _started(tmp_path, monkeypatch, placement='box_center',
+    setup = _started(tmp_path, monkeypatch, placement='box_center', acceptance='target',
                      params_overrides={'cgaimmd_prepare_function': _seeded_prepare,
                                        'cgaimmd_minimize_function': _seeded_minimize})
     positions = np.array([[0.12, 0.0, 0.0]])

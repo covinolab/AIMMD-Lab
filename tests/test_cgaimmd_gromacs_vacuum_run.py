@@ -18,8 +18,8 @@ of basin A with psi turned by 40 degrees (which puts them in R, next to A, so
 that the shots are short), randomly rotated (proper rotations), relabelled
 (the atoms of each element in a random order, which the validity hook undoes)
 and with 0.01 Angstrom of noise. Everything else is the production path: the
-committor values of the PaiNN, the target laws, the bootstrap acceptance, the
-sidecars, the trainer and the flow-matching fit.
+committor values of the PaiNN, the target laws, the default acceptance (no
+committor filter), the sidecars, the trainer and the flow-matching fit.
 
 The run, in this process:
 
@@ -104,7 +104,7 @@ masses_from_topology = True              # the CHARMM CL/CLP carbons
 initial_paths = ['free_md_A.xtc', 'free_md_B.xtc']
 round_shooting_index = True
 cgaimmd_generator = 'test_nanma_stand_in'
-cgaimmd_parameters = {{'window_after_trained_shots': 100, 'generation_seed': 0, 'n_targets': 4,
+cgaimmd_parameters = {{'generation_seed': 0, 'n_targets': 4,
                       'generation_device': 'cpu', 'values_device': 'cpu',
                       'training_device': 'cpu'}}
 
@@ -331,7 +331,10 @@ def check_shots(params, run, records, first):
     for fname, record in records.items():
         assert record['source'] == 'cgaimmd' and record['state_final'] == 'R'
         assert math.isfinite(record['lambda_registered'])
-        assert record['acceptance']['rule'] == 'bootstrap_any_R'
+        # the default rule: shot whatever the committor; the committor is recorded
+        assert record['acceptance']['rule'] == 'transition_region'
+        assert record['acceptance']['enforced'] is False
+        assert math.isfinite(record['lambda_final'])
         assert record['generator']['method'] == 'test_nanma_stand_in'
         assert record['generator']['settings'] == {'noise_A': 0.01}
         assert record['network']['sha256'] == first['sha256']      # the no-op round's network

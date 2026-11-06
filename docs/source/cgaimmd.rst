@@ -67,10 +67,12 @@ that are only approximately where it wants them.
 C-GAIMMD removes that restriction. Its network carries, next to the committor,
 a generator conditioned on the committor. The shooting worker draws a target
 :math:`\lambda^*` (by default uniformly in a window around the transition
-state), generates candidates at that target, and shoots from a candidate whose
-committor, measured by the network on the prepared structure, is within a
-tolerance of the target. The trainer then trains both the committor and the
-generator on the new shots. The committor tells the generator where the
+state), generates candidates at that target, and shoots from a candidate that
+passes the structure checks and lies in the transition region as the MD state
+definitions define it. The network's committor of the prepared structure is
+recorded with every shot but does not decide which candidate is shot (an
+optional rule can make it decide; see `The final acceptance check`_). The
+trainer then trains both the committor and the generator on the new shots. The committor tells the generator where the
 transition states are; the generator lets the run shoot there whether or not a
 path has visited the place.
 
@@ -122,10 +124,13 @@ final check:
    runs a restrained energy minimization. Without a preparation function the
    candidate is placed in the run's box.
 3. **Final acceptance check.** The worker computes the state and the committor
-   of the prepared frame, exactly as grompp will receive it. The frame must be
-   in the reactive region R and, once the network has been trained on enough
-   shots, its committor must be within ``lambda_tolerance`` of the candidate's
-   target. A candidate that fails is discarded and the next one is popped.
+   of the prepared frame, exactly as grompp will receive it. By default the
+   frame must be in the reactive region R and have a finite committor; the
+   committor is recorded but does not decide (acceptance
+   ``'transition_region'``). Only if the params file chooses the ``'target'``
+   rule must the committor also lie within ``lambda_tolerance`` of the
+   candidate's target, once the network has been trained on enough shots. A
+   candidate that fails is discarded and the next one is popped.
 4. **The shot.** The accepted frame becomes the shooting point of an ordinary
    two-way shot. Before the segments start, the worker writes an *in-flight
    record* into the chain folder; after registration, that record becomes the
@@ -438,21 +443,26 @@ an unknown key is an error:
      - None
      - The conditioning range :math:`L`; None takes the network's.
    * - ``acceptance``
-     - ``'target'``
-     - The rule of the final check once it is enforced: ``'target'``
-       (:math:`\lvert\lambda - \lambda^*\rvert \le` tolerance) or
-       ``'window'`` (:math:`\lambda` inside the window).
+     - ``'transition_region'``
+     - The rule of the final check. ``'transition_region'``: every frame in R
+       with a finite committor is shot; the committor is recorded, never used
+       to filter. ``'target'`` (:math:`\lvert\lambda - \lambda^*\rvert \le`
+       tolerance) and ``'window'`` (:math:`\lambda` inside the window) filter
+       by the committor once the network has been trained on
+       ``window_after_trained_shots`` shooting points.
    * - ``lambda_tolerance``
      - ``1.0``
      - The tolerance of the ``'target'`` rule, in logit units.
    * - ``window_after_trained_shots``
      - ``1000``
-     - The number of trained shooting points from which the rule is enforced;
-       before that any frame in R is accepted. Highly system dependent: set it.
+     - ``'target'`` and ``'window'`` only: the number of trained shooting
+       points from which the rule is enforced; before that any frame in R is
+       accepted. Highly system dependent: set it.
    * - ``raw_lambda_tolerance``
      - None
-     - Once the rule is enforced, also drop candidates whose raw committor is
-       further than this from their target, before preparation.
+     - ``'target'`` and ``'window'`` only (an error otherwise): once the rule
+       is enforced, also drop candidates whose raw committor is further than
+       this from their target, before preparation.
    * - ``n_targets``, ``candidates_per_target``
      - ``64``, ``2``
      - Targets per refill and candidates per target.
@@ -509,8 +519,24 @@ The final acceptance check
 The final check decides which prepared candidate is shot. It evaluates the
 frame exactly as grompp will receive it, rounded as the trajectory stores it:
 
-- the frame must be in the reactive region (``states[1]``); otherwise the
-  reason is ``state_<letter>``;
+- the frame must be in the reactive region (``states[1]``) as the MD state
+  function defines it; otherwise the reason is ``state_<letter>``;
+- its committor must be finite; otherwise the reason is ``lambda_nonfinite``
+  (a non-finite committor means a broken network, not a bad candidate);
+- the acceptance rule decides the rest.
+
+The default rule, ``'transition_region'``, **never filters by the committor**.
+Every candidate that passes the structure checks of the validity hook and the
+two checks above is shot, however far the network's committor is from the
+candidate's target. The committor is still computed and written into the
+shot's record (``lambda_final``, with ``acceptance.rule``
+``'transition_region'`` and ``acceptance.enforced`` False). A filter on the
+network's own committor would make the network that is being trained decide
+which shooting points it is trained on; it is off unless a params file asks
+for it.
+
+Two rules that filter by the committor remain available, for comparison runs:
+
 - while the network has been trained on fewer than
   ``window_after_trained_shots`` shooting points, any frame in R is accepted
   (the *bootstrap rule*, ``bootstrap_any_R`` in the sidecar);
@@ -519,17 +545,18 @@ frame exactly as grompp will receive it, rounded as the trajectory stores it:
   requires :math:`\lambda` inside the window; a failure is recorded as
   ``lambda_window``.
 
-The bootstrap phase exists because an untrained committor cannot tell
-whether a candidate is at its target: before the network has seen enough
-shots, enforcing the target would reject candidates at random. The number of
-shots after which the committor is trustworthy depends on the system, so set
+Their bootstrap phase exists because an untrained committor cannot tell
+whether a candidate is at its target. The number of shots after which the
+committor is trustworthy depends on the system, so with these rules set
 ``window_after_trained_shots`` explicitly (AIMMD warns when it is left at its
-default).
+default). With the default rule, setting ``lambda_tolerance`` or
+``window_after_trained_shots`` has no effect, and AIMMD warns about it.
 
-The check is enforced by default, and it shapes the shooting-point law: a
-candidate far from its target is never shot. This is intended: the check
-belongs to the online loop. To measure how well a generator meets its targets,
-evaluate its raw samples without the check.
+A committor rule shapes the shooting-point law: a candidate far from its
+target is never shot. Under the default rule the shots measure the generator
+as it is. Params files of runs made before the default changed (the old field
+name ``flow_parameters``) that set no rule ran under ``'target'``, and are
+read with it.
 
 Two more rejections can happen after the check. AIMMD checks that frame 0 of
 the new segments is in R; generated shooting points often sit near the edges
@@ -592,8 +619,10 @@ made:
        check) and of the registered shooting frame (what the reweighting
        uses).
    * - ``state_final``, ``acceptance``
-     - The state of the prepared frame, and the rule of the final check with
-       its tolerance, window and the number of trained shots.
+     - The state of the prepared frame, and the rule of the final check
+       (``rule``; ``enforced``, whether a committor filter decided), its
+       tolerance, window and switch-on point (None where the rule has none)
+       and the number of trained shots.
    * - ``lambda_law``
      - The target law, its window and where the window came from.
    * - ``network``

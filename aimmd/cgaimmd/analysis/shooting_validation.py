@@ -880,11 +880,13 @@ def from_shot_table(rows, *, states='ARB', level_edges=None):
 
     Notes
     -----
-    Once the network is trained, the run accepted a candidate only if the
-    network put it within ``lambda_tolerance`` of its request (the final
-    check, ``acceptance_enforced``). The shots therefore measure generation
-    and that check together, not the generator alone; select the rows with
-    ``acceptance_enforced`` False, or validate with fresh frames
+    Under a committor acceptance rule (``'target'`` or ``'window'``), once the
+    network is trained, the run accepted a candidate only if the network put
+    it near its request (the final check, ``acceptance_enforced`` True). Such
+    shots measure generation and that check together, not the generator
+    alone; select the rows with ``acceptance_enforced`` False (every shot of
+    a run under the default rule ``'transition_region'``, which never filters
+    by the committor), or validate with fresh frames
     (:func:`write_validation_frames`), for the generator alone.
     """
     out = []
@@ -1043,8 +1045,9 @@ def write_validation_frames(params, out_dir, levels, n_per_level, *, network=Non
                 context = candidate_context(
                     params, folder, path_name=f'validation_level{li:03d}_rank{k:04d}',
                     seed=_preparation_seed(seed, level, k), network=network)
-                # the state check only: the committor window of the final check is not applied
-                context.settings['window_after_trained_shots'] = 2 ** 62
+                # the state check only: no committor filter, whatever the run's rule
+                context.settings['acceptance'] = 'transition_region'
+                context.settings['raw_lambda_tolerance'] = None
                 return context
 
             context = context_of(0)

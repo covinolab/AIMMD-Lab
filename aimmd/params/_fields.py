@@ -391,9 +391,13 @@ lambda_law ('uniform' (default) or 'bins'),
 lambda_window ('bins' (default): the trainer's sp cutoffs, the whole
 conditioning range until bins exist; or a (lo, hi) pair),
 lambda_clip (None (default): the network's; a float > 0),
-acceptance ('target' (default) or 'window'), lambda_tolerance (1.0),
-window_after_trained_shots (1000; highly system dependent: set it),
-raw_lambda_tolerance (None), n_targets (64), candidates_per_target (2),
+acceptance ('transition_region' (default): every prepared candidate that
+the MD state function puts in the transition region is shot, whatever the
+network's committor, which is recorded in the shot's record file; or 'target'
+or 'window', which filter by the committor), lambda_tolerance (1.0) and
+window_after_trained_shots (1000; highly system dependent: set it) of the
+'target' and 'window' rules, raw_lambda_tolerance (None; only with 'target'
+or 'window'), n_targets (64), candidates_per_target (2),
 placement ('box_center' (default) or 'none'),
 final_check_round ('auto' (default), None or decimals),
 generation_device / values_device / training_device ('auto' (default),
@@ -406,7 +410,9 @@ the trainer's sp cutoffs are reweighted as free excursions, as in RFPS; the
 default lambda_window='bins' draws the targets inside them. How candidates
 are generated is set by `cgaimmd_generator`. The old field name
 'flow_parameters' is read with a DeprecationWarning (its ODE keys
-'ode_sampler', 'ode_steps' and 'generate_chunk' go to `cgaimmd_generator`)."""
+'ode_sampler', 'ode_steps' and 'generate_chunk' go to `cgaimmd_generator`,
+and without an 'acceptance' key it gets 'target', the rule such a run ran
+under)."""
                  })
 
     cgaimmd_generator: object = field(

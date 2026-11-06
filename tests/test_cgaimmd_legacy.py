@@ -106,8 +106,9 @@ def test_old_field_assigned(tmp_path, old, recwarn):
     with pytest.warns(DeprecationWarning, match=f"'{old}' is deprecated; use '{new}'") as record:
         setattr(params, old, value)
     assert len(deprecations(record)) == 1
-    assert getattr(params, new) == value if old == 'flow_parameters' else \
-        getattr(params, new)() == HOOK_VALUES[old]
+    # an old run's flow_parameters ran under the old default rule 'target': it is made explicit
+    assert getattr(params, new) == {**value, 'acceptance': 'target'} \
+        if old == 'flow_parameters' else getattr(params, new)() == HOOK_VALUES[old]
     assert old not in params.__dict__
     # once per process: the second assignment does not warn again
     recwarn.clear()
@@ -130,7 +131,8 @@ def test_old_field_in_a_params_file(tmp_path, old, recwarn):
         f"read for one release)"]
     if old == 'flow_parameters':
         assert params.cgaimmd_parameters == {'placement': 'none', 'lambda_clip': 10.0,
-                                             'window_after_trained_shots': 5}
+                                             'window_after_trained_shots': 5,
+                                             'acceptance': 'target'}
     else:
         assert getattr(params, new)() == HOOK_VALUES[old]
         # written under the new name only, as an import of the old function
@@ -149,6 +151,8 @@ def test_old_field_as_keyword(tmp_path, old, recwarn):
             return np.zeros(n)
     params = aimmd.Params.load(fname, save=False, **{old: value})
     assert len(deprecations(recwarn)) == 1
+    if old == 'flow_parameters':                       # the rule an old run ran under
+        value = {**value, 'acceptance': 'target'}
     assert getattr(params, _legacy.PARAMS_FIELDS[old]) == value
     with pytest.raises(TypeError, match="both 'flow_lambda_sampler' and its new name"):
         aimmd.Params.load(fname, save=False, flow_lambda_sampler=None,
@@ -206,7 +210,7 @@ def test_ode_settings_map_to_the_generator(tmp_path, recwarn):
     assert params.cgaimmd_generator == {'method': 'ode', 'sampler': 'rk4', 'n_steps': 8,
                                         'chunk': 32}
     assert params.cgaimmd_parameters == {'n_targets': 4, 'lambda_clip': 10.0,
-                                         'placement': 'none'}
+                                         'placement': 'none', 'acceptance': 'target'}
     from aimmd.cgaimmd.generation import make_generator
     from aimmd.cgaimmd.flow_matching.sampler import ODEGenerator
     assert make_generator(params.cgaimmd_generator, params.network) == ODEGenerator(
@@ -234,6 +238,26 @@ def test_old_and_new_in_one_file_is_an_error(tmp_path):
             flow_parameters = {'ode_steps': 4}
             cgaimmd_generator = 'ode'
             ''')), save=False)
+
+
+def test_old_flow_parameters_keep_the_rule_they_ran_under(tmp_path, recwarn):
+    """The old code's only default rule was 'target': an old run is read with it, a new one is not.
+
+    The new default 'transition_region' never filters by the committor; without this an archived
+    run's params (and its run card) would claim a rule the run did not use.
+    """
+    params = aimmd.Params.load(write_params(tmp_path, OLD), save=False)
+    assert params.cgaimmd_settings['acceptance'] == 'target'
+    assert params.cgaimmd_parameters['acceptance'] == 'target'
+    given = OLD.replace("flow_parameters = {", "flow_parameters = {'acceptance': 'window', ")
+    params = aimmd.Params.load(write_params(tmp_path / 'window', given), save=False)
+    assert params.cgaimmd_settings['acceptance'] == 'window'           # a given rule is kept
+    prefilter = OLD.replace("flow_parameters = {", "flow_parameters = {'raw_lambda_tolerance': 0.5, ")
+    params = aimmd.Params.load(write_params(tmp_path / 'raw', prefilter), save=False)
+    assert params.cgaimmd_settings['raw_lambda_tolerance'] == 0.5      # still loads
+    params = aimmd.Params.load(write_params(tmp_path / 'new', NEW), save=False)
+    assert params.cgaimmd_settings['acceptance'] == 'transition_region'
+    assert 'acceptance' not in params.cgaimmd_parameters
 
 
 def test_a_half_migrated_file_is_told_where_each_key_goes(tmp_path):

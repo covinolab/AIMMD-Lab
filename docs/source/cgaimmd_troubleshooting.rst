@@ -80,9 +80,20 @@ Loading the params file
    resolved against the params file's folder, not the current folder.
 
 ``WARNING: window_after_trained_shots is at its default 1000; this is highly system dependent ..., set it explicitly``
-   Not an error. The final check enforces the target rule only after the
-   network was trained on this many shooting points. Set the value for your
-   system in ``cgaimmd_parameters``.
+   Not an error; printed only under the acceptance rules ``'target'`` and
+   ``'window'``. The final check enforces the rule only after the network was
+   trained on this many shooting points. Set the value for your system in
+   ``cgaimmd_parameters``.
+
+``WARNING: cgaimmd_parameters sets 'lambda_tolerance', ..., which apply only with acceptance 'target' or 'window'; with acceptance 'transition_region' (the default) every candidate in the transition region is shot, whatever its committor``
+   Not an error. The default rule never filters candidates by the network's
+   committor, so these settings do nothing. Delete them, or set
+   ``'acceptance': 'target'`` if a committor filter is really wanted.
+
+``cgaimmd_parameters['raw_lambda_tolerance'] filters candidates by the network's committor; it applies only with acceptance 'target' or 'window' ...``
+   The params file sets ``raw_lambda_tolerance`` under the default rule
+   ``'transition_region'``, which never filters by the committor. Drop
+   ``raw_lambda_tolerance``, or set the acceptance rule explicitly.
 
 ``WARNING: chain_type='cgaimmd' with round_shooting_index=False: ...``
    Set ``round_shooting_index = True``; otherwise shots reloaded later may take
@@ -239,8 +250,10 @@ During a run
       a wrong-handed stereocenter, a contact closer than in the reference MD, or
       a failed polish.
    ``lambda_nonfinite``, ``raw_lambda``
-      The committor of the raw sample was not finite, or (with
-      ``raw_lambda_tolerance``) too far from the target.
+      The committor of the raw sample or of the prepared frame was not finite
+      (under every rule: it points to a broken network), or (``raw_lambda``,
+      with ``raw_lambda_tolerance`` under the ``'target'`` or ``'window'``
+      rule) too far from the target.
    ``prepare_failed``, ``minimize_failed``
       A GROMACS step of the preparation failed; the sidecars of later shots and
       the scratch folders (``keep_scratch=True``) hold the GROMACS messages.
@@ -249,12 +262,14 @@ During a run
    ``lambda_window``
       The prepared frame's committor is outside the tolerance around its target
       (the ``'target'`` rule) or outside the window (the ``'window'`` rule).
+      Never under the default rule ``'transition_region'``.
    ``pool_reset``
       Candidates discarded because a new network arrived; not a failure.
 
-   Persistent ``lambda_window`` rejections mean that the generator does not
-   reach its targets well enough for the tolerance: wait for more training
-   rounds, or widen ``lambda_tolerance``. Persistent ``state_<X>`` means the
+   Persistent ``lambda_window`` rejections (``'target'`` rule) mean that the
+   generator does not reach its targets well enough for the tolerance: wait for
+   more training rounds, or widen ``lambda_tolerance``. Persistent
+   ``state_<X>`` means the
    generator produces configurations outside R at the requested targets,
    typically targets near the edges of the window: narrow the window.
 
@@ -273,7 +288,10 @@ A free worker that runs for its whole walltime
    ``nframes`` says. Bound free workers with the walltime.
 
 Shots that start far from their target committor
-   Before the network has been trained on ``window_after_trained_shots``
-   shooting points, any frame in R is accepted (the sidecar says
-   ``bootstrap_any_R``). This is intended: an untrained committor cannot judge
-   the targets.
+   Under the default rule ``'transition_region'`` this is expected: every
+   candidate in R is shot, and the sidecar records its committor
+   (``lambda_final``) next to the target (``lambda_target``); their difference
+   measures the generator. Under ``'target'`` or ``'window'``, before the
+   network has been trained on ``window_after_trained_shots`` shooting points,
+   any frame in R is accepted too (the sidecar says ``bootstrap_any_R``): an
+   untrained committor cannot judge the targets.

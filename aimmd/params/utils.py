@@ -30,7 +30,9 @@ gromacs_topology_file, gromacs_include_dir, read_topology_masses, masses_disagre
 CGAIMMD_PARAMETER_DEFAULTS, canonical_cgaimmd_parameters(value)
     Defaults and validation of ``params.cgaimmd_parameters`` (the shooting
     loop and device settings of C-GAIMMD); ``Params.cgaimmd_settings`` merges
-    the two. ``DEFAULT_LAMBDA_WINDOW`` is the default target window.
+    the two. ``DEFAULT_LAMBDA_WINDOW`` is the default target window,
+    ``CGAIMMD_ACCEPTANCE_RULES`` the rules of the final check and
+    ``COMMITTOR_ACCEPTANCE_RULES`` those of them that filter by the committor.
 
 is_device_spec(value)
     Whether a value is a device setting of ``cgaimmd_parameters``
@@ -715,11 +717,39 @@ flipped; a flip also rewrites the ``lambda_window`` sentence of the
 the default.
 """
 
+CGAIMMD_ACCEPTANCE_RULES = ('transition_region', 'target', 'window')
+"""The values of ``cgaimmd_parameters['acceptance']``, the rule of the final check.
+
+``'transition_region'`` (the default) shoots every prepared candidate that the
+MD state function puts in the transition region and whose committor is finite;
+it never filters by the network's committor. ``'target'`` and ``'window'``
+filter by it once the network has been trained on
+``window_after_trained_shots`` shooting points (see
+:func:`aimmd.cgaimmd.source.final_check`).
+"""
+
+COMMITTOR_ACCEPTANCE_RULES = ('target', 'window')
+"""The acceptance rules that filter candidates by the network's committor.
+
+Only under these do ``lambda_tolerance``, ``window_after_trained_shots`` and
+``raw_lambda_tolerance`` apply.
+"""
+
+DEFAULT_ACCEPTANCE = 'transition_region'
+"""The default of ``cgaimmd_parameters['acceptance']``: no committor filter.
+
+A filter on the network's own committor shapes the law of the shooting points
+by the network being trained on them, so it is off unless a params file asks
+for ``'target'`` or ``'window'``. Old params files (the field name
+``flow_parameters``) that set no rule ran under ``'target'`` and are read with
+it (:func:`aimmd.cgaimmd._legacy.params_field`).
+"""
+
 CGAIMMD_PARAMETER_DEFAULTS = {
     'lambda_law': 'uniform',
     'lambda_window': DEFAULT_LAMBDA_WINDOW,
     'lambda_clip': None,
-    'acceptance': 'target',
+    'acceptance': DEFAULT_ACCEPTANCE,
     'lambda_tolerance': 1.0,
     'window_after_trained_shots': 1000,
     'raw_lambda_tolerance': None,
@@ -860,7 +890,7 @@ _CGAIMMD_PARAMETER_CHECKS = {
     'lambda_window': _setting_window,
     'lambda_clip': _setting_optional(
         lambda k, v: _setting_float(k, v, positive=True)),
-    'acceptance': lambda k, v: _setting_choice(k, v, ('target', 'window')),
+    'acceptance': lambda k, v: _setting_choice(k, v, CGAIMMD_ACCEPTANCE_RULES),
     'lambda_tolerance': lambda k, v: _setting_float(k, v, positive=True),
     'window_after_trained_shots': lambda k, v: _setting_int(k, v, 0),
     'raw_lambda_tolerance': _setting_optional(
@@ -906,6 +936,9 @@ def canonical_cgaimmd_parameters(value):
         the old ``flow_parameters`` (``ode_sampler``, ``ode_steps``,
         ``generate_chunk``) are unknown keys here: they belong to
         ``cgaimmd_generator``, and only the old field name is translated.
+        Also if ``raw_lambda_tolerance`` is set while the acceptance rule
+        (given or the default) does not filter by the committor: the
+        prefilter is a committor filter and would contradict the rule.
     """
     if value is None:
         return None
@@ -926,4 +959,13 @@ def canonical_cgaimmd_parameters(value):
                 f'unknown cgaimmd_parameters key {key!r}; allowed keys are '
                 f'{list(CGAIMMD_PARAMETER_DEFAULTS)}{hint}')
         out[key] = check(key, item)
+    rule = out.get('acceptance', CGAIMMD_PARAMETER_DEFAULTS['acceptance'])
+    if out.get('raw_lambda_tolerance') is not None and rule not in COMMITTOR_ACCEPTANCE_RULES:
+        raise TypeError(
+            f"cgaimmd_parameters['raw_lambda_tolerance'] filters candidates by the "
+            f"network's committor; it applies only with acceptance "
+            f"{' or '.join(repr(name) for name in COMMITTOR_ACCEPTANCE_RULES)}, and the "
+            f"acceptance is {rule!r}"
+            f"{' (the default)' if 'acceptance' not in out else ''}: drop "
+            f"raw_lambda_tolerance or set the acceptance rule explicitly")
     return out

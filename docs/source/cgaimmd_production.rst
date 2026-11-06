@@ -248,6 +248,33 @@ GROMACS executables and modules differ between machines, and the preflight
 only finds what is wrong *there*. The simplest way is to let the job run it
 (``create_job(..., preflight=True)``, below).
 
+Launching on a workstation
+--------------------------
+
+On one machine, ``Launcher.run`` starts every worker as a process of its own:
+the shooting chains, one free simulation per state and the trainer. The
+workers are started with Python's ``spawn`` method, so each of them imports
+the launch script again: put the launch under ``if __name__ == '__main__':``,
+or every worker starts a launcher of its own.
+
+.. code-block:: python
+
+    """launch.py: 12 shooting chains, free A, free B and the trainer, for 60 hours."""
+    import aimmd
+
+
+    def main():
+        launcher = aimmd.Launcher('params.py', '/local/disk/campaign/run')
+        launcher.run(12, 1, 1, walltime=60 * 3600)
+
+
+    if __name__ == '__main__':
+        main()
+
+Run it with ``nohup python launch.py > launch.log 2>&1 &``, from the campaign
+folder. The workers share the GPU; the GROMACS thread count is the one in
+``gmx_mdrun``. Calling ``launch.py`` again continues the run (`Restarts`_).
+
 Job scripts
 -----------
 
@@ -472,8 +499,11 @@ Before a campaign
   calcium-site check). For chignolin, ColabFold returns the sequence alone.
 - The end-state frames are unbiased MD, and the initial network was pretrained
   on them.
-- ``window_after_trained_shots``, ``lambda_tolerance`` and ``generation_seed``
-  are set explicitly.
+- ``generation_seed`` is set explicitly (one value per replicate).
+- The acceptance rule is the default ``'transition_region'`` (no committor
+  filter; the preflight's configuration line says so). Only a run that is
+  meant to filter by the committor sets ``'acceptance': 'target'``, and then
+  ``window_after_trained_shots`` and ``lambda_tolerance`` explicitly.
 - The GROMACS executables are given in the params file, with the thread count.
 - The preflight passes on the machine of the job, or the job runs it.
 - The run folder is on a local or scratch disk, with a backup schedule.

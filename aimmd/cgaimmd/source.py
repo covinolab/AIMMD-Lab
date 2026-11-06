@@ -18,14 +18,18 @@ shooting point, and the loop stays in ``aimmd.worker._shoot``.
    (``make_generator(params.cgaimmd_generator, network)``,
    :mod:`aimmd.cgaimmd.generation`), drop non-finite samples, apply
    ``params.cgaimmd_validity_function``, score the survivors with the
-   committor (the *raw* lambda; ``raw_lambda_tolerance`` prefilters on it once
-   the acceptance rule is enforced) and put them into the pool
+   committor (the *raw* lambda; non-finite values are dropped, and under a
+   committor acceptance rule ``raw_lambda_tolerance`` prefilters on it once
+   that rule is enforced) and put them into the pool
    (:mod:`aimmd.cgaimmd.pool`).
 2. **One candidate** (stage 2, per pop, :func:`prepare_candidate`): place it
    in the box (:func:`place_in_box`) or prepare it with
    ``params.cgaimmd_prepare_function`` (e.g. re-solvation), minimize it with
    ``params.cgaimmd_minimize_function``, and run the :func:`final_check`
-   (state and committor of the frame handed to grompp) until one passes.
+   (state and committor of the frame handed to grompp) until one passes. By
+   default (acceptance ``'transition_region'``) a frame passes when the MD
+   state function puts it in the transition region and its committor is
+   finite; the committor is recorded, never used to filter.
 
 The source knows nothing about how a generator works: it hands it ``(B,)``
 target logits and gets ``(B, M, 3)`` candidates in Ångström. It slices a
@@ -58,7 +62,8 @@ from typing import Optional
 import numpy as np
 
 from ..core.utils import now
-from ..params.utils import CGAIMMD_PARAMETER_DEFAULTS
+from ..params.utils import (CGAIMMD_ACCEPTANCE_RULES, CGAIMMD_PARAMETER_DEFAULTS,
+                            COMMITTOR_ACCEPTANCE_RULES)
 from ._once import once
 from .devices import device_for
 from .generation import check_generator, make_generator
@@ -97,8 +102,16 @@ output; with a key of its own the worker prints it into its ``worker.log`` as
 well (once per process each).
 """
 
-ACCEPTANCE_RULES = ('target', 'window')
-"""The values of ``cgaimmd_parameters['acceptance']`` (the rule the final check enforces)."""
+ACCEPTANCE_RULES = CGAIMMD_ACCEPTANCE_RULES
+"""The values of ``cgaimmd_parameters['acceptance']`` (the rule of the final check).
+
+``'transition_region'`` never filters by the committor; ``'target'`` and
+``'window'`` (:data:`~aimmd.params.utils.COMMITTOR_ACCEPTANCE_RULES`) do,
+from ``window_after_trained_shots`` trained shooting points on.
+"""
+
+DEFAULT_ACCEPTANCE = CGAIMMD_PARAMETER_DEFAULTS['acceptance']
+"""The default rule of the final check: ``'transition_region'``."""
 
 NUMERICS_FRAMES = 4
 """Initial-path frames the start-up numerical checks of the network run on."""
@@ -453,6 +466,18 @@ def place_in_box(positions, params, placement):
                          seconds=time.perf_counter() - started)
 
 
+def acceptance_text(settings):
+    """The acceptance rule of `settings` in words, for the start-up line and the preflight.
+
+    ``'transition_region (no committor filter)'``, or for a committor rule
+    ``'<rule> after <window_after_trained_shots> trained shots'``.
+    """
+    rule = settings['acceptance']
+    if rule in COMMITTOR_ACCEPTANCE_RULES:
+        return f'{rule} after {settings["window_after_trained_shots"]} trained shots'
+    return f'{rule} (no committor filter)'
+
+
 def final_check(frame, context, lambda_target):
     """Check a prepared frame: in the reactive region, and at the right committor.
 
@@ -478,9 +503,9 @@ def final_check(frame, context, lambda_target):
     Notes
     -----
     The record's keys are ``ok``, ``reason`` (``''`` when ok), ``state``,
-    ``lambda``, ``rule``, ``enforced``, ``tolerance``, ``window``,
-    ``window_after_trained_shots``, ``n_trained_shots``, ``decimals`` and
-    ``seconds``.
+    ``lambda``, ``rule``, ``enforced`` (whether a committor filter decided),
+    ``tolerance``, ``window``, ``window_after_trained_shots``,
+    ``n_trained_shots``, ``decimals`` and ``seconds``.
 
     1. ``x = frame.positions.astype(float32)``, rounded to
        ``final_check_round`` decimals (``'auto'``: 2 for ``.xtc``, the
@@ -494,21 +519,29 @@ def final_check(frame, context, lambda_target):
     3. ``lambda = params.values_function(params.descriptors_function(reader))``
        (the values function puts the network on its device); a non-finite
        value is ``'lambda_nonfinite'``.
-    4. The rule: with ``n_trained_shots`` (``context.network_info``, 0 without
-       one) below ``window_after_trained_shots`` any R frame is accepted
-       (``'bootstrap_any_R'``); from there on ``'target'`` (``|lambda -
-       lambda_target| <= lambda_tolerance``, the default) or ``'window'``
-       (lambda inside the
-       resolved window, :func:`aimmd.cgaimmd.lambda_law.resolve_window`),
-       else ``'lambda_window'``.
+    4. The rule (``settings['acceptance']``):
 
-    The check reshapes the law of the shooting points (it is not a measure of
-    the generator, whose adherence is measured without it). ``rule``,
-    ``enforced``, ``tolerance`` and ``window`` are filled for every outcome;
-    ``lambda`` is None when the committor was not reached or is not finite.
-    An unknown ``acceptance`` raises before anything is evaluated, also in the
-    bootstrap phase (``canonical_cgaimmd_parameters`` rejects it in params;
-    this function takes any ``context.settings``).
+       - ``'transition_region'`` (the default): every frame in R with a
+         finite committor passes, whatever ``lambda_target`` and however
+         many shots the network was trained on. The committor is computed
+         and recorded, never used to filter; ``enforced`` is False and
+         ``tolerance`` and ``window_after_trained_shots`` are None (they do
+         not apply).
+       - ``'target'`` and ``'window'``: with ``n_trained_shots``
+         (``context.network_info``, 0 without one) below
+         ``window_after_trained_shots`` any R frame is accepted
+         (``'bootstrap_any_R'``); from there on ``'target'`` (``|lambda -
+         lambda_target| <= lambda_tolerance``) or ``'window'`` (lambda inside
+         the resolved window, :func:`aimmd.cgaimmd.lambda_law.resolve_window`),
+         else ``'lambda_window'``.
+
+    A committor rule reshapes the law of the shooting points (it is not a
+    measure of the generator, whose adherence is measured without it).
+    ``rule``, ``enforced``, ``tolerance`` and ``window`` are filled for every
+    outcome; ``lambda`` is None when the committor was not reached or is not
+    finite. An unknown ``acceptance`` raises before anything is evaluated,
+    also in the bootstrap phase (``canonical_cgaimmd_parameters`` rejects it
+    in params; this function takes any ``context.settings``).
     """
     started = time.perf_counter()
     params = context.params
@@ -518,13 +551,18 @@ def final_check(frame, context, lambda_target):
                          f"{ACCEPTANCE_RULES}")
     info = context.network_info
     n_trained = 0 if info is None or info.n_trained_shots is None else int(info.n_trained_shots)
-    after = int(settings['window_after_trained_shots'])
-    enforced = n_trained >= after
-    rule = settings['acceptance'] if enforced else 'bootstrap_any_R'
+    if settings['acceptance'] in COMMITTOR_ACCEPTANCE_RULES:
+        after = int(settings['window_after_trained_shots'])
+        enforced = n_trained >= after
+        rule = settings['acceptance'] if enforced else 'bootstrap_any_R'
+        tolerance = float(settings['lambda_tolerance'])
+    else:                                                   # 'transition_region': no filter
+        after = tolerance = None
+        enforced = False
+        rule = settings['acceptance']
     L = lambda_clip_of(context.network, settings)
     (lo, hi), _ = resolve_window(settings, L, context.bins,
                                  reweight_parameters=getattr(params, 'reweight_parameters', None))
-    tolerance = float(settings['lambda_tolerance'])
     decimals = _decimals(settings['final_check_round'], params,
                          n_atoms=len(np.asarray(frame.positions)))
     result = {'ok': False, 'reason': '', 'state': None, 'lambda': None, 'rule': rule,
@@ -548,7 +586,7 @@ def final_check(frame, context, lambda_target):
             result['reason'] = 'lambda_nonfinite'
         else:
             result['lambda'] = value
-            if rule == 'bootstrap_any_R':
+            if rule in ('bootstrap_any_R', 'transition_region'):
                 passed = True
             elif rule == 'target':
                 passed = abs(value - float(lambda_target)) <= tolerance
@@ -713,8 +751,9 @@ def candidate_context(params, folder, *, path_name='candidate', seed=0, network=
     seed : int, optional
         The seed of the candidate's random stream (``rng`` is ``numpy.random.default_rng(seed)``).
     network, network_info : optional
-        Default: ``params.network``, None (the final check then uses the
-        bootstrap rule unless ``window_after_trained_shots`` is 0; pass a
+        Default: ``params.network``, None (under a committor acceptance rule
+        the final check then uses the bootstrap rule unless
+        ``window_after_trained_shots`` is 0; pass a
         :class:`~aimmd.cgaimmd.types.NetworkInfo` to apply the trained rule).
     directory : str, optional
         The run directory (default: `folder`'s parent).
@@ -934,9 +973,9 @@ class GenerativeShootingPointSource:
         not); ``M`` against the generator atoms of a
         :class:`~aimmd.cgaimmd.preparation.descriptors.GeneratorDescriptors`
         descriptors function; the WARNING about R frames of the initial paths
-        (they seed free simulations only); the WARNING about a default
-        ``window_after_trained_shots`` (once per process,
-        :data:`WINDOW_AFTER_WARNING_KEY`); the descriptor width and
+        (they seed free simulations only); under a committor acceptance rule
+        the WARNING about a default ``window_after_trained_shots`` (once per
+        process, :data:`WINDOW_AFTER_WARNING_KEY`); the descriptor width and
         :func:`~aimmd.cgaimmd.protocol.check_network_numerics` (one tiny
         generation through the generator) on the first :data:`NUMERICS_FRAMES`
         frames of the first initial path (the report is kept in ``numerics``);
@@ -984,7 +1023,8 @@ class GenerativeShootingPointSource:
         initial_paths = list(self.worker.initial_paths)
         self._warn_r_frames(initial_paths)
         user = getattr(params, 'cgaimmd_parameters', None) or {}
-        if 'window_after_trained_shots' not in user and once(WINDOW_AFTER_WARNING_KEY):
+        if (settings['acceptance'] in COMMITTOR_ACCEPTANCE_RULES
+                and 'window_after_trained_shots' not in user and once(WINDOW_AFTER_WARNING_KEY)):
             _log(f"WARNING: window_after_trained_shots is at its default "
                  f"{CGAIMMD_PARAMETER_DEFAULTS['window_after_trained_shots']}; this is highly "
                  f"system dependent (it was 8000 for the NANMA test system), set it explicitly")
@@ -1001,8 +1041,7 @@ class GenerativeShootingPointSource:
              f'generator {self.generator.method} {self._generator_settings}, devices '
              f'generation={generation_device} values={values_device}, network '
              f'{info.sha256[:8]} (round {info.round}, {self.watcher.n_trained_shots()} trained '
-             f'shots), law {law}, window {window}, acceptance {settings["acceptance"]} after '
-             f'{settings["window_after_trained_shots"]} trained shots')
+             f'shots), law {law}, window {window}, acceptance {acceptance_text(settings)}')
 
     def _provenance(self):
         """The provenance blocks of every sidecar (computed once per worker)."""
@@ -1330,8 +1369,10 @@ class GenerativeShootingPointSource:
             seconds['raw_lambda'] = time.perf_counter() - clock
             reasons[alive[~np.isfinite(lambda_raw[alive])]] = 'lambda_nonfinite'
             tolerance = settings['raw_lambda_tolerance']
-            # the prefilter follows the final check's rule: off in the bootstrap phase
-            enforced = (self.watcher.n_trained_shots()
+            # the prefilter follows the final check's rule: only under a committor rule,
+            # and off in its bootstrap phase
+            enforced = (settings['acceptance'] in COMMITTOR_ACCEPTANCE_RULES
+                        and self.watcher.n_trained_shots()
                         >= int(settings['window_after_trained_shots']))
             if tolerance is not None and enforced:
                 alive = np.flatnonzero(reasons == '')
