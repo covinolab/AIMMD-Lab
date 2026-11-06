@@ -22,27 +22,38 @@ The checks, in order:
    (``topology``) and the ``.mdp`` of a GROMACS run, the topology and index
    file of ``gmx_grompp`` (``-p``, ``-n``), and ``initial_network``, which
    must also load into the network (strictly, tensors only).
-3. **generator**: the generator of ``cgaimmd_generator`` (or the network's
+3. **fit**: when ``params.fit`` calls one of C-GAIMMD's fits
+   (:func:`aimmd.cgaimmd.flow_matching.fit.flow_matching_fit`,
+   :func:`aimmd.cgaimmd.bioemu2.fit.sequential_fit`), it is called inside
+   :func:`aimmd.cgaimmd.fitting.settings_only`: the fit checks its keywords
+   (unknown names and bad values fail here, not in the trainer's first
+   round) and its start, and trains nothing. A setting that would condition
+   the generator on the start network only fails too: ``relabel_every`` 0,
+   or not below ``steps_per_round``, while every round starts again from the
+   same network
+   (:func:`~aimmd.cgaimmd.flow_matching.fit.labels_from_start_problem`).
+   Other fits are not checked (skipped).
+4. **generator**: the generator of ``cgaimmd_generator`` (or the network's
    default) is built and checked against the network, strictly, also for
    params read through old names; the network's atom count is that of the
    :class:`~aimmd.cgaimmd.preparation.descriptors.GeneratorAtoms`
    (:func:`aimmd.cgaimmd.source.build_checked_generator`,
    :func:`~aimmd.cgaimmd.source.check_generator_atoms`).
-4. **numerics**: the descriptor width and the network's numbers on the first
+5. **numerics**: the descriptor width and the network's numbers on the first
    frames of the first initial path, with one tiny generation
    (:func:`aimmd.cgaimmd.source.check_start_up_numerics`).
-5. **configuration**: the lambda window (with the trainer's bins of
+6. **configuration**: the lambda window (with the trainer's bins of
    ``--run``, if given) and, without ``cgaimmd_prepare_function``, the
    placement in the box.
-6. **candidate**: ``--candidates`` structures (default 1) generated at a
+7. **candidate**: ``--candidates`` structures (default 1) generated at a
    target committor of 0, through the validity function, and the first valid
    one through :func:`aimmd.cgaimmd.source.prepare_candidate` (preparation,
    minimization, final check). An exception is a failure; a candidate that
    is rejected is a warning (an untrained generator may produce one), with
    the reason.
-7. **gromacs** (GROMACS engine): the executables of ``gmx_grompp`` and
+8. **gromacs** (GROMACS engine): the executables of ``gmx_grompp`` and
    ``gmx_mdrun`` exist and answer ``-version``.
-8. **bias** (a ``-plumed`` in ``gmx_mdrun``, or ``record_bias``): the
+9. **bias** (a ``-plumed`` in ``gmx_mdrun``, or ``record_bias``): the
    PLUMED input exists and is named by an absolute path, every file it reads
    (e.g. a frozen OPES state, ``STATE_RFILE``) exists and is absolute
    (``mdrun`` runs inside each chain folder, where relative paths do not
@@ -217,6 +228,38 @@ def _check_files(report, params):
                                             f'{_error(exc)}')
     else:
         report.add('initial_network', OK, f'{fname} loads into {type(params.network).__name__}')
+
+
+def _check_fit(report, params):
+    """The keywords of ``params.fit``, checked by the C-GAIMMD fit it calls, without training."""
+    from ..pathensemble import PathEnsemble
+    from .fitting import CGAIMMD_FITS, FitSettings, cgaimmd_fits_behind, settings_only
+    fit = getattr(params, 'fit', None)
+    fits = cgaimmd_fits_behind(fit)
+    if not fits:
+        report.add('fit', SKIPPED, 'params.fit calls none of the C-GAIMMD fits '
+                                   '(flow_matching_fit, sequential_fit): its keywords are not '
+                                   'checked')
+        return
+    names = ' and '.join(CGAIMMD_FITS[name] for name in fits)
+    try:
+        with settings_only():
+            fit(params, PathEnsemble(), verbose=False, worker=None)
+    except FitSettings as checked:
+        if checked.problems:
+            report.add('fit', FAIL, f'{names}: ' + '; '.join(checked.problems))
+        else:
+            given = ', '.join(f'{key}={value!r}' for key, value in checked.keywords.items())
+            notes = '; '.join(checked.notes)
+            report.add('fit', OK, f'{names} with '
+                                  + (_short(given, 400) if given else 'its default keywords')
+                                  + (f' ({notes})' if notes else ''))
+        return
+    except Exception as exc:                                  # noqa: BLE001
+        report.add('fit', FAIL, f'{names}: {_error(exc)}')
+        return
+    report.add('fit', WARNING, f'params.fit returned without reaching {names}, so its keywords '
+                               f'were not checked')
 
 
 def _check_generator(report, params, device):
@@ -648,6 +691,7 @@ def run_preflight(params_file, *, run_dir=None, candidates=1, generate=True, dev
             _check_files(report, params)
             frames = _initial_frames_in_r(params)
             if cgaimmd:
+                _check_fit(report, params)
                 spec = device or params.cgaimmd_settings['generation_device']
                 try:
                     torch_device = resolve_device(spec)

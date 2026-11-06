@@ -97,14 +97,16 @@ from .. import protocol
 from .._once import once
 from ..dataset import (DEFAULT_SERIES, extract_dataset, is_initial_path, path_weights,
                        resolve_exclusions)
-from ..fitting import fit_seed, previous_round, run_directory
+from ..fitting import (FitSettings, fit_seed, previous_round, run_directory,
+                       settings_only_active)
 from ..io import atomic_write_json, file_sha256
 from . import flowmath
 from .sampler import flow_matching_problems, pair, to_flow
 
 
 __all__ = ['flow_matching_fit', 'FlowTrainer', 'LossNormalizer', 'committor_nll',
-           'release_trainer', 'FLOW_FIT_DEFAULTS', 'BASIN_DRAWS', 'STATE_SCHEMA', 'FIT_NAME']
+           'release_trainer', 'FLOW_FIT_DEFAULTS', 'BASIN_DRAWS', 'STATE_SCHEMA', 'FIT_NAME',
+           'labels_from_start_problem']
 
 FLOW_FIT_DEFAULTS = {
     'graphs': False,
@@ -1212,6 +1214,12 @@ def flow_matching_fit(params, pathensemble, verbose=False, worker=None, **kwargs
     it), at most ``round_oom_retries`` times, ``round_oom_wait_s`` apart; an
     error while the round record is written repeats only that part.
 
+    Inside :func:`aimmd.cgaimmd.fitting.settings_only` (the preflight) a
+    call stops after step 1's refusals and the keyword checks and raises
+    :class:`aimmd.cgaimmd.fitting.FitSettings` with the settings, and with
+    :func:`labels_from_start_problem` as a problem; nothing is read or
+    trained.
+
     In the ``kinetics_convergence`` task the trainer fits data fractions:
     the fit then uses ``worker.kinetics_convergence_state_dir`` as its state
     folder when the trainer sets one, else it keeps nothing between calls;
@@ -1233,6 +1241,12 @@ def flow_matching_fit(params, pathensemble, verbose=False, worker=None, **kwargs
         raise TypeError(f'flow_matching_fit: {type(network).__name__} is not a flow-matching '
                         f'network: ' + '; '.join(problems))
     start_kind = _check_start(params, network)
+    if settings_only_active():
+        # the preflight: the keywords and the start are checked, nothing is read or trained
+        problem = labels_from_start_problem(settings)
+        raise FitSettings(FIT_NAME, settings, keywords=kwargs,
+                          problems=[problem] if problem else [],
+                          notes=[f'every round starts from {start_kind}'])
     states = params.sorted_states
     lambda_clip = protocol.lambda_clip_of(network, _cgaimmd_settings(params))
     from ..devices import device_for
@@ -1414,6 +1428,40 @@ def _relabel(context, data):
         pool = np.sort(trainer.rng.choice(pool, s['relabel_max_frames'], replace=False))
     lam = trainer.committor_of_rows(trainer.network, data.fr_rows[pool])
     trainer.set_fm_targets(pool, lam)
+
+
+def labels_from_start_problem(settings):
+    """Why `settings` would condition the generator on the start network only, or None.
+
+    Every round starts again from ``initial_network`` (or reset weights), and
+    the flow-matching labels of the reactive frames are the committor of the
+    round's EMA, taken at the start of the round and then every
+    ``relabel_every`` steps. With ``relabel_every`` 0, or not below
+    ``steps_per_round``, they stay the start network's for the whole round
+    and the generator never learns from the shooting points. None when the
+    labels are refreshed within the round, or when the flow-matching term
+    uses no reactive frames (``fm_weight`` 0, ``n_fm`` 0 or
+    ``instate_fm_share`` 1).
+
+    Parameters
+    ----------
+    settings : dict
+        :data:`FLOW_FIT_DEFAULTS` updated with the fit's keywords.
+
+    Returns
+    -------
+    str or None
+    """
+    s = settings
+    if s['fm_weight'] == 0 or s['n_fm'] == 0 or s['instate_fm_share'] >= 1:
+        return None
+    if s['relabel_every'] and s['relabel_every'] < s['steps_per_round']:
+        return None
+    return (f'relabel_every={s["relabel_every"]} with steps_per_round={s["steps_per_round"]}: '
+            f'every round starts again from the same network, so the flow-matching labels of '
+            f'the reactive frames would stay that start network\'s committor for the whole '
+            f'round and the generator would never learn from the shooting points; set '
+            f'relabel_every between 1 and steps_per_round - 1 (default 1000 of 4000)')
 
 
 def _warn_labels_from_start(context):
