@@ -1,9 +1,8 @@
 name: test
+# conda-forge only: every package is there, and the Anaconda "defaults"
+# channel asks CI for its terms of service
 channels:
-
   - conda-forge
-  - bioconda
-  - defaults
 dependencies:
     # Base depends
   - python
