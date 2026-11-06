@@ -667,7 +667,8 @@ def reweight_run(params, run_dir, *, values='cached', network=None, bias='auto',
         reproduces the rates it printed after its last round. ``'recompute'``:
         every reactive frame is scored again, in memory, with `network`; this is
         the cleaner choice for the final analysis of a finished run, because
-        then every frame has a value from the same network.
+        then every frame has a value from the same network, and the only choice
+        for a run with ``params.subsample_caps`` (see the Notes).
     network : path-like, optional
         For ``values='recompute'``: the network file to load into
         ``params.network`` (default: the run's ``network{states}.h5``).
@@ -709,16 +710,21 @@ def reweight_run(params, run_dir, *, values='cached', network=None, bias='auto',
     ValueError
         For an unknown `values`, `bias` or `fraction_by`, a fraction outside
         ``(0, 1]``, a TPS run (its paths have no equilibrium weights), a run
-        folder without paths, or ``bias=True`` without a recorded bias.
+        folder without paths, ``bias=True`` without a recorded bias, or
+        ``values='cached'`` in a run with active ``params.subsample_caps``.
 
     Notes
     -----
     The reproduction of the trainer's printed rates is exact when the run
     folder holds the data of the trainer's last reweighting: the trainer's
     eval ensemble is the whole ensemble unless ``params.subsample_caps`` is
-    set (then the trainer prints no rate, and its densities come from a
-    subsample). With ``params.rescale_committor`` the cached values are the
-    rescaled ones, which the trainer's printed rates predate.
+    set. With caps the trainer computes committor values for a random
+    subsample of the frames only and prints no rate, because that subsample
+    does not represent the ensemble; the cached values then cover only part
+    of the data, so ``values='cached'`` is refused and ``values='recompute'``
+    scores every frame of the whole ensemble. With
+    ``params.rescale_committor`` the cached values are the rescaled ones,
+    which the trainer's printed rates predate.
     """
     if values not in VALUES_MODES:
         raise ValueError(f'values must be one of {VALUES_MODES}, got {values!r}')
@@ -752,6 +758,13 @@ def reweight_run(params, run_dir, *, values='cached', network=None, bias='auto',
                  if getattr(params, 'multi_system', False) else run_dir)
     if not getattr(params, 'multi_system', False):
         system_id = None
+    caps_active = getattr(params, 'subsample_caps_active', None)
+    if values == 'cached' and callable(caps_active) and caps_active(system_id):
+        raise ValueError(
+            "params.subsample_caps is set: the trainer computed committor values for a random "
+            "subsample of the frames only, so the cached values do not cover the ensemble and "
+            "rates from them would be biased; use values='recompute', which scores every "
+            "reactive frame of the whole ensemble with the run's network")
 
     states = params.sorted_states
     reactive = states[1]

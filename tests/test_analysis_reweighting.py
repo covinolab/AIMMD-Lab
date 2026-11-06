@@ -197,6 +197,19 @@ def test_arguments_are_checked(ring):
         reweight_run(ring['params'], ring['run'] + '_missing')
 
 
+def test_cached_values_of_a_subsampled_value_pass_are_refused(ring, ring_reweighting):
+    """With subsample_caps the trainer scores a random subsample only and prints no rate; cached
+    values then cover part of the ensemble, so only recomputed values give rates."""
+    params = _load_params(ring['folder'])
+    params.__dict__['subsample_caps'] = {'shot': 2, 'free': 30, 'in_state': 500}
+    assert params.subsample_caps_active()
+    with pytest.raises(ValueError, match='subsample_caps.*recompute'):
+        reweight_run(params, ring['run'])
+    result = reweight_run(params, ring['run'], values='recompute')
+    assert result.n_shots == 16
+    assert result.k12 == pytest.approx(ring_reweighting.k12, rel=1e-5)
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # frames, populations, free energies
 # ════════════════════════════════════════════════════════════════════════════
