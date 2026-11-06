@@ -108,6 +108,7 @@ import contextlib
 import io
 import json
 import os
+import warnings
 from dataclasses import dataclass, field
 from math import inf, nan
 from typing import Optional
@@ -876,7 +877,8 @@ class FrameTable:
     """``w1 + w2`` of the frame's path."""
 
     bias: np.ndarray
-    """The recorded bias at the frame (kT); 0 when the bias is not applied."""
+    """The recorded bias at the frame (kT); 0 when the bias is not applied, and 0 for a frame
+    without a row in its bias cache (see :attr:`bias_missing`)."""
 
     weight: np.ndarray
     """Equilibrium weight of the frame: ``path_weight * exp(bias)``."""
@@ -896,8 +898,17 @@ class FrameTable:
     run_dir: Optional[str] = None
     """The run folder the table comes from (:meth:`save` refuses to write there)."""
 
+    bias_missing: Optional[np.ndarray] = None
+    """With the bias applied: True for the frames without a row in their bias cache (their bias
+    reads as 0, so their weight lacks the factor ``exp(bias)``); None otherwise."""
+
     def __len__(self):
         return int(len(self.weight))
+
+    @property
+    def frames_without_bias(self):
+        """The number of frames without a bias row (0 when the bias is not applied)."""
+        return 0 if self.bias_missing is None else int(np.count_nonzero(self.bias_missing))
 
     def column(self, name):
         """The collective variable `name` (or a column index)."""
@@ -915,7 +926,9 @@ class FrameTable:
             out[name] = getattr(self, name)[mask]
         return FrameTable(states=self.states, files=self.files,
                           cv=None if self.cv is None else self.cv[mask], cv_names=self.cv_names,
-                          bias_applied=self.bias_applied, run_dir=self.run_dir, **out)
+                          bias_applied=self.bias_applied, run_dir=self.run_dir,
+                          bias_missing=(None if self.bias_missing is None
+                                        else self.bias_missing[mask]), **out)
 
     def populations(self):
         """:func:`populations` of the table."""
@@ -935,6 +948,8 @@ class FrameTable:
         arrays['file_index'] = self.file        # ('file' is numpy's name for the target)
         if self.cv is not None:
             arrays['cv'] = self.cv
+        if self.bias_missing is not None:
+            arrays['bias_missing'] = self.bias_missing
         arrays.update(files=np.asarray(self.files, dtype=str),
                       cv_names=np.asarray(self.cv_names, dtype=str),
                       states=np.asarray(self.states), bias_applied=self.bias_applied)
@@ -1020,6 +1035,15 @@ def frame_table(reweighting, *, cv=None, cv_source='reader', include_zero_weight
     -------
     FrameTable
 
+    Warns
+    -----
+    UserWarning
+        With the bias applied, when frames in the end states have no row in
+        their bias cache: their bias reads as 0, so their equilibrium weight
+        lacks the factor ``exp(bias)`` and the populations and free energies
+        come out wrong. :attr:`FrameTable.bias_missing` marks every frame
+        without a row (in the reactive region the bias is zero anyway).
+
     Notes
     -----
     The frames of a path are those its count includes
@@ -1079,8 +1103,18 @@ def frame_table(reweighting, *, cv=None, cv_source='reader', include_zero_weight
     out['value'] = cache_rows(file_names, files, frames, 'values')[0]
     for offset, values in in_memory_values:
         out['value'][offset:offset + len(values)] = values
-    out['bias'] = (cache_rows(file_names, files, frames, 'bias')[0]
-                   if reweighting.bias_applied else np.zeros(len(files)))
+    bias_missing = None
+    if reweighting.bias_applied:
+        out['bias'], bias_missing = cache_rows(file_names, files, frames, 'bias')
+        in_states = bias_missing & np.isin(out['state'], end_states)
+        if in_states.any():
+            warnings.warn(
+                f'{int(in_states.sum())} frames in the states ({int(bias_missing.sum())} in all) '
+                f'have no row in their bias cache: their bias reads as 0, so their weight lacks '
+                f'exp(bias) and populations and free energies are off. The trainer writes the '
+                f'bias caches; let it pass over these files first.', UserWarning, stacklevel=3)
+    else:
+        out['bias'] = np.zeros(len(files))
     weight = out['path_weight'] * np.exp(out['bias'])
     cv_array, cv_names = None, ()
     if cv:
@@ -1100,7 +1134,7 @@ def frame_table(reweighting, *, cv=None, cv_source='reader', include_zero_weight
             cv_names = tuple(f'cv{j}' for j in range(cv_array.shape[1]))
     return FrameTable(states=states, files=file_names, weight=weight, cv=cv_array,
                       cv_names=cv_names, bias_applied=reweighting.bias_applied,
-                      run_dir=reweighting.run_dir, **out)
+                      run_dir=reweighting.run_dir, bias_missing=bias_missing, **out)
 
 
 def cache_rows(file_names, files, frames, name):

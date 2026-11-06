@@ -64,6 +64,7 @@ descriptors function), next to the C-GAIMMD model.
 """
 
 import os
+import warnings
 from types import SimpleNamespace
 
 import numpy as np
@@ -259,12 +260,18 @@ def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias
     -------
     dict
         ``mean``, ``std`` (one per pair), ``n_frames``, ``files``,
-        ``bias_applied``, ``series``.
+        ``bias_applied``, ``frames_without_bias`` (frames weighted 1 for
+        lack of a bias row), ``series``.
 
     Raises
     ------
     ValueError
         For a run that records a bias, unless `allow_biased_frames`.
+
+    Warns
+    -----
+    UserWarning
+        With the bias applied, when frames have no row in their bias cache.
 
     Notes
     -----
@@ -272,7 +279,7 @@ def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias
     distribution (in the states and, rarely, the reactive region), while
     shots and initial paths are selected configurations. Frames are read from
     the descriptor caches with numpy (nothing written into the run folder).
-    Frames that the bias cache does not cover get weight 1.
+    Frames that the bias cache does not cover get weight 1, with a warning.
     """
     from ...analysis._data_access import refuse_biased_frames
     from ...path.utils import get_cache_fname
@@ -287,6 +294,7 @@ def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias
             if fname not in files:
                 files.append(str(fname))
     rows, weights = [], []
+    without_bias = 0
     for fname in files:
         try:
             data = np.load(get_cache_fname(fname, series), allow_pickle=False)
@@ -298,14 +306,18 @@ def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias
             try:
                 b = np.asarray(np.load(get_cache_fname(fname, 'bias'), allow_pickle=False),
                                dtype=float).reshape(-1)
-                n = min(len(b), len(w))
-                w[:n] = np.exp(b[:n])
             except (OSError, ValueError):
-                pass
+                b = np.zeros(0)
+            n = min(len(b), len(w))
+            w[:n] = np.exp(b[:n])
+            without_bias += len(w) - n
         rows.append(data)
         weights.append(w)
     if not rows:
         raise FileNotFoundError(f'no {series!r} caches of free simulations in {run_dir!r}')
+    if without_bias:
+        warnings.warn(f'{without_bias} free-simulation frames have no row in their bias cache and '
+                      f'are weighted 1 instead of exp(bias)', UserWarning, stacklevel=3)
     rows = np.concatenate(rows)
     weights = np.concatenate(weights)
     if len(rows) > int(max_frames):
@@ -315,7 +327,8 @@ def run_distance_scaler(params, run_dir, atom_indices, *, max_frames=20000, bias
         raise ValueError(f'the {series!r} rows of width {rows.shape[1]} are not flat coordinates')
     mean, std = distance_scaler(rows, atom_indices, weights=weights, min_std=min_std)
     return {'mean': mean, 'std': std, 'n_frames': int(len(rows)), 'files': files,
-            'bias_applied': applied, 'series': series}
+            'bias_applied': applied, 'frames_without_bias': int(without_bias),
+            'series': series}
 
 
 @without_writing

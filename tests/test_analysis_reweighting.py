@@ -359,6 +359,30 @@ def test_bias_weights_give_the_unbiased_free_energy(biased_reweightings):
     assert populations_['A'] == pytest.approx(populations_['B'], abs=0.1)
 
 
+def test_frames_without_a_bias_row_are_counted_and_flagged(biased_ring, biased_reweightings,
+                                                         tmp_path):
+    """A missing bias cache reads as bias 0: the frame table marks those frames and warns when
+    frames in the states are among them (their weight lacks exp(bias))."""
+    complete = frame_table(biased_reweightings[0])
+    assert complete.frames_without_bias == 0 and not complete.bias_missing.any()
+    assert frame_table(biased_reweightings[1]).bias_missing is None        # bias not applied
+    folder = tmp_path / 'campaign'
+    shutil.copytree(biased_ring['folder'], folder, symlinks=True)
+    missing = folder / 'run' / 'freeA' / 'traj000001.part0001.xtc.bias.npy'
+    missing.unlink()
+    params = _load_params(folder)
+    with pytest.warns(UserWarning, match='coverage'):                    # AIMMD's own rate check
+        result = reweight_run(params, str(folder / 'run'))
+    with pytest.warns(UserWarning, match='frames in the states .* have no row in their bias'):
+        table = frame_table(result)
+    in_file = np.array([table.files[f] == str(missing)[:-len('.bias.npy')] for f in table.file])
+    assert table.frames_without_bias == int(in_file.sum()) > 0
+    np.testing.assert_array_equal(table.bias_missing, in_file)
+    assert np.all(table.bias[in_file] == 0)
+    assert table.select(in_file).frames_without_bias == int(in_file.sum())
+    assert table.populations()['state']['A'] < complete.populations()['state']['A']
+
+
 def test_exp_bias_weights_recover_unbiased_populations_of_a_markov_chain():
     """A Metropolis chain on the ring under U + V, its frames weighted with exp(V): the weighted
     histogram is exp(-U), the unweighted one exp(-U - V)."""

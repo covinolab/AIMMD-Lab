@@ -261,7 +261,8 @@ def free_md_rates(params, run_dir, *, bias='auto', confidence=0.95, system_id=No
     bias : {'auto', True, False}, optional
         Count boosted time ``sum exp(bias)`` per frame (``'auto'``: when
         ``params.record_bias`` is set). The bias comes from the trainer's
-        caches; frames without one count with ``exp(0) = 1``.
+        caches; frames without one count with ``exp(0) = 1`` (a warning says
+        how many).
     confidence : float, optional
         Level of the two-sided interval (default 0.95).
     system_id : str, optional
@@ -281,7 +282,9 @@ def free_md_rates(params, run_dir, *, bias='auto', confidence=0.95, system_id=No
     Warns
     -----
     UserWarning
-        When ``params.free_restart_source`` is ``'crossing'`` (see the module docstring).
+        When ``params.free_restart_source`` is ``'crossing'`` (see the module
+        docstring), and with the bias applied when frames have no row in their
+        bias cache.
     """
     params, run_dir, free = _free_trajectories(params, run_dir, system_id)
     if bias not in ('auto', True, False):
@@ -315,6 +318,10 @@ def free_md_rates(params, run_dir, *, bias='auto', confidence=0.95, system_id=No
             frames[s] += counts['frames'][s]
         for key in transitions:
             transitions[key] += counts['transitions'][key]
+    if without_bias:
+        warnings.warn(f'{without_bias} free-simulation frames have no row in their bias cache and '
+                      f'count with exp(0) = 1 instead of their boosted time', UserWarning,
+                      stacklevel=3)
     out = {'confidence': confidence, 'bias_applied': bias_applied,
            'n_trajectories': len(free), 'frames_without_state': int(unknown),
            'frames_without_bias': int(without_bias), 'free_restart_source': source,

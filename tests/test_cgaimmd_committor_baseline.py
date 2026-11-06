@@ -199,11 +199,18 @@ def test_a_run_with_a_bias_is_refused_unless_allowed(tmp_path):
     assert weighted['bias_applied'] is True                             # 'auto': the run's bias
     w = np.where(np.arange(60) < 30, np.e, 1.0)                         # free A first
     assert weighted['mean'][0] == pytest.approx((w * d).sum() / w.sum(), rel=1e-6)
+    assert weighted['frames_without_bias'] == 0
     torch.manual_seed(0)
     result = baseline.train_on_run(params, run, baseline.DistanceMLP([0, 1], n_atoms=2,
                                                                      hidden=(4,)),
                                    epochs=2, allow_biased_frames=True)
     assert result['n_shots'] == 4
+    # a free simulation without its bias cache: weighted 1, with a warning
+    os.remove(get_cache_fname(str(run / 'freeA' / 'traj000001.part0001.xtc'), 'bias'))
+    with pytest.warns(UserWarning, match='30 free-simulation frames have no row'):
+        partial = baseline.run_distance_scaler(params, run, [0, 1], allow_biased_frames=True)
+    assert partial['frames_without_bias'] == 30
+    assert partial['mean'][0] == pytest.approx(d.mean(), rel=1e-6)
 
 
 def test_train_on_the_shots_of_a_run(tmp_path):

@@ -9,6 +9,7 @@ exactly (the solution of a linear system), and so are its transition counts
 """
 
 import os
+import shutil
 import warnings
 from pathlib import Path
 
@@ -294,8 +295,19 @@ def test_free_md_rates_use_boosted_time_under_a_bias(markov_run):
     assert out['AB']['transitions'] == plain['AB']['transitions']
     assert out['AB']['rate'] < plain['AB']['rate']
     assert out['BA'] == pytest.approx(plain['BA'])        # the B side has no frame in A
+    assert out['frames_without_bias'] == 0
     with pytest.raises(ValueError, match='records no bias'):
         free_md_rates(load(markov_run['folder']), markov_run['run'], bias=True)
+
+
+def test_frames_without_a_bias_row_count_unboosted_with_a_warning(markov_run, tmp_path):
+    folder = tmp_path / 'campaign'
+    shutil.copytree(markov_run['folder'], folder)
+    (folder / 'run' / 'freeB' / 'traj000001.part0001.xtc.bias.npy').unlink()
+    params = load(folder, 'params_biased.py')
+    with pytest.warns(UserWarning, match='20000 free-simulation frames have no row'):
+        out = free_md_rates(params, str(folder / 'run'))
+    assert out['frames_without_bias'] == 20000
 
 
 def test_a_reference_from_biased_free_simulations_needs_permission(markov_run):
