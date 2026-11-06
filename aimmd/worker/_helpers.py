@@ -94,11 +94,19 @@ class WorkerHelpers(ABC):
             ``'stdout'``.
         walltime : float, optional
             Maximum allowed walltime in seconds for the current task before the
-            worker should stop. Default is ``inf`` (no limit).
+            worker should stop. It is checked while the engine runs (by the
+            engine's stop condition), so it bounds one long engine run too.
+            Default is ``inf`` (no limit).
         nsteps : float, optional
             Maximum number of steps before stopping. Default is ``inf``.
         nframes : float, optional
             Maximum number of frames before stopping. Default is ``inf``.
+            The frames are counted when a trajectory is complete or the
+            engine returns, not during one engine run, so that a worker stops
+            with complete trajectories: a free worker whose trajectory stays
+            in its state can write far more frames (a free run of NANMA in
+            vacuum with ``nframes=20`` wrote 176,106 frames in 75 s). Bound
+            such a run with `walltime`.
         termination_timeout : float, optional
             Grace period (seconds) used by higher-level logic to allow a task
             to terminate cleanly after a stop/termination request. This mixin
