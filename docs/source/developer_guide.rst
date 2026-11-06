@@ -133,9 +133,27 @@ of the build — this is what lets Read the Docs build the API reference without
 installing the package. Example notebooks are rendered from their saved outputs
 (``nb_execution_mode = "off"``); they are not executed at build time.
 
+The C-GAIMMD modules use more of torch at import time (``torch.nn.functional``,
+``torch.Generator``, dtypes, ``torch.no_grad`` as a decorator); the local
+extension ``docs/source/_ext/cgaimmd_stubs.py`` extends the torch stub for them
+and does nothing when the real torch is installed. bioemu2 and RDKit (the
+``bioemu2`` extra) are listed in ``autodoc_mock_imports``, so the API pages of
+:mod:`aimmd.cgaimmd.bioemu2` build without that extra. ``conf.py`` also
+normalizes docstrings after napoleon: it removes stray title underlines and
+flattens loose indented prose, but keeps the indentation of napoleon's field
+lists and of literal blocks and directives. The build must pass with
+``sphinx-build -W`` (warnings are errors), as the ``docs`` CI job runs it.
+
 The parameter reference on :doc:`parameters` is generated at build time by the
 small ``aimmd-params`` Sphinx extension in ``docs/source/_ext/`` directly from
 the :class:`aimmd.Params` dataclass fields.
+
+The tutorial notebooks live in ``examples/notebooks/`` and are linked into
+``docs/source/tutorials/``. They are committed with their outputs:
+re-execute a notebook (for example with ``jupyter nbconvert --to notebook
+--execute --inplace``) after changing it. ``tests/test_tutorial_notebooks.py``
+checks that every notebook is linked, that its code parses, and (``slow``)
+runs tutorial 3 from top to bottom.
 
 Contributing
 ------------

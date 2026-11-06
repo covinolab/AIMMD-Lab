@@ -277,6 +277,17 @@ callables such as:
 That design is why ``Params`` includes helper code for tracking Python source
 and why the tests pay special attention to relative imports and reloading.
 
+C-GAIMMD Parameters
+-------------------
+
+``chain_type='cgaimmd'`` adds ``cgaimmd_parameters`` (the settings of the
+shooting loop, one dict), ``cgaimmd_generator`` (how candidates are generated),
+the hooks ``cgaimmd_validity_function``, ``cgaimmd_prepare_function``,
+``cgaimmd_minimize_function`` and ``cgaimmd_lambda_sampler``, and uses
+``initial_network`` (the network every training round starts from, available
+under every chain type). :doc:`cgaimmd` explains each of them, with a table of
+every ``cgaimmd_parameters`` key.
+
 Full Parameter Reference
 ------------------------
 

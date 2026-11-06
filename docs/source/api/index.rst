@@ -51,5 +51,6 @@ Core classes
 
    network
    analysis
+   cgaimmd
    utilities
    config

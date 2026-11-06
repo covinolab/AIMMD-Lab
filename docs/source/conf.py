@@ -323,6 +323,10 @@ def _install_doc_stubs() -> None:
 
 _install_doc_stubs()
 
+import cgaimmd_stubs  # noqa: E402  (local extension in _ext/: the torch stand-ins of aimmd.cgaimmd)
+
+cgaimmd_stubs.install()
+
 
 # -- Project information -----------------------------------------------------
 
@@ -361,6 +365,9 @@ autodoc_default_options = {
     "show-inheritance": True,
     "undoc-members": False,
 }
+# bioemu2 and RDKit (the bioemu2 extra) are mocked while autodoc imports
+# aimmd.cgaimmd.bioemu2, so the API pages build without that extra.
+autodoc_mock_imports = list(cgaimmd_stubs.MOCKED_IMPORTS)
 napoleon_google_docstring = True
 napoleon_numpy_docstring = True
 napoleon_include_init_with_doc = True

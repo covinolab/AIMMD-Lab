@@ -1,10 +1,15 @@
 Tutorials
 =========
 
-These Jupyter notebooks run end to end on the built-in toy engine — no GROMACS
-and no GPU required. They are rendered here from their **saved outputs**; to run
-them yourself, launch them from ``examples/notebooks/`` in a clone of the
+These Jupyter notebooks are rendered here from their **saved outputs**; to
+run them yourself, launch them from ``examples/notebooks/`` in a clone of the
 repository.
+
+AIMMD
+-----
+
+Tutorials 1 and 2 run end to end on the built-in toy engine, with no GROMACS
+and no GPU.
 
 .. toctree::
    :maxdepth: 1
@@ -19,3 +24,51 @@ repository.
   atom counts in one run, trained with a single shared committor network
   (contrasted with per-system networks), including per-system committor and rate
   analysis.
+
+C-GAIMMD
+--------
+
+Committor-conditioned Generative AIMMD (:doc:`../cgaimmd`). Tutorial 3 runs on
+a CPU in about a minute. Tutorials 4 to 6 are the production workflows of real
+systems; they need a GPU and GROMACS, and tutorials 5 and 6 the BioEmu2
+weights.
+
+.. toctree::
+   :maxdepth: 1
+
+   3_cgaimmd_toy_1d
+   4_cgaimmd_painn_nanma
+   5_cgaimmd_bioemu2_chignolin
+   6_cgaimmd_bioemu2_trypsin_benzamidine
+
+.. A tutorial on analysing a C-GAIMMD run (rates and free energies through the
+   reweighting, the shot table, generator adherence, shooting validation of
+   generated structures) joins this list once the analysis tools are part of
+   the package.
+
+- **C-GAIMMD on the 1-D toy** (:doc:`3_cgaimmd_toy_1d`) — the C-GAIMMD loop on
+  the toy engine with the minimal flow-matching network: the params file, the
+  ``'ode'`` generator, the target-committor law, the preflight, shots under the
+  bootstrap and the target rule, the final acceptance check, the sidecars and
+  the shot table, and a generator of your own registered in about ten lines.
+- **PaiNN C-GAIMMD on alanine dipeptide** (:doc:`4_cgaimmd_painn_nanma`) — the
+  production workflow with GROMACS: generator atoms, unbiased end-state MD,
+  the PaiNN network and its end-state pretraining, the params file, the
+  preflight, a local launch and a job script, monitoring, restarts and
+  post-training, rates and the committor against brute-force shooting.
+  *Rendered from a GPU run: until that run is added, the page shows the code
+  and the explanations without outputs.*
+- **BioEmu2 C-GAIMMD on chignolin** (:doc:`5_cgaimmd_bioemu2_chignolin`) — the
+  BioEmu2 system folder (atom map, completion of hydrogens, trunk embeddings),
+  the params file with the sequential fit, the polish, re-solvation and
+  minimization, the initial network, the preflight, a local launch and a
+  cluster job script, restarts and monitoring.
+  *Rendered from a GPU run: until that run is added, the page shows the code
+  and the explanations without outputs.*
+- **BioEmu2 C-GAIMMD on trypsin with benzamidine**
+  (:doc:`6_cgaimmd_bioemu2_trypsin_benzamidine`) — what a ligand changes: the
+  ligand atom map from its SMILES string, the completion of hydrogens and of
+  the Ca²⁺ ion, a system-specific validity check of the calcium site, the
+  pooled features and pair adapters, and the ligand weight of the fit.
+  *Rendered from a GPU run: until that run is added, the page shows the code
+  and the explanations without outputs.*
