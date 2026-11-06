@@ -364,6 +364,10 @@ autodoc_default_options = {
 napoleon_google_docstring = True
 napoleon_numpy_docstring = True
 napoleon_include_init_with_doc = True
+# "Attributes" sections become ``:ivar:`` fields: as ``.. attribute::`` entries
+# they duplicate the members autodoc documents itself (namedtuple fields,
+# dataclass fields, class attributes), which a -W build rejects.
+napoleon_use_ivar = True
 
 # -- MyST / notebooks (myst-nb) ----------------------------------------------
 
@@ -413,10 +417,15 @@ html_theme_options = {
 # Several docstrings begin with an RST title + underline and mix prose with
 # loose reStructuredText. This handler runs *after* napoleon (conf.py's setup()
 # is connected last), so it only cleans residual title underlines / stray
-# indentation left after napoleon has converted the NumPy sections — it does not
-# touch napoleon's generated field lists.
+# indentation left after napoleon has converted the NumPy sections. It keeps
+# the indentation that carries meaning: the continuation lines of napoleon's
+# field lists (``:param x: ...`` and the lines below it) and the content of
+# literal blocks and directives (the indented lines after a line ending in
+# ``::``). Flattening those turned every multi-line parameter description into
+# a "Field list ends without a blank line" warning.
 
 _UNDERLINE_RE = re.compile(r"^[=\-~`:#*^]{3,}\s*$")
+_FIELD_RE = re.compile(r"^:[^:\s][^:]*:")
 
 
 def _sanitize_docstring(app, what, name, obj, options, lines):
@@ -426,13 +435,26 @@ def _sanitize_docstring(app, what, name, obj, options, lines):
         del lines[:2]
 
     cleaned = []
+    in_field = False          # inside a napoleon field (``:param x:`` and its body)
+    block_indent = None       # indentation of the line that opened a ``::`` block
     for line in lines:
         stripped = line.strip()
         if _UNDERLINE_RE.match(stripped):
             continue
         if stripped:
             line = line.replace("\t", "    ")
-            line = re.sub(r"^\s{4,}", "", line)
+            indent = len(line) - len(line.lstrip())
+            if block_indent is not None and indent <= block_indent:
+                block_indent = None
+            if _FIELD_RE.match(line):
+                in_field = True
+            elif indent == 0:
+                in_field = False
+            opens_block = block_indent is None and stripped.endswith("::")
+            if not in_field and block_indent is None:
+                line = re.sub(r"^\s{4,}", "", line)
+            if opens_block:
+                block_indent = indent
         cleaned.append(line.rstrip())
 
     while cleaned and not cleaned[0].strip():

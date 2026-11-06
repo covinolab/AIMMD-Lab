@@ -159,10 +159,12 @@ class PathCompute(ABC):
         function : callable or None, optional
             Computation function. Its expected calling convention depends on
             `source`:
+
             - If `source == 'reader'`, `compute_batch` will feed a reader slice
               (or timesteps) and `function` typically iterates over timesteps.
             - Otherwise, `function` is applied to numpy-like batches of the
               extracted source series.
+
             If `function is None`, no computation is performed and the method
             returns either `None` (if returning results) or 0 (if only updating).
         target : str, optional

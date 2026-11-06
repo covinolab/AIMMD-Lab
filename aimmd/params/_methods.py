@@ -572,10 +572,11 @@ class ParamsMethods(ABC):
             single `deffnm` (free simulation) continues with the frame's
             velocities, and of a two-way shot (`back`, `forw`) the `back`
             branch starts with them, the `forw` branch with them reversed.
-          * if `params.gen_temperature < 0` and the frame has no velocities:
+          * if `params.gen_temperature < 0` and the frame has no velocities,
             zero velocities (with a warning).
           * else randomize from `params.masses` if available.
           * else set zeros (with a warning).
+
         - For GROMACS:
 
           * writes a temporary `.trr` file to pass velocities to `grompp` via `-t`.

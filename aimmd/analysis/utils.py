@@ -601,8 +601,10 @@ def binomial_mean_and_confidence_interval(r1, r2, alpha=0.95):
     ----------
     r1, r2 : int
         Two outcome counts. The code interprets:
+
         - n = r1 + r2
         - k = r2
+
         and computes the confidence interval for p = k/n.
     alpha : float, default=0.95
         Confidence level.
