@@ -858,8 +858,9 @@ class WorkerTrain(ABC):
 
         Notes
         -----
-        Removes the side checkpoint and round records an earlier call left in
-        that folder (``state.pt``, ``state.pt.prev``, ``rounds.jsonl``) and
+        Removes the fit state and round records an earlier call left in that
+        folder (the flow-matching fit's ``state.json`` and ``rounds.jsonl``;
+        ``state.pt`` and ``state.pt.prev`` of the flow branch's fit) and
         the trainer the flow-matching fit keeps for it in this process (when
         that fit was imported), loads ``initial_network`` into
         ``params.network`` (strict, ``weights_only``) and sets
@@ -871,7 +872,7 @@ class WorkerTrain(ABC):
                      f'.kcv{round(fraction * 100):03d}')
         _release_flow_matching_trainer(state_dir)
         removed = []
-        for name in ('state.pt', 'state.pt.prev', 'rounds.jsonl'):
+        for name in ('state.json', 'state.pt', 'state.pt.prev', 'rounds.jsonl'):
             fname = os.path.join(state_dir, name)
             if os.path.exists(fname):
                 os.remove(fname)

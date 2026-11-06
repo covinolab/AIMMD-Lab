@@ -663,6 +663,10 @@ def test_kinetics_convergence_fractions_start_from_initial_network(tmp_path, mon
         os.makedirs(state_dir, exist_ok=True)
         with open(os.path.join(state_dir, 'rounds.jsonl'), 'a') as handle:
             handle.write('{"round": 1}\n')
+        if os.path.exists(os.path.join(state_dir, 'state.json')):     # an earlier call's state
+            raise AssertionError('the fraction started on an earlier call\'s fit state')
+        with open(os.path.join(state_dir, 'state.json'), 'w') as handle:
+            handle.write('{"round": 1}')
         with torch.no_grad():
             params.network.committor_net[-1].bias.add_(1.0)   # what a round would learn
         return [1.0], fit_info()
