@@ -114,8 +114,8 @@ the same code.
    C-GAIMMD may choose their levels. Among configurations with the same
    committor value, however, the shooting points should be distributed as in
    equilibrium. If the committor were exact and condition 2 held exactly, this
-   would not matter, since every configuration at one level would then have the
-   same future; with a learned committor it matters. For C-GAIMMD it is what the
+   would not matter, since what happens after a frame would then depend on its
+   committor level only; with a learned committor it matters. For C-GAIMMD it is what the
    generator is trained toward, and what generator adherence, sample quality
    and shooting validation measure (below). Where a generator departs from it,
    the weights, the free energies and the rates carry an error that the
@@ -167,10 +167,12 @@ number of transitions from A to B divided by the time spent with A as the last
 state, with an exact 95 % Poisson interval. It needs no committor and no
 shots, so it is the model-free check of the reweighted rates. It rests on one
 condition: every free simulation must restart from the equilibrium inside its
-state (``free_restart_source = 'equilibrium'`` or ``'basin'``).
-With ``'crossing'`` (the default), ``'transitions'`` or ``'seed'`` the restarts
-sit on the state boundary or at fixed frames, the first-passage times are too
-short, and the function warns. With few transitions the interval is wide.
+state (``free_restart_source = 'equilibrium'`` or ``'basin'``). With
+``'crossing'`` (the default) or ``'transitions'`` every restart sits on the
+state boundary and the counted rate is too fast; with ``'seed'`` every restart
+is one fixed configuration, which is no sample of the state's equilibrium
+either. The function warns in all three cases. With few transitions the
+interval is wide.
 
 The trainer's printed rates
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -394,10 +396,12 @@ does.
 
 .. code-block:: python
 
+   import aimmd
    import torch
 
    from aimmd.cgaimmd.analysis import committor_baseline, validate
 
+   sweep_params = aimmd.Params.load('params_sweep.py', save=False)    # the sweep's params
    reference = validate.sweep_reference(sweep_params, 'sweep_run',
                                         frames='configurations.xtc')
    # or a set computed elsewhere:
@@ -450,7 +454,7 @@ two endpoints per configuration, so only coarse statistics) and the outcomes
 of the run's own free simulations (:func:`aimmd.analysis.free_md.free_md_reference`
 and :func:`aimmd.analysis.free_md.free_md_calibration`: every reactive frame of
 a free simulation is followed by the state it reaches next, which tests a
-network on configurations it never chose).
+network on configurations the run did not choose as shooting points).
 
 Requested against sampled committor
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -513,6 +517,8 @@ are *judged* by a committor model. The judge matters:
 
 .. code-block:: python
 
+   import numpy as np
+
    from aimmd.cgaimmd.analysis import adherence
 
    samples = validate.draw_samples(params.network, [-4, -2, -1, 0, 1, 2, 4], 64)
@@ -566,12 +572,20 @@ distribution of one collective variable of the samples with that of the MD
 frames at the same committor. When you compare the shooting points of two
 methods structurally, compare them at matched committor (by each method's own
 model and by shooting outcome), and run the same comparison on paths shot from
-MD frames as the control: along a collective variable alone, differences in
-committor show up as differences in structure.
+MD frames as the control: binned along a collective variable alone, two sets
+of points that differ in committor look as if they differed in structure.
 
 The thresholds of these functions are arguments with documented defaults;
 none of them returns a verdict. Whether a generator is good enough is your
 decision, with the thresholds written next to the numbers.
+
+**The generator before the run.** The initial network of a BioEmu2 run
+(``initial_network``, made by :mod:`aimmd.cgaimmd.bioemu2.pretrain`) has
+identity adapters: it generates as plain BioEmu2 and ignores the request.
+Samples drawn with it (``draw_samples`` with the initial network loaded, or
+``write_validation_frames(..., network=...)`` to prepare them as the run would)
+and projected on the same collective variables show the distribution BioEmu2
+starts from, next to that of the trained generator.
 
 The whole protocol for one network
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
