@@ -45,6 +45,70 @@ What is computed
   with the amount of data; it is not a re-run of the training, which
   :meth:`aimmd.Worker.kinetics_convergence` does.
 
+Assumptions and valid estimators
+--------------------------------
+The rates and weights are those of AIMMD's main reweighting. In outline: the
+shots and the free-simulation excursions are ordered by the committor values
+(logits) of their frames; for every committor level the method estimates the
+probability that an excursion that leaves a state reaches that level, from
+how many of the excursions that reached one level went on to the next (a
+product over levels, as a survival curve is built); every excursion is then
+weighted so that the weighted ensemble has these crossing probabilities, and
+the rates follow from the weighted time spent with each state as the last one
+visited. This rests on the following.
+
+- **The dynamics in the reactive region are those of the system.** Every
+  half of a shot and every free-simulation segment is a piece of unbiased
+  dynamics from its first frame on. With a static bias inside the states
+  (``record_bias``, below) the bias must vanish in the reactive region; the
+  trainer checks this every round.
+- **Progress along the committor has no memory.** The chance that an
+  excursion at one level goes on to a higher one is taken to depend on the
+  level only, not on how fast or from where it got there. This holds for
+  diffusive dynamics saved at frame intervals that are long compared with the
+  memory of the velocities and short compared with the time to move by about
+  one logit. Dynamics that cross the barrier within a few frames (a light
+  molecule in vacuum, little friction) violate it: the crossing probability,
+  and with it the rate out of the state that is left, then comes out too low;
+  frames that are far apart bias it the other way. When at least
+  ``free_threshold`` (``params.reweight_parameters``, 20 by default)
+  free-simulation excursions from a state reached the other state, the
+  crossing probability out of that state comes from the free simulations
+  alone, and the rate out of it is in effect their direct count, which does
+  not rest on this assumption.
+- **Every committor level between the states is crossed** by enough shots or
+  free excursions.
+- **Within each committor level, the shooting points are distributed as in
+  equilibrium.** How many shooting points sit at each level is free (the
+  reweighting corrects for it; this is why RFPS and C-GAIMMD may choose their
+  levels), but among the configurations that share a committor value the
+  shooting points must be distributed as in equilibrium. RFPS satisfies this
+  by construction. For C-GAIMMD it is what the generator is trained toward
+  and what the tools of :mod:`aimmd.cgaimmd.analysis` test (adherence,
+  variety, structural match, shooting validation); where a generator departs
+  from it, the weights, free energies and rates carry an error that the
+  reweighting itself cannot see.
+- **The numbers depend on the committor values used.** The levels are those
+  of a network. Cached values (each frame scored by the network of the round
+  that scored it) and recomputed values (every frame scored by one network)
+  give different numbers, and another network gives different numbers again;
+  :attr:`RunReweighting.values` and :attr:`RunReweighting.network` record
+  which were used.
+
+Exact path importance sampling and path-ensemble MBAR (the multistate Bennett
+acceptance ratio applied to paths) need no memoryless progress along the
+committor, but they need the probability with which each shooting point was
+proposed. A C-GAIMMD generator's probability density is not evaluated during a
+run, and the preparation of a generated structure (restrained minimisation,
+solvation, a short relaxation) changes it further, so these estimators cannot
+be applied to C-GAIMMD shots; this module provides neither. The sidecar of
+every shot keeps what is known about how its shooting point was made (the
+requested committor, the generator and its settings, the network round).
+
+The rates counted in the free simulations
+(:func:`aimmd.analysis.free_md.free_md_rates`) need no committor at all, but
+need free simulations that restart from the equilibrium inside each state.
+
 Static bias
 -----------
 A run with ``params.record_bias`` applies a bias only inside the metastable
@@ -99,8 +163,11 @@ hold frames beyond its states cache (the last frames written after the
 worker's final state pass). AIMMD reads their state as ``''``, and the
 trainer's reweighting counts them like any frame, as a state of their own.
 :func:`reweight_run` keeps them too, so that it reproduces the trainer;
-:attr:`RunReweighting.frames_without_state` says how many there are, and
-:func:`populations` reports their share as ``'unknown'``.
+:attr:`RunReweighting.frames_without_state` says how many there are,
+:func:`populations` reports their share as ``'unknown'``, and a warning is
+given when they are more than :data:`UNKNOWN_STATE_SHARE` of the counted
+frames: the rates of such a run rest partly on frames whose state is not
+known.
 """
 
 # external
@@ -121,7 +188,7 @@ from ._data_access import without_writing
 __all__ = ['RunReweighting', 'reweight_run', 'FrameTable', 'frame_table', 'populations',
            'FreeEnergy', 'free_energy', 'free_energy_difference', 'free_energy_convergence',
            'trainer_rate_estimates', 'cache_rows', 'check_output_outside', 'VALUES_MODES',
-           'FRACTION_BY']
+           'FRACTION_BY', 'UNKNOWN_STATE_SHARE']
 
 
 VALUES_MODES = ('cached', 'recompute')
@@ -129,6 +196,9 @@ VALUES_MODES = ('cached', 'recompute')
 
 FRACTION_BY = ('shots', 'time')
 """How :func:`reweight_run` picks the first fraction of the shots."""
+
+UNKNOWN_STATE_SHARE = 0.01
+"""Share of the counted frames without a known state above which :func:`reweight_run` warns."""
 
 _range = range
 """The builtin, which the ``range`` keywords of the free-energy functions shadow."""
@@ -713,6 +783,12 @@ def reweight_run(params, run_dir, *, values='cached', network=None, bias='auto',
         One :class:`RunReweighting`; for a multi-system run without
         `system_id`, ``{system_id: RunReweighting}``.
 
+    Warns
+    -----
+    UserWarning
+        When more than :data:`UNKNOWN_STATE_SHARE` of the counted frames have
+        no known state (see the module docstring).
+
     Raises
     ------
     ValueError
@@ -833,6 +909,15 @@ def reweight_run(params, run_dir, *, values='cached', network=None, bias='auto',
         result.subsets.append(subset)
     shot_times = [_shot_time(path) for chain in chains for path in chain._paths]
     result.registered_until = max(shot_times) if shot_times else None
+    counted = int(np.sum(result.n_frames))
+    if counted and result.frames_without_state > UNKNOWN_STATE_SHARE * counted:
+        label = f'system {system_id!r}: ' if system_id is not None else ''
+        warnings.warn(
+            f'{label}{result.frames_without_state} of the {counted} counted frames '
+            f'({100 * result.frames_without_state / counted:.1f} %) have no known state (written '
+            f'after the last state pass of their worker); the trainer counts them, and so does '
+            f'reweight_run to reproduce it, so the rates rest partly on frames whose state is '
+            f'not known', UserWarning, stacklevel=3)
     return result
 
 
@@ -1421,7 +1506,11 @@ def trainer_rate_estimates(log_fname):
     Notes
     -----
     These are the trainer's online estimates, each with the network of its
-    round. For rates at a fraction of the data with the final network, use
+    round, computed by the AIMMD version that ran the trainer: if AIMMD's
+    reweighting has been corrected since, they are wrong. The rates to report
+    come from :func:`reweight_run` with the current code (see "Assumptions
+    and valid estimators" in the module docstring for what they rest on). For
+    rates at a fraction of the data with the final network, use
     :func:`reweight_run` with ``fractions=``. Against the
     estimates of :func:`aimmd.analysis.utils.extract_rate_estimates_from_log_file`,
     this parser adds the number of shots and the time, and keeps the raw and

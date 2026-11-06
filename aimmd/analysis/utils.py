@@ -665,25 +665,24 @@ def extract_rate_estimates_from_log_file(fname, n_shots=False):
     -----------------
     The function returns three arrays:
 
-    - ``t``   : cumulative simulated time (as printed by the logger)
+    - ``t``   : the number of frames the estimate counts (as printed by the logger)
     - ``k12`` : rate constant estimate for the state 1 to state 2 transition
     - ``k21`` : rate constant estimate for the state 2 to state 1 transition
+
+    The printed estimates come from the AIMMD version that ran the trainer;
+    rates to report come from :func:`aimmd.analysis.reweighting.reweight_run`.
 
     Parameters
     ----------
     fname : str or path-like
         Path to a training log file (e.g., ``trainARB.log``).
     n_shots : bool, default False
-        Also return the number of shots the trainer had loaded at each
-        estimate (from its progress lines), to plot the estimates against the
-        amount of shooting data.
+        Also return the shots the trainer had loaded at each estimate.
 
     Returns
     -------
     (np.ndarray, np.ndarray, np.ndarray)
-        ``(t, k12, k21)`` as NumPy arrays of dtype float; with `n_shots`,
-        ``(t, k12, k21, n_shots)``, the last an int array (-1 where the log
-        shows no count).
+        ``(t, k12, k21)`` float arrays; with `n_shots`, also ``n_shots`` (int, -1: no count).
 
     Notes
     -----
@@ -735,9 +734,10 @@ def extract_bias_reweighted_rate_estimates_from_log_file(fname, n_shots=False):
         k12 bias-reweighted:   1.200e-03 [1/dt]
         k21 bias-reweighted:   5.500e-04 [1/dt]
 
-    The time coordinate ``t`` is taken from the ``frames`` line (same as for
-    the raw estimates), so the returned arrays align index-by-index with those
-    returned by :func:`extract_rate_estimates_from_log_file`.
+    The coordinate ``t`` (the number of frames the estimate counts) is taken
+    from the ``frames`` line (same as for the raw estimates), so the returned
+    arrays align index-by-index with those returned by
+    :func:`extract_rate_estimates_from_log_file`.
 
     Parameters
     ----------

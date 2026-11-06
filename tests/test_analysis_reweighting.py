@@ -446,7 +446,7 @@ def test_a_read_only_run_folder_gives_the_same_numbers(ring, ring_reweighting, t
     assert rates == free_md_rates(ring['params'], ring['run'])
 
 
-def test_frames_without_values_are_left_out(ring, ring_reweighting, tmp_path):
+def test_frames_without_values_are_left_out(ring, ring_reweighting, tmp_path, monkeypatch):
     """Frames written after the trainer's last value pass read as logit 0; with until_values (the
     default) free trajectories are cut at their first reactive frame without a value and such
     shots are left out, which gives the trainer's numbers back. A part file with no reactive
@@ -488,6 +488,12 @@ def test_frames_without_values_are_left_out(ring, ring_reweighting, tmp_path):
     assert result.frames_without_state == 9 and ring_reweighting.frames_without_state == 0
     shares = result.populations()['state']
     assert shares['unknown'] > 0 and sum(shares.values()) == pytest.approx(1.0)
+    # 9 of about 12,000 frames: below the share that is worth a warning; above it, a warning
+    import aimmd.analysis.reweighting as module
+    with monkeypatch.context() as patch:
+        patch.setattr(module, 'UNKNOWN_STATE_SHARE', 1e-4)
+        with pytest.warns(UserWarning, match=r'9 of the \d+ counted frames .* no known state'):
+            reweight_run(params, str(run))
     without = reweight_run(params, str(run), until_values=False)
     assert without.left_out == {'free_frames': {}, 'shots': []}
     assert without.n_shots == 17
