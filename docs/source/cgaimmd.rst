@@ -457,8 +457,9 @@ an unknown key is an error:
    * - ``final_check_round``
      - ``'auto'``
      - Round the frame's coordinates before the final check as the
-       trajectory format stores them (2 decimals in Å for ``.xtc``), or None,
-       or a number of decimals.
+       trajectory format stores them (2 decimals in Å for ``.xtc``, none for
+       a system of at most nine atoms, which ``.xtc`` stores as plain floats),
+       or None, or a number of decimals.
    * - ``generation_device``, ``values_device``, ``training_device``
      - ``'auto'``
      - Where the network generates, evaluates and trains: ``'auto'`` (the GPU

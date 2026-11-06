@@ -494,7 +494,8 @@ grompp will receive it:
 
 1. the positions, as float32, are rounded to ``final_check_round`` decimals
    (``'auto'``: 2 for ``.xtc``, the precision at which frame 0 of ``back.xtc``
-   is stored) and wrapped in a one-frame reader of the type ``Path.compute``
+   is stored; none for a system of at most nine atoms, which ``.xtc`` stores
+   as plain floats) and wrapped in a one-frame reader of the type ``Path.compute``
    hands to user functions;
 2. ``params.states_function`` must return ``states[1]``; otherwise the reason
    is ``state_<X>``;

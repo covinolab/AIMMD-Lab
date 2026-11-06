@@ -218,9 +218,21 @@ def _box_of(universe):
     return box
 
 
-def _decimals(setting, params):
+XTC_PLAIN_FLOAT_ATOMS = 9
+"""XTC files store a frame of at most this many atoms as plain floats (not rounded)."""
+
+
+def _decimals(setting, params, n_atoms=None):
+    """The decimals the final check rounds to: ``'auto'`` follows how the trajectory stores a frame.
+
+    XTC rounds the coordinates of a frame to 0.001 nm (2 decimals in Å), except for a frame of
+    at most :data:`XTC_PLAIN_FLOAT_ATOMS` atoms, which it stores as plain floats; other formats
+    keep full precision.
+    """
     if setting == 'auto':
-        return 2 if getattr(params, 'trajectory_extension', None) == '.xtc' else None
+        if getattr(params, 'trajectory_extension', None) != '.xtc':
+            return None
+        return None if n_atoms is not None and n_atoms <= XTC_PLAIN_FLOAT_ATOMS else 2
     return None if setting is None else int(setting)
 
 
@@ -472,7 +484,8 @@ def final_check(frame, context, lambda_target):
 
     1. ``x = frame.positions.astype(float32)``, rounded to
        ``final_check_round`` decimals (``'auto'``: 2 for ``.xtc``, the
-       precision frame 0 of ``back.xtc`` is stored at), inside a one-frame
+       precision frame 0 of ``back.xtc`` is stored at; none for a system of
+       at most nine atoms, which XTC stores as plain floats), inside a one-frame
        :class:`aimmd.path.chainreader.ChainReader` over an MDAnalysis
        ``MemoryReader``, the reader type ``Path.compute`` hands to user
        functions.
@@ -512,7 +525,8 @@ def final_check(frame, context, lambda_target):
     (lo, hi), _ = resolve_window(settings, L, context.bins,
                                  reweight_parameters=getattr(params, 'reweight_parameters', None))
     tolerance = float(settings['lambda_tolerance'])
-    decimals = _decimals(settings['final_check_round'], params)
+    decimals = _decimals(settings['final_check_round'], params,
+                         n_atoms=len(np.asarray(frame.positions)))
     result = {'ok': False, 'reason': '', 'state': None, 'lambda': None, 'rule': rule,
               'enforced': bool(enforced), 'tolerance': tolerance, 'window': [lo, hi],
               'window_after_trained_shots': after, 'n_trained_shots': n_trained,
