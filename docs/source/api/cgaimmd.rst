@@ -28,6 +28,9 @@ The reference is split by what the code does:
   generator ``'ode'``, its fit and its end-state pretraining;
 - :doc:`cgaimmd_bioemu2`: the BioEmu2 adaptor (the ``bioemu2`` extra), its
   generator ``'bioemu2_edm'``, its network, fit and system folder.
+- :doc:`cgaimmd_analysis`: the tools that judge a model and its generator
+  after a run (committor parity against brute-force sets, generator
+  adherence, shooting validation, a distance-matrix committor baseline).
 
 .. toctree::
    :hidden:
@@ -37,3 +40,4 @@ The reference is split by what the code does:
    cgaimmd_preparation
    cgaimmd_flow_matching
    cgaimmd_bioemu2
+   cgaimmd_analysis

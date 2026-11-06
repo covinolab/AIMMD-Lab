@@ -90,6 +90,14 @@ law, such as exact path importance sampling or path MBAR, do not apply. The
 sidecars record everything about each shooting point, so that the law can be
 studied afterwards.
 
+To repeat the trainer's reweighting after a run (per-frame equilibrium
+weights, populations, free energies along any collective variable, rates from
+part of the data), use :func:`aimmd.analysis.reweighting.reweight_run`; rates
+counted in the free simulations alone are in :mod:`aimmd.analysis.free_md`.
+The tools that judge the committor model and the generator (parity against
+brute-force shooting, generator adherence, shooting validation of generated
+configurations) are described in :doc:`api/cgaimmd_analysis`.
+
 How one shot is made
 --------------------
 
@@ -689,5 +697,5 @@ spelling, so such runs can be loaded, resumed and analysed; only the new names
 are written.
 
 .. The page "Analysis and estimators" (which rate estimators are valid for
-   C-GAIMMD, and why) joins the C-GAIMMD section of the index once the
-   analysis tools are part of the package.
+   C-GAIMMD, and why) is still to be written; it joins the C-GAIMMD section
+   of the index.

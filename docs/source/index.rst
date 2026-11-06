@@ -97,8 +97,8 @@ License.
    cgaimmd_internals
 
 .. The page "Analysis and estimators" (which rate estimators are valid for
-   C-GAIMMD, and why) joins the C-GAIMMD toctree above, after
-   cgaimmd_troubleshooting, once the analysis tools are part of the package.
+   C-GAIMMD, and why) is still to be written; it joins the C-GAIMMD toctree
+   above, after cgaimmd_troubleshooting.
 
 .. toctree::
    :hidden:

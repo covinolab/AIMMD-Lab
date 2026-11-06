@@ -43,8 +43,7 @@ weights.
 
 .. A tutorial on analysing a C-GAIMMD run (rates and free energies through the
    reweighting, the shot table, generator adherence, shooting validation of
-   generated structures) joins this list once the analysis tools are part of
-   the package.
+   generated structures) is still to be written; it joins this list.
 
 - **C-GAIMMD on the 1-D toy** (:doc:`3_cgaimmd_toy_1d`) — the C-GAIMMD loop on
   the toy engine with the minimal flow-matching network: the params file, the
