@@ -162,6 +162,24 @@ def test_noise_ceiling_is_what_the_exact_committor_scores():
     # one endpoint per entry: no noise estimate
     single = validate.committor_metrics([0.0, 1.0], [1.0, 0.0], [0.0, 1.0])
     assert single['r2_noise_ceiling'] is None and single['mse_binomial_noise'] is None
+    assert single['r2_noise_ceiling_entries'] is None and single['n_noise_ceiling_entries'] == 0
+    # mixed: the ceiling and the R² held against it cover the same entries (n >= 2)
+    lam = np.array([-2.0, -1.0, 0.0, 1.0, 2.0])
+    nA, nB = np.array([1.0, 15.0, 10.0, 6.0, 1.0]), np.array([0.0, 5.0, 10.0, 14.0, 19.0])
+    mixed = validate.committor_metrics(lam, nA, nB)
+    assert mixed['n_noise_ceiling_entries'] == 4 and mixed['n_entries'] == 5
+    want = validate.committor_metrics(lam[1:], nA[1:], nB[1:])
+    assert mixed['r2_noise_ceiling_entries'] == pytest.approx(want['r2'])
+    assert mixed['r2_noise_ceiling'] == pytest.approx(want['r2_noise_ceiling'])
+    assert mixed['r2'] != pytest.approx(want['r2'])
+    # the two halves of one two-way shot are not independent: no ceiling
+    halves = validate.committor_metrics(lam, np.full(5, 1.0), np.full(5, 1.0),
+                                        independent_endpoints=False)
+    assert halves['r2_noise_ceiling'] is None and halves['mse_binomial_noise'] is None
+    reference = validate.CommittorReference('held-out', _molecule(5), [2, 1, 1, 0, 0],
+                                            [0, 1, 1, 2, 2], kind='heldout_chains')
+    report, _ = validate.score_committor(lambda positions: lam, reference)
+    assert report['r2_noise_ceiling'] is None and report['r2'] is not None
 
 
 def test_calibration_fit_recovers_known_line():
@@ -186,6 +204,22 @@ def test_calibration_fit_recovers_known_line():
     separated = (lam > 0).astype(float)
     _, steep = validate.calibration_fit(lam, 1 - separated, separated, ridge=1e-2)
     assert np.isfinite(steep) and 3 < steep < 100
+
+
+def test_calibration_and_metrics_refuse_what_they_cannot_judge():
+    """Non-finite logits are an error (a NaN once read as the calibration (0, 1)); with every
+    endpoint in one state the calibration line is not identifiable."""
+    for bad in ([-2.0, 0.0, 2.0, np.nan], [-np.inf, 0.0, 1.0, 2.0]):
+        with pytest.raises(ValueError, match='not finite'):
+            validate.calibration_fit(bad, [3, 2, 1, 0], [0, 1, 2, 3])
+        with pytest.raises(ValueError, match='not finite'):
+            validate.committor_metrics(bad, [3, 2, 1, 0], [0, 1, 2, 3])
+    # an entry without endpoints may carry any logit: it is dropped first
+    ok = validate.committor_metrics([-2.0, 0.0, 2.0, np.nan], [3, 2, 1, 0], [0, 1, 2, 0])
+    assert ok['n_entries'] == 3
+    assert validate.calibration_fit([-2.0, 0.0, 2.0], [5, 5, 5], [0, 0, 0]) == (None, None)
+    one_state = validate.committor_metrics([-2.0, 0.0, 2.0], [5, 5, 5], [0, 0, 0])
+    assert one_state['calibration_slope'] is None and one_state['calibration_intercept'] is None
 
 
 def test_metrics_of_a_constant_model_and_degenerate_sets():

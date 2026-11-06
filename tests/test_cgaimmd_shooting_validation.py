@@ -100,6 +100,22 @@ def test_logistic_dial_recovers_known_line():
     # perfectly separated halves stay finite thanks to the ridge
     _, b_sep = sv.logistic_dial(x, (x > 0).astype(float))
     assert np.isfinite(b_sep) and b_sep > 5
+    # every half in one state: no slope (a ridge-only number would look like a measurement)
+    assert all(np.isnan(v) for v in sv.logistic_dial([0.0, 0.0, 1.0, 1.0], [0.0] * 4))
+
+
+def test_a_dial_whose_halves_all_end_in_one_state_has_no_slope():
+    rows = []
+    for level in (0.0, 1.0):
+        for rank in range(5):
+            row = {'level': level, 'request': level, 'rank': rank, 'outcome_class': 'shoot'}
+            row.update(sv.frame_outcomes([('A', 'A')]))
+            rows.append(row)
+    dial = sv.dial_slope(rows, n_boot=50)
+    assert dial['single_outcome'] is True
+    assert np.isnan(dial['slope']) and np.isnan(dial['intercept'])
+    assert all(np.isnan(v) for v in dial['slope_interval'])
+    assert not dial['large_slope']
 
 
 def _fake_rows(rng, b_true, n=24, open_first=True):
@@ -126,7 +142,7 @@ def test_dial_slope_and_comparison():
     assert dial['slope_interval'][0] < dial['slope'] < dial['slope_interval'][1]
     assert dial['slope_bounds'][0] <= dial['slope'] <= dial['slope_bounds'][1]
     assert set(dial['slope_with_open_halves']) == set(sv.UNCOMMITTED_RULES[1:])
-    assert not dial['large_slope']
+    assert not dial['large_slope'] and dial['single_outcome'] is False
     out = sv.compare_dials(base, cand, n_boot=500, seed=3)
     assert out['delta_slope'] == pytest.approx(dial['slope'] - sv.dial_slope(base, n_boot=0)['slope'])
     assert out['delta_slope_interval'][0] > 0

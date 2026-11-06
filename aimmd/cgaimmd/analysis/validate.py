@@ -52,7 +52,10 @@ the number of trajectory ends (endpoints) of a configuration:
   and its **noise ceiling**: ``q`` is itself a noisy estimate (binomial
   variance ``q (1 - q) / (n - 1)`` per configuration), so even the exact
   committor has an R² below 1 on these counts; the ceiling is ``1 - sum
-  noise / sum (q - mean q)^2``;
+  noise / sum (q - mean q)^2``. It needs two or more endpoints per
+  configuration, and endpoints that are independent given the configuration
+  (separate shots); the two halves of one two-way shot are not, so a
+  reference of held-out chains gets no ceiling;
 - in the transition region ``0.1 < q < 0.9``: the root mean square and the
   mean of ``p - q`` (endpoint weighted), and how many predictions there are
   saturated (``p < 0.05`` or ``p > 0.95``).
@@ -187,7 +190,13 @@ def calibration_fit(lam, n_first, n_last, *, max_iter=200, ridge=0.0):
     Returns
     -------
     tuple
-        ``(a, b)`` floats; ``(None, None)`` when `lam` is constant (the slope is not identifiable).
+        ``(a, b)`` floats; ``(None, None)`` when the line is not identifiable:
+        `lam` is constant, or every endpoint lies in the same end state.
+
+    Raises
+    ------
+    ValueError
+        If a logit of an entry with endpoints is not finite.
 
     Notes
     -----
@@ -199,10 +208,14 @@ def calibration_fit(lam, n_first, n_last, *, max_iter=200, ridge=0.0):
     """
     x = np.asarray(lam, dtype=float).reshape(-1)
     a_n, b_n = _counts(n_first, n_last)
+    if x.shape != a_n.shape:
+        raise ValueError(f'{len(x)} logits for {len(a_n)} entries')
     n = a_n + b_n
     keep = n > 0
     x, a_n, b_n, n = x[keep], a_n[keep], b_n[keep], n[keep]
-    if len(x) == 0 or np.ptp(x) < 1e-12:
+    if not np.all(np.isfinite(x)):
+        raise ValueError(f'{int(np.sum(~np.isfinite(x)))} logits are not finite')
+    if len(x) == 0 or np.ptp(x) < 1e-12 or not (a_n.sum() > 0 and b_n.sum() > 0):
         return None, None
     ridge = float(ridge)
 
@@ -239,7 +252,7 @@ def calibration_fit(lam, n_first, n_last, *, max_iter=200, ridge=0.0):
 
 
 def committor_metrics(lam, n_first, n_last, *, prob_clip=PROB_CLIP, transition=TRANSITION_Q,
-                      saturation=SATURATION):
+                      saturation=SATURATION, independent_endpoints=True):
     """Accuracy of committor logits against commitment counts.
 
     Parameters
@@ -254,6 +267,11 @@ def committor_metrics(lam, n_first, n_last, *, prob_clip=PROB_CLIP, transition=T
         Open range of the brute-force committor ``q`` that is the transition region.
     saturation : float, optional
         A prediction ``p < saturation`` or ``p > 1 - saturation`` is saturated.
+    independent_endpoints : bool, optional
+        Whether the endpoints of one entry are independent given its
+        configuration (separate shots, default). False for the two halves of
+        one two-way shot (held-out chains): the noise ceiling, which assumes
+        independent endpoints, is then not computed.
 
     Returns
     -------
@@ -263,7 +281,8 @@ def committor_metrics(lam, n_first, n_last, *, prob_clip=PROB_CLIP, transition=T
     Raises
     ------
     ValueError
-        For counts of another shape, negative counts, or no endpoints at all.
+        For counts of another shape, negative counts, no endpoints at all, or
+        a logit that is not finite (of an entry with endpoints).
 
     Notes
     -----
@@ -289,10 +308,14 @@ def committor_metrics(lam, n_first, n_last, *, prob_clip=PROB_CLIP, transition=T
       ``rmse_weighted`` weight each entry by its endpoints;
     - ``mse_binomial_noise``: the mean of ``q (1 - q) / (n - 1)`` over the
       entries with ``n >= 2`` (an unbiased estimate of the variance of
-      ``q`` around the true committor), and ``r2_noise_ceiling``: ``1 - sum
-      of that noise / sum((q - mean q)^2)`` over the same entries, the R² the
-      exact committor would reach on these counts on average; None without
-      such entries;
+      ``q`` around the true committor when the ``n`` endpoints are
+      independent), and ``r2_noise_ceiling``: ``1 - sum of that noise /
+      sum((q - mean q)^2)`` over the same entries, the R² the exact committor
+      would reach on these counts on average; ``r2_noise_ceiling_entries``:
+      the model's R² over those same entries (with ``n_noise_ceiling_entries``
+      of them), the number to hold against the ceiling (it equals ``r2`` when
+      every entry has two or more endpoints); all None without such entries
+      or with `independent_endpoints` False;
     - ``logit_rmse_mid``: RMS of ``logit(p) - logit(q)`` over ``0.05 < q < 0.95``;
     - ``n_entries``, ``n_endpoints``, ``endpoints_per_entry`` (min, median, max).
     """
@@ -305,6 +328,9 @@ def committor_metrics(lam, n_first, n_last, *, prob_clip=PROB_CLIP, transition=T
         raise ValueError('the reference has no endpoints')
     keep = n > 0
     lam, a_n, b_n, n = lam[keep], a_n[keep], b_n[keep], n[keep]
+    if not np.all(np.isfinite(lam)):
+        raise ValueError(f'{int(np.sum(~np.isfinite(lam)))} logits are not finite; leave those '
+                         f'entries out (or fix the model) before scoring')
     clip = float(prob_clip)
     p_raw = _sigmoid(lam)
     p = np.clip(p_raw, clip, 1 - clip)
@@ -323,9 +349,11 @@ def committor_metrics(lam, n_first, n_last, *, prob_clip=PROB_CLIP, transition=T
     qw = np.sum(n * q) / total
     ssw = np.sum(n * (q - qw) ** 2)
     r2w = None if ssw == 0 else float(1 - np.sum(n * (q - p_raw) ** 2) / ssw)
-    several = n >= 2
+    several = (n >= 2) & bool(independent_endpoints)
     noise = q[several] * (1 - q[several]) / (n[several] - 1)
     ss_several = np.sum((q[several] - q[several].mean()) ** 2) if several.any() else 0.0
+    r2_several = (None if ss_several == 0 else
+                  float(1 - np.sum((q[several] - p_raw[several]) ** 2) / ss_several))
     tr = (q > transition[0]) & (q < transition[1])
     if tr.any():
         rmse_tr = float(np.sqrt(np.sum(n[tr] * (p_raw[tr] - q[tr]) ** 2) / n[tr].sum()))
@@ -350,11 +378,14 @@ def committor_metrics(lam, n_first, n_last, *, prob_clip=PROB_CLIP, transition=T
         'mse_binomial_noise': float(noise.mean()) if several.any() else None,
         'r2_noise_ceiling': (None if not several.any() or ss_several == 0
                              else float(1 - noise.sum() / ss_several)),
+        'r2_noise_ceiling_entries': r2_several,
+        'n_noise_ceiling_entries': int(several.sum()),
         'logit_rmse_mid': logit_rmse, 'n_mid': int(mid.sum()),
         'n_entries': int(len(q)), 'n_endpoints': int(round(total)),
         'endpoints_per_entry': [float(n.min()), float(np.median(n)), float(n.max())],
         'settings': {'prob_clip': clip, 'transition': [float(transition[0]), float(transition[1])],
-                     'saturation': float(saturation)}}
+                     'saturation': float(saturation),
+                     'independent_endpoints': bool(independent_endpoints)}}
 
 
 def _sha256(fname):
@@ -679,7 +710,8 @@ def score_committor(committor, reference, *, prob_clip=PROB_CLIP, transition=TRA
         ``(report, lam)``: the :func:`committor_metrics` of the included
         entries with ``kind``, ``n_configurations``, ``n_scored``,
         ``n_excluded``, ``seconds`` and ``notes``; the ``(n,)`` logits of
-        every entry.
+        every entry. A reference of held-out chains gets no noise ceiling
+        (its two endpoints per entry are the halves of one two-way shot).
 
     Raises
     ------
@@ -701,7 +733,8 @@ def score_committor(committor, reference, *, prob_clip=PROB_CLIP, transition=TRA
                else reference.include)
     metrics = committor_metrics(lam[include], reference.n_first[include],
                                 reference.n_last[include], prob_clip=prob_clip,
-                                transition=transition, saturation=saturation)
+                                transition=transition, saturation=saturation,
+                                independent_endpoints=reference.kind != 'heldout_chains')
     report = {'kind': reference.kind, 'n_configurations': int(len(lam)),
               'n_scored': int(include.sum()), 'n_excluded': int((~include).sum()),
               **metrics, 'seconds': round(time.time() - start, 3),
@@ -2155,7 +2188,7 @@ def redraw_card(path, *, stem=None):
 _M2_COLUMNS = ('loglik_per_endpoint', 'loglik_saturated', 'loglik_constant',
                'calibration_slope', 'calibration_intercept', 'spearman', 'rmse_transition',
                'bias_transition', 'n_saturated_transition', 'n_transition', 'r2',
-               'r2_noise_ceiling')
+               'r2_noise_ceiling', 'r2_noise_ceiling_entries')
 _M3_COLUMNS = ('spearman', 'within_tolerance', 'median_abs_error')
 
 

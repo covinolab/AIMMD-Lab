@@ -104,6 +104,19 @@ def _panel_validity(ax, report):
     ax.text(0, 1.012, note, transform=ax.transAxes, fontsize=7.8, color=INK2, va='bottom')
 
 
+def _r2_text(m2):
+    """R² and its noise ceiling, each over the entries it covers."""
+    text = f'R² {_fmt(m2["r2"])}'
+    if m2.get('r2_noise_ceiling') is None:
+        return text
+    covered = m2.get('n_noise_ceiling_entries')
+    if covered is not None and covered < m2.get('n_entries', covered):
+        return (f'{text}; on the {covered} entries with n ≥ 2: '
+                f'{_fmt(m2.get("r2_noise_ceiling_entries"))} '
+                f'(noise ceiling {_fmt(m2["r2_noise_ceiling"])})')
+    return f'{text} (noise ceiling {_fmt(m2["r2_noise_ceiling"])})'
+
+
 def _metric_lines(m2):
     """The parity numbers of one reference, one per line."""
     return [f'log-lik/endpoint {_fmt(m2["loglik_per_endpoint"])}',
@@ -115,7 +128,7 @@ def _metric_lines(m2):
             f'0.1<q<0.9: RMSE {_fmt(m2["rmse_transition"])}, bias '
             f'{_fmt(m2["bias_transition"], 3, True)}',
             f'  saturated {m2["n_saturated_transition"]} of {m2["n_transition"]}',
-            f'R² {_fmt(m2["r2"])} (noise ceiling {_fmt(m2.get("r2_noise_ceiling"))})']
+            _r2_text(m2)]
 
 
 def _binomial_band(a, b):
@@ -167,7 +180,8 @@ def parity_panels(entries, stem, *, title=None):
         ax = fig.add_subplot(gs[0, k])
         include = np.ones(len(lam), dtype=bool) if reference.include is None else reference.include
         m2 = committor_metrics(lam[include], reference.n_first[include],
-                               reference.n_last[include])
+                               reference.n_last[include],
+                               independent_endpoints=reference.kind != 'heldout_chains')
         ylabel = _parity_axes(ax, reference, lam, SERIES[k % len(SERIES)])
         ax.set_xlim(-0.02, 1.02)
         ax.set_ylim(-0.02, 1.02)
@@ -389,7 +403,7 @@ def _panel_summary(ax, report):
                      f'{_fmt(m2["loglik_saturated"])}, constant {_fmt(m2["loglik_constant"])}); '
                      f'b {_fmt(m2["calibration_slope"], 2)}; '
                      f'Spearman {_fmt(m2.get("spearman"), 2)}; '
-                     f'R² {_fmt(m2["r2"])} (noise ceiling {_fmt(m2.get("r2_noise_ceiling"))})')
+                     f'{_r2_text(m2)}')
     m3 = report['m3']
     for key, name in (('own', 'own committor'), ('independent', m3.get('independent_name')),
                       ('own_after_polish', 'own committor, valid after polish'),

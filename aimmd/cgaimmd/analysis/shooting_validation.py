@@ -364,7 +364,10 @@ def logistic_dial(x, y, *, ridge=1e-4):
     Returns
     -------
     tuple
-        ``(a, b)``; NaN when there are fewer than two halves or one request only.
+        ``(a, b)``; NaN when there are fewer than two halves, one request
+        only, or every half ended in the same end state (then the outcomes
+        say nothing about the slope; with the ridge alone a fit would return
+        a number that only reflects the penalty).
 
     Notes
     -----
@@ -419,7 +422,8 @@ def dial_slope(rows, *, n_boot=2000, confidence=0.95, seed=0, ridge=1e-4):
         :data:`UNCOMMITTED_RULES`) and ``slope_bounds`` (the smallest and
         largest of these and ``b``); ``large_slope`` (True when ``|b| > 20``:
         the outcomes are nearly separated by the request and ``b`` is set by
-        the ridge); ``confidence``.
+        the ridge); ``single_outcome`` (True when every committed half ended
+        in the same end state: then ``a`` and ``b`` are NaN); ``confidence``.
     """
     rng = np.random.default_rng(seed)
     x, y = half_outcomes(rows)
@@ -429,7 +433,8 @@ def dial_slope(rows, *, n_boot=2000, confidence=0.95, seed=0, ridge=1e-4):
     with_open = {rule: logistic_dial(*half_outcomes(rows, rule), ridge=ridge)[1]
                  for rule in UNCOMMITTED_RULES[1:]}
     finite = [v for v in list(with_open.values()) + [b] if np.isfinite(v)]
-    return {'intercept': a, 'slope': b,
+    single_outcome = bool(len(y)) and bool(np.all(y == y[0])) and y[0] in (0.0, 1.0)
+    return {'intercept': a, 'slope': b, 'single_outcome': single_outcome,
             'slope_interval': (percentile_interval(draws, confidence) if draws
                                else [math.nan, math.nan]),
             'confidence': float(confidence), 'n_committed_halves': int(len(x)),
