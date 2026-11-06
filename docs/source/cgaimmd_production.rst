@@ -43,7 +43,9 @@ and goes through these steps:
 3. pretrain the initial network on the unbiased end-state frames;
 4. write the params file and run the preflight;
 5. launch: locally with the Launcher, or as a cluster job;
-6. monitor the logs, the network metadata and the sidecars;
+6. monitor the logs, the network metadata and the sidecars (the record
+   ``path<n>.xtc.cgaimmd.json`` that every C-GAIMMD shot leaves next to its
+   path);
 7. restart after the time limit, post-train if needed, back up.
 
 Installing
@@ -299,9 +301,9 @@ When any worker exits, the job ends all others (``wait -n; scancel``), so a
 crash in one chain does not leave the trainer running alone. Jobs normally end
 at their time limit; resubmit the same script to continue (`Restarts`_).
 
-Free simulations are bounded by ``walltime``, not by ``nframes``: AIMMD counts
-a free worker's frames when a trajectory is complete, and a trajectory that
-stays in its state runs until the walltime. A free worker of a C-GAIMMD run
+Bound free simulations with ``walltime``. AIMMD counts a free worker's frames
+(``nframes``) only when a trajectory is complete, and a trajectory that stays
+in its state runs until the walltime. A free worker of a C-GAIMMD run
 keeps adding in-state frames for the fits, so give the job a walltime that
 fits the campaign.
 
@@ -311,8 +313,9 @@ Monitoring
 The files to watch, all in the run folder:
 
 ``chainR<k>/worker.log``
-   One line per pool refill and one per shooting point (each is one line in
-   the log, wrapped here)::
+   One line per pool refill (stage 1: the candidates generated, how many passed
+   the validity check, and why the others did not) and one per shooting point
+   (each is one line in the log, wrapped here)::
 
        C-GAIMMD pool refill 3 for run/chainR0/path000412: 32 candidates for 16 targets
            (network 5c1e9a02, uniform); 21 passed stage 1 (bond_count: 7, clash: 4) in 95.3 s
@@ -363,7 +366,8 @@ call ``Launcher.run`` again. Every worker picks up from the files on disk:
   (:doc:`workflow`, "Restarts and Checkpoints"). Never restore ``.cpt`` files
   from an older copy of the run folder.
 - A shot that was killed leaves its in-flight record
-  (``chainR<k>/.cgaimmd_shooting_point.json``). When the worker restarts, the
+  (``chainR<k>/.cgaimmd_shooting_point.json``, written before the shot's
+  segments start: the shooting point and how it was made). When the worker restarts, the
   record is attached to the path it names, or to the registered path whose
   shooting frame matches its coordinates; otherwise it is kept aside, and that
   shot's sidecar says ``source: 'unknown'``.

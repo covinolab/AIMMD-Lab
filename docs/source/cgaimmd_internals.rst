@@ -1110,8 +1110,8 @@ their old worker used (``'bioemu2_edm'`` for a network with its own
 ``generate``, else ``'ode'``). BioEmu2 networks of earlier runs load into
 :class:`~aimmd.cgaimmd.bioemu2.network.BioEmu2Network` through
 :func:`~aimmd.cgaimmd.bioemu2.network.load_archived_network`. The fit-state
-folder ``flow_fit<states>/`` keeps its name: it belongs to the flow-matching
-technique, not to the method.
+folder ``flow_fit<states>/`` keeps its name, because it belongs to the
+flow-matching technique.
 
 Tests
 -----

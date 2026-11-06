@@ -485,9 +485,8 @@ never wait for bins.
 
 The window ``'bins'`` is the trainer's range of shooting values, outside which
 a shot is reweighted as a free excursion (as in RFPS); with the default
-window, targets stay inside it. Whatever the law, the shots are reweighted
-like RFPS shots: the law decides where the run spends its shots, not how they
-are counted.
+window, targets stay inside it. The law decides where the run spends its
+shots; whatever the law, the shots are reweighted like RFPS shots.
 
 The final acceptance check
 --------------------------
@@ -513,9 +512,9 @@ shots after which the committor is trustworthy depends on the system, so set
 default).
 
 The check is enforced by default, and it shapes the shooting-point law: a
-candidate far from its target is never shot. This is intended. It is part of
-the online loop and not a measure of the generator; to measure how well a
-generator meets its targets, evaluate its raw samples without the check.
+candidate far from its target is never shot. This is intended: the check
+belongs to the online loop. To measure how well a generator meets its targets,
+evaluate its raw samples without the check.
 
 Two more rejections can happen after the check. AIMMD checks that frame 0 of
 the new segments is in R; generated shooting points often sit near the edges
