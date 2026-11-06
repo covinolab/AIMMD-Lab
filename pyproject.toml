@@ -83,11 +83,16 @@ bioemu2-cuda = [
     "aimmd-lab[bioemu2]",
     "bioemu2[cuda]==0.1.0rc0; python_version >= '3.12' and sys_platform == 'linux'",
 ]
+# nbformat, nbclient and ipykernel run the CPU tutorial notebook in the slow
+# lane (tests/test_tutorial_notebooks.py); the test skips without them.
 tests = [
     "pytest",
     "pytest-cov",
     "pytest-timeout",
     "networkx",
+    "nbformat",
+    "nbclient",
+    "ipykernel",
 ]
 docs = [
     "sphinx",
