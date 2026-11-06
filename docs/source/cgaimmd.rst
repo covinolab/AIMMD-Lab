@@ -84,11 +84,15 @@ Two things are the same as in RFPS:
 One thing is different: the shooting points are not frames of the path
 ensemble, and the probability with which a configuration becomes a shooting
 point (the *shooting-point law*) is not known in closed form. AIMMD's own
-reweighting does not need it, so free energies and rates come from the
-trainer's reweighting as in an RFPS run. Estimators that need the shooting-point
-law, such as exact path importance sampling or path MBAR, do not apply. The
-sidecars record everything about each shooting point, so that the law can be
-studied afterwards.
+reweighting does not need to know how many shooting points sit at each
+committor value, so free energies and rates come from the trainer's
+reweighting as in an RFPS run; it does assume that, at each committor value,
+the shooting points resemble equilibrium configurations, which is what the
+generator is trained toward and what its validation measures. Estimators that
+need the shooting-point law, such as exact path importance sampling or path
+MBAR, do not apply. The sidecars record everything about each shooting point,
+so that the law can be studied afterwards. :doc:`cgaimmd_analysis` explains
+which estimators apply and why.
 
 To repeat the trainer's reweighting after a run (per-frame equilibrium
 weights, populations, free energies along any collective variable, rates from
@@ -96,7 +100,9 @@ part of the data), use :func:`aimmd.analysis.reweighting.reweight_run`; rates
 counted in the free simulations alone are in :mod:`aimmd.analysis.free_md`.
 The tools that judge the committor model and the generator (parity against
 brute-force shooting, generator adherence, shooting validation of generated
-configurations) are described in :doc:`api/cgaimmd_analysis`.
+configurations) are described in :doc:`api/cgaimmd_analysis`; how to make each
+analysis of a run is shown in :doc:`cgaimmd_analysis` and in tutorial 7
+(:doc:`tutorials/7_cgaimmd_analysis`).
 
 How one shot is made
 --------------------
@@ -697,6 +703,3 @@ for one release, each with one ``DeprecationWarning`` that names the new
 spelling, so such runs can be loaded, resumed and analysed; only the new names
 are written.
 
-.. The page "Analysis and estimators" (which rate estimators are valid for
-   C-GAIMMD, and why) is still to be written; it joins the C-GAIMMD section
-   of the index.
