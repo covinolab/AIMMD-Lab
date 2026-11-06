@@ -414,6 +414,13 @@ untouched), or set the old caches aside with
 kinetics-convergence analysis of :doc:`advanced` works for C-GAIMMD runs too;
 every data fraction is trained from ``initial_network``.
 
+To continue, or re-analyse, a BioEmu2 run made with other trunk embeddings than
+``build-system`` computes, build its system folder with the embeddings that run
+used: ``build-system --trunk-embeddings embeddings.pt`` copies them unchanged
+(and ``build_system(reference_structure=...)`` also takes the reference pose as
+coordinates). The network's values depend on them: the trunk embeddings of
+another alignment, or of another precision, give other values.
+
 Backups
 -------
 
@@ -457,6 +464,12 @@ Before a campaign
 -----------------
 
 - The install passes the weights lane (BioEmu2) on the machine of the job.
+- BioEmu2: the system folder was built with an alignment of every protein chain
+  that is not a short peptide (``build-system --msa A=chain_A.a3m``, for example
+  from ColabFold). With only its own sequence (``--msa query-only``), plain
+  BioEmu2's trypsin samples were all invalid after the polish (0 of 16), with
+  the ColabFold alignment 9 of 16 were valid (the other 7 failed only the
+  calcium-site check). For chignolin, ColabFold returns the sequence alone.
 - The end-state frames are unbiased MD, and the initial network was pretrained
   on them.
 - ``window_after_trained_shots``, ``lambda_tolerance`` and ``generation_seed``
