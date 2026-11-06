@@ -537,6 +537,23 @@ def test_the_log_parser_on_single_and_multi_system_logs(tmp_path):
     np.testing.assert_array_equal(out['round'], [2, 2])
 
 
+def test_aimmds_own_log_parsers_give_the_shot_counts(tmp_path):
+    """extract_rate_estimates_from_log_file(n_shots=True): the shots loaded at each estimate."""
+    from aimmd.analysis.utils import (extract_bias_reweighted_rate_estimates_from_log_file,
+                                      extract_rate_estimates_from_log_file)
+    log = tmp_path / 'trainARB.log'
+    log.write_text(LOG)
+    t, k12, k21 = extract_rate_estimates_from_log_file(log)        # unchanged without the flag
+    t2, k12b, k21b, shots = extract_rate_estimates_from_log_file(log, n_shots=True)
+    np.testing.assert_array_equal(t, t2)
+    np.testing.assert_array_equal(k21, k21b)
+    np.testing.assert_array_equal(shots, [1018, 1100, 1100])
+    np.testing.assert_array_equal(t, [796505, 10, 26251])
+    t, k12, k21, shots = extract_bias_reweighted_rate_estimates_from_log_file(log, n_shots=True)
+    np.testing.assert_allclose(k12, [1.0e-05])
+    np.testing.assert_array_equal(shots, [1018])
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # more than one system, cross-checks, imports
 # ════════════════════════════════════════════════════════════════════════════

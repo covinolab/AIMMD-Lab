@@ -640,7 +640,21 @@ def binomial_mean_and_confidence_interval(r1, r2, alpha=0.95):
     return k / n, lower, upper
 
 
-def extract_rate_estimates_from_log_file(fname):
+def _shot_counts_of_estimates(fname, n, bias_reweighted=False):
+    """The shots the trainer had loaded at each of its `n` printed (bias-reweighted) estimates."""
+    from .reweighting import trainer_rate_estimates
+    estimates = trainer_rate_estimates(fname)
+    keep = estimates['system'] == ''
+    if bias_reweighted:
+        keep &= np.isfinite(estimates['k12_bias_reweighted'])
+    shots = estimates['n_shots'][keep]
+    if len(shots) != n:
+        raise ValueError(f'{fname}: {n} estimates but {len(shots)} shot counts; for logs of '
+                         f'multi-system runs use aimmd.analysis.reweighting.trainer_rate_estimates')
+    return shots
+
+
+def extract_rate_estimates_from_log_file(fname, n_shots=False):
     """
     Parse rate estimates from an AIMMD training log.
 
@@ -659,15 +673,22 @@ def extract_rate_estimates_from_log_file(fname):
     ----------
     fname : str or path-like
         Path to a training log file (e.g., ``trainARB.log``).
+    n_shots : bool, default False
+        Also return the number of shots the trainer had loaded at each
+        estimate (from its progress lines), to plot the estimates against the
+        amount of shooting data.
 
     Returns
     -------
     (np.ndarray, np.ndarray, np.ndarray)
-        ``(t, k12, k21)`` as NumPy arrays of dtype float.
+        ``(t, k12, k21)`` as NumPy arrays of dtype float; with `n_shots`,
+        ``(t, k12, k21, n_shots)``, the last an int array (-1 where the log
+        shows no count).
 
     Notes
     -----
     This parser assumes the log format where:
+
     - a line containing ``'k12 estimate'`` holds the k12 value after ``'estimate:'``
     - the next relevant line holds the k21 value in the same format
     - the subsequent relevant line begins with the number of frames followed by
@@ -693,10 +714,13 @@ def extract_rate_estimates_from_log_file(fname):
             elif step == 2:
                 t.append(float(line.split('frames')[0]))
                 step = 0
+    if n_shots:
+        return (np.array(t), np.array(k12), np.array(k21),
+                _shot_counts_of_estimates(fname, len(k12)))
     return np.array(t), np.array(k12), np.array(k21)
 
 
-def extract_bias_reweighted_rate_estimates_from_log_file(fname):
+def extract_bias_reweighted_rate_estimates_from_log_file(fname, n_shots=False):
     """
     Parse bias-reweighted rate estimates from an AIMMD training log.
 
@@ -719,12 +743,15 @@ def extract_bias_reweighted_rate_estimates_from_log_file(fname):
     ----------
     fname : str or path-like
         Path to a training log file (e.g. ``trainARB.log``).
+    n_shots : bool, default False
+        Also return the number of shots the trainer had loaded at each estimate.
 
     Returns
     -------
     (np.ndarray, np.ndarray, np.ndarray)
         ``(t, k12_rw, k21_rw)`` as NumPy arrays.  Empty arrays if the log
         contains no bias-reweighted lines (e.g. ``record_bias=False`` run).
+        With `n_shots`, ``(t, k12_rw, k21_rw, n_shots)``.
     """
     t = []
     k12_rw = []
@@ -759,6 +786,9 @@ def extract_bias_reweighted_rate_estimates_from_log_file(fname):
                     pass
                 step = 0
                 _t_pending = None
+    if n_shots:
+        return (np.array(t), np.array(k12_rw), np.array(k21_rw),
+                _shot_counts_of_estimates(fname, len(k12_rw), bias_reweighted=True))
     return np.array(t), np.array(k12_rw), np.array(k21_rw)
 
 
