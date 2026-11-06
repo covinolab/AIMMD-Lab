@@ -682,20 +682,66 @@ def _reweight(params, run_dir, system_id, chains, free, *, values, network, bias
 
 
 def _shot_time(path):
-    """Registration time of a shot: the modification time of its trajectory file."""
-    return os.path.getmtime(str(path.fnames[0]))
+    """Registration time of a shot (seconds since the epoch).
+
+    The time its C-GAIMMD sidecar records (``registered``, to the second) when
+    there is one, else the modification time of its trajectory file.
+    """
+    import datetime
+    fname = str(path.fnames[0])
+    try:
+        from ..cgaimmd.sidecar import read_shot_sidecar
+        record = read_shot_sidecar(fname) or {}
+        registered = record.get('registered')
+        if registered:
+            return datetime.datetime.fromisoformat(str(registered)).timestamp()
+    except (ValueError, TypeError, OSError):
+        pass
+    return os.path.getmtime(fname)
 
 
-def _subset(chains, free, fraction, by):
+TIED_REGISTRATION_SHARE = 0.5
+"""Share of shots with a registration time shared by another shot above which the
+registration order is reported as unreliable."""
+
+
+def _registration_order(chains):
+    """``[(time, rank, k, j)]`` of every shot ``j`` of chain ``k``, in registration order.
+
+    Within a chain the shots are registered in the order of their path numbers,
+    so a shot's time is at least that of the shot before it in its chain
+    (``rank`` is its place there). Shots registered at the same time (a run
+    copied without its file times, or several chains within one second) are
+    ordered by their place in their chain, so the chains interleave instead of
+    entering one after the other; a warning is given when more than
+    :data:`TIED_REGISTRATION_SHARE` of the shots tie.
+    """
+    order = []
+    for k, chain in enumerate(chains):
+        latest = -inf
+        for j, path in enumerate(chain._paths):
+            latest = max(latest, _shot_time(path))
+            order.append((latest, j, k, j))
+    order.sort()
+    times = np.array([entry[0] for entry in order])
+    if len(times) > 1:
+        _, counts = np.unique(times, return_counts=True)
+        tied = int(counts[counts > 1].sum())
+        if tied > TIED_REGISTRATION_SHARE * len(times):
+            warnings.warn(
+                f'{tied} of {len(times)} shots share their registration time with another shot '
+                f'(files copied without their modification times?); among them the order '
+                f'follows the path numbers, chain by chain in turn', UserWarning, stacklevel=4)
+    return order
+
+
+def _subset(chains, free, fraction, by, order=None):
     """The first `fraction` of the data: the shots registered first, and the same share of every
     free-simulation folder's frames (its trajectories in file order, assuming they ran at a
     constant speed). Returns ``(chains, free, registered_until)``."""
     from ..pathensemble import PathEnsemble
-    shots = []
-    for k, chain in enumerate(chains):
-        for j, path in enumerate(chain._paths):
-            shots.append((_shot_time(path), k, j))
-    shots.sort()
+    shots = [(time, k, j) for time, _, k, j in
+             (_registration_order(chains) if order is None else order)]
     if by == 'shots':
         keep = shots[:int(round(fraction * len(shots)))]
     else:
@@ -768,7 +814,10 @@ def reweight_run(params, run_dir, *, values='cached', network=None, bias='auto',
         shots in registration order. ``'time'``: the shots registered within
         the first ``fraction`` of the time between the first and the last
         registration. Either way every free-simulation folder contributes the
-        same share of its frames.
+        same share of its frames. The registration time of a shot is the one
+        its C-GAIMMD sidecar records, else the modification time of its file
+        (so copy a run with its file times, e.g. ``cp -p`` or ``rsync -a``);
+        within a chain the path numbers give the order.
     system_id : str, optional
         A multi-system run: the system to reweight. None reweights every
         system and returns a dict.
@@ -897,9 +946,10 @@ def reweight_run(params, run_dir, *, values='cached', network=None, bias='auto',
     result = _reweight(params, directory, system_id, chains, free, values=values,
                        network=network_file, bias_applied=bias_applied, verbose=verbose)
     result.left_out = left_out
+    order = _registration_order(chains) if fractions else None
     for fraction in fractions:
         chains_subset, free_subset, registered_until = _subset(chains, free, fraction,
-                                                               fraction_by)
+                                                               fraction_by, order)
         subset = _reweight(params, directory, system_id, chains_subset, free_subset,
                            values=values, network=network_file, bias_applied=bias_applied,
                            verbose=verbose)
@@ -907,7 +957,8 @@ def reweight_run(params, run_dir, *, values='cached', network=None, bias='auto',
         subset.fraction_by = fraction_by
         subset.registered_until = registered_until
         result.subsets.append(subset)
-    shot_times = [_shot_time(path) for chain in chains for path in chain._paths]
+    shot_times = ([entry[0] for entry in order] if order is not None else
+                  [_shot_time(path) for chain in chains for path in chain._paths])
     result.registered_until = max(shot_times) if shot_times else None
     counted = int(np.sum(result.n_frames))
     if counted and result.frames_without_state > UNKNOWN_STATE_SHARE * counted:

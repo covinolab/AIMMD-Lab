@@ -183,6 +183,77 @@ def test_subsets_by_registration_time(ring):
     assert subset.n_shots == sum(t <= limit for t in times)
 
 
+def _two_chains(ring, folder):
+    """The ring run with its shots 9-16 moved into a second chain (as path000001-8 there)."""
+    shutil.copytree(ring['folder'], folder, symlinks=True)
+    first, second = folder / 'run' / 'chainR0', folder / 'run' / 'chainR1'
+    second.mkdir()
+    for name in sorted(os.listdir(first)):
+        if name.startswith('.'):
+            os.remove(first / name)                       # hidden index and lock files
+            continue
+        number = int(name[4:10])
+        if number > 8:
+            os.rename(first / name, second / f'path{number - 8:06d}{name[10:]}')
+    return first, second
+
+
+def _set_times(chain, times):
+    for n, t in enumerate(times, start=1):
+        os.utime(chain / f'path{n:06d}.xtc', (t, t))
+
+
+def test_registration_order_interleaves_chains_whose_times_tie(ring, tmp_path):
+    """A copy without file times: every shot ties, so the chains interleave by path number
+    (with a warning) instead of one whole chain entering first."""
+    folder = tmp_path / 'campaign'
+    first, second = _two_chains(ring, folder)
+    for chain in (first, second):
+        _set_times(chain, [1.7e9] * 8)
+    params = _load_params(folder)
+    with pytest.warns(UserWarning, match='16 of 16 shots share their registration time'):
+        result = reweight_run(params, str(folder / 'run'), fractions=(0.25,))
+    (subset,) = result.subsets
+    kept = sorted(os.path.relpath(path.fnames[0], folder / 'run')
+                  for path in subset.pathensemble._paths[:subset.n_shots])
+    assert kept == ['chainR0/path000001.xtc', 'chainR0/path000002.xtc',
+                    'chainR1/path000001.xtc', 'chainR1/path000002.xtc']
+
+
+def test_registration_order_takes_the_sidecar_time_over_the_file_time(ring, tmp_path):
+    """The sidecar's registration time wins over the file time; within a chain the path numbers
+    give the order even when the times disagree."""
+    import datetime
+    folder = tmp_path / 'campaign'
+    first, second = _two_chains(ring, folder)
+    _set_times(first, 1.7e9 + np.arange(8.0))                 # file times: chain 0 first
+    _set_times(second, 1.7e9 + 100 + np.arange(8.0))
+    for chain, start in ((first, 1000.0), (second, 0.0)):     # sidecars: chain 1 first
+        for n in range(1, 9):
+            stamp = datetime.datetime.fromtimestamp(1.8e9 + start + 10 * n,
+                                                    tz=datetime.timezone.utc)
+            (chain / f'path{n:06d}.xtc.cgaimmd.json').write_text(json.dumps(
+                {'schema': 'aimmd.cgaimmd.shot/1', 'source': 'cgaimmd',
+                 'registered': stamp.isoformat(timespec='seconds')}))
+    _set_times(first, 1.7e9 + np.arange(8.0)[::-1])            # out of order within the chain
+    params = _load_params(folder)
+    result = reweight_run(params, str(folder / 'run'), fractions=(0.5,))
+    (subset,) = result.subsets
+    kept = {os.path.relpath(path.fnames[0], folder / 'run')
+            for path in subset.pathensemble._paths[:subset.n_shots]}
+    assert kept == {f'chainR1/path{n:06d}.xtc' for n in range(1, 9)}
+    assert result.registered_until == pytest.approx(1.8e9 + 1080)
+    for chain in (first, second):
+        for sidecar in chain.glob('*.cgaimmd.json'):
+            sidecar.unlink()
+    files_only = reweight_run(params, str(folder / 'run'), fractions=(0.5,))
+    (subset,) = files_only.subsets
+    kept = {os.path.relpath(path.fnames[0], folder / 'run')
+            for path in subset.pathensemble._paths[:subset.n_shots]}
+    # the reversed file times of chain 0 are overruled by its path numbers: still chain 0 first
+    assert kept == {f'chainR0/path{n:06d}.xtc' for n in range(1, 9)}
+
+
 def test_arguments_are_checked(ring):
     with pytest.raises(ValueError, match='values'):
         reweight_run(ring['params'], ring['run'], values='new')
