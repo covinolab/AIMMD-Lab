@@ -4,12 +4,26 @@ import dataclasses
 import json
 import math
 import os
+import sys
 
 import numpy as np
 import pytest
 import torch
 
 from aimmd.analysis.run_card import RUN_CARD_SCHEMA, describe_value, run_card, run_card_rows
+
+
+@pytest.fixture(autouse=True, scope='module')
+def _restore_sys_path():
+    """``Params.load`` leaves the params file's folder in ``sys.path``; restore it after the module.
+
+    Otherwise a later ``import params`` (``tests/test_retinal.py`` imports its
+    ``params.py`` by name) finds a ``params.py`` of this module's runs first.
+    Module scope, because the module-scoped run folders load their params too.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, 'path', list(sys.path))
+        yield
 
 
 BIAS = '''

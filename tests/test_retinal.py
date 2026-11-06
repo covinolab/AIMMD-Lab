@@ -37,7 +37,14 @@ def test_retinal():
     os.system('rm -rf run1 run2')
     
     print('\nImporting parameters')
-    from params import cv
+    # this folder's params.py, also when an earlier test of the session left
+    # another folder with a params.py in sys.path or a module 'params' imported
+    sys.modules.pop('params', None)
+    sys.path.insert(0, FOLDER)
+    try:
+        from params import cv
+    finally:
+        sys.path.remove(FOLDER)
     params = aimmd.Params.load('params.py')
     params.check_engine()
     states_function = params.states_function

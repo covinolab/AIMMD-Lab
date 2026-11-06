@@ -12,6 +12,7 @@
 
 import dataclasses
 import os
+import sys
 
 import numpy as np
 import pytest
@@ -28,6 +29,19 @@ pytestmark = pytest.mark.slow
 
 TOLERANCE = 0.25
 """kT; the largest deviation over ten bins from the exact free energy at 40,000 frames."""
+
+
+@pytest.fixture(autouse=True, scope='module')
+def _restore_sys_path():
+    """``Params.load`` leaves the params file's folder in ``sys.path``; restore it after the module.
+
+    Otherwise a later ``import params`` (``tests/test_retinal.py`` imports its
+    ``params.py`` by name) finds a ``params.py`` of this module's runs first.
+    Module scope, because the module-scoped run folders load their params too.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, 'path', list(sys.path))
+        yield
 
 
 def _load(folder):
@@ -109,9 +123,12 @@ def test_a_cgaimmd_toy_campaign(tmp_path, monkeypatch, restore_signals,  # noqa:
     np.random.seed(0)
     torch.manual_seed(0)
     params = aimmd.Params.load(str(folder / 'params.py'), save=False)
-    calls, bias_calls = _spy(monkeypatch)
-    run = run_campaign(folder, params, n_target=0)       # the trainer's round is the last step
-    monkeypatch.undo()
+    # The spies in a context of their own: monkeypatch.undo() would also undo short_sys_path,
+    # and the Params.load calls below would then leave this campaign's folder at the front of
+    # the session's sys.path (test_retinal's `from params import cv` then finds its params.py).
+    with monkeypatch.context() as spies:
+        calls, bias_calls = _spy(spies)
+        run = run_campaign(folder, params, n_target=0)   # the trainer's round is the last step
     monkeypatch.chdir(folder)
     (n1, w1), (n2, w2) = calls[-2:]
     trainer = [1 / np.sum(w1 * n1) if np.sum(w1 * n1) else np.nan,

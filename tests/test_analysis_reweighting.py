@@ -18,6 +18,7 @@ check with three times the data at 0.25 kT.
 import json
 import os
 import shutil
+import sys
 
 import numpy as np
 import pytest
@@ -29,6 +30,20 @@ from aimmd.analysis.reweighting import (FreeEnergy, check_output_outside, frame_
 from tests._analysis_ring_run import (build_ring_run, expected_free_energy, forget_open_files,
                                       metropolis, read_only, ring_states, snapshot, train_once,
                                       write_frames)
+
+
+@pytest.fixture(autouse=True, scope='module')
+def _restore_sys_path():
+    """``Params.load`` leaves the params file's folder in ``sys.path``; restore it after the module.
+
+    Otherwise a later ``import params`` (``tests/test_retinal.py`` imports its
+    ``params.py`` by name) finds a ``params.py`` of this module's runs first.
+    Module scope, because the module-scoped run folders load their params too.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, 'path', list(sys.path))
+        yield
+
 
 FES_TOLERANCE = 0.4
 """kT; the largest deviation over ten bins from the exact free energy (see the module docstring)."""

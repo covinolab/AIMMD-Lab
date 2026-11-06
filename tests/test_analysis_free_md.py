@@ -10,6 +10,7 @@ exactly (the solution of a linear system), and so are its transition counts
 
 import os
 import shutil
+import sys
 import warnings
 from pathlib import Path
 
@@ -20,6 +21,20 @@ from scipy.stats import chi2
 from aimmd.analysis.free_md import (NON_EQUILIBRIUM_RESTARTS, forward_outcomes,
                                     free_md_calibration, free_md_rates, free_md_reference,
                                     poisson_rate_interval, transition_counts)
+
+
+@pytest.fixture(autouse=True, scope='module')
+def _restore_sys_path():
+    """``Params.load`` leaves the params file's folder in ``sys.path``; restore it after the module.
+
+    Otherwise a later ``import params`` (``tests/test_retinal.py`` imports its
+    ``params.py`` by name) finds a ``params.py`` of this module's runs first.
+    Module scope, because the module-scoped run folders load their params too.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, 'path', list(sys.path))
+        yield
+
 
 N_SITES = 9
 
