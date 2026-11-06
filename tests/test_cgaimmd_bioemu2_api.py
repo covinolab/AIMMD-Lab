@@ -171,3 +171,30 @@ def test_entities_the_map_does_not_support_are_named(api):
                          {'entity_type': 'rna', 'asym_ids': ['B'], 'sequence': 'GCAU'}]}
     with pytest.raises(NotImplementedError, match="entities of type 'rna' \\(chains \\['B'\\]\\) are not supported"):
         api.ligand_chains(spec)
+
+
+def test_a_trunk_that_needs_cuequivariance_says_how_to_install_it(api, tiny_bioemu2_checkpoint, tmp_path,
+                                                                     monkeypatch):
+    """The released checkpoint's trunk uses cuEquivariance's triangle multiplication (trimul_variant 'cueq').
+
+    Without cuEquivariance (the 'bioemu2' extra instead of 'bioemu2-cuda'),
+    bioemu2 builds the model and fails inside the first trunk pass with
+    ``NameError: name 'cueq_torch' is not defined``. The embedding says what
+    to install instead.
+    """
+    from bioemu2.biomoa.ops import triangle_multiplication
+    folder = tmp_path / 'cueq'
+    folder.mkdir()
+    text = (tiny_bioemu2_checkpoint.parent / 'config.yaml').read_text()
+    assert 'trimul_variant: full' in text
+    (folder / 'config.yaml').write_text(text.replace('trimul_variant: full', 'trimul_variant: cueq'))
+    shutil.copy(tiny_bioemu2_checkpoint, folder / 'model.ckpt')
+    monkeypatch.setattr(triangle_multiplication, 'HAS_CUEQ', False)
+    model = api.load_model(checkpoint_path=folder / 'model.ckpt', device='cpu')
+    system = api.make_system({'entities': [{'entity_type': 'protein', 'asym_ids': ['A'], 'sequence': 'YYDPETGTWY'}]})
+    with pytest.raises(ImportError, match=r"aimmd-lab\[bioemu2-cuda\]") as info:
+        api.embed(model, system, api.query_only_msa(system))
+    assert 'cuEquivariance' in str(info.value)
+    # a model without those kernels (the tiny one) embeds as before
+    plain = api.load_model(checkpoint_path=tiny_bioemu2_checkpoint, device='cpu')
+    assert api.embed(plain, system, api.query_only_msa(system)).single.shape[1] == 10

@@ -73,7 +73,8 @@ __all__ = ['INSTALL_HINT', 'SUPPORTED_VERSION', 'bioemu2', 'Chem', 'MSA', 'Syste
            'weighted_rigid_align', 'bioemu2_version', 'check_version', 'load_model', 'parameter_checksum',
            'model_parameter_checksum', 'checkpoint_snapshot',
            'make_system', 'system_to_dict', 'polymer_sequences', 'ligand_chains', 'query_only_msa', 'read_msa',
-           'embed', 'save_trunk', 'load_trunk', 'sampling_inputs', 'topology_atoms', 'topology_bonds',
+           'embed', 'check_trunk_kernels', 'CUEQUIVARIANCE_HINT', 'save_trunk', 'load_trunk', 'sampling_inputs',
+           'topology_atoms', 'topology_bonds',
            'token_feature_width', 'ReadoutCapture', 'static_context_with_grad', 'expand_batch',
            'edm_sample', 'ligand_signature', 'check_ligand_order', 'LigandOrderError', 'element_graph',
            'graph_matches', 'symmetry_classes']
@@ -265,8 +266,37 @@ def read_msa(files):
     return MSA({chain: Path(path).read_text() for chain, path in files.items()})
 
 
+CUEQUIVARIANCE_HINT = ("the trunk of this BioEmu2 checkpoint uses cuEquivariance's triangle multiplication "
+                       "(trimul_variant 'cueq', as bioemu2-preview does), and cuEquivariance is not installed: "
+                       "pip install 'aimmd-lab[bioemu2-cuda]' and embed on a CUDA device")
+"""The message of the ImportError when the trunk needs cuEquivariance (:func:`embed`)."""
+
+
+def check_trunk_kernels(model):
+    """Raise ImportError (:data:`CUEQUIVARIANCE_HINT`) when `model`'s trunk needs cuEquivariance and it is missing.
+
+    bioemu2 builds such a model without cuEquivariance and only fails inside
+    the first trunk pass (``NameError: name 'cueq_torch' is not defined``).
+    The denoiser does not use these kernels: features, values and samples of
+    a system folder whose trunk embeddings exist need no cuEquivariance.
+    """
+    from bioemu2.biomoa.ops import triangle_multiplication as trimul
+    if getattr(trimul, 'HAS_CUEQ', True):
+        return
+    kernels = tuple(getattr(trimul, name) for name in ('TriangleMultiplicationCueq',
+                                                       'TriangleMultiplicationCueqTiled') if hasattr(trimul, name))
+    modules = getattr(model, 'score_model', model).modules()
+    if kernels and any(isinstance(module, kernels) for module in modules):
+        raise ImportError(CUEQUIVARIANCE_HINT, name='cuequivariance_torch')
+
+
 def embed(model, system, msa, mode='equilibrium'):
-    """``model.embed(system, msa=msa, mode=mode)``: the trunk embeddings of `system`."""
+    """``model.embed(system, msa=msa, mode=mode)``: the trunk embeddings of `system`.
+
+    Raises ImportError first when the trunk needs cuEquivariance and it is not
+    installed (:func:`check_trunk_kernels`).
+    """
+    check_trunk_kernels(model)
     return model.embed(make_system(system), msa=msa, mode=mode)
 
 

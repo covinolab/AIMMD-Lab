@@ -6,7 +6,9 @@
 # campaign: on the workstation GPU, or inside a one-GPU job on JUPITER. It
 # doubles as a check of the production install: it fails when the
 # checkpoint is not in the Hugging Face cache (nothing is downloaded), when
-# no GPU is visible, or when a weights test fails.
+# no GPU is visible, when cuEquivariance is missing (the 'bioemu2' extra
+# without 'bioemu2-cuda': the checkpoint's trunk cannot run), or when a
+# weights test fails.
 #
 # Usage (from anywhere; the tests are those of this checkout):
 #
@@ -50,6 +52,11 @@ for name in ('aimmd-lab', 'bioemu2', 'cuequivariance-torch'):
         print(f'{name} {importlib.metadata.version(name)}')
     except importlib.metadata.PackageNotFoundError:
         print(f'{name} not installed')
+try:
+    import cuequivariance_torch  # noqa: F401
+except ImportError as exc:
+    sys.exit(f'cuEquivariance is not importable ({exc}); the trunk of bioemu2-preview needs it: '
+             "install the 'bioemu2-cuda' extra (pip install 'aimmd-lab[bioemu2-cuda]')")
 from bioemu2.checkpoints import get_checkpoint_files
 try:
     files = get_checkpoint_files('bioemu2-preview')

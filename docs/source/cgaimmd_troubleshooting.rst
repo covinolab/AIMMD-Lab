@@ -201,6 +201,14 @@ Starting a run or a job
    ``bioemu2`` extra, or with a Python older than 3.12. A BioEmu2 run can still
    be loaded and analysed there; only BioEmu2 passes need the extra.
 
+``ImportError: the trunk of this BioEmu2 checkpoint uses cuEquivariance's triangle multiplication ...``
+   ``build-system`` (or another trunk embedding) ran with the ``bioemu2`` extra
+   but without ``bioemu2-cuda``. The trunk of ``bioemu2-preview`` needs the
+   cuEquivariance kernels; install ``aimmd-lab[bioemu2-cuda]`` and build the
+   system folder on an NVIDIA GPU. Features, values and samples of a folder that
+   is already built do not need cuEquivariance. Without this check bioemu2 fails
+   inside the trunk with ``NameError: name 'cueq_torch' is not defined``.
+
 ``<system folder> was built with bioemu2 <version>, bioemu2 <other> is installed: ...``
    A system folder records the bioemu2 version it was built with, because its
    atom map and trunk embeddings depend on it. Install the version the folder
