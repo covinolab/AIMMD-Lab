@@ -138,6 +138,9 @@ def test_a_cgaimmd_toy_campaign(tmp_path, monkeypatch, restore_signals,  # noqa:
     with pytest.warns(UserWarning, match='crossing'):     # the toy keeps the default restarts
         rates = free_md_rates(params, run)
     assert rates['n_trajectories'] >= 2
+    if with_bias:                                         # biased frames: only when allowed
+        with pytest.raises(ValueError, match='records a bias'):
+            free_md_reference(params, run)
     with pytest.warns(UserWarning, match='crossing'):
-        free_md_reference(params, run)
+        free_md_reference(params, run, allow_biased_frames=with_bias)
     assert snapshot(run) == before
