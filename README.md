@@ -6,7 +6,7 @@
 [![Read the Docs](https://img.shields.io/badge/Read_the_Docs-8CA1AF?logo=readthedocs&logoColor=white)](https://aimmd-lab.readthedocs.io/en/latest/)
 [![PyPI](https://img.shields.io/pypi/v/aimmd-lab.svg)](https://pypi.org/project/aimmd-lab/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
 This repository implements **AI for Molecular Mechanism Discovery (AIMMD)** — AI-enhanced path sampling for rare
 molecular transitions.
@@ -34,6 +34,8 @@ Jung _et al._ (2023) is available at <https://github.com/bio-phys/aimmd>.
 - **Biased dynamics** (OPES/PLUMED) with Tiwary–Parrinello rate reweighting.
 - **Graph-neural-network** committor models (optional).
 - **Local or HPC** execution from the same parameter file.
+- **C-GAIMMD**: shooting points generated at chosen committor values (optional,
+  [below](#c-gaimmd)).
 
 ## Installation
 
@@ -149,6 +151,44 @@ Full documentation is hosted at <https://aimmd-lab.readthedocs.io>, including:
   (multi-system, biased dynamics, validation),
 - the full [parameter reference](https://aimmd-lab.readthedocs.io/en/latest/parameters.html) and
   [API reference](https://aimmd-lab.readthedocs.io/en/latest/api/index.html).
+
+## C-GAIMMD
+
+<p align="center">
+  <img src="docs/source/_static/cgaimmd_logo.png" alt="C-GAIMMD logo" width="420">
+</p>
+
+**Committor-conditioned Generative AIMMD (C-GAIMMD)** generates the shooting
+points of an AIMMD run instead of selecting them from earlier paths: a
+generative model conditioned on the committor produces configurations at the
+committor value the run asks for, and AIMMD shoots, trains and reweights as
+usual. Two generators are built in, a flow-matching PaiNN network for any
+molecule with a GROMACS topology and BioEmu2 for proteins and protein-ligand
+complexes, and others can be added through one interface.
+
+```bash
+git clone https://github.com/covinolab/AIMMD-Lab.git && cd AIMMD-Lab
+pip install -e ".[cgaimmd]"                # the PaiNN generator (Python 3.10+)
+# BioEmu2 (Python 3.12+): install torch 2.11-2.13 for your CUDA first, then
+pip install -e ".[bioemu2-cuda]" -c devtools/constraints-bioemu2.txt
+```
+
+A run sets `chain_type = 'cgaimmd'` in its params file. Before a job, check the
+params file with `python -m aimmd.cgaimmd.preflight params.py`.
+
+- [C-GAIMMD user guide](https://aimmd-lab.readthedocs.io/en/latest/cgaimmd.html):
+  what it does, choosing a generator, the settings, the final acceptance check,
+  the per-shot records;
+- [Running production campaigns](https://aimmd-lab.readthedocs.io/en/latest/cgaimmd_production.html):
+  installs on workstations and clusters, the preflight, job scripts, restarts,
+  backups;
+- [Troubleshooting](https://aimmd-lab.readthedocs.io/en/latest/cgaimmd_troubleshooting.html)
+  and [internals](https://aimmd-lab.readthedocs.io/en/latest/cgaimmd_internals.html);
+- tutorials: [C-GAIMMD on a 1-D toy](https://aimmd-lab.readthedocs.io/en/latest/tutorials/3_cgaimmd_toy_1d.html)
+  (CPU, one minute), and production workflows with
+  [PaiNN on alanine dipeptide](https://aimmd-lab.readthedocs.io/en/latest/tutorials/4_cgaimmd_painn_nanma.html),
+  [BioEmu2 on chignolin](https://aimmd-lab.readthedocs.io/en/latest/tutorials/5_cgaimmd_bioemu2_chignolin.html) and
+  [BioEmu2 on trypsin with benzamidine](https://aimmd-lab.readthedocs.io/en/latest/tutorials/6_cgaimmd_bioemu2_trypsin_benzamidine.html).
 
 ## Citation
 
