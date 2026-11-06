@@ -1,0 +1,30 @@
+name: docs
+
+# Build the documentation as Read the Docs does (.readthedocs.yaml): only
+# docs/requirements.txt is installed, and docs/source/conf.py stands in for
+# the heavy runtime dependencies. Warnings are errors.
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.13"
+        cache: pip
+        cache-dependency-path: docs/requirements.txt
+    - name: Install the documentation requirements
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r docs/requirements.txt
+    - name: Build the documentation (warnings are errors)
+      run: |
+        sphinx-build -W --keep-going -b html docs/source docs/build/html

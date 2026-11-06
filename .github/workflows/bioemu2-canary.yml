@@ -1,0 +1,42 @@
+name: bioemu2-canary
+
+# Weekly: the BioEmu2 adaptor against bioemu2's upstream main branch, without
+# the version constraints, so that an upstream change that breaks the
+# adaptor (its contract tests name each BioEmu2 call it relies on) shows up
+# before anyone upgrades. A red run is a warning, not a broken build: the
+# package pins bioemu2 0.1.0rc0.
+#
+# GitHub starts scheduled workflows only from the default branch: the
+# schedule takes effect once this file is on main. Until then, start it by
+# hand (Actions -> bioemu2-canary -> Run workflow).
+
+on:
+  schedule:
+    - cron: "41 3 * * 1"
+  workflow_dispatch:
+
+env:
+  CUDA_VISIBLE_DEVICES: ""
+  OMP_NUM_THREADS: 2
+  HF_HUB_OFFLINE: 1
+
+jobs:
+  bioemu2-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install torch for the CPU, AIMMD-Lab, and bioemu2 from upstream main
+      run: |
+        python -m pip install --upgrade pip
+        pip install "torch==2.11.*" --index-url https://download.pytorch.org/whl/cpu
+        pip install -e ".[cgaimmd,tests]"
+        pip install "bioemu2 @ git+https://github.com/microsoft/bioemu2@main"
+        python -c "import bioemu2, importlib.metadata as m; print('bioemu2', m.version('bioemu2'))"
+    - name: BioEmu2 tests against upstream main (contract tests included)
+      run: |
+        pytest -v --color=yes -m bioemu2 tests/
