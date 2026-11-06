@@ -271,7 +271,8 @@ def test_shot_under_a_static_plumed_bias(tmp_path, monkeypatch):
     assert bias['record_bias'] is True and bias['bias_source'] == 'file'
     assert bias['plumed_file'] == str(plumed) and bias['plumed_sha256']
     assert bias['bias_function'].endswith('bias_function')
-    assert bias['preparation_unbiased'] is True
+    assert bias['preparation_unbiased'] is True                     # no preparation hooks
+    assert bias['preparation_unverified_hooks'] == {}
 
 
 def test_pool_log_untouched(tmp_path, monkeypatch):

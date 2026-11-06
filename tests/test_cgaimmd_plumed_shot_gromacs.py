@@ -191,7 +191,8 @@ def test_cgaimmd_shot_under_a_static_plumed_bias(tmp_path, monkeypatch, gmx_exec
     assert record['bias']['record_bias'] is True and record['bias']['bias_source'] == 'file'
     assert record['bias']['plumed_file'] == str(plumed)
     assert record['bias']['plumed_sha256'] == file_sha256(plumed)
-    assert record['bias']['preparation_unbiased'] is True
+    assert record['bias']['preparation_unbiased'] is True       # the wrapper of a GromacsMinimizer
+    assert record['bias']['preparation_unverified_hooks'] == {}
     # the preparation ran without the bias: its mdrun had no -plumed, it wrote no PLUMED output
     minimize = record['minimize']
     assert minimize['ok'] is True

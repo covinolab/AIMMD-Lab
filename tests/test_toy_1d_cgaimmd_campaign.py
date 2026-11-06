@@ -262,7 +262,11 @@ def test_campaign_under_a_recorded_bias(tmp_path, monkeypatch, capfd, restore_si
     for record in sidecars(run).values():
         assert record['bias']['record_bias'] is True and record['bias']['bias_source'] == 'reader'
         assert record['bias']['bias_function'].endswith('bias_function')
-        assert record['bias']['plumed_file'] is None and record['bias']['preparation_unbiased']
+        assert record['bias']['plumed_file'] is None
+        # the toy params file's own hooks: whether they run biased MD is not known
+        assert record['bias']['preparation_unbiased'] is None
+        assert set(record['bias']['preparation_unverified_hooks']) == {
+            'cgaimmd_validity_function', 'cgaimmd_minimize_function'}
     results = aimmd.Worker(params, run, walltime=600).kinetics_convergence(fractions=[1.0])
     assert np.isfinite(results['k12_rw']).all() and np.isfinite(results['k21_rw']).all()
 

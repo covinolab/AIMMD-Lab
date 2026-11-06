@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -740,6 +741,63 @@ def test_software_versions_read_metadata_without_importing():
         assert 'bioemu2' not in sys.modules
 
 
+_PACKAGE_MINIMIZER = None
+"""The module-level object the params-file wrapper below calls."""
+
+
+def _wrapped_minimizer(frame, context):
+    return _PACKAGE_MINIMIZER(frame, context)
+
+
+def _wrapper_that_does_more(frame, context):
+    subprocess.run(['gmx', 'mdrun'])
+    return _PACKAGE_MINIMIZER(frame, context)
+
+
+def test_preparation_unbiased_only_for_the_package_preparation(tmp_path, monkeypatch):
+    """preparation_unbiased is True only when every preparation hook is the package's own
+    (GromacsMinimizer, GromacsSolvator, TopologyValidity, PolishedValidity of those, or the
+    params-file wrapper that names one of them and nothing else); a hook of the user's own
+    gives None, and the sidecar names it."""
+    from aimmd.cgaimmd.preparation.minimize import GromacsMinimizer
+    from aimmd.cgaimmd.preparation.solvate import GromacsSolvator
+    from aimmd.cgaimmd.preparation.validity import PolishedValidity, TopologyValidity
+    global _PACKAGE_MINIMIZER
+    minimizer = object.__new__(GromacsMinimizer)          # no files needed: only the type counts
+    solvator = object.__new__(GromacsSolvator)
+    topology_validity = object.__new__(TopologyValidity)
+    polished = object.__new__(PolishedValidity)
+    polished.validity, polished.minimizer = topology_validity, minimizer
+    monkeypatch.setattr(sys.modules[__name__], '_PACKAGE_MINIMIZER', minimizer)
+
+    def user_minimizer(frame, context):
+        return frame
+
+    user_polished = object.__new__(PolishedValidity)
+    user_polished.validity, user_polished.minimizer = topology_validity, user_minimizer
+    params = _params(engine='gromacs')
+    params.__dict__.update(record_bias=True, bias_source='file', gmx_mdrun='gmx mdrun',
+                           bias_function=lambda fname: np.zeros(1), path=Path(tmp_path))
+
+    def recorded(validity=None, prepare=None, minimize=None):
+        params.__dict__.update(cgaimmd_validity_function=validity,
+                               cgaimmd_prepare_function=prepare,
+                               cgaimmd_minimize_function=minimize)
+        bias = sidecar.bias_settings(params)
+        return bias['preparation_unbiased'], bias['preparation_unverified_hooks']
+
+    assert recorded() == (True, {})                           # place_in_box, no minimization
+    assert recorded(polished, solvator, minimizer) == (True, {})
+    assert recorded(topology_validity, solvator.__call__, _wrapped_minimizer) == (True, {})
+    flag, hooks = recorded(user_polished, solvator, user_minimizer)
+    assert flag is None and set(hooks) == {'cgaimmd_validity_function',
+                                           'cgaimmd_minimize_function'}
+    assert hooks['cgaimmd_minimize_function'].endswith('user_minimizer')
+    assert hooks['cgaimmd_validity_function'].endswith('PolishedValidity')
+    assert recorded(minimize=_wrapper_that_does_more) == (
+        None, {'cgaimmd_minimize_function': f'{__name__}._wrapper_that_does_more'})
+
+
 def test_bias_settings(tmp_path):
     """None without a bias; the PLUMED file of gmx_mdrun (absolute, hashed) and the bias fields."""
     params = _params()
@@ -768,7 +826,7 @@ def test_bias_settings(tmp_path):
                       'plumed_file_relative': True, 'plumed_sha256': file_sha256(plumed),
                       'plumed_inputs': [{'keyword': 'STATE_RFILE', 'path': str(state),
                                          'sha256': file_sha256(state)}],
-                      'preparation_unbiased': True}
+                      'preparation_unbiased': True, 'preparation_unverified_hooks': {}}
     json.dumps(record)
     params.__dict__['gmx_mdrun'] = f'gmx mdrun -ntomp 2 -plumed {plumed}'
     assert sidecar.bias_settings(params)['plumed_file_relative'] is False

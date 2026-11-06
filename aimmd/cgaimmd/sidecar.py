@@ -61,6 +61,8 @@ import math
 import os
 import platform
 import subprocess
+import sys
+import types
 
 import numpy as np
 
@@ -932,6 +934,65 @@ def software_versions():
     return out
 
 
+PREPARATION_HOOKS = ('cgaimmd_validity_function', 'cgaimmd_prepare_function',
+                     'cgaimmd_minimize_function')
+"""The params hooks of candidate preparation: :func:`bias_settings` records whether their MD is
+known to run without the bias."""
+
+_UNBIASED_PREPARATION = (('minimize', 'GromacsMinimizer'), ('solvate', 'GromacsSolvator'),
+                         ('validity', 'TopologyValidity'))
+"""Preparation classes of the package that run no MD under the bias: the GROMACS ones remove
+``-plumed`` from their mdrun commands (``sanitize_mdrun``), TopologyValidity runs no MD."""
+
+
+def _preparation_class(module, name):
+    """A class of ``aimmd.cgaimmd.preparation.<module>``, None if that module is not imported
+    (then no hook can be an instance of it, and nothing needs importing)."""
+    return getattr(sys.modules.get(f'{__package__}.preparation.{module}'), name, None)
+
+
+def _unbiased_preparation(hook):
+    """Whether candidate preparation `hook` is known to run no MD under the PLUMED bias.
+
+    True for None (no hook: :func:`~aimmd.cgaimmd.source.place_in_box`, or no
+    minimization), for an object of :data:`_UNBIASED_PREPARATION` or one of
+    its bound methods, for a ``PolishedValidity`` whose validity and
+    minimizer are such objects, and for the params-file wrapper whose code
+    names nothing but one such object (``def cgaimmd_minimize_function(frame,
+    context): return MINIMIZER(frame, context)``). False for anything else:
+    a hook of the user's own may run mdrun itself, with ``-plumed`` or not.
+    """
+    if hook is None:
+        return True
+    if isinstance(hook, types.MethodType):
+        hook = hook.__self__
+    classes = tuple(cls for cls in (_preparation_class(*entry) for entry in _UNBIASED_PREPARATION)
+                    if cls is not None)
+    if classes and isinstance(hook, classes):
+        return True
+    polished = _preparation_class('validity', 'PolishedValidity')
+    if polished is not None and isinstance(hook, polished):
+        parts = (getattr(hook, 'validity', None), getattr(hook, 'minimizer', None))
+        return all(part is not None and _unbiased_preparation(part) for part in parts)
+    code = getattr(hook, '__code__', None)
+    names = getattr(hook, '__globals__', None)
+    if (code is None or names is None or getattr(hook, '__closure__', None)
+            or len(code.co_names) != 1
+            or any(isinstance(constant, types.CodeType) for constant in code.co_consts)):
+        return False
+    target = names.get(code.co_names[0])
+    return (target is not None and getattr(target, '__code__', None) is None
+            and _unbiased_preparation(target))
+
+
+def _qualified_name(function):
+    """``module.qualname`` of a function, or of an object's class."""
+    if function is None:
+        return None
+    return (f"{getattr(function, '__module__', None) or '?'}."
+            f"{getattr(function, '__qualname__', None) or type(function).__name__}")
+
+
 def bias_settings(params):
     """The sidecar's ``bias`` block: the PLUMED bias of the run, None without one.
 
@@ -953,21 +1014,30 @@ def bias_settings(params):
         ``plumed_sha256`` (of that file, None if it cannot be read),
         ``plumed_inputs`` (the files the PLUMED input reads, e.g. a frozen
         OPES state's ``STATE_RFILE``: ``keyword``, ``path``, ``sha256``;
-        :func:`aimmd.cgaimmd.plumed.plumed_input_files`) and
-        ``preparation_unbiased`` (always True: candidate preparation removes
-        ``-plumed`` from its mdrun commands,
-        :func:`aimmd.cgaimmd.preparation.gromacs.sanitize_mdrun`).
+        :func:`aimmd.cgaimmd.plumed.plumed_input_files`),
+        ``preparation_unbiased`` and ``preparation_unverified_hooks``.
+
+    Notes
+    -----
+    ``preparation_unbiased`` is True when every preparation hook of
+    :data:`PREPARATION_HOOKS` is known to run its MD without the bias: none
+    is set, or each is the package's own preparation (``GromacsMinimizer``
+    and ``GromacsSolvator`` remove ``-plumed`` from their mdrun commands,
+    :func:`aimmd.cgaimmd.preparation.gromacs.sanitize_mdrun`;
+    ``TopologyValidity`` runs no MD; see :func:`_unbiased_preparation`). It is
+    None (unknown) when a hook is the user's own code, which may run mdrun
+    itself; ``preparation_unverified_hooks`` then maps those hooks' params
+    names to their qualified names (empty when the flag is True).
     """
     from .plumed import plumed_setup
     record_bias = bool(getattr(params, 'record_bias', False))
     setup = plumed_setup(params)
     if not record_bias and setup is None:
         return None
-    function = getattr(params, 'bias_function', None)
-    name = None
-    if function is not None:
-        name = (f"{getattr(function, '__module__', None) or '?'}."
-                f"{getattr(function, '__qualname__', None) or type(function).__name__}")
+    name = _qualified_name(getattr(params, 'bias_function', None))
+    unverified = {field: _qualified_name(getattr(params, field, None))
+                  for field in PREPARATION_HOOKS
+                  if not _unbiased_preparation(getattr(params, field, None))}
     threshold = getattr(params, 'bias_reactive_threshold', None)
     inputs = None
     if setup is not None:
@@ -982,7 +1052,8 @@ def bias_settings(params):
             'plumed_file_relative': None if setup is None else setup['relative'],
             'plumed_sha256': None if setup is None else setup['sha256'],
             'plumed_inputs': inputs,
-            'preparation_unbiased': True}
+            'preparation_unbiased': True if not unverified else None,
+            'preparation_unverified_hooks': unverified}
 
 
 # ════════════════════════════════════════════════════════════════════════════
