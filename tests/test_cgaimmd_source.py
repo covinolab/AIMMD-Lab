@@ -263,7 +263,8 @@ def test_startup_line(tmp_path, monkeypatch, capsys):
              lambda_law='bins', lambda_window='bins')
     out = capsys.readouterr().out
     line = _lines(out, 'C-GAIMMD shooting: ')[0]
-    assert "generator ode {'sampler': 'midpoint', 'n_steps': 16, 'chunk': 128}" in line
+    assert ("generator ode {'sampler': 'midpoint', 'n_steps': 16, 'chunk': 128, "
+            "'guidance_scale': 1.0}") in line
     assert 'law bins, window bins (no bins yet: -10.0, 10.0), ' in line
 
     # the window printed is the resolved one: a pair clipped to [-L, L], the bins' cutoffs

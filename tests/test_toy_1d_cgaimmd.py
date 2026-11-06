@@ -49,7 +49,8 @@ from tests._helpers_unit import write_trajectory
 FOLDER = Path(__file__).resolve().parent / 'toy_1d_cgaimmd'
 STATES = 'ARB'
 WINDOW_AFTER = 5                          # cgaimmd_parameters['window_after_trained_shots']
-GENERATOR = {'method': 'ode', 'settings': {'sampler': 'midpoint', 'n_steps': 8, 'chunk': 16},
+GENERATOR = {'method': 'ode', 'settings': {'sampler': 'midpoint', 'n_steps': 8, 'chunk': 16,
+                                         'guidance_scale': 1.0},          # 1: no guidance
              'batch_size': 16}
 
 SIDECAR_SUBKEYS = {
@@ -293,7 +294,8 @@ def test_toy_1d_cgaimmd_chain_in_process(tmp_path, monkeypatch, capfd, restore_s
     assert records[6]['pool']['refill'] > records[5]['pool']['refill']
     text = out + logs_of(run)
     assert 'C-GAIMMD pool reset: network changed' in text
-    assert "generator ode {'sampler': 'midpoint', 'n_steps': 8, 'chunk': 16}" in text
+    assert ("generator ode {'sampler': 'midpoint', 'n_steps': 8, 'chunk': 16, "
+            "'guidance_scale': 1.0}") in text
     # the validity hook filtered candidates: the first refill is reproducible (generation_seed
     # 0, and the initial network's zero velocity output returns its seeded prior samples)
     assert records[0]['stage1_rejected'].get('toy_window', 0) > 0, records[0]['stage1_rejected']
