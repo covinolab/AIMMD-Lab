@@ -72,6 +72,14 @@ default generation method.
 
 _ODE_SETTINGS = ('ode_sampler', 'ode_steps')
 
+OLD_DEFAULT_ACCEPTANCE = 'target'
+"""The acceptance rule of a ``flow_parameters`` that sets none.
+
+The old code knew only the rules ``'target'`` (its default) and ``'window'``,
+so an old run that set no rule ran under ``'target'``; it is made explicit so
+that the params, the run card and a restart of such a run keep that rule.
+"""
+
 CHAIN_TYPES = {'flow': 'cgaimmd'}
 """Old ``chain_type`` -> new (any value starting with ``'fl'`` was stored as ``'flow'``)."""
 
@@ -419,7 +427,10 @@ def params_field(name, value):
         ``{'method': 'ode', 'sampler': ..., 'n_steps': ..., 'chunk': ...}``
         when an ODE setting is among them, else ``{'chunk': ...}`` (settings
         of the network's default method), listed before
-        ``cgaimmd_parameters``.
+        ``cgaimmd_parameters``. A ``flow_parameters`` without ``'acceptance'``
+        gets :data:`OLD_DEFAULT_ACCEPTANCE`, the rule such a run ran under
+        (the default of ``cgaimmd_parameters`` is now a rule without a
+        committor filter).
     """
     new = PARAMS_FIELDS[name]
     out = {}
@@ -434,6 +445,7 @@ def params_field(name, value):
             note = (f", and cgaimmd_generator = {settings!r} for its keys "
                     f"{', '.join(repr(key) for key in moved)}")
         value = {key: item for key, item in value.items() if key not in GENERATOR_SETTINGS}
+        value.setdefault('acceptance', OLD_DEFAULT_ACCEPTANCE)
     out[new] = value
     warn_renamed(f'the params field {name!r}', f'{new!r}{note}', key=('field', name),
                  stacklevel=5)

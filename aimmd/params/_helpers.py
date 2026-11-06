@@ -49,6 +49,7 @@ from .utils import (update_source, create_default_values_function,
                     canonical_restart_source, canonical_seeding_position,
                     legacy_transitions_replacement, check_descriptors_series,
                     canonical_cgaimmd_parameters, CGAIMMD_PARAMETER_DEFAULTS,
+                    COMMITTOR_ACCEPTANCE_RULES,
                     SEEDING_POSITION_ALIASES, SEEDING_POSITION_RANDOM)
 from ..core.utils import accepts_system_id
 from ..path import Path
@@ -1072,8 +1073,12 @@ class ParamsHelpers(ABC):
         7. a conditioning range ``lambda_clip``;
         8. no ``placement='none'`` with a prepare function;
         9. the network's class is local;
-        10. warnings: no ``initial_network``, ``round_shooting_index=False``,
-            ``window_after_trained_shots`` at its default.
+        10. warnings: no ``initial_network``, ``round_shooting_index=False``;
+            under a committor acceptance rule (``'target'``, ``'window'``)
+            ``window_after_trained_shots`` at its default; under the default
+            ``'transition_region'`` the settings of the committor rules
+            (``lambda_tolerance``, ``window_after_trained_shots``) given,
+            since they have no effect there.
         """
         from ..cgaimmd.protocol import check_network_protocol, lambda_clip_of
         from ..cgaimmd.generation import make_generator, check_generator
@@ -1136,12 +1141,24 @@ class ParamsHelpers(ABC):
         # into its worker log, after this one went to the launcher's output
         # before Worker.run redirected it
         user_keys = self.cgaimmd_parameters or {}
-        if ('window_after_trained_shots' not in user_keys
-                and once('params: window_after_trained_shots default')):
-            default = CGAIMMD_PARAMETER_DEFAULTS['window_after_trained_shots']
-            print(f'WARNING: window_after_trained_shots is at its default '
-                  f'{default}; this is highly system dependent (it was 8000 '
-                  f'for the NANMA test system), set it explicitly')
+        rule = settings['acceptance']
+        if rule in COMMITTOR_ACCEPTANCE_RULES:
+            if ('window_after_trained_shots' not in user_keys
+                    and once('params: window_after_trained_shots default')):
+                default = CGAIMMD_PARAMETER_DEFAULTS['window_after_trained_shots']
+                print(f'WARNING: window_after_trained_shots is at its default '
+                      f'{default}; this is highly system dependent (it was 8000 '
+                      f'for the NANMA test system), set it explicitly')
+        else:
+            unused = [key for key in ('lambda_tolerance', 'window_after_trained_shots')
+                      if key in user_keys]
+            if unused and once('params: committor rule settings without a committor rule'):
+                default = (' (the default)' if 'acceptance' not in user_keys else '')
+                print(f"WARNING: cgaimmd_parameters sets "
+                      f"{', '.join(repr(key) for key in unused)}, which apply only "
+                      f"with acceptance 'target' or 'window'; with acceptance "
+                      f"{rule!r}{default} every candidate in the transition region "
+                      f"is shot, whatever its committor")
 
     def _check_cgaimmd_descriptor_width(self, path, i=0):
         """Rule 11: descriptors of width ``3 * n_atoms_of(network)``.

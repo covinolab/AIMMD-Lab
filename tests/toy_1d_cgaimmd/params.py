@@ -14,10 +14,12 @@ names there: ``initial_A.xtc`` and ``initial_B.xtc`` (end-state frames only,
 one file per basin: a C-GAIMMD run needs no initial transition) and
 ``initial_network.h5`` (the state dict of a ``Network()``).
 
-With the zero-initialized committor output of the untrained network every
-value is 0, so ``|lambda - lambda*| <= 3`` holds on the whole window
-``(-3, 3)`` and acceptance cannot stall; the rule switches from the
-bootstrap rule to the target rule after 5 trained shots.
+The acceptance rule is ``'target'``, set explicitly (the default
+``'transition_region'`` never filters by the committor), so that the chain
+tests see the rule switch on. With the zero-initialized committor output of
+the untrained network every value is 0, so ``|lambda - lambda*| <= 3`` holds
+on the whole window ``(-3, 3)`` and acceptance cannot stall; the rule
+switches from the bootstrap rule to the target rule after 5 trained shots.
 
 Two cheap hooks put candidate filtering and minimization into the chain:
 ``cgaimmd_validity_function`` rejects every sample whose ``x`` lies outside
@@ -44,8 +46,9 @@ gen_temperature = 300.0
 masses_from_topology = True    # every C-GAIMMD params file sets it; a no-op on the toy engine
 cgaimmd_generator = {'method': 'ode', 'sampler': 'midpoint', 'n_steps': 8, 'chunk': 16}
 cgaimmd_parameters = {
-    'placement': 'none', 'lambda_clip': 10.0, 'window_after_trained_shots': 5,
-    'lambda_window': (-3.0, 3.0), 'lambda_tolerance': 3.0, 'n_targets': 8,
+    'placement': 'none', 'lambda_clip': 10.0, 'acceptance': 'target',
+    'window_after_trained_shots': 5, 'lambda_window': (-3.0, 3.0), 'lambda_tolerance': 3.0,
+    'n_targets': 8,
     'max_refills': 3, 'wait_seconds': 1.0, 'generation_seed': 0,
     'generation_device': 'cpu', 'values_device': 'cpu', 'training_device': 'cpu'}
 

@@ -312,7 +312,7 @@ def _run_bins(run_dir, params):
 def _check_configuration(report, params, n_atoms, run_dir):
     from .lambda_law import resolve_window
     from .protocol import lambda_clip_of
-    from .source import place_in_box
+    from .source import acceptance_text, place_in_box
     settings = params.cgaimmd_settings
     try:
         L = lambda_clip_of(params.network, settings)
@@ -325,8 +325,7 @@ def _check_configuration(report, params, n_atoms, run_dir):
         report.add('configuration', FAIL, _error(exc))
         return None
     report.add('configuration', OK, f'lambda window ({lo:.3g}, {hi:.3g}), acceptance '
-                                    f'{settings["acceptance"]!r} after '
-                                    f'{settings["window_after_trained_shots"]} trained shots')
+                                    f'{acceptance_text(settings)}')
     return (lo, hi)
 
 

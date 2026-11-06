@@ -25,7 +25,7 @@ SPEC_DEFAULTS = {
     'lambda_law': 'uniform',
     'lambda_window': 'bins',
     'lambda_clip': None,
-    'acceptance': 'target',
+    'acceptance': 'transition_region',
     'lambda_tolerance': 1.0,
     'window_after_trained_shots': 1000,
     'raw_lambda_tolerance': None,
@@ -154,6 +154,32 @@ def test_cgaimmd_parameters_rejects(bad, tmp_path):
 
     with pytest.raises(TypeError):
         aimmd.Params.load(_write_params(tmp_path, repr(bad), 'bad.py'), save=False)
+
+
+def test_acceptance_rules():
+    """'transition_region' (the default: no committor filter), 'target' and 'window' are accepted."""
+    assert CGAIMMD_PARAMETER_DEFAULTS['acceptance'] == 'transition_region'
+    for rule in ('transition_region', 'target', 'window'):
+        assert canonical_cgaimmd_parameters({'acceptance': rule}) == {'acceptance': rule}
+    with pytest.raises(TypeError, match="'acceptance'"):
+        canonical_cgaimmd_parameters({'acceptance': 'transition region'})
+
+
+def test_raw_lambda_prefilter_needs_a_committor_rule(tmp_path):
+    """raw_lambda_tolerance filters by the committor: an error unless acceptance is 'target'/'window'."""
+    for value in ({'raw_lambda_tolerance': 0.5},
+                  {'acceptance': 'transition_region', 'raw_lambda_tolerance': 0.5},
+                  {'raw_lambda_tolerance': 0.5, 'acceptance': 'transition_region'}):
+        with pytest.raises(TypeError, match="'raw_lambda_tolerance'.*'transition_region'"):
+            canonical_cgaimmd_parameters(value)
+    for rule in ('target', 'window'):
+        value = {'acceptance': rule, 'raw_lambda_tolerance': 0.5}
+        assert canonical_cgaimmd_parameters(value) == value
+    # None is the default and means no prefilter: allowed with every rule
+    assert canonical_cgaimmd_parameters({'raw_lambda_tolerance': None}) == {
+        'raw_lambda_tolerance': None}
+    with pytest.raises(TypeError, match="'raw_lambda_tolerance'"):
+        aimmd.Params.load(_write_params(tmp_path, "{'raw_lambda_tolerance': 0.5}"), save=False)
 
 
 def test_generation_keys_point_to_the_generator_field():
