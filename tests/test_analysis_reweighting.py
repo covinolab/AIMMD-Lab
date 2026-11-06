@@ -407,7 +407,11 @@ def test_frames_without_values_are_left_out(ring, ring_reweighting, tmp_path):
     in_a = np.clip(np.full(30, 1.0) + 0.01 * rng.standard_normal(30), 0.5, 1.5)
     in_a[0] = x_last
     n = int(last_part.stem.split('part')[1]) + 1
-    write_frames(run / 'freeA' / f'traj000001.part{n:04d}.xtc', in_a, t_last + np.arange(30.0))
+    a_part = write_frames(run / 'freeA' / f'traj000001.part{n:04d}.xtc', in_a,
+                          t_last + np.arange(30.0))
+    # its last 10 frames have no state yet (written after the worker's last state pass)
+    from aimmd.cache.npy import save_npy
+    save_npy(a_part + '.states.npy', ring_states(aimmd.Path(a_part).positions[:20, 0, 0]))
     reactive = np.concatenate([[in_a[-1]], np.linspace(2.2, 4.0, 20)])
     write_frames(run / 'freeA' / f'traj000001.part{n + 1:04d}.xtc', reactive,
                  t_last + 29 + np.arange(21.0))
@@ -420,8 +424,12 @@ def test_frames_without_values_are_left_out(ring, ring_reweighting, tmp_path):
     assert cut == 20                    # the reactive part (its first frame repeats the A part's last)
     assert [os.path.basename(f) for f in result.left_out['shots']] == ['path000017.xtc']
     assert result.n_shots == 16
-    # the 30 frames in A were kept: one counted frame more per kept frame than before
+    # the 30 frames in A were kept (the last one repeats in the next part), also the 9 without a
+    # state, as the trainer keeps them; their share of the weight is 'unknown'
     assert result.free_frames == ring_reweighting.free_frames + 29
+    assert result.frames_without_state == 9 and ring_reweighting.frames_without_state == 0
+    shares = result.populations()['state']
+    assert shares['unknown'] > 0 and sum(shares.values()) == pytest.approx(1.0)
     without = reweight_run(params, str(run), until_values=False)
     assert without.left_out == {'free_frames': {}, 'shots': []}
     assert without.n_shots == 17

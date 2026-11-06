@@ -87,6 +87,16 @@ would look like progress to the transition state. With ``values='cached'`` and
 its first reactive frame without a cached value, and shots with such frames
 are left out. Frames in the states need no value (the value pass skips them,
 and a part file without reactive frames has no values file at all).
+
+Frames without a state
+----------------------
+The workers compute the state of every frame they write, but a trajectory can
+hold frames beyond its states cache (the last frames written after the
+worker's final state pass). AIMMD reads their state as ``''``, and the
+trainer's reweighting counts them like any frame, as a state of their own.
+:func:`reweight_run` keeps them too, so that it reproduces the trainer;
+:attr:`RunReweighting.frames_without_state` says how many there are, and
+:func:`populations` reports their share as ``'unknown'``.
 """
 
 # external
@@ -187,9 +197,10 @@ def _load_cache(fname, name):
 def _frames_with_rows(path, reactive, name):
     """Leading frames of `path` whose reactive frames all have a row in cache `name`.
 
-    Frames whose state is not known yet (beyond the states cache) end the
-    count as well. Mirrors what the trainer can have seen: it computes
-    values for the reactive frames only, and zero-fills the others.
+    Mirrors what the trainer can have seen: it computes values for the
+    reactive frames only and zero-fills the others. Frames beyond the states
+    cache have no state yet; the trainer keeps them (AIMMD reads their state
+    as ``''``), so they do not end the count either.
     """
     n_keep = 0
     for k in range(path.n_files):
@@ -202,7 +213,7 @@ def _frames_with_rows(path, reactive, name):
         labels = np.full(len(locs), '', dtype='<U1')
         if n_states:
             labels[inside] = np.asarray(states).reshape(-1)[locs[inside]]
-        missing = (~inside) | (labels == '') | ((labels == reactive) & (locs >= n_rows))
+        missing = (labels == reactive) & (locs >= n_rows)
         if missing.any():
             return n_keep + int(np.argmax(missing))
         n_keep += len(locs)
@@ -328,6 +339,10 @@ class RunReweighting:
     report: str = ''
     """What AIMMD's bias checks printed (reactive bias, zero point, cache coverage, seeds)."""
 
+    frames_without_state: int = 0
+    """Counted frames whose state is not known (beyond their file's states cache); the
+    trainer counts them too (see the module docstring)."""
+
     left_out: dict = field(default_factory=dict)
     """Data left out because it has no values yet: ``free_frames`` (per free trajectory, frames
     cut off its end), ``shots`` (the files of the shots left out)."""
@@ -437,7 +452,8 @@ class RunReweighting:
                'n_nonfinite_weights': int(np.count_nonzero(
                    ~np.isfinite(self.weights_forward)) + np.count_nonzero(
                    ~np.isfinite(self.weights_backward))),
-               'left_out': self.left_out, 'free_restart_source': self.free_restart_source,
+               'left_out': self.left_out, 'frames_without_state': self.frames_without_state,
+               'free_restart_source': self.free_restart_source,
                'fraction': self.fraction, 'fraction_by': self.fraction_by,
                'registered_until': self.registered_until,
                'subsets': [subset.summary() for subset in self.subsets]}
@@ -559,7 +575,12 @@ def _reweight(params, run_dir, system_id, chains, free, *, values, network, bias
         densities[densities == 0.] = 1e-15
         densities /= densities.sum()
 
+    starts, stops = ensemble.frame_windows
+    unknown = 0
+    for path, start, stop in zip(ensemble._paths, starts, stops):
+        unknown += int(np.count_nonzero(np.asarray(path._get('states'))[start:stop] == ''))
     result = RunReweighting(
+        frames_without_state=unknown,
         states=states, run_dir=run_dir, system_id=system_id, pathensemble=ensemble,
         weights_forward=w1, weights_backward=w2, n_frames=np.asarray(lengths),
         is_shot=is_shot, origin=origin, bins=np.asarray(bins, dtype=float),
@@ -1114,9 +1135,11 @@ def populations(state, last_visited, weights, *, states='ARB'):
     dict
         ``{'state': {label: share}, 'last_visited': {label: share, 'none': share},
         'total_weight': float}``. ``state`` gives the share of the weight in
-        each of the three regions (the probability of finding the system
-        there); ``last_visited`` the share whose last end state was each one
-        (the "history" populations, whose ratio is the ratio of the rates in
+        each region (the probability of finding the system there): the three
+        of `states`, any other label the states function gives, and
+        ``'unknown'`` for frames without a state; the shares sum to 1.
+        ``last_visited`` gives the share whose last end state was each one (the
+        "history" populations, whose ratio is about the ratio of the rates in
         a two-state system: ``P(last first) / P(last last) = k21 / k12``).
         Shares are 0 when the total weight is not positive.
     """
@@ -1126,7 +1149,11 @@ def populations(state, last_visited, weights, *, states='ARB'):
     total = float(np.sum(weights))
     def share(mask):
         return float(np.sum(weights[mask]) / total) if total > 0 else 0.0
-    return {'state': {label: share(state == label) for label in states},
+    labels = list(states) + sorted(set(str(x) for x in np.unique(state)) - set(states) - {''})
+    shares = {label: share(state == label) for label in labels}
+    if np.any(state == ''):
+        shares['unknown'] = share(state == '')
+    return {'state': shares,
             'last_visited': {**{label: share(last_visited == label)
                                 for label in (states[0], states[2])},
                              'none': share(last_visited == '')},
