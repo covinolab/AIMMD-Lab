@@ -18,8 +18,8 @@ wraps :func:`flow_matching_fit` in the four-argument ``fit`` AIMMD calls::
         return flow_matching_fit(params, pathensemble, verbose=verbose, worker=worker,
                                  steps_per_round=4000, relabel_every=1000)
 
-**Every round starts from the same weights** (PI ruling of 26 Oct 2026: never
-warm-start a round from the previous one). The start is
+**Every round starts from the same weights**: a round never continues from
+the previous round's weights. The start is
 ``params.initial_network`` (typically the end-state pretraining of
 :mod:`~aimmd.cgaimmd.flow_matching.pretrain`) when it is set, else
 ``network.reset_parameters()`` under the run's seed. The optimizer, the
@@ -33,7 +33,7 @@ come from the round's own EMA. What is carried between rounds is bookkeeping
 (the round counter, the held-out chains, the first-round no-op; in
 ``flow_fit{states}/state.json``) and, in memory, the extracted dataset.
 
-One step minimizes the single loss of the committor-flow prototype:
+One step minimizes a single loss:
 
 .. math::
 
@@ -72,15 +72,15 @@ their density weight), ``holdout_every`` with
 ``early_stopping_patience`` (early stopping on the held-out chains' shooting
 likelihood), ``split_backward`` (two backward passes per step, for a small
 GPU) and ``graphs`` (graph mode).
-
-Ported from ``aimmd/network/flow_fit.py`` of the flow branch (``FlowTrainer``,
-``LossNormalizer``, ``committor_nll``, ``flow_fit``); the warm start (the
-round continued the previous round's live weights, optimizer and EMA), the
-side checkpoint of those weights and its reconciliation with the network
-file, and the flow-matching labels read from the values caches (the previous
-round's network) were dropped. ``split_backward`` comes from the run-local
-patch of the Goethe-dataset campaign (16 Oct 2026).
 """
+
+# Provenance: Ported from ``aimmd/network/flow_fit.py`` of the flow branch (``FlowTrainer``,
+# ``LossNormalizer``, ``committor_nll``, ``flow_fit``); the warm start (the
+# round continued the previous round's live weights, optimizer and EMA), the
+# side checkpoint of those weights and its reconciliation with the network
+# file, and the flow-matching labels read from the values caches (the previous
+# round's network) were dropped. ``split_backward`` comes from the run-local
+# patch of the Goethe-dataset campaign (16 Oct 2026).
 
 import copy
 import json
@@ -165,8 +165,7 @@ FLOW_FIT_DEFAULTS = {
 ``lr_schedule='cosine'`` decays to 0 at ``total_steps`` (None: the round's
 ``steps_per_round``); the schedule and the warm-up restart with every round,
 so ``total_steps`` larger than ``steps_per_round`` is refused (the cosine
-would never reach 0; the flow branch's templates set it to "rounds x steps
-per round" for warm-started rounds).
+would never reach 0).
 ``trainer_seed`` None takes the run's seed (:func:`aimmd.cgaimmd.fitting.fit_seed`).
 ``steps_per_round`` 4,000 and ``relabel_every`` 1,000 are the online recipe
 of the PaiNN evidence (4,000 steps gave the best held-out committor on
@@ -182,7 +181,7 @@ STATE_SCHEMA = 'aimmd.flow_fit/2'
 """The ``schema`` entry of ``flow_fit{states}/state.json`` (the fit's bookkeeping between rounds)."""
 
 OLD_CHECKPOINT_SCHEMA = 'aimmd.flow_fit/1'
-"""The schema of the warm-start side checkpoint ``state.pt`` of the flow branch (bookkeeping read, weights not)."""
+"""The schema of the side checkpoint ``state.pt`` of earlier versions (bookkeeping read, weights not)."""
 
 FIT_NAME = 'aimmd.cgaimmd.flow_matching.fit'
 """The ``fit`` entry of the network metadata."""

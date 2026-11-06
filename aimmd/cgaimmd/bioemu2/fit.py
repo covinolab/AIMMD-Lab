@@ -46,10 +46,11 @@ One round (:func:`sequential_round`):
 5. **Label probe** (logged, decides nothing): the trained adapters' loss on
    fixed pool frames with their own labels, shuffled labels and none.
 
-The weights are reset every round (PI, 26 Oct 2026: never warm-start); the
-round counter and the dataset are the only state carried between rounds.
+The weights are reset every round (a round never continues the previous
+round's weights); the round counter and the dataset are the only state
+carried between rounds.
 
-Options (all off by default; DESIGN 4.8):
+Options (all off by default):
 
 ``label_time_window_ps``
     The labels of the reactive frames become the logit of the mean committor
@@ -79,15 +80,15 @@ a run restarted in the same folder reproduces its seeds. A run that is moved
 (local disk, archive, cluster) gets other seeds after the move unless
 ``generation_seed`` is set. The seed and every setting go into the round's
 metadata.
-
-Ported from ``bioemu2_committor/aimmd_flow_fit.py`` (``sequential_round``,
-``bioemu2_fit_sequential``, ``fresh_head``, ``fresh_adapter``,
-``_rotations``, ``_previous_round``) and ``aimmd_flow_holo_fit.py``
-(``holo_sequential_round``, ``holo_fit_sequential``, ``_label_probe``),
-merged; the warm-start fit, the density-weighted pool and the patch of AIMMD's
-reweighting were dropped, and the round counter reads ``round`` where AIMMD
-stores it.
 """
+
+# Provenance: Ported from ``bioemu2_committor/aimmd_flow_fit.py`` (``sequential_round``,
+# ``bioemu2_fit_sequential``, ``fresh_head``, ``fresh_adapter``,
+# ``_rotations``, ``_previous_round``) and ``aimmd_flow_holo_fit.py``
+# (``holo_sequential_round``, ``holo_fit_sequential``, ``_label_probe``),
+# merged; the warm-start fit, the density-weighted pool and the patch of AIMMD's
+# reweighting were dropped, and the round counter reads ``round`` where AIMMD
+# stores it.
 
 import copy
 import inspect

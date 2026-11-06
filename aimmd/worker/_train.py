@@ -860,7 +860,7 @@ class WorkerTrain(ABC):
         -----
         Removes the fit state and round records an earlier call left in that
         folder (the flow-matching fit's ``state.json`` and ``rounds.jsonl``;
-        ``state.pt`` and ``state.pt.prev`` of the flow branch's fit) and
+        ``state.pt`` and ``state.pt.prev`` of earlier versions of that fit) and
         the trainer the flow-matching fit keeps for it in this process (when
         that fit was imported), loads ``initial_network`` into
         ``params.network`` (strict, ``weights_only``) and sets

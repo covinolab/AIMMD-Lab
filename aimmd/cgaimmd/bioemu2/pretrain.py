@@ -16,12 +16,12 @@ Save the result as the run's ``initial_network`` (``pretrained/network{states}.h
     from aimmd.cgaimmd.bioemu2 import BioEmu2Network, pretrain_initial_network
     network = BioEmu2Network('system')
     record = pretrain_initial_network(network, frames, states, network_file='pretrained/networkARB.h5')
-
-Ported from the two pretraining scripts of the archived campaigns
-(``faimmd/pretrain_flow_network.py``, ``faimmd/pretrain_holo_flow_network.py``),
-made generic: the frames and their states are arguments, the trypsin
-script's balanced A/B draws and its scaler on every frame are kept.
 """
+
+# Provenance: Ported from the two pretraining scripts of the archived campaigns
+# (``faimmd/pretrain_flow_network.py``, ``faimmd/pretrain_holo_flow_network.py``),
+# made generic: the frames and their states are arguments, the trypsin
+# script's balanced A/B draws and its scaler on every frame are kept.
 
 import json
 import time

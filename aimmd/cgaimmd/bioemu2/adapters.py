@@ -38,13 +38,15 @@ the noise level (windows ``'lo-hi:weight:null'``), and the null is the
 adapters' own null (``'learned'``; plain BioEmu2 without a learned null) or
 plain BioEmu2 (``'bioemu2'``, adapters off).
 
-Ported from ``bioemu2_committor/finetune.py`` (``TrunkAdapter``,
-``lambda_features``, the trunk kinds of ``ConditionedDenoiser``; LoRA and the
-token-conditioning embedding were dropped) and the guidance schedule of the
-generator-adherence campaign (``adherence_lib.parse_guidance_schedule``,
-``null_denoise``, ``guidance_hook``). The parameter names of
-:class:`TrunkAdapter` are the old ones, so archived adapters load unchanged.
+The parameter names of :class:`TrunkAdapter` are those of earlier BioEmu2
+C-GAIMMD runs, so their adapters load unchanged.
 """
+
+# Provenance: Ported from ``bioemu2_committor/finetune.py`` (``TrunkAdapter``,
+# ``lambda_features``, the trunk kinds of ``ConditionedDenoiser``; LoRA and the
+# token-conditioning embedding were dropped) and the guidance schedule of the
+# generator-adherence campaign (``adherence_lib.parse_guidance_schedule``,
+# ``null_denoise``, ``guidance_hook``).
 
 import math
 from numbers import Real

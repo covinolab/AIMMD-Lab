@@ -42,10 +42,10 @@ The analysis runs once per moleculetype and is replicated to the other
 copies. Whole identical solvent molecules (waters, ions) are reported as
 molecule blocks, which the OT pairing assigns as blocks; identical non-solvent
 molecules are not exchanged (the embedding's chain token tells them apart).
-
-Port of ``cfaimmd.symmetry`` (the prototype of C-GAIMMD) with the config
-coupling removed. ``networkx`` is imported inside the functions that need it.
 """
+
+# Provenance: Port of ``cfaimmd.symmetry`` (the prototype of C-GAIMMD) with the config
+# coupling removed. ``networkx`` is imported inside the functions that need it.
 
 import itertools
 import math

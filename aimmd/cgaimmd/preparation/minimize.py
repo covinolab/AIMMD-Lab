@@ -21,9 +21,9 @@ a trajectory file. With ``restrain='none'`` the result agrees with
 ``Params.minimize_energy`` on the same EM mdp (a ``--runslow`` test checks
 RMS < 0.01 Å).
 
-The restrained default follows the measurement that unrestrained
-minimization rolls barrier structures into the basins (C-GAIMMD development
-notebook, 2026-09-24).
+The restraints are on by default because unrestrained minimization rolls
+barrier structures into the basins, which moves the shooting point away from
+the committor it was generated at.
 """
 
 import os

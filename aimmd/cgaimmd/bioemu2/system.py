@@ -791,7 +791,7 @@ class BioEmu2System:
 
         Parameters
         ----------
-        bioemu2_system : bioemu2.System, dict or path
+        bioemu2_system : bioemu2.System, dict or path-like
             The BioEmu2 system (a YAML file, as ``System.from_yaml`` reads).
         md : MDAtoms
             The generator atoms, whole (the template of the completion).

@@ -183,7 +183,7 @@ def radius_edges(pos, batch, cutoff, *, max_num_neighbors=128, backend='auto'):
     ``'pyg'`` backend is ``radius_graph(x=pos, r=cutoff, batch=batch,
     loop=False, max_num_neighbors=max_num_neighbors)``, the call
     ``graph_utils.get_graphs_pyg`` makes per frame; the ``'torch'`` backend is
-    the prototype's ``build_edges`` (a ``(B, k, k)`` distance tensor when every
+    a dense distance computation (a ``(B, k, k)`` distance tensor when every
     sample has ``k`` atoms in order, else one masked matrix). Both give the
     same edge set as long as no atom reaches the cap; at the cap PyG keeps
     arbitrary neighbours and the torch backend the nearest. A

@@ -37,11 +37,12 @@ the ensemble.
    logged once (``'clash'``). Reference frames MUST be unbiased MD (no
    umbrella, OPES, steered or MBAR-selected frames).
 
-Port of ``cfaimmd.canonicalise``, ``cfaimmd.geometry`` and the
-``Canonicaliser`` and clash scoring of the chignolin generator evaluator of
-the C-GAIMMD development project. ``networkx`` and MDAnalysis are imported
-inside the functions that need them.
+``networkx`` and MDAnalysis are imported inside the functions that need them.
 """
+
+# Provenance: Port of ``cfaimmd.canonicalise``, ``cfaimmd.geometry`` and the
+# ``Canonicaliser`` and clash scoring of the chignolin generator evaluator of
+# the C-GAIMMD development project.
 
 import os
 import signal
@@ -714,10 +715,10 @@ class PolishedValidity:
     polished one. A sample that is not polished, or whose polish failed,
     keeps its raw positions.
 
-    This is the validity hook that the BioEmu2 production params of October
-    2026 wrote out by hand around ``aimmd.flow.validate._polish``. With the
-    default ``info_keys=()`` the result is the same as that of the chignolin
-    hook (a test checks it against a recording of the hand-written hook). A
+    It replaces the validity hook that earlier BioEmu2 params files wrote
+    out by hand around a private polish function: with the default
+    ``info_keys=()`` the result is the same as that of the chignolin hook (a
+    test checks it against a recording of the hand-written hook). A
     system-specific check, such as the Ca2+ site check of the trypsin
     params, goes into `validity`: a function that runs
     :class:`TopologyValidity` and the extra check and returns one

@@ -26,10 +26,10 @@ Token values: ``'element'`` tokens are atomic numbers; the others are
 ``1001 + rank``, ranked by first appearance in atom order. Values above 118
 are never atomic numbers, which is how a consumer tells a token list from an
 element list.
-
-Port of ``cfaimmd.embedding`` (the prototype of C-GAIMMD) without the
-schemes and ties C-GAIMMD does not use. Standard library and numpy only.
 """
+
+# Provenance: Port of ``cfaimmd.embedding`` (the prototype of C-GAIMMD) without the
+# schemes and ties C-GAIMMD does not use. Standard library and numpy only.
 
 import numpy as np
 

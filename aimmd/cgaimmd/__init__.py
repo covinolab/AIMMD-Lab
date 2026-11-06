@@ -13,7 +13,7 @@ RFPS shooting point. The network is the committor model of the run (its
 :mod:`aimmd.cgaimmd.protocol`); how candidates are generated is chosen through
 one interface (:mod:`aimmd.cgaimmd.generation`), so that the flow-matching ODE
 of a PaiNN network (:mod:`aimmd.cgaimmd.flow_matching`), BioEmu2's diffusion
-sampler and later methods are interchangeable.
+sampler (:mod:`aimmd.cgaimmd.bioemu2`) and later methods are interchangeable.
 
 This package sits at the learning level, next to :mod:`aimmd.network`.
 Importing it imports no submodule: the public names below are resolved on
@@ -37,8 +37,7 @@ Public names, by module:
   worker): ``GenerativeShootingPointSource``, ``make_cgaimmd_source``,
   ``prepare_candidate``, ``candidate_context``, ``PreparedCandidate``;
 - :mod:`~aimmd.cgaimmd.sidecar` (the per-shot records of a run):
-  ``read_shot_sidecar``, ``shot_table``, ``summarise_shots``.
-
+  ``read_shot_sidecar``, ``shot_table``, ``summarise_shots``;
 - :mod:`~aimmd.cgaimmd.restart` (continuing a run as C-GAIMMD, post-training
   on an existing run): ``check_cgaimmd_restart``, ``derive_run``,
   ``migrate_descriptors``;
@@ -47,11 +46,18 @@ Public names, by module:
 
 The target-committor laws are in :mod:`~aimmd.cgaimmd.lambda_law`, the
 candidate pool and the network watcher in :mod:`~aimmd.cgaimmd.pool`, the
-PLUMED bias of the shots in :mod:`~aimmd.cgaimmd.plumed`.
+PLUMED bias of the shots in :mod:`~aimmd.cgaimmd.plumed`, and what the online
+fits share in :mod:`~aimmd.cgaimmd.fitting`.
 
-The GROMACS tools that turn a generated configuration into a shooting point
-(descriptors, validity checks, the polish, re-solvation, minimization) are in
-the subpackage :mod:`aimmd.cgaimmd.preparation`.
+Subpackages:
+
+- :mod:`aimmd.cgaimmd.preparation`: the GROMACS tools that turn a generated
+  configuration into a shooting point (descriptors, validity checks, the
+  polish, re-solvation, minimization);
+- :mod:`aimmd.cgaimmd.flow_matching`: the PaiNN network with its
+  flow-matching generator ``'ode'``, its fit and its end-state pretraining;
+- :mod:`aimmd.cgaimmd.bioemu2`: the BioEmu2 adaptor with its generator
+  ``'bioemu2_edm'`` (needs the ``bioemu2`` extra).
 """
 
 import importlib as _importlib

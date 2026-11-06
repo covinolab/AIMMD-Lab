@@ -13,8 +13,8 @@ tensors of shape ``(..., M, 3)`` (``M`` atoms) and return tensors. Every random
 draw takes a ``generator``, so that a trainer that owns its own random stream
 (the flow-matching fit, end-state pretraining) draws nothing from the global one.
 
-Ported from the flow-matching prototype; the ODE integrators are
-:mod:`aimmd.cgaimmd.flow_matching.sampler`. ``scipy.optimize`` is imported only
+The ODE integrators are :mod:`aimmd.cgaimmd.flow_matching.sampler`.
+``scipy.optimize`` is imported only
 inside :func:`permutation_align` and the whole-molecule pairing.
 """
 
@@ -379,7 +379,7 @@ def ot_pair(x1, x0, *, groups=(), factors=(), molecule_blocks=(), rotate=True, n
     rotation, the molecule blocks, the factors and the Hungarian groups; with
     nothing to permute one round is done (a rotation alone is idempotent).
     Alternating never increases the cost. Two rounds were enough for NANMA
-    in the prototype (the second changes the cost by under 1 %).
+    (the second changes the cost by under 1 %).
     """
     x1 = center(x1)
     x0 = center(x0)

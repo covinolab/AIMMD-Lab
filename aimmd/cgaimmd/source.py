@@ -35,8 +35,8 @@ the batch after running out of CUDA memory; the batch size it used is written
 to every sidecar next to the generator's method and settings.
 
 The pool resets whenever the network file changes (checked before every
-pop; the discarded candidates count as ``'pool_reset'``), with one exception
-(the PI's answer of 2 Oct): a refill whose network was replaced while it was
+pop; the discarded candidates count as ``'pool_reset'``), with one exception:
+a refill whose network was replaced while it was
 generated serves :data:`STALE_REFILL_POPS` pop(s) first, so that a refill
 that takes longer than a training round still yields shots. The source never
 raises for want of a candidate: after ``max_refills`` refills without a
@@ -84,9 +84,8 @@ stops. C-GAIMMD places candidates at the basin rims on purpose, so under
 ``chain_type='cgaimmd'`` that failure (step-0 constraints, xtc compression)
 is routine: with True the worker's glitch branch runs whatever the flag says,
 the candidate is discarded (``state_readback`` in the source's counters) and
-the next one is taken from the pool. This is the PI's answer of 2 Oct
-("discard on read-back failure"), kept in this one place; False restores the
-flag's rule for C-GAIMMD chains.
+the next one is taken from the pool. False restores the flag's rule for
+C-GAIMMD chains.
 """
 
 WINDOW_AFTER_WARNING_KEY = 'window_after_trained_shots default'
@@ -110,11 +109,11 @@ POLL_SECONDS = 1.0
 STALE_REFILL_POPS = 1
 """Pops a refill may serve after its network was replaced while it was generated.
 
-The PI's answer of 2 Oct: such a refill serves at least one pop (the shot's
-sidecar says ``pool.stale_refill_pop`` and names the refill's network,
-``pool.refill_network_sha256``), and then the pool resets as before. 0 keeps
-the PI's earlier ruling strictly (every refill outdated before its first pop
-is discarded unused, so a refill slower than a training round never shoots).
+Such a refill serves at least one pop (the shot's sidecar says
+``pool.stale_refill_pop`` and names the refill's network,
+``pool.refill_network_sha256``), and then the pool resets as before. With 0,
+every refill outdated before its first pop is discarded unused, so a refill
+slower than a training round never shoots.
 """
 
 _STOPPED = object()
@@ -485,8 +484,8 @@ def final_check(frame, context, lambda_target):
     4. The rule: with ``n_trained_shots`` (``context.network_info``, 0 without
        one) below ``window_after_trained_shots`` any R frame is accepted
        (``'bootstrap_any_R'``); from there on ``'target'`` (``|lambda -
-       lambda_target| <= lambda_tolerance``, the default: the PI's decision of
-       29 Sep, enforced in production) or ``'window'`` (lambda inside the
+       lambda_target| <= lambda_tolerance``, the default) or ``'window'``
+       (lambda inside the
        resolved window, :func:`aimmd.cgaimmd.lambda_law.resolve_window`),
        else ``'lambda_window'``.
 

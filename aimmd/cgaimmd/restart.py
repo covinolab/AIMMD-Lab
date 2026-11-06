@@ -650,7 +650,7 @@ def check_descriptor_record(params, run_dir, *, write=True):
         or if a run whose descriptors have a cluster holds ``'descriptors'``
         caches in its ``chain*/`` or ``free*/`` folders but no record: such
         caches may come from a version that placed the cluster waters next to
-        the solute's centre (the development branch), which a resumed run would
+        the solute's centre (water placement 1), which a resumed run would
         silently mix with the current placement. The message names the ways
         out: a series of its own, or :func:`migrate_descriptors`.
 

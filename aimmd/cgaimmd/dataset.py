@@ -33,11 +33,11 @@ with a series of its own (:mod:`aimmd.core.series`) is read from that series.
 >>> labels = np.array([-2.0, 0.0, 2.0])
 >>> np.round(time_averaged_labels(labels, [0, 0, 0], [0.0, 1.0, 2.0], 1.0), 4)
 array([-0.802,  0.   ,  0.802])
-
-Ported from ``aimmd.network.flow_fit`` of the flow branch
-(``FlowDataset``, ``extract_flow_dataset``, ``path_weights`` and the private
-``_resolve_exclusions``).
 """
+
+# Provenance: Ported from ``aimmd.network.flow_fit`` of the flow branch
+# (``FlowDataset``, ``extract_flow_dataset``, ``path_weights`` and the private
+# ``_resolve_exclusions``).
 
 import json
 import math

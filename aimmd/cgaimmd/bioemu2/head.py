@@ -22,13 +22,15 @@ were taken at.
 
 Only torch and numpy: a network loads and its head runs without bioemu2.
 
-Ported from the BioEmu2 project code of the archived production campaigns
-(``bioemu2_committor/joint.py``: ``JointHead`` is :class:`CommittorHead`,
-``fit_scaler``; ``bioemu2_committor/head.py``: ``FeatureMLP``, ``STD_FLOOR``;
-``aimmd_flow_fit.py``: ``_sp_nll``, ``_anchor``, ``fresh_head``). The buffer
-and layer names are the old ones, so the archived networks load with a plain
-key map (:func:`aimmd.cgaimmd.bioemu2.network.archived_state_dict`).
+The buffer and layer names are those of the networks of earlier BioEmu2
+C-GAIMMD runs, so those networks load with a plain key map
+(:func:`aimmd.cgaimmd.bioemu2.network.archived_state_dict`).
 """
+
+# Provenance: Ported from the BioEmu2 project code of the archived production campaigns
+# (``bioemu2_committor/joint.py``: ``JointHead`` is :class:`CommittorHead`,
+# ``fit_scaler``; ``bioemu2_committor/head.py``: ``FeatureMLP``, ``STD_FLOOR``;
+# ``aimmd_flow_fit.py``: ``_sp_nll``, ``_anchor``, ``fresh_head``).
 
 import numpy as np
 import torch
