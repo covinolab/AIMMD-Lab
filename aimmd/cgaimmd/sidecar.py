@@ -794,7 +794,8 @@ def git_provenance():
         uncommitted changes (None if unknown); None or the reason why the
         commit or the dirty flag is unknown; ``'git'`` (the executable
         answered), ``'git files'`` (read from the ``.git`` files),
-        ``'direct_url'`` (pip's install record) or None.
+        ``'direct_url'`` (pip's install record), ``'build record'`` (the
+        record ``setup.py`` writes into a built package) or None.
 
     Notes
     -----
@@ -816,8 +817,12 @@ def git_provenance():
        not tracked by any repository. Its commit is then read from pip's
        install record (``direct_url.json``), which names one for an install
        from git (``pip install git+...``; the dirty flag is unknown); an
-       install from a folder, an archive or an index names none: the commit
-       is None and the reason says so. :func:`aimmd_provenance` then still
+       install from a folder, an archive or an index names none.
+    4. Then the commit is read from the build record that ``setup.py``
+       writes into every built package (``aimmd/_build_record.json``: the
+       commit of the checkout it was built from and its dirty flag), which
+       covers wheels and installs from a folder. Without one the commit is
+       None and the reason says why. :func:`aimmd_provenance` then still
        identifies the code by ``source_sha256``.
 
     Looked up once per process (``functools.lru_cache``).
@@ -852,15 +857,55 @@ def git_provenance():
     return _from_install(out, package, f'{why}; {file_why}')
 
 
+BUILD_RECORD = '_build_record.json'
+"""The build record in the package folder of a built AIMMD-Lab (written by ``setup.py``)."""
+
+
+def _commit_from_build_record(package):
+    """``(record, None)`` of the build record of the imported package, or ``(None, why)``.
+
+    ``setup.py`` writes ``aimmd/_build_record.json`` into every built package
+    (a wheel, a non-editable install, a source distribution): the commit of
+    the git checkout it was built from and whether the package folder had
+    uncommitted changes. A checkout or an editable install has none.
+    """
+    fname = os.path.join(package, BUILD_RECORD)
+    if not os.path.isfile(fname):
+        return None, f'the package has no build record ({BUILD_RECORD})'
+    try:
+        with open(fname) as handle:
+            record = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return None, f'its build record could not be read ({type(exc).__name__}: {exc})'
+    if not isinstance(record, dict):
+        return None, 'its build record is not a JSON object'
+    commit = record.get('git_commit')
+    if not (isinstance(commit, str) and _is_commit(commit)):
+        return None, (f'its build record names no commit '
+                      f'({record.get("git_reason") or "no reason given"})')
+    return record, None
+
+
 def _from_install(out, package, why):
-    """`out` with the commit of pip's install record, or with `why` and the record's reason."""
+    """`out` with the commit of pip's install record or of the build record, or with the reasons."""
     commit, install_why = _commit_from_install(package)
     if commit is not None:
         out.update(git_commit=commit, git_source='direct_url',
                    git_reason=(f"read from pip's install record (direct_url.json), the dirty "
                                f"flag is unknown, because {why}"))
         return out
-    out['git_reason'] = f'{why}; {install_why}'
+    record, record_why = _commit_from_build_record(package)
+    if record is not None:
+        dirty = record.get('git_dirty')
+        out.update(git_commit=record['git_commit'],
+                   git_dirty=dirty if isinstance(dirty, bool) else None,
+                   git_source='build record',
+                   git_reason=(f'read from the build record ({BUILD_RECORD}, built '
+                               f'{record.get("built_at")} from a '
+                               f'{record.get("built_from") or "checkout"}), because {why}; '
+                               f'{install_why}'))
+        return out
+    out['git_reason'] = f'{why}; {install_why}; {record_why}'
     return out
 
 
