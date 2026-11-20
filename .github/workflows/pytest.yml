@@ -14,17 +14,17 @@ jobs:
       max-parallel: 5
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: conda-incubator/setup-miniconda@v2
+    - uses: actions/checkout@v4
+    - uses: conda-incubator/setup-miniconda@v4
       with:
         # the hosted runner no longer ships a conda installation: install one
         miniforge-version: latest
-        python-version: 3.13
+        python-version: "3.13"
         environment-file: devtools/conda-envs/test_env.yaml
         channels: conda-forge,defaults
         activate-environment: test
         auto-update-conda: true
-        auto-activate-base: false
+        auto-activate: false
         show-channel-urls: true
     - name: Install build tools
       run: pip install --upgrade pip setuptools
