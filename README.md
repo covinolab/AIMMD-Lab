@@ -87,6 +87,11 @@ If the default wheels do not match your CUDA/Python build, install them
 explicitly — see the [installation guide](https://aimmd-lab.readthedocs.io/en/latest/installation.html)
 for a confirmed-working CUDA 11.8 / Python 3.13 example.
 
+For a graph-network params file, start from
+[`examples/graph_network/params.py`](examples/graph_network/params.py), which
+stores the network's inputs as node tables; see
+[Graph Networks and Node Tables](https://aimmd-lab.readthedocs.io/en/latest/graph_networks.html).
+
 ### Development install
 
 ```bash

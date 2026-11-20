@@ -139,6 +139,7 @@ class ParamsIO(ABC):
 
         # in case of problems: restore modules and params fields
         backup_modules = sys.modules.copy()
+        local_module_names = {}
         updated_fields = []
 
         try:
@@ -265,6 +266,15 @@ class ParamsIO(ABC):
                 if 'initial_paths' in module.__dict__:
                     self.__dict__['_initial_path_files'] = \
                         resolve_path_names(module.__dict__['initial_paths'])
+                    # A multi-system file gives one entry per system; keep
+                    # the names apart per system as well, since a worker is
+                    # bound to one system and may read only its own
+                    # (WorkerRun._bind_system_id narrows the list to them).
+                    groups = module.__dict__['initial_paths']
+                    if (fields.get('multi_system', False)
+                            and isinstance(groups, (list, tuple))):
+                        self.__dict__['_initial_path_files_by_system'] = [
+                            resolve_path_names(group) for group in groups]
 
                 # after execution: swap original and local modules names
                 # avoiding conflicts
@@ -316,8 +326,20 @@ class ParamsIO(ABC):
 
         except Exception as exception:
 
-            # restore modules
-            sys.modules = backup_modules
+            # restore modules, in place: the import system keeps using the
+            # dict sys.modules was bound to, so rebinding the name to the
+            # backup would leave the two out of step (later imports could
+            # fail half way). Only the modules of the params folder (the
+            # params file and its local modules, under either name) are
+            # dropped; packages first imported by the failed load stay,
+            # since many cannot be executed twice in one process (e.g.
+            # torch_geometric, which registers names in torch)
+            local_names = {*local_module_names, *local_module_names.values()}
+            for name in [name for name in sys.modules
+                         if name not in backup_modules
+                         and name in local_names]:
+                del sys.modules[name]
+            sys.modules.update(backup_modules)
 
             # restore attributes
             self.__dict__.update(backup_dict)

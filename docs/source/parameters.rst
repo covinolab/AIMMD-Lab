@@ -32,6 +32,23 @@ In practice, the most important inputs are:
 ``descriptors_function`` and ``descriptor_transform``
    Optional feature pipeline before the network is evaluated.
 
+``descriptors_series``
+   Name of the per-trajectory cache series that stores the
+   ``descriptors_function`` output, ``{trajectory}.{descriptors_series}.npy``.
+   The default, ``'descriptors'``, is the historical series. Any other name is
+   ``'descriptors-'`` followed by letters, digits, ``_``, ``.`` or ``-`` and
+   starts a separate series: files of other series are never read, and frames
+   without a row are featurized from the trajectories when they are needed.
+   Use a new name whenever the ``descriptors_function`` output changes.
+   Reading ``'descriptors'`` from a trajectory that only has a named series
+   raises an error instead of returning zeros; analysis scripts read
+   ``getattr(path, params.descriptors_series)``. Graph-network runs with node
+   tables use a fingerprinted name, ``'descriptors-gn...'``, computed by the
+   featurizer (``descriptors_series = FEATURIZER.series``). For any named
+   series, the launcher and every worker check before a job starts that each
+   trajectory of the run has a file of it, and stop the job (or let the
+   featurizer refill the series first) otherwise (see :doc:`graph_networks`).
+
 ``values_function``
    Optional, if evaluating the network forward pass requires any special care. If not given, will default to network(descriptors).
 

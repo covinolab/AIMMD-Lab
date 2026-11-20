@@ -454,9 +454,15 @@ class ParamsMethods(ABC):
 
         Notes
         -----
-        Multi-system runs keep one `PathEnsemble` per system in
-        `initial_paths`; those are flattened here, which is safe because the
-        source base names are what the lookup matches on.
+        In a multi-system worker the names are those of the worker's own
+        system only: `Params.load` records them per system and
+        `WorkerRun._bind_system_id` narrows ``_initial_path_files`` to them.
+        The worker's `states_function` is bound to its system and cannot
+        evaluate another system's trajectory, and the systems' files may share
+        a base name (``inputs/<system>/initial.xtc``). Names that hold several
+        systems' paths (the populated `initial_paths` of a multi-system
+        launcher) are flattened, and one base name for two different files is
+        refused rather than resolved to whichever comes first.
         """
         groups = getattr(self, 'initial_paths', None) or []
         if isinstance(groups, PathEnsemble):
@@ -474,6 +480,25 @@ class ParamsMethods(ABC):
                     "neither 'initial_paths' nor the file names recorded at "
                     "load time. A free_seeding_position other than 'boundary' "
                     "needs them; check that params.py assigns 'initial_paths'.")
+
+        # One base name must name one file: the trimmed copies a worker holds
+        # find their source by base name, so a second file of the same name
+        # would be dropped in silence and its system seeded from the first.
+        # Checked before any states_function pass, which could not evaluate
+        # another system's file anyway.
+        named = {}
+        for source in sources:
+            named.setdefault(os.path.basename(str(source)), set()).add(
+                os.path.abspath(str(source)))
+        clashes = {base: sorted(files) for base, files in named.items()
+                   if len(files) > 1}
+        if clashes:
+            raise TypeError(
+                f"the initial paths {clashes} share a base name, so the "
+                f"trimmed copies cannot tell which file they came from. A "
+                f"free_seeding_position other than 'boundary' needs one base "
+                f"name per file (in a multi-system run, per system: a worker "
+                f"reads its own system's files only).")
 
         out = {}
         for source in sources:

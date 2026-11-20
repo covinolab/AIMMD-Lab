@@ -68,6 +68,7 @@ from ..params import Params
 from .._config import print
 from ..resources import get_num_cpus, get_num_gpus
 from ..core.utils import now
+from ..core.series import check_series_coverage
 from ..execute.processes import ProcessExecutor
 
 
@@ -205,6 +206,23 @@ class LauncherHelpers(ABC):
             sys.exit(128 + signal.SIGTERM)
         else:
             sys.exit(0)
+
+    def _check_series(self):
+        """Refuse a job on a run whose trajectories lack the params'
+        descriptor series, or announce that the job refills it first.
+
+        A computed series name (a node-table featurizer's) changes with the
+        settings; the job would then featurize every frame again, lazily.
+        See `aimmd.core.series.check_series_coverage`.
+
+        Raises
+        ------
+        aimmd.core.series.SeriesCoverageError
+            If trajectories of a run lack the series and its featurizer does
+            not refill it (``refill=False``).
+        """
+        for params, directory in zip(self._params, self._directories):
+            check_series_coverage(params, directory or '.', log=print)
 
     def _process_input(self, name, value, dtype=None):
         """

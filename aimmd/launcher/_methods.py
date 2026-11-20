@@ -247,6 +247,10 @@ class LauncherMethods(ABC):
             If ``filename`` cannot be written.
         TypeError
             If the launcher cannot be configured with the requested modes.
+        aimmd.core.series.SeriesCoverageError
+            If trajectories of a run have no file of the params' descriptor
+            series and its featurizer does not refill it (no job is
+            written); with ``refill=True`` the refill is announced instead.
 
         Notes
         -----
@@ -263,6 +267,10 @@ class LauncherMethods(ABC):
         # scripts need no GROMACS.
         if any(getattr(p, 'engine', None) == 'gromacs' for p in self.params):
             require_gromacs()
+
+        # every trajectory of the runs needs the params' descriptor series:
+        # refuse the job (or announce its refill) before it is written
+        self._check_series()
 
         # retrieve run information: slurm header
         slurm_header = self.params[0].slurm_header + ''

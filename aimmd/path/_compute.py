@@ -56,6 +56,13 @@ The "filled" test depends on the target type:
 
 This convention allows sparse/incremental population of caches.
 
+The check reads as little as it can: a copy of the target already resident
+in `NPY_CACHE` is used directly; when the requested frames are a small part
+of the file (at most `LEDGER_PARTIAL_READ_FRACTION`, e.g. the new frames of a
+growing trajectory), only the header and those rows are read, and rows beyond
+the end of the file count as missing without being read; otherwise the whole
+file is loaded into `NPY_CACHE`.
+
 Notes on termination
 --------------------
 If `worker` is provided and has a truthy attribute `termination_signal`,
@@ -80,8 +87,60 @@ from tqdm import tqdm
 
 # aimmd imports
 from .utils import get_cache_fname, compute_batch
+from ..cache.npy import read_npy_ledger
 from ..core.utils import accepts_system_id
 from .._config import NPY_CACHE
+
+# The "already computed" check reads only the rows it needs when they are at
+# most this fraction of the cached file (e.g. the tail of a growing
+# trajectory). Above it, the whole file is read (in the same open) and kept
+# in NPY_CACHE, where the value pass that usually follows finds it again.
+LEDGER_PARTIAL_READ_FRACTION = 0.25
+
+
+def _ledger_rows(fname, locs):
+    """
+    Rows of a cached target series, for the "already computed" check.
+
+    Parameters
+    ----------
+    fname : str
+        Cache file of the target series.
+    locs : numpy.ndarray of int
+        Frame indices (rows) to check, in Path order.
+
+    Returns
+    -------
+    tuple or None
+        ``(length, rows)``: the length of the series and its rows at the
+        `locs` smaller than that length, in order; None if there is no
+        series to read.
+
+    Notes
+    -----
+    A copy resident in NPY_CACHE that is long enough is used as is, exactly
+    as ``NPY_CACHE.get(fname, min_length=locs[-1])`` would. Otherwise the
+    file is read once, under its lock
+    (:func:`aimmd.cache.npy.read_npy_ledger`): when the requested rows are a
+    small part of it, only the header and those rows (rows beyond the end of
+    the file are not read at all); else the whole array, which is put into
+    NPY_CACHE as ``NPY_CACHE.get`` would have loaded it. Unusual files are
+    loaded through NPY_CACHE as before. All of them give the same result.
+    """
+    old = NPY_CACHE.peek(fname, min_length=locs[-1])
+    if old is None:
+        read = read_npy_ledger(fname, locs,
+                               max_fraction=LEDGER_PARTIAL_READ_FRACTION)
+        if read is not None:
+            length, rows, whole = read
+            if whole is not None:
+                NPY_CACHE.put(fname, whole)
+            return length, rows
+        old = NPY_CACHE.get(fname, min_length=locs[-1])
+        if old is None:
+            return None
+    return len(old), old[locs[locs < len(old)]]
+
 
 # compute methods for path
 class PathCompute(ABC):
@@ -120,7 +179,8 @@ class PathCompute(ABC):
             Mapping `{reference_name: predicate}`. For each file-segment `k`,
             the method attempts to load `reference_name` via `_extract(k, ...)`
             and applies `predicate(...)` to obtain a boolean mask. Masks are
-            multiplied together.
+            multiplied together. They are applied before the `target` cache
+            is checked, which then only looks at the frames they leave.
         overwrite : bool, optional
             If False (default), try to skip frames already present in the target
             cache file (if it exists and is recent enough).
@@ -200,26 +260,6 @@ class PathCompute(ABC):
             locs = self._extract(k, 'locs')
             mask = np.ones(len(locs), dtype=bool)
                         
-            # get target and check mtime
-            if target:
-                targ_fname = get_cache_fname(fname, target)
-                targ_fnames.add(targ_fname)
-                if not overwrite:
-                    old = NPY_CACHE.get(targ_fname, min_length=locs[-1])
-                    # will remove later
-                    if old is not None:
-                        # update mask: do not compute where old is not "0"
-                        if (mtime is None or
-                            os.path.getmtime(targ_fname) >= mtime):
-                            keepers = locs < len(old)
-                            old = old[locs[keepers]]
-                            if len(old.shape) > 1:
-                                mask[keepers] &= ~old.any(axis=1)
-                            elif target != 'states':
-                                mask[keepers] &= ~old.astype(bool)
-                            else:
-                                mask[keepers] &= old == ''
-                                                
             # apply conditions (if possible)
             for reference, condition in conditions.items():
                 try:
@@ -227,6 +267,29 @@ class PathCompute(ABC):
                 except Exception as exception:
                     if raise_if_error:
                         raise exception
+
+            # get target and check mtime
+            # (only on the frames the conditions left, so that the ledger
+            #  reads nothing when they exclude every frame)
+            if target:
+                targ_fname = get_cache_fname(fname, target)
+                targ_fnames.add(targ_fname)
+                if not overwrite and mask.any():
+                    candidates = np.flatnonzero(mask)
+                    ledger = _ledger_rows(targ_fname, locs[candidates])
+                    # will remove from NPY_CACHE later
+                    if ledger is not None:
+                        # update mask: do not compute where old is not "0"
+                        if (mtime is None or
+                            os.path.getmtime(targ_fname) >= mtime):
+                            length, old = ledger
+                            keepers = candidates[locs[candidates] < length]
+                            if len(old.shape) > 1:
+                                mask[keepers] &= ~old.any(axis=1)
+                            elif target != 'states':
+                                mask[keepers] &= ~old.astype(bool)
+                            else:
+                                mask[keepers] &= old == ''
                         
             if verbose:
                 # Frames skipped by mask are "already done" for the purpose of progress.

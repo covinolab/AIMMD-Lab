@@ -51,6 +51,7 @@ Notes
 """
 
 # external
+import os
 import time
 import multiprocessing
 from abc import ABC
@@ -58,6 +59,7 @@ from math import inf
 
 # aimmd imports
 from ..worker import Worker
+from ..core.series import JOB_START as series_job_start
 from ..core.utils import now
 from .._config import require_gromacs
 
@@ -187,6 +189,9 @@ class LauncherRun(ABC):
         ------
         RuntimeError
             If any worker exits with a non-zero exit code.
+        aimmd.core.series.SeriesCoverageError
+            If trajectories of a run have no file of the params' descriptor
+            series and its featurizer does not refill it.
         Exception
             Re-raises unexpected exceptions that occur during process startup or
             monitoring.
@@ -204,6 +209,10 @@ class LauncherRun(ABC):
         if any(getattr(p, 'engine', None) == 'gromacs' for p in self.params):
             require_gromacs()
 
+        # every trajectory of the runs needs the params' descriptor series:
+        # refuse the run (or announce its refill) before any worker starts
+        self._check_series()
+
         # update run settings
         self._update(n, n1, n2,
                      reactive_region_mode, state1_mode, state2_mode,
@@ -214,7 +223,10 @@ class LauncherRun(ABC):
         for args, description in zip(*self._build()):
             self._processes.add(run_task, *args, name=description)
 
-        # start processes
+        # start processes; they inherit the start of this launch, which
+        # tells a failed series refill of this launch from an older one
+        # (see aimmd.core.series)
+        os.environ[series_job_start] = repr(time.time())
         try:
             self._processes.run(timeout=self.termination_timeout)
 

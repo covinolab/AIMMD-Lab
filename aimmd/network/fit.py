@@ -43,23 +43,46 @@ import os
 import copy
 import time
 import torch
+import warnings
 import numpy as np
 from math import inf
 from tqdm import tqdm
 from scipy.special import expit
+from collections.abc import Mapping
 
 # aimmd imports
 from .utils import extract_indices_and_series, extract_lsr_pairs, extract_mar_sequences
 from ..core.utils import concatenate, now, accepts_system_id
 from ..analysis.utils import compute_bins, merge_marginal_bins
 from ..path.utils import get_cache_fname
+from ..cache.npy import read_npy_rows, read_npy_rows_unlocked
 from .._config import NPY_CACHE
 
 
 def _load_batch_descriptors(npy_paths, locs):
     """Load a batch of raw descriptors by indexing per-trajectory NPY cache files.
 
-    Groups frame lookups by file to avoid redundant disk reads within a batch.
+    Frames are grouped by file, and each file of the batch is read once, in
+    the order of its first frame. This never evicts anything from
+    ``NPY_CACHE``: a training batch draws a few rows from each of many files,
+    and once the files no longer fit in the cache budget, loading each of
+    them whole would evict others and every batch would reload whole files
+    for a few rows each. Per file:
+
+    1. a resident copy with all the requested rows is used;
+    2. else, if the whole file fits in the room left in the budget (judged
+       from its size on disk before reading it), it is loaded and kept, as
+       ``NPY_CACHE.get`` keeps it;
+    3. else only the requested rows are read and nothing is kept: without
+       the file lock (`read_npy_rows_unlocked`; see `_file_rows` for why that
+       is safe), or under it (`read_npy_rows`) when the lock-free read cannot
+       vouch for the rows (e.g. one is all zero). Files `read_npy_rows`
+       cannot read, and rows past the end of a file, go through
+       ``NPY_CACHE.get`` as before.
+
+    A run whose files fit in the budget therefore loads and keeps them as
+    before. The rows, their order and their repetitions do not depend on
+    the case.
 
     Parameters
     ----------
@@ -73,18 +96,104 @@ def _load_batch_descriptors(npy_paths, locs):
     numpy.ndarray
         Raw descriptor array, shape ``(batch, *frame_shape)``.
     """
+    frames = {}
+    for i, npy_path in enumerate(npy_paths):
+        frames.setdefault(npy_path, []).append(i)
     result = [None] * len(npy_paths)
-    cache = {}
-    for i, (npy_path, loc) in enumerate(zip(npy_paths, locs)):
-        if npy_path not in cache:
-            arr = NPY_CACHE.get(npy_path)
-            if arr is None:
-                raise RuntimeError(
-                    f'Could not load descriptor cache file: {npy_path!r}.' \
-                    'The descriptor caches are likely corrupted.')
-            cache[npy_path] = arr
-        result[i] = cache[npy_path][loc]
+    for npy_path, positions in frames.items():
+        rows = _file_rows(npy_path, [locs[i] for i in positions])
+        for i, row in zip(positions, rows):
+            result[i] = row
     return np.array(result)
+
+
+def _file_rows(npy_path, locs):
+    """Rows `locs` of one descriptor file, for `_load_batch_descriptors`."""
+    min_length = max(int(np.max(locs)) + 1, 0)
+    array = NPY_CACHE.peek(npy_path, min_length)
+    if array is None:
+        array = _load_if_room(npy_path)
+    if array is None:
+        # The rows fit draws need no file lock. They are frames of the
+        # trainer's ensemble, whose descriptor rows the ledger of the round
+        # (`PathEnsemble.compute(*params.compute_descriptors_args)` on the
+        # same ensemble, right before `fit`) has computed, and nothing
+        # rewrites a computed row in place: `Path.compute` (overwrite=False)
+        # writes only rows its ledger reads as all zero; `register_path`
+        # writes a new path's file once (`save_npy`: a new file, atomically
+        # replaced); `update_npy` appends to the in-flight segment files,
+        # which are not in the ensemble; prefill and repack run offline.
+        # At worst two processes fill the same zero row at once, and both
+        # write the same function's values for the same frame. A row that
+        # is not complete yet reads as zeros, or lies beyond the length in
+        # the header, or comes with a header that does not match the file's
+        # size; `read_npy_rows_unlocked` then gives None and the rows are
+        # read under the lock as before, so the rows never change.
+        found = read_npy_rows_unlocked(npy_path, locs)
+        if found is not None:
+            return found[1]
+        found = read_npy_rows(npy_path, locs)
+        if found is not None and len(found[1]) == len(locs):
+            return found[1]
+        array = NPY_CACHE.get(npy_path, min_length)
+    if array is None:
+        raise RuntimeError(
+            f'Could not load descriptor cache file: {npy_path!r}.' \
+            'The descriptor caches are likely corrupted.')
+    return [array[loc] for loc in locs]
+
+
+def _load_if_room(npy_path):
+    """The whole array of `npy_path`, if ``NPY_CACHE`` has room for it.
+
+    The file's size on disk (data and header) stands in for what
+    ``NPY_CACHE`` charges for the array; a file larger than the room left
+    is not read, and None is returned. A file read whole is kept only if
+    its actual charge fits as well, so that nothing is ever evicted; it is
+    returned either way. The room of a resident copy too short for the
+    batch counts as free, since loading the file replaces it.
+    """
+    stale = NPY_CACHE.peek(npy_path)
+    room = NPY_CACHE.max_size - NPY_CACHE.total_size
+    if stale is not None:
+        room += NPY_CACHE._size(stale)
+    try:
+        if os.stat(npy_path).st_size >= room:
+            return None
+    except OSError:
+        return None
+    array = NPY_CACHE.open(npy_path)
+    if array is not None and NPY_CACHE._size(array) < room:
+        NPY_CACHE.put(npy_path, array)
+    return array
+
+
+def _graph_batch(transformed, device):
+    """Network input of one batch of graph descriptors (``graphs=True``).
+
+    Parameters
+    ----------
+    transformed : list or Mapping
+        What ``descriptor_transform`` returned for the batch: a list of
+        ``torch_geometric.data.Data`` graphs, batched here with
+        ``Batch.from_data_list``, or a batch dict ready for the network (e.g.
+        `aimmd.network.nodetables.NodeTableFeaturizer.batch_dict`), used as
+        it is. The dict skips building one ``Data`` object per frame and
+        batching them again.
+    device : torch.device
+        Device of the network.
+
+    Returns
+    -------
+    dict
+        The batch, its tensors on `device`.
+    """
+    if isinstance(transformed, Mapping):
+        return {key: (value.to(device) if isinstance(value, torch.Tensor)
+                      else value)
+                for key, value in transformed.items()}
+    from torch_geometric.data import Batch
+    return Batch.from_data_list(transformed).to(device).to_dict()
 
 
 # ----------------------------------------------------------------------------
@@ -201,6 +310,12 @@ def _load_batch_descriptors_routed(npy_paths, locs, system_id, system_labels,
             transformed = descriptor_transform(raw, system_id=label)
         else:
             transformed = descriptor_transform(raw)
+        if graphs and isinstance(transformed, Mapping):
+            raise TypeError(
+                'descriptor_transform returned a batch dict, but a '
+                'multi-system fit transforms every system separately and '
+                'reassembles the graphs in batch order: return a list of '
+                'graphs instead (e.g. MultiSystemNodeTableFeaturizer.graphs)')
         for k, idx in enumerate(sel):
             out[idx] = transformed[k]
     if graphs:
@@ -322,8 +437,12 @@ def fit(params,
             State labels in the order ``(state1, reactant, state2)`` assigned to
             variables ``a, r, b`` in the implementation.
         - ``params.descriptors_function`` : bool or callable-like
-            Used to decide whether descriptors are read from ``'descriptors'`` or
-            ``'positions'`` in the path storage model.
+            Used to decide whether descriptors are read from the descriptors
+            series or from ``'coordinates'`` in the path storage model.
+        - ``params.descriptors_series`` : str, optional
+            Name of the descriptors series (default ``'descriptors'``): the
+            rows of ``{trajectory}.{descriptors_series}.npy`` are the
+            training inputs.
         - ``params.descriptor_transform`` : callable or None
             Optional transformation applied to raw descriptors to obtain network
             inputs. If None, an identity transform is used.
@@ -453,11 +572,19 @@ def fit(params,
           one batch rather than the full dataset, at the cost of repeated disk
           I/O and transform overhead each epoch.
 
+        Ignored with ``graphs=True`` (with a warning): graphs are always
+        built per batch, as with ``False``.
+
     graphs : bool, default=False
-        If True, descriptors (after ``descriptor_transform``) are assumed to be
-        lists of ``torch_geometric.data.Data`` graphs (e.g. as returned by
-        ``process_descriptors_pyg(...)['data_list']``), requiring
-        `torch_geometric` for batching.
+        If True, ``descriptor_transform`` returns graphs for each batch:
+        either a list of ``torch_geometric.data.Data`` graphs (e.g. as
+        returned by ``process_descriptors_pyg(...)['data_list']`` or
+        `aimmd.network.nodetables.NodeTableFeaturizer.graphs`), batched with
+        ``Batch.from_data_list`` and requiring `torch_geometric`, or a batch
+        dict ready for the network (e.g.
+        `~aimmd.network.nodetables.NodeTableFeaturizer.batch_dict`), which
+        is only moved to the network's device. Multi-system fits need the
+        list. Implies ``in_memory=False``.
 
     lsr_weight : float, default=0.0
         If non-zero, add a latent space regularization (LSR) term to the loss,
@@ -524,12 +651,23 @@ def fit(params,
     if augment not in ('no', 'yes', 'experimental'):
         raise TypeError(f"Invalid augment: {augment!r}")
 
+    # Graphs are built per batch: with in_memory=True, descriptor_transform
+    # would build every graph of the training set up front and keep them all
+    # in RAM (tens of GB for large PaiNN graphs).
+    if graphs and in_memory:
+        warnings.warn(
+            'fit(in_memory=True) is ignored with graphs=True: graphs are '
+            'built per batch, as with in_memory=False. Pass in_memory=False '
+            'to silence this warning.', UserWarning, stacklevel=2)
+        in_memory = False
+
     # Optional dependency only when graph descriptors are enabled
     if graphs:
-        # only need to import this torch_geometric Batch if graphs
-        # are used as descriptors. Otherwise, avoid the dependency.
-        from torch_geometric.data import Batch
-    
+        # only need torch_geometric (Batch, in _graph_batch) if graphs are
+        # used as descriptors. Otherwise, avoid the dependency. Imported here
+        # to fail before the extraction rather than at the first batch.
+        from torch_geometric.data import Batch  # noqa: F401
+
     # Initialization: network, optimizer, descriptor handling
     t0 = time.time()
     losses, scales = [], []
@@ -544,8 +682,9 @@ def fit(params,
     a, r, b = states = params.sorted_states
 
     # choose where descriptors are sourced from in Path storage
-    descriptors_source = ('descriptors' if params.descriptors_function else
-                          'coordinates')
+    descriptors_series = getattr(params, 'descriptors_series', 'descriptors')
+    descriptors_source = (descriptors_series if params.descriptors_function
+                          else 'coordinates')
     descriptor_transform = params.descriptor_transform
     if params.descriptor_transform is None:
         descriptor_transform = lambda x: x
@@ -753,7 +892,7 @@ def fit(params,
             desc_locs = (np.concatenate(_lc) if _lc
                          else np.array([], dtype=int))
             desc_npy_paths = np.array(
-                [get_cache_fname(f, 'descriptors') for f in desc_fnames])
+                [get_cache_fname(f, descriptors_series) for f in desc_fnames])
 
     # Report collection statistics
     lengths = [len(in1_back), len(in2_back),
@@ -890,7 +1029,9 @@ def fit(params,
                 pathensemble, lsr_key_B, lsr_lagtime, 'filenames')
             lc_t_B, lc_tau_B, _, _ = extract_lsr_pairs(
                 pathensemble, lsr_key_B, lsr_lagtime, 'locs')
-            _gcf = lambda arr: np.array([get_cache_fname(f, 'descriptors') for f in arr]) if len(arr) else arr
+            _gcf = lambda arr: np.array(
+                [get_cache_fname(f, descriptors_series) for f in arr]
+            ) if len(arr) else arr
             lsr_npy_t_A, lsr_locs_t_A     = _gcf(fn_t_A),   lc_t_A
             lsr_npy_tau_A, lsr_locs_tau_A = _gcf(fn_tau_A), lc_tau_A
             lsr_npy_t_B, lsr_locs_t_B     = _gcf(fn_t_B),   lc_t_B
@@ -925,7 +1066,7 @@ def fit(params,
                 pathensemble, mar_key_used, mar_lagtime, 'filenames')
             lc_seqs, _, _ = extract_mar_sequences(
                 pathensemble, mar_key_used, mar_lagtime, 'locs')
-            _gcf_mar = lambda f: get_cache_fname(f, 'descriptors')
+            _gcf_mar = lambda f: get_cache_fname(f, descriptors_series)
             for fn_seq, lc_seq in zip(fn_seqs, lc_seqs):
                 npy_seq = np.array([_gcf_mar(f) for f in fn_seq])
                 mar_sequences_refs.append((npy_seq, lc_seq))
@@ -962,7 +1103,7 @@ def fit(params,
                                          shot1to1_desc_ref[1], shot2to2_desc_ref[1],
                                          shot1to2_desc_ref[1], shot2to1_desc_ref[1]])
             desc_npy_paths = np.array(
-                [get_cache_fname(f, 'descriptors') for f in desc_fnames])
+                [get_cache_fname(f, descriptors_series) for f in desc_fnames])
     results = concatenate([in1_results, in2_results,
                            free1to1_results, free2to2_results,
                            free1to2_results, free2to1_results,
@@ -1161,7 +1302,7 @@ def fit(params,
             else:
                 d_val_list = descriptor_transform(_load_batch_descriptors(
                     desc_npy_paths[validation_indices], desc_locs[validation_indices]))
-            d_val = Batch.from_data_list(d_val_list).to(device).to_dict()
+            d_val = _graph_batch(d_val_list, device)
         r_val = torch.tensor(results[validation_indices], dtype=dtype, device=device)
     
     print(f'\nTraining set size {training_set_size}')
@@ -1324,7 +1465,7 @@ def fit(params,
             else:  # load raw frames on-the-fly from NPY_CACHE
                 d = descriptor_transform(
                     _load_batch_descriptors(desc_npy_paths[indices], desc_locs[indices]))
-            d = Batch.from_data_list(d).to(device).to_dict()
+            d = _graph_batch(d, device)
 
         # flatten non-graph descriptors for dense networks
         if not graphs:
@@ -1438,8 +1579,8 @@ def fit(params,
                     else:
                         dv_t_list = descriptor_transform(raw_t)
                         dv_tau_list = descriptor_transform(raw_tau)
-                    dv_t = Batch.from_data_list(dv_t_list).to(device).to_dict()
-                    dv_tau = Batch.from_data_list(dv_tau_list).to(device).to_dict()
+                    dv_t = _graph_batch(dv_t_list, device)
+                    dv_tau = _graph_batch(dv_tau_list, device)
 
                 network.train()
                 chi_t = _get_latent(network, dv_t)
@@ -1467,7 +1608,7 @@ def fit(params,
                             start_dim=1)
                     else:
                         graph_list = descriptor_transform(raw_seq)
-                        dv_mar = Batch.from_data_list(graph_list).to(device).to_dict()
+                        dv_mar = _graph_batch(graph_list, device)
                     network.train()
                     z_seq = _get_latent(network, dv_mar)   # (n_frames_i, latent_dim)
                     latent_seqs.append(z_seq)

@@ -108,7 +108,7 @@ This mixin relies on worker components providing:
 - :attr:`initial_paths` and :attr:`must_stop`,
 - path and pool utilities from :mod:`aimmd.worker.utils`:
   ``register_path``, ``update_selection_pool``, ``select_shooting_point``,
-  ``accept_or_reject_last_path``.
+  ``accept_or_reject_last_path``, ``compute_shooting_point_value``.
 
 Notes
 -----
@@ -129,6 +129,7 @@ from .utils import register_path
 from .utils import select_shooting_point
 from .utils import update_selection_pool
 from .utils import accept_or_reject_last_path
+from .utils import compute_shooting_point_value
 from .utils import get_initial_transitions_for_shooting_chain
 from .utils import (sweep_coverage, least_covered_frame, write_sweep_marker,
                     read_sweep_marker, clear_sweep_marker)
@@ -539,7 +540,10 @@ class WorkerShoot(ABC):
                             if (params.record_bias
                                 and params.bias_source == 'file')
                             else None)
-                register_path(path, chain, eneconv, bias_function=_bias_fn)
+                register_path(path, chain, eneconv, bias_function=_bias_fn,
+                              descriptors_series=getattr(
+                                  params, 'descriptors_series',
+                                  'descriptors'))
                 self.total_steps += 1
                 self.total_frames += path.n_frames
                 
@@ -570,9 +574,7 @@ class WorkerShoot(ABC):
                         # otherwise the value will never be updated
                         # if not training, since will never feature
                         # in the selection pool
-                        si = path.shooting_index
-                        path[si:si + 1].compute(*params.compute_values_args,
-                                                return_result=True)
+                        compute_shooting_point_value(path, params)
                 
                 else:  # sweep: tag the shot with its source frame, then report
                     # tag the registered shot with the validation frame it was

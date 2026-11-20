@@ -43,6 +43,30 @@ with ``pip install "aimmd-lab[graphs]"`` (see :doc:`../installation` for
 ``torch-cluster`` wheels matching your torch/CUDA build) and see
 :doc:`../advanced`.
 
+Node tables
+-----------
+
+The package below stores the inputs of a graph network as an ordinary
+descriptor series instead of caching graphs: ``NodeTableFeaturizer`` writes one
+fixed-width row per frame (the positions and atom types of the frame's graph
+nodes) to ``{trajectory}.{descriptors_series}.npy`` under a fingerprinted
+series name, and rebuilds the network input from the rows per batch, bitwise
+equal to the graphs of ``get_graphs_pyg``. Writing rows needs only numpy and
+MDAnalysis; building graphs needs the ``graphs`` extra. Both classes are also
+importable from ``aimmd.network.graph_utils``. Use their methods through
+module-level wrapper functions in the params file (``Params`` refuses bound
+methods of the featurizers). ``python -m aimmd.network.nodetables`` prefills,
+repacks and verifies the node tables of existing runs; a featurizer built with
+``refill=True`` lets a job refill the series of its run itself
+(:mod:`aimmd.core.series`). See :doc:`../graph_networks` for the params
+template, the command-line tool, changed settings and switching a running
+campaign.
+
+.. automodule:: aimmd.network.nodetables
+   :members: NodeTableFeaturizer, MultiSystemNodeTableFeaturizer,
+             NodeTableOverflowError
+   :show-inheritance:
+
 Graph-cache acceleration
 ------------------------
 
@@ -53,6 +77,8 @@ replica and an in-process memo, falling back to the database on any miss or
 failure. It is enabled automatically for the trainer and needs no configuration;
 the environment variables in its docstring exist only to constrain or disable it.
 Unlike ``graph_utils`` it has no optional dependencies, so it imports anywhere.
+It serves the graph cache only: runs with node tables open no database and do
+not use it.
 
 .. automodule:: aimmd.network.shm_cache
    :members:

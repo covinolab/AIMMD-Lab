@@ -51,3 +51,25 @@ def _reset_graph_cache_reader_role():
     shm_cache._READER_ROLE = False
     yield
     shm_cache._READER_ROLE = False
+
+
+@pytest.fixture(autouse=True)
+def _restore_series_registry():
+    """Keep the descriptor-series registry from leaking between tests.
+
+    Every node-table featurizer registers its series in the process-global
+    registry of `aimmd.core.series` when it is built, as a params file does
+    in a job. Under pytest the featurizers of one test would stay registered
+    for every later test, and a params whose computed series is not
+    registered while another one is counts as written for other settings
+    (`SeriesMismatchError`): restore the registry after each test.
+    """
+    try:
+        from aimmd.core import series
+    except Exception:                                           # noqa: BLE001
+        yield
+        return
+    saved = dict(series._POLICIES)
+    yield
+    series._POLICIES.clear()
+    series._POLICIES.update(saved)

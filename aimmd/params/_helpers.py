@@ -29,6 +29,7 @@ Notes
 # external
 import os
 import numpy as np
+import functools
 import inspect
 import warnings
 from abc import ABC
@@ -43,7 +44,7 @@ from collections.abc import Iterable
 # aimmd imports
 from .utils import (update_source, create_default_values_function,
                     canonical_restart_source, canonical_seeding_position,
-                    legacy_transitions_replacement)
+                    legacy_transitions_replacement, check_descriptors_series)
 from ..core.utils import accepts_system_id
 from ..path import Path
 from ..pathensemble import PathEnsemble
@@ -76,6 +77,103 @@ def _check_caps_dict(value):
                             f"None, got {cap!r}")
         out[key] = int(cap)
     return out
+
+
+def _store_seed_descriptors(path, series, descriptors):
+    """Attach the descriptors of an initial path as its `series` array.
+
+    Descriptor arrays of other series (from an earlier `descriptors_series`)
+    are dropped first: the launcher exports every array of an initial path
+    to ``initial{states}``, and only the current series is read.
+    """
+    for name in [name for name in path.__dict__
+                 if name == 'descriptors' or name.startswith('descriptors-')]:
+        del path.__dict__[name]
+    setattr(path, series, descriptors)
+
+
+def _requires_wrapper(instance):
+    """Whether callables bound to `instance` must be refused: objects such as
+    node-table featurizers set ``_params_requires_wrapper = True``, since
+    Params would drop them (it stores functions, not objects)."""
+    try:
+        return getattr(instance, '_params_requires_wrapper', False) is True
+    except Exception:
+        return False
+
+
+def _wrapper_example(name, function, callable_):
+    """The module-level wrapper `name` that calls ``INSTANCE.function`` with
+    the parameters of `callable_` (an example for the error messages)."""
+    try:
+        parameters = list(inspect.signature(callable_).parameters.values())
+    except (TypeError, ValueError):
+        parameters = []
+    arguments = []
+    for parameter in parameters:
+        if parameter.kind is parameter.VAR_POSITIONAL:
+            arguments.append(f'*{parameter.name}')
+        elif parameter.kind is parameter.VAR_KEYWORD:
+            arguments.append(f'**{parameter.name}')
+        elif parameter.kind is parameter.KEYWORD_ONLY:
+            arguments.append(f'{parameter.name}={parameter.name}')
+        else:
+            arguments.append(parameter.name)
+    signature = ', '.join(str(parameter) for parameter in parameters)
+    return (f'    def {name}({signature}):\n'
+            f'        return INSTANCE.{function}({", ".join(arguments)})\n')
+
+
+def _bound_method_message(name, method):
+    """Why the bound `method` cannot be the callable field `name`, and the
+    module-level wrapper to write instead."""
+    owner = type(method.__self__).__name__
+    function = method.__func__.__name__
+    return (f'{name!r} is the bound method {owner}.{function}. Params stores '
+            f'functions, not objects, and would lose the {owner} instance. '
+            f'Define a module-level wrapper in the params file instead, e.g.\n'
+            f'\n'
+            f'{_wrapper_example(name, function, method)}'
+            f'\n'
+            f'where INSTANCE is your {owner}.')
+
+
+def _partial_owner(partial):
+    """``(owner, function name)`` if the functools.partial `partial` (nested
+    or not) binds an object that `_requires_wrapper`, through a bound method
+    or an argument; None otherwise."""
+    owner = None
+    function = partial
+    while isinstance(function, functools.partial):
+        bound = [*function.args, *function.keywords.values()]
+        if isinstance(function.func, Method):
+            bound.append(function.func.__self__)
+        if owner is None:
+            owner = next((item for item in bound if _requires_wrapper(item)),
+                         None)
+        function = function.func
+    if owner is None:
+        return None
+    if isinstance(function, Method):
+        function = function.__func__
+    return owner, getattr(function, '__name__', 'method')
+
+
+def _partial_message(name, partial):
+    """Why the functools.partial `partial` over an object that
+    `_requires_wrapper` cannot be the callable field `name`, and the
+    module-level wrapper to write instead."""
+    owner, function = _partial_owner(partial)
+    owner = (owner if isinstance(owner, type) else type(owner)).__name__
+    return (f'{name!r} is a functools.partial of {owner}.{function}. Params '
+            f'stores functions, not objects: it would save the partial as '
+            f"'from functools import {name}', which no worker can import, "
+            f'and lose the {owner} instance. Define a module-level wrapper in '
+            f'the params file instead, e.g.\n'
+            f'\n'
+            f'{_wrapper_example(name, function, partial)}'
+            f'\n'
+            f'where INSTANCE is your {owner}.')
 
 
 # params' helpers
@@ -171,7 +269,10 @@ class ParamsHelpers(ABC):
         -----
         Many fields require special handling:
 
-        - callable fields: unwrap bound methods, attach `__source__`.
+        - callable fields: unwrap bound methods, attach `__source__`. Bound
+          methods of objects with ``_params_requires_wrapper`` (node-table
+          featurizers), and functools.partial objects binding such an object,
+          are refused: they need module-level wrappers.
         - `states`: normalized to uppercase letters and validated.
         - `topology`: attempts to build an MDAnalysis Universe to cache masses.
         - `initial_paths`: immediately coerced into a PathEnsemble.
@@ -193,10 +294,21 @@ class ParamsHelpers(ABC):
                                     f'got {type(value).__name__}: {value}')
                 
                 # Bound methods are converted to underlying function objects.
+                # That drops the instance: objects whose methods need it (e.g.
+                # a NodeTableFeaturizer) are refused, the params file must
+                # wrap them in module-level functions.
                 elif isinstance(value, Method):
+                    if _requires_wrapper(value.__self__):
+                        raise TypeError(_bound_method_message(name, value))
                     value = value.__func__
                     update_source(value, name)
-                
+
+                # So are partials binding such an object: they would be saved
+                # as an import from functools, which the workers cannot load.
+                elif (isinstance(value, functools.partial)
+                      and _partial_owner(value) is not None):
+                    raise TypeError(_partial_message(name, value))
+
                 else:
                     update_source(value, name)
 
@@ -351,6 +463,10 @@ class ParamsHelpers(ABC):
                         raise TypeError(
                             f'could not get any initial paths from {value!r}')
                     value = initial_paths
+
+            # name of the descriptors cache series (part of a file name)
+            elif name == 'descriptors_series':
+                value = check_descriptors_series(value)
 
             # engine
             elif name == 'engine':
@@ -571,12 +687,14 @@ class ParamsHelpers(ABC):
                         'states_function' in fields or
                         check_paths)
         check_descrs = (self.descriptors_function is not None and
-                       ('descriptors_function' in fields or check_paths))
+                       ('descriptors_function' in fields or
+                        'descriptors_series' in fields or check_paths))
         if self.descriptors_function is None:
             check_values = 'values_function' in fields or check_paths
         else:
             check_values = ('values_function' in fields or
                             'descriptors_function' in fields or
+                            'descriptors_series' in fields or
                             check_paths)
 
         # go through paths
@@ -621,13 +739,16 @@ class ParamsHelpers(ABC):
                          'Perhaps you are using it for brute-force shooting?')
             
             if check_descrs:
-                # Cache descriptors on the Path object.
-                path.descriptors = path.compute(self.descriptors_function)
+                # Cache descriptors on the Path object, as the series array
+                # (exported next to the initial path by the launcher).
+                _store_seed_descriptors(
+                    path, self.descriptors_series,
+                    path.compute(self.descriptors_function))
 
             if check_values:
                 # Ensure values_function returns exactly one value per frame.
                 if self.descriptors_function is not None:
-                    source = path.descriptors[:1]
+                    source = getattr(path, self.descriptors_series)[:1]
                 else:
                     source = path.coordinates[:1]
                 assert self.values_function(source).shape == (1,)
@@ -705,12 +826,14 @@ class ParamsHelpers(ABC):
         check_states = ('states' in fields or 'states_function' in fields
                         or check_paths)
         check_descrs = (self.descriptors_function is not None and
-                        ('descriptors_function' in fields or check_paths))
+                        ('descriptors_function' in fields or
+                         'descriptors_series' in fields or check_paths))
         if self.descriptors_function is None:
             check_values = 'values_function' in fields or check_paths
         else:
             check_values = ('values_function' in fields or
-                            'descriptors_function' in fields or check_paths)
+                            'descriptors_function' in fields or
+                            'descriptors_series' in fields or check_paths)
         values_takes_sid = accepts_system_id(self.values_function)
 
         # go through each system's group of paths
@@ -750,12 +873,14 @@ class ParamsHelpers(ABC):
                               f"as it is.")
 
                 if check_descrs:
-                    path.descriptors = path.compute(self.descriptors_function,
-                                                    system_id=sid)
+                    _store_seed_descriptors(
+                        path, self.descriptors_series,
+                        path.compute(self.descriptors_function,
+                                     system_id=sid))
 
                 if check_values:
                     if self.descriptors_function is not None:
-                        source = path.descriptors[:1]
+                        source = getattr(path, self.descriptors_series)[:1]
                     else:
                         source = path.coordinates[:1]
                     if values_takes_sid:

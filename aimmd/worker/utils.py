@@ -840,7 +840,39 @@ def _write_colvar(fname, header, rows):
             fh.write(' '.join(f'{v:.6f}' for v in row) + '\n')
 
 
-def register_path(path, chain, eneconv=None, bias_function=None):
+def _rows_or_zeros(series, indices, like):
+    """
+    Rows of a per-frame series, zero where the series has none.
+
+    Parameters
+    ----------
+    series : numpy.ndarray or None
+        Cached series of one trajectory file, None if the file has none.
+    indices : array-like of int
+        Rows to take.
+    like : numpy.ndarray
+        A series with the same row shape and dtype, used when `series` is
+        None.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``series[indices]``, with zero rows where `series` is None or too
+        short. Zero rows mean "not computed" to the ledger of
+        :meth:`aimmd.path.Path.compute`, which refills them.
+    """
+    indices = np.asarray(indices)
+    reference = series if series is not None else like
+    result = np.zeros((len(indices),) + reference.shape[1:],
+                      dtype=reference.dtype)
+    if series is not None:
+        inside = indices < len(series)
+        result[inside] = series[indices[inside]]
+    return result
+
+
+def register_path(path, chain, eneconv=None, bias_function=None,
+                  descriptors_series='descriptors'):
     """
     Register a newly generated path into the shooting chain and persist it.
 
@@ -851,7 +883,7 @@ def register_path(path, chain, eneconv=None, bias_function=None):
 
     1) Writes per-frame cached arrays:
        - ``...states.npy`` (always),
-       - ``...descriptors.npy`` (if present).
+       - ``...{descriptors_series}.npy`` (if present).
 
        Arrays are taken from :data:`NPY_CACHE` for the temporary segment files
        (``back`` / ``forw``) and then concatenated/selected according to the
@@ -893,6 +925,11 @@ def register_path(path, chain, eneconv=None, bias_function=None):
           ``bias_function``).
 
         If ``None`` (default), no bias files are written.
+    descriptors_series : str, default 'descriptors'
+        ``params.descriptors_series``: the cache series of the descriptors
+        (see :attr:`aimmd.Params.descriptors_series`). Only this series is
+        read from the segments and written for the path; files of other
+        descriptor series are never opened.
 
     Returns
     -------
@@ -917,15 +954,15 @@ def register_path(path, chain, eneconv=None, bias_function=None):
     temp_fname = f'{folder}/.{name}{ext}'
     fname = f'{folder}/{name}{ext}'
     fname_states = get_cache_fname(fname, 'states')
-    fname_descr = get_cache_fname(fname, 'descriptors')
+    fname_descr = get_cache_fname(fname, descriptors_series)
 
     # backward and forward
     forw_fname = f'{folder}/back{ext}'
     forw_fname = f'{folder}/forw{ext}'
     back_fname_states = get_cache_fname(back_fname, 'states')
     forw_fname_states = get_cache_fname(forw_fname, 'states')
-    back_fname_descr = get_cache_fname(back_fname, 'descriptors')
-    forw_fname_descr = get_cache_fname(forw_fname, 'descriptors')
+    back_fname_descr = get_cache_fname(back_fname, descriptors_series)
+    forw_fname_descr = get_cache_fname(forw_fname, descriptors_series)
 
     # only back
     if path.n_files == 1:
@@ -934,10 +971,11 @@ def register_path(path, chain, eneconv=None, bias_function=None):
         states = NPY_CACHE.pop(back_fname_states)[path.locs]
         save_npy(fname_states, states)
 
-        # save descriptors time series (if existing)
+        # save descriptors time series (if existing; zero rows where the
+        # series is too short, the ledger refills them)
         descriptors = NPY_CACHE.pop(back_fname_descr)
         if descriptors is not None:
-            descriptors = descriptors[path.locs]
+            descriptors = _rows_or_zeros(descriptors, path.locs, descriptors)
             save_npy(fname_descr, descriptors)
 
     else:  # backward and forward
@@ -952,12 +990,18 @@ def register_path(path, chain, eneconv=None, bias_function=None):
             NPY_CACHE.pop(forw_fname_states)[forw_indices]])
         save_npy(fname_states, states)
 
-        # save descriptors time series (if existing)
-        descriptors = NPY_CACHE.pop(forw_fname_descr)
-        if descriptors is not None:
+        # save descriptors time series (if existing for either half; zero
+        # rows for a half without a series or with a too short one, e.g.
+        # begun before a change of descriptor series: the ledger refills
+        # them)
+        back_descriptors = NPY_CACHE.pop(back_fname_descr)
+        forw_descriptors = NPY_CACHE.pop(forw_fname_descr)
+        if back_descriptors is not None or forw_descriptors is not None:
             descriptors = np.concatenate([
-                NPY_CACHE.pop(back_fname_descr)[back_indices],
-                descriptors[forw_indices]])
+                _rows_or_zeros(back_descriptors, back_indices,
+                               forw_descriptors),
+                _rows_or_zeros(forw_descriptors, forw_indices,
+                               back_descriptors)])
             save_npy(fname_descr, descriptors)
 
         # merge energies (if existing)
@@ -1016,6 +1060,80 @@ def register_path(path, chain, eneconv=None, bias_function=None):
     # report
     print(f'+++ added {fname} ({path.type[:3]}) '
           f'with {len(path)} frames {now()}')
+
+
+def _lacks_value(values):
+    """Ledger convention of a values series: 0 means "not computed yet"."""
+    return ~np.asarray(values).astype(bool)
+
+
+def ensure_descriptors(paths, params, missing_values_only=False):
+    """
+    Featurize the frames a value pass is about to read, where needed.
+
+    Values are computed from the cached descriptor series. With a cached
+    series as source, :meth:`aimmd.path.Path.compute` skips a file whose
+    series is missing or too short (silently, unless ``raise_if_error``), so
+    a value pass on such a path returns fewer values than frames. A path can
+    lack its series after a lost file, a registration that found one half
+    without it, or a change of descriptor series (the path was registered
+    before it). Calling this function on the same frames right before the
+    value pass computes the missing rows; for a complete series it only
+    checks the ledger.
+
+    Parameters
+    ----------
+    paths : aimmd.path.Path or aimmd.pathensemble.PathEnsemble
+        The frames of the value pass that follows.
+    params : aimmd.params.Params
+        Parameters providing ``compute_descriptors_args`` (and
+        ``compute_values_args`` when `missing_values_only`).
+    missing_values_only : bool, default False
+        Restrict to the frames that have no cached value yet, i.e. the frames
+        a ``compute(*params.compute_values_args)`` pass (without
+        ``overwrite``) computes. Frames with a value need no descriptors, and
+        their series is then not even read.
+
+    Returns
+    -------
+    int
+        Number of frames featurized (0 without a ``descriptors_function``).
+    """
+    args = getattr(params, 'compute_descriptors_args', None)
+    if args is None:
+        return 0
+    conditions = {}
+    if missing_values_only:
+        conditions[params.compute_values_args[1]] = _lacks_value
+    return paths.compute(*args, conditions=conditions)
+
+
+def compute_shooting_point_value(path, params):
+    """
+    Compute and cache the value of a path's shooting point if it is missing.
+
+    A path with zero weight never enters the selection pool, so without a
+    trainer its shooting-point value would never be computed. The descriptor
+    row of that frame is ensured first (see :func:`ensure_descriptors`).
+
+    Parameters
+    ----------
+    path : aimmd.path.Path
+        Registered path; its ``shooting_index`` selects the frame.
+    params : aimmd.params.Params
+        Parameters providing the descriptor and value functions.
+
+    Returns
+    -------
+    numpy.ndarray
+        The newly computed value (one element), or an empty array if the
+        value was already cached.
+    """
+    si = path.shooting_index
+    shooting_point = path[si:si + 1]
+    ensure_descriptors(shooting_point, params, missing_values_only=True)
+    return shooting_point.compute(*params.compute_values_args,
+                                  return_result=True)
 
 
 def select_shooting_point(pool, params, folder,
@@ -1157,10 +1275,12 @@ def select_shooting_point(pool, params, folder,
         chain = PathEnsemble()
     
     # shared density adjustment: obtain shared_shooting_points
-    shared_shooting_points = Path()
+    # (registered chain paths, then frame 0 of the backward halves in flight)
+    shared_shooting_points = registered_shooting_points = Path()
     if shared_density_adjustment:
         shooting_chains = PathEnsemble(shooting_chains)
-        shared_shooting_points = shooting_chains.shooting('self').join()
+        registered_shooting_points = shooting_chains.shooting('self').join()
+        shared_shooting_points = registered_shooting_points
         for fname in glob(f'{folder}/../chain{t}*/back{ext}'):
             shared_shooting_points += Path(fname, stop=1)
 
@@ -1184,6 +1304,10 @@ def select_shooting_point(pool, params, folder,
         bins, densities = params.load_bins_and_densities(f'{folder}/..')
 
         # compute simulated values only where there are none (yet)
+        # (featurize first the frames whose descriptors are missing)
+        ensure_descriptors(pool, params, missing_values_only=True)
+        ensure_descriptors(overriding_unique, params,
+                           missing_values_only=True)
         n1 = pool.compute(*compute_values_args,
                           raise_if_error=True)
         n2 = overriding_unique.compute(*compute_values_args,
@@ -1192,6 +1316,7 @@ def select_shooting_point(pool, params, folder,
         # also recompute initial paths' values if they still feature in pool
         initial_paths_in_pool = PathEnsemble(
             [path for path in pool if is_initial_path(path)])
+        ensure_descriptors(initial_paths_in_pool, params)
         n1 += initial_paths_in_pool.compute(
             *compute_values_args, overwrite=True)
 
@@ -1221,6 +1346,10 @@ def select_shooting_point(pool, params, folder,
         populations_for_adjustment = np.zeros_like(populations)
     if shared_density_adjustment:
         try:  # catch instabilities in try/except loop
+            # featurize registered paths only: the halves in flight belong
+            # to other workers, which write their series while ingesting
+            # them (and replace them with every shot), so they are only read
+            ensure_descriptors(registered_shooting_points, params)
             shared_populations_for_adjustment = np.histogram(
                 shared_shooting_points.compute(
                     compute_values_args[0], '',
@@ -1487,8 +1616,13 @@ def accept_or_reject_last_path(chain, params):
     # the last bin is for handling special cases outside of bin range
 
     # get (internal) values
-    source = 'descriptors' if params.descriptors_function else 'reader'
+    # (featurize first the frames whose descriptors are missing: a path
+    #  without its series would give no values and break the step below)
+    source = (getattr(params, 'descriptors_series', 'descriptors')
+              if params.descriptors_function else 'reader')
     batch_size = params.network_batch_size
+    ensure_descriptors(current[1:-1], params)
+    ensure_descriptors(leading[1:-1], params)
     current_values = current[1:-1].compute(
         params.values_function, source=source, batch_size=batch_size)
     leading_values = leading[1:-1].compute(
